@@ -12,7 +12,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE QuasiQuotes #-}
 
-module SAWScript.Heapster.PermParser where
+module Verifier.SAW.Heapster.PermParser where
 
 import Data.List
 import Data.String
@@ -39,8 +39,8 @@ import Lang.Crucible.LLVM.MemModel
 import Lang.Crucible.FunctionHandle
 -- import What4.FunctionName
 
-import SAWScript.Heapster.CruUtil
-import SAWScript.Heapster.Permissions
+import Verifier.SAW.Heapster.CruUtil
+import Verifier.SAW.Heapster.Permissions
 
 
 -- FIXME: maybe some of these should use unsafeMbTypeRepr for efficiency?

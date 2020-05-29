@@ -22,7 +22,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 
-module SAWScript.Heapster.TypedCrucible where
+module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
 import Data.Text hiding (length, map, concat, findIndex, foldr, foldl, maximum)
@@ -70,9 +70,9 @@ import Lang.Crucible.CFG.Extension.Safety
 import Lang.Crucible.Analysis.Fixpoint.Components
 import qualified What4.Partial.AssertionTree as AT
 
-import SAWScript.Heapster.CruUtil
-import SAWScript.Heapster.Permissions
-import SAWScript.Heapster.Implication
+import Verifier.SAW.Heapster.CruUtil
+import Verifier.SAW.Heapster.Permissions
+import Verifier.SAW.Heapster.Implication
 
 import Debug.Trace
 

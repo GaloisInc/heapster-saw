@@ -22,7 +22,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
 
-module SAWScript.Heapster.Permissions where
+module Verifier.SAW.Heapster.Permissions where
 
 import Data.Maybe
 import Data.Bits
@@ -57,7 +57,7 @@ import Lang.Crucible.CFG.Core
 import Verifier.SAW.Term.Functor (Ident)
 import Verifier.SAW.OpenTerm
 
-import SAWScript.Heapster.CruUtil
+import Verifier.SAW.Heapster.CruUtil
 
 import Debug.Trace
 

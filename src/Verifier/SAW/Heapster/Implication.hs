@@ -23,7 +23,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 
-module SAWScript.Heapster.Implication where
+module Verifier.SAW.Heapster.Implication where
 
 import Data.Maybe
 import Data.List
@@ -54,8 +54,8 @@ import Verifier.SAW.Term.Functor (Ident)
 import Verifier.SAW.OpenTerm
 
 import Data.Binding.Hobbits
-import SAWScript.Heapster.CruUtil
-import SAWScript.Heapster.Permissions
+import Verifier.SAW.Heapster.CruUtil
+import Verifier.SAW.Heapster.Permissions
 
 import Debug.Trace
 

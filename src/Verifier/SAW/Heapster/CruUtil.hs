@@ -13,7 +13,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module SAWScript.Heapster.CruUtil where
+module Verifier.SAW.Heapster.CruUtil where
 
 import Data.Kind
 import Data.Text hiding (length)

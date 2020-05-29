@@ -23,7 +23,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TupleSections #-}
 
-module SAWScript.Heapster.SAWTranslation where
+module Verifier.SAW.Heapster.SAWTranslation where
 
 import Data.Maybe
 import Data.Either
@@ -72,10 +72,10 @@ import Verifier.SAW.Term.Functor
 import Verifier.SAW.Module
 import Verifier.SAW.SharedTerm
 
-import SAWScript.Heapster.CruUtil
-import SAWScript.Heapster.Permissions
-import SAWScript.Heapster.Implication
-import SAWScript.Heapster.TypedCrucible
+import Verifier.SAW.Heapster.CruUtil
+import Verifier.SAW.Heapster.Permissions
+import Verifier.SAW.Heapster.Implication
+import Verifier.SAW.Heapster.TypedCrucible
 
 import Debug.Trace
 
