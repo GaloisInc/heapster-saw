@@ -22,6 +22,7 @@ Qed.
 
 Lemma no_errors_is_elem_manual : refinesFun is_elem (fun _ _ => noErrorsSpec).
 Proof.
+  unfold is_elem, is_elem__tuple_fun.
   unfold noErrorsSpec.
   apply refinesFun_multiFixM_fst. intros x l.
   apply refinesM_letRecM0.
@@ -69,6 +70,23 @@ Proof.
   prove_refinement.
 Qed.
 
+Lemma is_elem_fun_ref_manual : refinesFun is_elem is_elem_fun.
+Proof.
+  unfold is_elem, is_elem__tuple_fun, is_elem_fun.
+  apply refinesFun_multiFixM_fst.
+  apply refinesFunStep; intro x.
+  apply refinesFunStep; intro l.
+  destruct l; simpl; apply noDestructArg.
+  - apply refinesM_letRecM0.
+    reflexivity.
+  - apply refinesM_letRecM0.
+    apply refinesM_if_r; intro H; rewrite H; simpl.
+    + reflexivity.
+    + setoid_rewrite existT_eta_unit.
+      setoid_rewrite bindM_returnM_CompM.
+      reflexivity.
+Qed.
+
 (* The pure version of is_elem *)
 Definition is_elem_pure (x:bitvector 64) (l:list {_:bitvector 64 & unit})
   : {_:bitvector 64 & unit} :=
@@ -79,9 +97,32 @@ Definition is_elem_pure (x:bitvector 64) (l:list {_:bitvector 64 & unit})
 
 Arguments is_elem_pure /.
 
+Definition is_elem_lrt : LetRecType :=
+  LRT_Fun (bitvector 64) (fun _ =>
+    LRT_Fun (list {_:bitvector 64 & unit}) (fun _ =>
+      LRT_Ret {_:bitvector 64 & unit})).
+
+(* In order to prove this refinement we need induction on l, not just destruct!
+   (Compare this to is_elem_fun_ref_manual) *)
+Lemma is_elem_pure_fun_ref : @refinesFun is_elem_lrt is_elem_fun (fun x l => returnM (is_elem_pure x l)).
+Proof.
+  unfold is_elem_fun, is_elem_pure.
+  apply refinesFunStep; intro x.
+  apply refinesFunStep; intro l.
+  induction l; simpl; apply noDestructArg.
+  - reflexivity.
+  - apply refinesM_if_l; intro H; rewrite H.
+    + reflexivity.
+    + exact IHl.
+Qed.
+
 Lemma is_elem_pure_ref : refinesFun is_elem (fun x l => returnM (is_elem_pure x l)).
 Proof.
-Admitted.
+  intros x l. (* TODO add PreOrder_refinesFun to saw-core-coq to remove this line *)
+  transitivity (is_elem_fun x l).
+  exact (is_elem_fun_ref x l).
+  exact (is_elem_pure_fun_ref x l).
+Qed.
 
 Definition orM {A} (m1 m2:CompM A) : CompM A :=
   existsM (fun (b:bool) => if b then m1 else m2).
