@@ -3,6 +3,10 @@ enable_experimental;
 // Create a Heapster environment
 env <- heapster_init_env "string_set" "string_set.bc";
 
+// FIXME: want to load up a SAW core file when we init
+// env <- heapster_init_env_from_file "string_set.sawcore" "string_set.bc";
+
+
 // Define permissions for strings and for lists being used as sets
 heapster_define_opaque_perm env "string" "" "llvmptr 64" "Prelude.String";
 
@@ -27,3 +31,5 @@ heapster_typecheck_fun env "insert_remove" "(l:lifetime).arg0:string_set<W,l>, a
 
 // FIXME: should be able to write the above like this when all the changes above happen
 // heapster_typecheck_fun env "insert_remove" "(l:lifetime).arg0:string_set<W,l>, arg1:string<>, arg2:string<> -o arg0:string_set<W,l>, arg1:true, arg2:string<>";
+
+heapster_export_coq env "string_set.v";
