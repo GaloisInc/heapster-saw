@@ -1828,6 +1828,7 @@ beginLifetime :: StmtPermCheckM ext cblocks blocks ret args
                  RNil RNil (ExprVar LifetimeType)
 beginLifetime =
   emitStmt knownRepr checkerProgramLoc BeginLifetime >>>= \(_ :>: n) ->
+  stmtTraceM (\i -> string "Beginning lifetime" <+> permPretty i n) >>>
   stmtRecombinePerms >>>
   greturn n
 
