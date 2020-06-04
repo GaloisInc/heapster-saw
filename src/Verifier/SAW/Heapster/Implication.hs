@@ -2844,6 +2844,9 @@ proveVarImplH :: ExprVar a -> ValuePerm a ->
                  Mb vars (ValuePerm a) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
 
+-- Prove an empty conjunction trivially
+proveVarImplH x p [nuP| ValPerm_Conj [] |] = implPopM x p >>> introConjM x
+
 -- Prove x:eq(e) by calling proveVarEq; note that we do not eliminate
 -- disjunctive permissions first because some trivial equalities do not require
 -- any eq permissions on the left, and we do not eliminate equalities on the
@@ -2932,9 +2935,6 @@ proveVarImplH x p [nuP| ValPerm_Exists mb_p |] =
   let e = fromMaybe (zeroOfType knownRepr) maybe_e in
   partialSubstForceM mb_p "proveVarImpl: incomplete psubst: introExists" >>>=
   introExistsM x e
-
--- Prove an empty conjunction trivially
-proveVarImplH x p [nuP| ValPerm_Conj [] |] = implPopM x p >>> introConjM x
 
 -- Prove x:(p1 * .. * pn) from x:eq(y+off) by proving y:(p1 + off * ...) and
 -- then casting the result
