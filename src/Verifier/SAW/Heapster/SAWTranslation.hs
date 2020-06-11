@@ -530,6 +530,10 @@ piTransM x tp body_m =
 -- | Translation info for translating types and pure expressions
 data TypeTransInfo ctx = TypeTransInfo (ExprTransCtx ctx) PermEnv
 
+-- | Build an empty 'TypeTransInfo' from a 'PermEnv'
+emptyTypeTransInfo :: PermEnv -> TypeTransInfo RNil
+emptyTypeTransInfo = TypeTransInfo MNil 
+
 instance TransInfo TypeTransInfo where
   infoCtx (TypeTransInfo ctx _) = ctx
   infoEnv (TypeTransInfo _ env) = env
@@ -1405,7 +1409,6 @@ instance TransInfo info =>
     piPermCtx (mbCombine $ fmap mbCombine perms_in) $ \_ ->
     translateRetType (mbLift ret) $
     mbCombine $ fmap (mbCombine . fmap mbValuePermsToDistPerms) perms_out
-
 
 -- | Lambda-abstraction over a permission
 lambdaPermTrans :: TransInfo info => String -> Mb ctx (ValuePerm a) ->
@@ -3342,3 +3345,15 @@ tcTranslateAddCFGs sc mod_name w env cfgs_and_perms =
               [globalOpenTerm ident])
        cfgs_and_perms [0 ..]
      return $ permEnvAddGlobalSyms env new_entries
+
+
+----------------------------------------------------------------------
+-- * Top-level Entrypoints for Translating Other Things
+----------------------------------------------------------------------
+
+-- | Translate a 'FunPerm' to the SAW core type it represents
+translateCompleteFunPerm :: SharedContext -> PermEnv ->
+                            FunPerm ghosts args ret -> IO Term
+translateCompleteFunPerm sc env fun_perm =
+  completeOpenTerm sc $
+  runTransM (translate $ emptyMb fun_perm) (emptyTypeTransInfo env)
