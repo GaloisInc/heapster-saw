@@ -3,6 +3,27 @@ module StringSet where
 
 import Prelude;
 
+listInsertM : (a : sort 0) -> List a -> a ->
+              CompM (Sigma #() (\ (_:#()) -> List a));
+listInsertM a l s =
+  returnM (Sigma #() (\ (_:#()) -> List a))
+          (exists #() (\ (_:#()) -> List a) () (Cons a s l));
+
+listRemoveM : (a : sort 0) -> (a -> a -> Bool) -> List a -> a ->
+              CompM (Sigma #() (\ (_:#()) -> List a * a * #()));
+listRemoveM a test_eq l s =
+  returnM
+    (Sigma #() (\ (_:#()) -> List a * a * #()))
+    (exists
+       #() (\ (_:#()) -> List a * a * #()) ()
+       (List__rec
+         a (\ (_:List a) -> List a)
+         (Nil a)
+         (\ (s':a) (_:List a) (rec:List a) ->
+            ite (List a) (test_eq s s') rec (Cons a s' rec))
+         l,
+        s, ()));
+
 ----------------------------------------------------------------------
 -- Helper defs for Heapster examples
 
