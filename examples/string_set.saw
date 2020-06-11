@@ -15,13 +15,12 @@ heapster_define_opaque_perm env "string" "" "llvmptr 64" "Prelude.String";
 heapster_define_opaque_perm env "string_set" "rw:rwmodality, l:lifetime" "llvmptr 64" "StringSet.stringList";
 
 
-// FIXME: want the translations of our assumed funs to use terms
-// heapster_assume_fun env "string_set_insert" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string -o arg0:string_set<W,l1>, arg1:true, ret:true" "listInsertM stringEqual"
-// heapster_assume_fun env "string_set_remove" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string -o arg0:string_set<W,l1>, arg1:string, ret:true" "listRemoveM stringEqual"
+heapster_assume_fun env "string_set_insert" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string<> -o arg0:string_set<W,l1>, arg1:true, ret:true" "listInsertM String";
+heapster_assume_fun env "string_set_remove" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string<> -o arg0:string_set<W,l1>, arg1:string<>, ret:true" "listRemoveM String equalString";
 
-// Instead, we have to define names to use for them
-heapster_assume_fun env "string_set_insert" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string<> -o arg0:string_set<W,l1>, arg1:true, ret:true" "StringSet.stringListInsertM";
-heapster_assume_fun env "string_set_remove" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string<> -o arg0:string_set<W,l1>, arg1:string<>, ret:true" "StringSet.stringListRemoveM";
+// The old way: we have to define names to use the functions above
+// heapster_assume_fun env "string_set_insert" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string<> -o arg0:string_set<W,l1>, arg1:true, ret:true" "stringListInsertM";
+// heapster_assume_fun env "string_set_remove" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string<> -o arg0:string_set<W,l1>, arg1:string<>, ret:true" "stringListRemoveM";
 
 // Type-check our insert_remove function
 heapster_typecheck_fun env "insert_remove" "(l:lifetime).arg0:string_set<W,l>, arg1:string<>, arg2:string<> -o arg0:string_set<W,l>, arg1:true, arg2:string<>";
