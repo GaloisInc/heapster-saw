@@ -1,0 +1,43 @@
+
+module StringSet where
+
+import Prelude;
+
+----------------------------------------------------------------------
+-- Helper defs for Heapster examples
+
+stringList : sort 0;
+stringList = List String;
+
+stringListInsertM : List String -> String ->
+                    CompM (Sigma #() (\ (_:#()) -> List String));
+stringListInsertM l s =
+  returnM (Sigma #() (\ (_:#()) -> List String))
+          (exists #() (\ (_:#()) -> List String) () (Cons String s l));
+
+stringListRemoveM : List String -> String ->
+                    CompM (Sigma #() (\ (_:#()) -> stringList * String * #()));
+stringListRemoveM l s =
+  returnM
+    (Sigma #() (\ (_:#()) -> stringList * String * #()))
+    (exists
+       #() (\ (_:#()) -> stringList * String * #()) ()
+       (List__rec
+         String (\ (_:List String) -> List String)
+         (Nil String)
+         (\ (s':String) (_:List String) (rec:List String) ->
+            ite (List String) (equalString s s') rec (Cons String s' rec))
+         l,
+        s, ()));
+
+
+string_dup : String -> String * String;
+string_dup x = (x,x);
+
+data ULCTerm : sort 0 where {
+  ULCTerm_Const : bitvector 64 -> ULCTerm;
+  ULCTerm_Variable : String -> ULCTerm;
+  ULCTerm_Lambda : String -> ULCTerm -> ULCTerm;
+  ULCTerm_Add : ULCTerm -> ULCTerm -> ULCTerm;
+  ULCTerm_Call : ULCTerm -> ULCTerm -> ULCTerm;
+}
