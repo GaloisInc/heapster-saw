@@ -1407,6 +1407,7 @@ instance TransInfo info =>
                (CruCtxCons (mbLift ghosts) LifetimeRepr)
                (mbLift args)) $
     piPermCtx (mbCombine $ fmap mbCombine perms_in) $ \_ ->
+    applyTransM (return $ globalOpenTerm "Prelude.CompM") $
     translateRetType (mbLift ret) $
     mbCombine $ fmap (mbCombine . fmap mbValuePermsToDistPerms) perms_out
 
