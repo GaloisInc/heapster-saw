@@ -5,14 +5,13 @@ env <- heapster_init_env_from_file "string_set.sawcore" "string_set.bc";
 
 
 // Define permissions for strings and for lists being used as sets
-heapster_define_opaque_perm env "string" "" "llvmptr 64" "Prelude.String";
+heapster_define_opaque_perm env "string" "" "llvmptr 64" "String";
 
 
-// FIXME: want to define the permission this way, with translation a term and not just an identifier
-// heapster_define_opaque_perm env "string_set" "rw:rwmodality, l:lifetime" "llvmptr 64" "List String"
+heapster_define_opaque_perm env "string_set" "rw:rwmodality, l:lifetime" "llvmptr 64" "List String";
 
-// So we have to do this instead
-heapster_define_opaque_perm env "string_set" "rw:rwmodality, l:lifetime" "llvmptr 64" "StringSet.stringList";
+// The old way
+// heapster_define_opaque_perm env "string_set" "rw:rwmodality, l:lifetime" "llvmptr 64" "StringSet.stringList";
 
 
 heapster_assume_fun env "string_set_insert" "(l1:lifetime).arg0:string_set<W,l1>, arg1:string<> -o arg0:string_set<W,l1>, arg1:true, ret:true" "listInsertM String";
