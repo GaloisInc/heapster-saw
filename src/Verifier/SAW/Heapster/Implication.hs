@@ -138,6 +138,15 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:eq(e) -o x:eq(e) * x:eq(e)
 
+  SImpl_LLVMWordEq :: (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+                      ExprVar (BVType w) -> PermExpr (BVType w) ->
+                      SimplImpl (RNil :> LLVMPointerType w :> BVType w)
+                      (RNil :> LLVMPointerType w)
+  -- ^ Cast an @eq(llvmword(y))@ proof to an @eq(llvmword(e))@ proof using a
+  -- proof of @y:eq(e)@:
+  --
+  -- > x:eq(llvmword(y)) * y:eq(e) -o x:eq(llvmword(e))
+
   SImpl_IntroConj :: ExprVar a -> SimplImpl RNil (RNil :> a)
   -- ^ Introduce an empty conjunction on @x@, i.e.:
   --
@@ -641,6 +650,8 @@ simplImplIn (SImpl_Cast x y p) = distPerms2 x (ValPerm_Eq $ PExpr_Var y) y p
 simplImplIn (SImpl_IntroEqRefl x) = DistPermsNil
 simplImplIn (SImpl_InvertEq x y) = distPerms1 x (ValPerm_Eq $ PExpr_Var y)
 simplImplIn (SImpl_CopyEq x e) = distPerms1 x (ValPerm_Eq e)
+simplImplIn (SImpl_LLVMWordEq x y e) =
+  distPerms2 x (ValPerm_Eq (PExpr_LLVMWord (PExpr_Var y))) y (ValPerm_Eq e)
 simplImplIn (SImpl_IntroConj x) = DistPermsNil
 simplImplIn (SImpl_ExtractConj x ps i) = distPerms1 x (ValPerm_Conj ps)
 simplImplIn (SImpl_CopyConj x ps i) = distPerms1 x (ValPerm_Conj ps)
@@ -772,6 +783,8 @@ simplImplOut (SImpl_Cast x _ p) = distPerms1 x p
 simplImplOut (SImpl_IntroEqRefl x) = distPerms1 x (ValPerm_Eq $ PExpr_Var x)
 simplImplOut (SImpl_InvertEq x y) = distPerms1 y (ValPerm_Eq $ PExpr_Var x)
 simplImplOut (SImpl_CopyEq x e) = distPerms2 x (ValPerm_Eq e) x (ValPerm_Eq e)
+simplImplOut (SImpl_LLVMWordEq x y e) =
+  distPerms1 x (ValPerm_Eq (PExpr_LLVMWord e))
 simplImplOut (SImpl_IntroConj x) = distPerms1 x ValPerm_True
 simplImplOut (SImpl_ExtractConj x ps i) =
   distPerms2 x (ValPerm_Conj [ps !! i])
@@ -998,6 +1011,8 @@ instance SubstVar PermVarSubst m =>
     SImpl_InvertEq <$> genSubst s x <*> genSubst s y
   genSubst s [nuP| SImpl_CopyEq x e |] =
     SImpl_CopyEq <$> genSubst s x <*> genSubst s e
+  genSubst s [nuP| SImpl_LLVMWordEq x y e |] =
+    SImpl_LLVMWordEq <$> genSubst s x <*> genSubst s y <*> genSubst s e
   genSubst s [nuP| SImpl_IntroConj x |] =
     SImpl_IntroConj <$> genSubst s x
   genSubst s [nuP| SImpl_ExtractConj x ps i |] =
@@ -1878,6 +1893,33 @@ elimOrsExistsRecsM x =
       else greturn p
     _ -> greturn p
 
+-- | Eliminate any disjunctions, existentials, or recursive permissions for a
+-- variable and then return the resulting "simple" permission
+getSimpleVarPerm :: ExprVar a -> ImplM vars s r ps ps (ValuePerm a)
+getSimpleVarPerm x =
+  getPerm x >>>= \p_init ->
+  implPushM x p_init >>>
+  elimOrsExistsRecsM x >>>= \p ->
+  implPopM x p >>> greturn p
+
+-- | Eliminate any disjunctions, existentials, or recursive permissions for any
+-- variables in the supplied expression and substitute any equality permissions
+-- for those variables
+getEqualsExpr :: PermExpr a -> ImplM vars s r ps ps (PermExpr a)
+getEqualsExpr e@(PExpr_Var x) =
+  getSimpleVarPerm x >>>= \p ->
+  case p of
+    ValPerm_Eq e' -> getEqualsExpr e'
+    _ -> greturn e
+getEqualsExpr (PExpr_BV factors off) =
+  foldr bvAdd (PExpr_BV [] off) <$>
+  mapM (\(BVFactor i x) -> bvMult i <$> getEqualsExpr (PExpr_Var x)) factors
+getEqualsExpr (PExpr_LLVMOffset x off) =
+  getEqualsExpr (PExpr_Var x) >>>= \e ->
+  getEqualsExpr off >>>= \off' ->
+  greturn (addLLVMOffset e off)
+getEqualsExpr e = greturn e
+
 
 -- | Introduce a proof of @x:eq(x)@ onto the top of the stack
 introEqReflM :: ExprVar a -> ImplM vars s r (ps :> a) ps ()
@@ -1891,6 +1933,14 @@ invertEqM x y = implSimplM Proxy (SImpl_InvertEq x y)
 introEqCopyM :: ExprVar a -> PermExpr a ->
                 ImplM vars s r (ps :> a :> a) (ps :> a) ()
 introEqCopyM x e = implSimplM Proxy (SImpl_CopyEq x e)
+
+-- | Cast an @eq(llvmword(y))@ proof to an @eq(llvmword(e))@ proof using a
+-- proof of @y:eq(e)@
+llvmWordEqM :: (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+               ExprVar (BVType w) -> PermExpr (BVType w) ->
+               ImplM vars s r (ps :> LLVMPointerType w)
+               (ps :> LLVMPointerType w :> BVType w) ()
+llvmWordEqM x y e = implSimplM Proxy (SImpl_LLVMWordEq x y e)
 
 -- | Cast a @y:p@ perm on the top of the stack to an @x:p@ perm using an
 -- @x:eq(y)@ just below it on the stack
@@ -2315,66 +2365,87 @@ proveVarEq :: ExprVar a -> ValuePerm a ->
               Mb vars (PermExpr a) -> ImplM vars s r (ps :> a) (ps :> a) ()
 proveVarEq x p mb_e =
   getPSubst >>>= \psubst ->
-  proveVarEqH x p psubst mb_e
+  -- Check for special cases that do not require an eq perm already for x
+  case mb_e of
 
--- | Main helper function for 'proveVarEq'
-proveVarEqH :: ExprVar a -> ValuePerm a ->
+    -- Prove x:eq(z) for evar z by setting z=x
+    [nuP| PExpr_Var z |]
+      | Left memb <- mbNameBoundP z
+      , Nothing <- psubstLookup psubst memb ->
+        setVarM memb (PExpr_Var x) >>> implPopM x p >>> introEqReflM x
+
+    -- Prove x:eq(x) by reflexivity
+    _ | Just (PExpr_Var y) <- partialSubst psubst mb_e
+      , x == y ->
+        implPopM x p >>> introEqReflM x
+
+    -- Default case: get an eq(e) perm and call proveVarEqH
+    _ ->
+      elimOrsExistsRecsM x >>>= \p' ->
+      case p' of
+        ValPerm_Eq e ->
+          proveVarEqH x e psubst mb_e
+        _ -> implFailVarM "proveVarEqH" x p' (fmap ValPerm_Eq mb_e)
+
+-- | Main helper function for 'proveVarEq': prove @x:eq(e) |- x:eq(e')@ assuming
+-- the LHS equality permission is on the top of the stack
+proveVarEqH :: ExprVar a -> PermExpr a ->
                PartialSubst vars -> Mb vars (PermExpr a) ->
                ImplM vars s r (ps :> a) (ps :> a) ()
 
--- Prove x:eq(z) for evar z by setting z=x
-proveVarEqH x p psubst [nuP| PExpr_Var z |]
-  | Left memb <- mbNameBoundP z
-  , Nothing <- psubstLookup psubst memb
-  = setVarM memb (PExpr_Var x) >>> implPopM x p >>> introEqReflM x
-
--- Prove x:eq(x) by reflexivity
-proveVarEqH x p psubst mb_e
-  | Just (PExpr_Var y) <- partialSubst psubst mb_e
-  , x == y
-  = implPopM x p >>> introEqReflM x
-
 -- Prove x:eq(e) |- x:eq(e) using introEqCopyM
-proveVarEqH x p@(ValPerm_Eq e) psubst mb_e
+proveVarEqH x e psubst mb_e
   | Just e' <- partialSubst psubst mb_e
   , e' == e
-  = introEqCopyM x e >>> implPopM x p
+  = introEqCopyM x e >>> implPopM x (ValPerm_Eq e)
 
 -- Prove x:eq(word(e)) |- x:eq(word(z)) by setting z=e
-proveVarEqH x p@(ValPerm_Eq
-                 (PExpr_LLVMWord e)) psubst [nuP| PExpr_LLVMWord (PExpr_Var z) |]
+proveVarEqH x (PExpr_LLVMWord e) psubst [nuP| PExpr_LLVMWord (PExpr_Var z) |]
   | Left memb <- mbNameBoundP z
-  , Nothing <- psubstLookup psubst memb
-  = setVarM memb e >>> introEqCopyM x (PExpr_LLVMWord e) >>> implPopM x p
+  , Nothing <- psubstLookup psubst memb =
+    setVarM memb e >>> introEqCopyM x (PExpr_LLVMWord e) >>>
+    implPopM x (ValPerm_Eq (PExpr_LLVMWord e))
 
--- Prove x:eq(word(e')) |- x:eq(word(e)) by first proving x:eq(word(e')) and
--- then casting e' to e
-proveVarEqH x p@(ValPerm_Eq
-                 (PExpr_LLVMWord e')) psubst [nuP| PExpr_LLVMWord mb_e |]
+-- Prove x:eq(word(y)) |- x:eq(word(e)) by proving @y:eq(e)@
+proveVarEqH x (PExpr_LLVMWord
+               (PExpr_Var y)) psubst [nuP| PExpr_LLVMWord mb_e |] =
+  introEqCopyM x (PExpr_LLVMWord (PExpr_Var y)) >>>
+  implPopM x (ValPerm_Eq (PExpr_LLVMWord (PExpr_Var y))) >>>
+  getPerm y >>>= \y_p ->
+  implPushM y y_p >>> proveVarEq y y_p mb_e >>>
+  partialSubstForceM mb_e
+  "proveVarEqH: incomplete psubst" >>>= \e ->
+  llvmWordEqM x y e
+
+-- Prove x:eq(word(e')) |- x:eq(word(e)) for ground e by first proving
+-- x:eq(word(e')) and then casting e' to e
+proveVarEqH x (PExpr_LLVMWord e') psubst [nuP| PExpr_LLVMWord mb_e |]
   | Just e <- partialSubst psubst mb_e =
-    introEqCopyM x (PExpr_LLVMWord e') >>> implPopM x p >>>
+    introEqCopyM x (PExpr_LLVMWord e') >>>
+    implPopM x (ValPerm_Eq (PExpr_LLVMWord e')) >>>
     castLLVMWordEqM x e' e
 
+-- Prove x:eq(e) |- x:eq(N*z + M) where e - M is a multiple of N by setting z =
+-- (e-M)/N
+proveVarEqH x e psubst [nuP| PExpr_BV [BVFactor mb_n z] mb_m |]
+  | Left memb <- mbNameBoundP z
+  , Nothing <- psubstLookup psubst memb
+  , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) =
+    setVarM memb (bvDiv (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) >>>
+    introEqCopyM x e >>> implPopM x (ValPerm_Eq e)
+
 -- Prove x:eq(y) |- x:eq(e) by first proving y:eq(e) and then casting
-proveVarEqH x p@(ValPerm_Eq (PExpr_Var y)) psubst mb_e =
+proveVarEqH x (PExpr_Var y) psubst mb_e =
   introEqCopyM x (PExpr_Var y) >>>
-  implPopM x p >>>
+  implPopM x (ValPerm_Eq (PExpr_Var y)) >>>
   proveVarImpl y (fmap ValPerm_Eq mb_e) >>>
   partialSubstForceM mb_e
   "proveVarEqH: incomplete psubst" >>>= \e ->
   introCastM x y (ValPerm_Eq e)
 
--- Eliminate disjunctive and/or existential permissions
-proveVarEqH x (ValPerm_Or _ _) _ mb_e =
-  elimOrsExistsM x >>>= \p -> proveVarEq x p mb_e
-
--- Eliminate disjunctive and/or existential permissions
-proveVarEqH x (ValPerm_Exists _) _ mb_e =
-  elimOrsExistsM x >>>= \p -> proveVarEq x p mb_e
-
 -- Otherwise give up!
-proveVarEqH x p _ mb_e =
-  implFailVarM "proveVarEqH" x p (fmap ValPerm_Eq mb_e)
+proveVarEqH x e _ mb_e =
+  implFailVarM "proveVarEqH" x (ValPerm_Eq e) (fmap ValPerm_Eq mb_e)
 
 
 ----------------------------------------------------------------------

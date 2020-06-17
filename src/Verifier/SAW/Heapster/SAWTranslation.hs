@@ -1898,6 +1898,11 @@ translateSimplImpl _ [nuP| SImpl_CopyEq _ _ |] m =
   (\(pctx :>: ptrans) -> (pctx :>: ptrans :>: ptrans))
   m
 
+translateSimplImpl _ [nuP| SImpl_LLVMWordEq x y e |] m =
+  withPermStackM mapRListTail
+  (\(pctx :>: _ :>: _) -> (pctx :>: PTrans_Eq (fmap PExpr_LLVMWord e)))
+  m
+
 translateSimplImpl _ [nuP| SImpl_IntroConj x |] m =
   withPermStackM (:>: translateVar x) (:>: PTrans_True) m
 

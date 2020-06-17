@@ -1404,37 +1404,16 @@ getPushSimpleRegPerm r =
 getSimpleRegPerm :: TypedReg a ->
                     StmtPermCheckM ext cblocks blocks ret args ps ps (ValuePerm a)
 getSimpleRegPerm r =
-  getRegPerm r >>>= \p_init ->
-  embedImplM TypedImplStmt emptyCruCtx
-  (implPushM (typedRegVar r) p_init >>>
-   elimOrsExistsRecsM (typedRegVar r) >>>= \p ->
-    implPopM (typedRegVar r) p >>> greturn p) >>>= \(_, p_ret) ->
-  greturn p_ret
-
--- | Eliminate any disjunctions, existentials, or recursive permissions for any
--- variables in the supplied expression and substitute any equality permissions
--- for those variables
-getEqualsExpr :: PermExpr a ->
-                 StmtPermCheckM ext cblocks blocks ret args ps ps (PermExpr a)
-getEqualsExpr e@(PExpr_Var x) =
-  getSimpleRegPerm (TypedReg x) >>>= \p ->
-  case p of
-    ValPerm_Eq e' -> getEqualsExpr e'
-    _ -> greturn e
-getEqualsExpr (PExpr_BV factors off) =
-  foldr bvAdd (PExpr_BV [] off) <$>
-  mapM (\(BVFactor i x) -> bvMult i <$> getEqualsExpr (PExpr_Var x)) factors
-getEqualsExpr (PExpr_LLVMOffset x off) =
-  getEqualsExpr (PExpr_Var x) >>>= \e ->
-  getEqualsExpr off >>>= \off' ->
-  greturn (addLLVMOffset e off)
-getEqualsExpr e = greturn e
+  snd <$> embedImplM TypedImplStmt emptyCruCtx (getSimpleVarPerm $
+                                                typedRegVar r)
 
 -- | A version of 'getEqualsExpr' for 'TypedReg's
 getRegEqualsExpr ::
   TypedReg a ->
   StmtPermCheckM ext cblocks blocks ret args ps ps (PermExpr a)
-getRegEqualsExpr = getEqualsExpr . PExpr_Var . typedRegVar
+getRegEqualsExpr r =
+  snd <$> embedImplM TypedImplStmt emptyCruCtx (getEqualsExpr $
+                                                PExpr_Var $ typedRegVar r)
 
 -- | Eliminate any disjunctions, existentials, recursive permissions, or
 -- equality permissions for an LLVM register until we either get a conjunctive

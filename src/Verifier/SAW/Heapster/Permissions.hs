@@ -626,8 +626,7 @@ normalizeBVExpr :: PermExpr (BVType w) -> PermExpr (BVType w)
 normalizeBVExpr (PExpr_BV [BVFactor 1 x] 0) = PExpr_Var x
 normalizeBVExpr e = e
 
--- | Test whether two bitvector expressions are semantically equal, assuming
--- they are both in normal form
+-- | Test whether two bitvector expressions are semantically equal
 bvEq :: PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
 bvEq e1 e2 = normalizeBVExpr e1 == normalizeBVExpr e2
 
@@ -657,6 +656,11 @@ bvInRange :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> BVRange w -> Bool
 bvInRange e (BVRange off len) =
   (bvEq off e || bvLt off e) && bvLt e (bvAdd off len)
 
+-- | Test whether a bitvector @e@ equals @0@
+bvIsZero :: PermExpr (BVType w) -> Bool
+bvIsZero (PExpr_Var _) = False
+bvIsZero (PExpr_BV [] 0) = True
+bvIsZero (PExpr_BV _ _) = False
 
 -- | Test whether a bitvector @e@ could equal @0@, i.e., whether the equation
 -- @e=0@ has any solutions.
@@ -2600,8 +2604,12 @@ instance SubstVar s m => Substable s (BVRange w) m where
 instance SubstVar s m => Substable s (BVProp w) m where
   genSubst s [nuP| BVProp_Eq e1 e2 |] =
     BVProp_Eq <$> genSubst s e1 <*> genSubst s e2
+  genSubst s [nuP| BVProp_Neq e1 e2 |] =
+    BVProp_Neq <$> genSubst s e1 <*> genSubst s e2
   genSubst s [nuP| BVProp_InRange e r |] =
     BVProp_InRange <$> genSubst s e <*> genSubst s r
+  genSubst s [nuP| BVProp_NotInRange e r |] =
+    BVProp_NotInRange <$> genSubst s e <*> genSubst s r
   genSubst s [nuP| BVProp_RangeSubset r1 r2 |] =
     BVProp_RangeSubset <$> genSubst s r1 <*> genSubst s r2
   genSubst s [nuP| BVProp_RangesDisjoint r1 r2 |] =
@@ -3149,8 +3157,16 @@ instance AbstractVars (BVProp w) where
     absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_Eq |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 e1
     `clMbMbApplyM` abstractPEVars ns1 ns2 e2
+  abstractPEVars ns1 ns2 (BVProp_Neq e1 e2) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_Neq |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e1
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e2
   abstractPEVars ns1 ns2 (BVProp_InRange e r) =
     absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_InRange |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e
+    `clMbMbApplyM` abstractPEVars ns1 ns2 r
+  abstractPEVars ns1 ns2 (BVProp_NotInRange e r) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_NotInRange |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 e
     `clMbMbApplyM` abstractPEVars ns1 ns2 r
   abstractPEVars ns1 ns2 (BVProp_RangeSubset r1 r2) =
