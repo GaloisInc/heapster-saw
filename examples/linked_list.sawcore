@@ -1,0 +1,7 @@
+
+module linked_list where
+
+import Prelude;
+
+mallocSpec : (sz:bitvector 64) -> CompM (BVVec 64 sz #());
+mallocSpec sz = returnM (BVVec 64 sz #()) (genBVVec 64 sz #() (\ (_:bitvector 64) -> ()));
