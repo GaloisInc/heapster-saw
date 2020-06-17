@@ -2,6 +2,6 @@
 enable_experimental;
 env <- heapster_init_env "poly_linked_list" "poly_linked_list.bc";
 
-heapster_typecheck_fun env "any" "(X:perm(llvmptr(64))).arg0:eq(llvmfunptr[1](().arg0:X -o arg0:X, ret:exists x:(bv 64).eq(llvmword(x)))), arg1:list64<always,R> -o arg0:true, arg1:true, ret:exists x:(bv 64).eq(llvmword(x))";
+heapster_typecheck_fun env "any" "(X:perm(llvmptr(64))).arg0:eq(llvmfunptr{1,64}(().arg0:X -o arg0:X, ret:exists x:(bv 64).eq(llvmword(x)))), arg1:list64<always,R> -o arg0:true, arg1:true, ret:exists x:(bv 64).eq(llvmword(x))";
 
 heapster_export_coq env "poly_linked_list.v";
