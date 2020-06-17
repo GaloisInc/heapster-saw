@@ -592,6 +592,7 @@ parseLLVMArrayPerm =
      spaces >> comma >> spaces >> char '['
      llvmArrayFields <- sepBy1 (parseLLVMFieldPerm True) (spaces >> comma)
      let llvmArrayBorrows = []
+     spaces >> char ']' >> spaces >> char ')'
      return LLVMArrayPerm {..}
 
 -- | Parse a 'BVProp'
