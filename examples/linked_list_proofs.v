@@ -142,3 +142,20 @@ Arguments is_elem_spec /.
 Lemma is_elem_spec_ref : refinesFun is_elem is_elem_spec.
 Proof.
 Admitted.
+
+
+Arguments sorted_insert__tuple_fun /.
+Eval simpl in sorted_insert__tuple_fun.
+
+Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
+Proof.
+  unfold sorted_insert, sorted_insert__tuple_fun, noErrorsSpec.
+  apply refinesFun_multiFixM_fst. intros x l. simpl.
+  apply refinesM_letRecM0.
+  destruct l; simpl.
+  - unfold malloc, mallocSpec. rewrite returnM_bindM.
+    eapply refinesM_existsM_r. reflexivity.
+  - rewrite existsM_bindM. apply refinesM_existsM_l; intros.
+    rewrite returnM_bindM.
+    eapply refinesM_existsM_r. reflexivity.
+Qed.
