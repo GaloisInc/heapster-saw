@@ -223,13 +223,45 @@ Eval simpl in sorted_insert__tuple_fun.
 
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.
-  unfold sorted_insert, sorted_insert__tuple_fun, noErrorsSpec.
-  apply refinesFun_multiFixM_fst. intros x l. simpl.
+  unfold sorted_insert, sorted_insert__tuple_fun, malloc, mallocSpec, noErrorsSpec.
+  prove_refinement.
+Qed.
+
+
+Lemma refinesM_bind_lr A B (x y : CompM A) (f g : A -> CompM B) :
+  refinesM x y -> @refinesFun (LRT_Fun A (fun _ => LRT_Ret B)) f g ->
+  refinesM (x >>= f) (y >>= g).
+Proof.
+  unfold refinesM, bindM, MonadBindOp_OptionT, bindM, MonadBindOp_SetM.
+  intros x_ref f_ref b H.
+  destruct H as [ a xa H ].
+  exists a.
+  - apply x_ref.
+    assumption.
+  - destruct a.
+    + apply f_ref.
+      assumption.
+    + assumption.
+Qed.
+
+Definition any_fun (f:{_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit}) :
+  list {_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit} :=
+  list_rect (fun _ => CompM {_:bitvector 64 & unit})
+            (returnM (existT _ (bvNat 64 0) tt))
+            (fun y l' rec =>
+               f y >>= fun call_ret_val =>
+                if not (bvEq 64 (projT1 call_ret_val) (bvNat 64 0))
+                then returnM (existT _ (bvNat 64 1) tt) else rec).
+
+Lemma any_fun_ref : refinesFun any any_fun.
+Proof.
+  unfold any, any__tuple_fun, any_fun.
+  apply refinesFun_multiFixM_fst. intros f l.
   apply refinesM_letRecM0.
-  destruct l; simpl.
-  - unfold malloc, mallocSpec. rewrite returnM_bindM.
-    eapply refinesM_existsM_r. reflexivity.
-  - rewrite existsM_bindM. apply refinesM_existsM_l; intros.
-    rewrite returnM_bindM.
-    eapply refinesM_existsM_r. reflexivity.
+  induction l.
+  - reflexivity.
+  - apply refinesM_bind_lr.
+    + destruct a; destruct u; simpl.
+      reflexivity.
+    + prove_refinement.
 Qed.
