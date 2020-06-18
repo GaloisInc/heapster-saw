@@ -551,6 +551,15 @@ parseAtomicPerm (LLVMPointerRepr w)
          e <- parseBVExpr
          spaces >> char ')'
          return $ Perm_LLVMFree e) <|>
+     (do try (string "llvmfunptr" >> spaces >> char '{')
+         Some (Pair args_no _) <- parseNatRepr
+         spaces >> char ',' >> spaces
+         Some (Pair w LeqProof)  <- parseNatRepr
+         spaces >> char '}' >> spaces >> char '('
+         Some args <- return $ cruCtxReplicate args_no (LLVMPointerRepr w)
+         SomeFunPerm fun_perm <- parseFunPermM args (LLVMPointerRepr w) 
+         spaces >> char ')'
+         return $ Perm_LLVMFunPtr fun_perm) <|>     
      Perm_BVProp <$> parseBVProp)
 
 -- | Parse a field permission @[l]ptr((rw,off) |-> p)@. If the 'Bool' flag is
@@ -807,7 +816,6 @@ parseFunPermM args ret =
          perms_out <-
            inParsedCtxM ghosts_l_ctx $ const $
            parseSortedMbValuePerms (consParsedCtx "ret" ret args_ctx)
-         eof
          return $ SomeFunPerm $ FunPerm ghosts args ret perms_in perms_out
 
 -- | Run the 'parseFunPermM' parsing computation on a 'String'
