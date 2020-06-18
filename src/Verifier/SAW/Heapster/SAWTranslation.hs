@@ -2341,6 +2341,16 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) |]
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
                         prop@(BVProp_InRange e (BVRange off len)) |]
+  [nuP| MbPermImpls_Cons _ mb_impl |]
+  | mbLift (mbMap2 bvLt (mbMap2 bvSub e off) len) =
+    withPermStackM (:>: translateVar x)
+    (:>: bvPropPerm (BVPropTrans prop
+                     (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
+                                                    globalOpenTerm "Prelude.True"])))
+    (translate $ mbCombine mb_impl)
+
+translatePermImpl1 [nuP| Impl1_TryProveBVProp x
+                        prop@(BVProp_InRange e (BVRange off len)) |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   do prop_tp_trans <- translate prop
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
