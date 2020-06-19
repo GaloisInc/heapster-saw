@@ -466,7 +466,9 @@ parseExpr PermListRepr =
   (PExpr_Var <$> parseExprVarOfType PermListRepr) <?>
   "permission list expression"
 parseExpr RWModalityRepr =
-  (string "R" >> return PExpr_Read) <|> (string "W" >> return PExpr_Write)
+  (string "R" >> return PExpr_Read) <|> (string "W" >> return PExpr_Write) <|>
+  (PExpr_Var <$> parseExprVarOfType knownRepr) <?>
+  "rwmodality expression"
 parseExpr (ValuePermRepr tp) = PExpr_ValPerm <$> parseValPerm tp
 parseExpr tp = PExpr_Var <$> parseExprVarOfType tp <?> ("expression of type "
                                                         ++ show tp)
