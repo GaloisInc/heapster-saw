@@ -50,15 +50,3 @@ stringListRemoveM l s =
             ite (List String) (equalString s s') rec (Cons String s' rec))
          l,
         s, ()));
-
-
-string_dup : String -> String * String;
-string_dup x = (x,x);
-
-data ULCTerm : sort 0 where {
-  ULCTerm_Const : bitvector 64 -> ULCTerm;
-  ULCTerm_Variable : String -> ULCTerm;
-  ULCTerm_Lambda : String -> ULCTerm -> ULCTerm;
-  ULCTerm_Add : ULCTerm -> ULCTerm -> ULCTerm;
-  ULCTerm_Call : ULCTerm -> ULCTerm -> ULCTerm;
-}
