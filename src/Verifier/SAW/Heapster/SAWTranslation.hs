@@ -599,6 +599,8 @@ instance TransInfo info =>
     return $ mkTypeTrans0 ETrans_Lifetime
   translate [nuP| PermListRepr |] =
     return $ mkTypeTrans0 ETrans_PermList
+  translate [nuP| RWModalityRepr |] =
+    return $ mkTypeTrans0 ETrans_RWModality
   translate [nuP| ValuePermRepr _ |] =
     returnType1 (sortOpenTerm $ mkSort 0)
   translate [nuP| IntrinsicRepr _ _ |] =
