@@ -92,14 +92,11 @@ Definition is_elem_lrt : LetRecType :=
     LRT_Fun (list {_:bitvector 64 & unit}) (fun _ =>
       LRT_Ret {_:bitvector 64 & unit})).
 
-(* FIXME: why did this stop working? *)
-(*
 Lemma is_elem_pure_fun_ref : @refinesFun is_elem_lrt is_elem_fun (fun x l => returnM (is_elem_pure x l)).
 Proof.
   unfold is_elem_fun, is_elem_pure.
   prove_refinement.
 Qed.
-*)
 
 Lemma is_elem_pure_fun_ref_manual : @refinesFun is_elem_lrt is_elem_fun (fun x l => returnM (is_elem_pure x l)).
 Proof.
@@ -113,17 +110,12 @@ Proof.
     + exact IHl.
 Qed.
 
-(* FIXME: why did this stop working? *)
-(*
 Lemma is_elem_pure_ref : refinesFun is_elem (fun x l => returnM (is_elem_pure x l)).
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_pure.
   prove_refinement.
 Qed.
-*)
 
-
-(* FIXME: why did all of this stop working too?
 
 (* Lemmas needed for is_elem_spec_ref *)
 Section Lemmas_is_elem_spec_ref.
@@ -133,22 +125,23 @@ Section Lemmas_is_elem_spec_ref.
     bvEq 64 s1 a = b.
   Proof. destruct (bvEq 64 s1 a). auto. auto. Qed.
 
-  Require Import Coq.Program.Equality.
+  (* Require Import Coq.Program.Equality. *)
 
   Lemma bv_eq_impl_eq k : forall x y, bvEq k x y = true -> x = y.
   Proof.
     unfold bitvector, bvEq, boolEq.
-    dependent induction x; dependent induction y.
+    (* dependent induction x; dependent induction y.
     - reflexivity.
-    - admit.
+    - admit. *)
   Admitted.
 
   Lemma bv_neq_impl_neq k : forall x y, bvEq k x y = false -> x <> y.
   Proof.
     unfold bitvector, bvEq, boolEq.
+    (*
     dependent induction x; dependent induction y.
     - discriminate.
-    - admit.
+    - admit. *)
   Admitted.
 
   Lemma deMorgan_inv (P Q : Prop) : ~ P /\ ~ Q -> ~ (P \/ Q).
@@ -160,7 +153,6 @@ Section Lemmas_is_elem_spec_ref.
   Qed.
 
 End Lemmas_is_elem_spec_ref.
- *)
 
 
 Definition orM {A} (m1 m2:CompM A) : CompM A :=
@@ -178,7 +170,6 @@ Definition is_elem_spec (x:bitvector 64) (l:list {_:bitvector 64 & unit})
 
 Arguments is_elem_spec /.
 
-(*
 Lemma is_elem_spec_ref : refinesFun is_elem is_elem_spec.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_spec.
@@ -226,7 +217,7 @@ Proof.
       injection p.
       assumption.
 Qed.
-*)
+
 
 Lemma refinesM_bind_lr A B (x y : CompM A) (f g : A -> CompM B) :
   refinesM x y -> @refinesFun (LRT_Fun A (fun _ => LRT_Ret B)) f g ->
