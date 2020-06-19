@@ -549,6 +549,15 @@ cruCtxLookup :: CruCtx ctx -> Member ctx a -> TypeRepr a
 cruCtxLookup (CruCtxCons _ tp) Member_Base = tp
 cruCtxLookup (CruCtxCons ctx _) (Member_Step memb) = cruCtxLookup ctx memb
 
+-- | Build a 'CruCtx' of the given length.
+cruCtxReplicate :: NatRepr n -> TypeRepr a -> Some CruCtx 
+cruCtxReplicate n tp =
+  case isZeroNat n of
+    ZeroNat -> Some CruCtxNil
+    NonZeroNat
+      | Some ctx <- cruCtxReplicate (predNat n) tp
+      -> Some (CruCtxCons ctx tp)
+
 
 ----------------------------------------------------------------------
 -- * Misc Operations on Crucible Objects

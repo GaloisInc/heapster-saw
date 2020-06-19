@@ -2519,7 +2519,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_LoadHandle _ ptr args ret) =
       , Just Refl <- testEquality (funPermArgs fun_perm) (mkCruCtx args)
       , Just Refl <- testEquality (funPermRet fun_perm) ret ->
         stmtEmbedImplM (implCopyConjM x ps i >>>
-                        implPopM x (ValPerm_Conj ps)) >>>
+                        recombinePerm x (ValPerm_Conj ps)) >>>
         emitLLVMStmt (FunctionHandleRepr args ret) loc
         (TypedLLVMLoadHandle tptr fun_perm) >>>= \ret ->
         stmtRecombinePerms >>>
