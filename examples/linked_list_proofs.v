@@ -24,7 +24,7 @@ Lemma no_errors_is_elem_manual : refinesFun is_elem (fun _ _ => noErrorsSpec).
 Proof.
   unfold is_elem, is_elem__tuple_fun.
   unfold noErrorsSpec.
-  apply refinesFun_multiFixM_fst. intros x l.
+  apply refinesFun_multiFixM_fst. intros x l. unfold refinesFun, Datatypes.fst.
   apply refinesM_letRecM0.
   apply refinesM_either_l; intros.
   - eapply refinesM_existsM_r. reflexivity.
@@ -160,6 +160,7 @@ Section Lemmas_is_elem_spec_ref.
   Qed.
 
 End Lemmas_is_elem_spec_ref.
+ *)
 
 
 Definition orM {A} (m1 m2:CompM A) : CompM A :=
@@ -177,6 +178,7 @@ Definition is_elem_spec (x:bitvector 64) (l:list {_:bitvector 64 & unit})
 
 Arguments is_elem_spec /.
 
+(*
 Lemma is_elem_spec_ref : refinesFun is_elem is_elem_spec.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_spec.
@@ -224,18 +226,7 @@ Proof.
       injection p.
       assumption.
 Qed.
- *)
-
-
-Arguments sorted_insert__tuple_fun /.
-Eval simpl in sorted_insert__tuple_fun.
-
-Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
-Proof.
-  unfold sorted_insert, sorted_insert__tuple_fun, malloc, mallocSpec, noErrorsSpec.
-  prove_refinement.
-Qed.
-
+*)
 
 Lemma refinesM_bind_lr A B (x y : CompM A) (f g : A -> CompM B) :
   refinesM x y -> @refinesFun (LRT_Fun A (fun _ => LRT_Ret B)) f g ->
@@ -273,4 +264,14 @@ Proof.
     + destruct a; destruct u; simpl.
       reflexivity.
     + prove_refinement.
+Qed.
+
+
+Arguments sorted_insert__tuple_fun /.
+Eval simpl in sorted_insert__tuple_fun.
+
+Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
+Proof.
+  unfold sorted_insert, sorted_insert__tuple_fun, malloc, mallocSpec, noErrorsSpec.
+  prove_refinement.
 Qed.
