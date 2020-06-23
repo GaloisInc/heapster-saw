@@ -7,7 +7,7 @@ From CryptolToCoq Require Import SAWCoreVectorsAsCoqVectors.
 From CryptolToCoq Require Import SAWCorePrelude.
 From CryptolToCoq Require Import CompMExtra.
 
-Load "linked_list.v".
+Require Import linked_list.
 Import linked_list.
 
 Import SAWCorePrelude.
@@ -259,6 +259,7 @@ Qed.
 
 Arguments sorted_insert__tuple_fun /.
 Eval simpl in sorted_insert__tuple_fun.
+Print sorted_insert__tuple_fun.
 
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.
