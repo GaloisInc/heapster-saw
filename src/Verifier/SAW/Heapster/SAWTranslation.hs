@@ -1405,9 +1405,7 @@ instance TransInfo info =>
 instance TransInfo info =>
          Translate info ctx (FunPerm ghosts args ret) OpenTerm where
   translate ([nuP| FunPerm ghosts args ret perms_in perms_out |]) =
-    piExprCtx (appendCruCtx
-               (CruCtxCons (mbLift ghosts) LifetimeRepr)
-               (mbLift args)) $
+    piExprCtx (appendCruCtx (mbLift ghosts) (mbLift args)) $
     piPermCtx (mbCombine $ fmap mbCombine perms_in) $ \_ ->
     applyTransM (return $ globalOpenTerm "Prelude.CompM") $
     translateRetType (mbLift ret) $
@@ -2782,7 +2780,7 @@ translateStmt [nuP| TypedSetRegPermExpr _ e |] m =
      inExtTransM etrans $
        withPermStackM (:>: Member_Base) (:>: PTrans_Eq (extMb e)) m
 
-translateStmt [nuP| stmt@(TypedCall freg fun_perm ghosts args l ps) |] m =
+translateStmt [nuP| stmt@(TypedCall freg fun_perm ghosts args) |] m =
   do f_trans <- getTopPermM
      let f = case f_trans of
            PTrans_Conj [APTrans_Fun _ f_trm] -> f_trm
@@ -2808,7 +2806,7 @@ translateStmt [nuP| stmt@(TypedCall freg fun_perm ghosts args l ps) |] m =
          (\ret_trans pctx ->
            inExtTransM ret_trans $
            withPermStackM
-           (\(args :>: l :>: _) -> (args :>: Member_Base :>: l))
+           (\(args :>: _) -> (args :>: Member_Base))
            (const pctx)
            m)
          ret_val]
@@ -3211,9 +3209,6 @@ translateCFG env cfg =
       retType = typedFnHandleRetType h in
   flip runTransM (TypeTransInfo MNil env) $ lambdaExprCtx ctx $
   lambdaPermCtx (mbCombine $ funPermIns fun_perm) $ \pctx ->
-  lambdaPermTrans "l" (fmap (const $ ValPerm_Conj1 $
-                             Perm_LOwned PExpr_PermListNil) $
-                       mbCombine $ funPermIns fun_perm) $ \pl ->
   do retTypeTrans <-
        translateRetType retType
        (mbCombine $ fmap mbValuePermsToDistPerms $ tpcfgOutputPerms cfg)
@@ -3233,7 +3228,7 @@ translateCFG env cfg =
        , lambdaBlockMap blkMap
          (\mapTrans ->
            impTransM (appendMapRList
-                      (truePermTransCtx ghosts :>: pl)
+                      (truePermTransCtx ghosts)
                       pctx) mapTrans retTypeTrans $
            translateCallEntryID "CFG" (tpcfgEntryBlockID cfg)
            (funPermToBlockInputs fun_perm)
@@ -3261,8 +3256,7 @@ someCFGAndPermLRT :: PermEnv -> SomeCFGAndPerm ext -> OpenTerm
 someCFGAndPermLRT env (SomeCFGAndPerm _ _
                        (FunPerm ghosts args ret perms_in perms_out)) =
   flip runTransM (TypeTransInfo MNil env) $
-  translateClosed (appendCruCtx
-                   (CruCtxCons ghosts LifetimeRepr) args) >>= \ctx_trans ->
+  translateClosed (appendCruCtx ghosts args) >>= \ctx_trans ->
   lambdaLRTTransM "arg" ctx_trans $ \ectx ->
   inCtxTransM ectx $
   translate (mbCombine perms_in) >>= \perms_trans ->

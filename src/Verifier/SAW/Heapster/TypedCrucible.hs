@@ -76,7 +76,6 @@ import Verifier.SAW.Heapster.Implication
 
 import Debug.Trace
 
-
 -- | Make a program location with "internal" posiotion that has the same
 -- function name as another location
 -- FIXME: figure out where to put this
@@ -143,11 +142,9 @@ typedFnHandleArgs (TypedFnHandle _ h) = mkCruCtx $ handleArgTypes h
 
 -- | Extract out the context of all arguments of a 'TypedFnHandle', including
 -- the lifetime argument
-typedFnHandleAllArgs :: TypedFnHandle ghosts args ret ->
-                        CruCtx (ghosts :> LifetimeType :++: args)
+typedFnHandleAllArgs :: TypedFnHandle ghosts args ret -> CruCtx (ghosts :++: args)
 typedFnHandleAllArgs h =
-  appendCruCtx (CruCtxCons (typedFnHandleGhosts h) LifetimeRepr)
-  (typedFnHandleArgs h)
+  appendCruCtx (typedFnHandleGhosts h) (typedFnHandleArgs h)
 
 
 -- | Extract out the return type of a 'TypedFnHandle'
@@ -273,10 +270,9 @@ data TypedStmt ext (rets :: RList CrucibleType) ps_in ps_out where
                TypedReg (FunctionHandleType cargs ret) ->
                FunPerm ghosts args ret ->
                PermExprs ghosts -> TypedRegs args ->
-               ExprVar LifetimeType -> PermExpr PermListType ->
                TypedStmt ext (RNil :> ret)
-               (args :> LifetimeType :> FunctionHandleType cargs ret)
-               (args :> ret :> LifetimeType)
+               (args :> FunctionHandleType cargs ret)
+               (args :> ret)
 
   -- | Begin a new lifetime:
   --
@@ -436,11 +432,9 @@ data TypedLLVMStmt w ret ps_in ps_out where
 typedStmtIn :: TypedStmt ext rets ps_in ps_out -> DistPerms ps_in
 typedStmtIn (TypedSetReg _ _) = DistPermsNil
 typedStmtIn (TypedSetRegPermExpr _ _) = DistPermsNil
-typedStmtIn (TypedCall (TypedReg f) fun_perm ghosts args l ps) =
+typedStmtIn (TypedCall (TypedReg f) fun_perm ghosts args) =
   DistPermsCons
-  (DistPermsCons
-   (funPermDistIns fun_perm (typedRegsToVars args) l ghosts)
-   l (ValPerm_Conj1 $ Perm_LOwned ps))
+  (funPermDistIns fun_perm (typedRegsToVars args) ghosts)
   f (ValPerm_Conj1 $ Perm_Fun fun_perm)
 typedStmtIn BeginLifetime = DistPermsNil
 typedStmtIn (EndLifetime l perms ps end_perms) =
@@ -506,10 +500,8 @@ typedStmtOut (TypedSetReg _ (TypedExpr _ Nothing)) (_ :>: ret) =
   distPerms1 ret ValPerm_True
 typedStmtOut (TypedSetRegPermExpr _ e) (_ :>: ret) =
   distPerms1 ret (ValPerm_Eq e)
-typedStmtOut (TypedCall _ fun_perm ghosts args l ps) (_ :>: ret) =
-  DistPermsCons
-  (funPermDistOuts fun_perm (typedRegsToVars args :>: ret) l ghosts)
-  l (ValPerm_Conj1 $ Perm_LOwned ps)
+typedStmtOut (TypedCall _ fun_perm ghosts args) (_ :>: ret) =
+  funPermDistOuts fun_perm (typedRegsToVars args :>: ret) ghosts
 typedStmtOut BeginLifetime (_ :>: l) =
   distPerms1 l $ ValPerm_Conj [Perm_LOwned PExpr_PermListNil]
 typedStmtOut (EndLifetime l perms _ _) _ = perms
@@ -825,9 +817,9 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
     TypedSetReg (mbLift tp) <$> genSubst s expr
   genSubst s [nuP| TypedSetRegPermExpr tp expr |] =
     TypedSetRegPermExpr (mbLift tp) <$> genSubst s expr
-  genSubst s [nuP| TypedCall f fun_perm ghosts args l ps |] =
+  genSubst s [nuP| TypedCall f fun_perm ghosts args |] =
     TypedCall <$> genSubst s f <*> genSubst s fun_perm <*>
-    genSubst s ghosts <*> genSubst s args <*> genSubst s l <*> genSubst s ps
+    genSubst s ghosts <*> genSubst s args
   genSubst s [nuP| BeginLifetime |] = return BeginLifetime
   genSubst s [nuP| EndLifetime l perms ps end_perms |] =
     EndLifetime <$> genSubst s l <*> genSubst s perms <*> genSubst s ps <*>
@@ -949,16 +941,16 @@ data TypedCFG
              , tpcfgFunPerm :: !(FunPerm ghosts inits ret)
              , tpcfgBlockMap :: !(TypedBlockMap ext blocks ret)
              , tpcfgEntryBlockID ::
-                 !(TypedEntryID blocks inits (ghosts :> LifetimeType))
+                 !(TypedEntryID blocks inits ghosts)
              }
 
 
 tpcfgInputPerms :: TypedCFG ext blocks ghosts inits ret ->
-                   Mb (ghosts :> LifetimeType) (MbValuePerms inits)
+                   Mb ghosts (MbValuePerms inits)
 tpcfgInputPerms = funPermIns . tpcfgFunPerm
 
 tpcfgOutputPerms :: TypedCFG ext blocks ghosts inits ret ->
-                    Mb (ghosts :> LifetimeType) (MbValuePerms (inits :> ret))
+                    Mb ghosts (MbValuePerms (inits :> ret))
 tpcfgOutputPerms = funPermOuts . tpcfgFunPerm
 
 
@@ -2104,22 +2096,12 @@ tcEmitStmt' ctx loc (CallHandle ret freg_untyped args_ctx args_untyped) =
   getRegFunPerm freg >>>= \some_fun_perm ->
   case some_fun_perm of
     SomeFunPerm fun_perm ->
-      beginLifetime >>>= \l ->
       (stmtProvePerms' (funPermGhosts fun_perm)
-       (funPermExDistIns fun_perm (typedRegsToVars args) l)) >>>= \ghosts ->
-      (getVarPerm l >>>= \l_perm ->
-        case l_perm of
-          ValPerm_Conj [Perm_LOwned ps] -> greturn ps
-          _ -> error "tcEmitStmt: CallHandle: unexpected perm on lifetime"
-      ) >>>= \ps ->
-      stmtProvePerm (TypedReg l) (emptyMb $
-                                  ValPerm_Conj1 $ Perm_LOwned ps) >>>= \_ ->
+       (funPermExDistIns fun_perm (typedRegsToVars args))) >>>= \ghosts ->
       stmtProvePerm freg (emptyMb $ ValPerm_Conj1 $ Perm_Fun fun_perm) >>>= \_ ->
       (emitStmt (singletonCruCtx ret) loc
-       (TypedCall freg fun_perm (exprsOfSubst ghosts) args l ps)
-      ) >>>= \(_ :>: ret) ->
+       (TypedCall freg fun_perm (exprsOfSubst ghosts) args)) >>>= \(_ :>: ret) ->
       stmtRecombinePerms >>>
-      endLifetime l >>>
       greturn (addCtxName ctx ret)
 
 tcEmitStmt' ctx loc (Assert reg msg) =
@@ -2847,25 +2829,20 @@ tcEmitBlock is_scc blk =
      !block_t <- tcBlock is_scc memb blk
      modifyBlockInfo (blockInfoMapSetBlock memb block_t)
 
-funPermToBlockInputs :: FunPerm ghosts args ret ->
-                        MbDistPerms (ghosts :> LifetimeType :++: args)
+-- | Convert the input permissions on just the normal arguments of a 'FunPerm'
+-- to a set of permissions on the ghost and normal arguments
+funPermToBlockInputs :: FunPerm ghosts args ret -> MbDistPerms (ghosts :++: args)
 funPermToBlockInputs fun_perm =
   mbValuePermsToDistPerms $
-  fmap (appendValuePerms (ValPerms_Cons (trueValuePerms $ funPermGhosts fun_perm) $
-                          ValPerm_Conj1 $ Perm_LOwned $ PExpr_PermListNil)) $
+  fmap (appendValuePerms (trueValuePerms $ funPermGhosts fun_perm)) $
   mbCombine $ funPermIns fun_perm
 
+-- | Convert the output permissions on just the normal and return arguments of a 'FunPerm'
+-- to a set of permissions on the ghost, normal, and return arguments
 funPermToBlockOutputs :: FunPerm ghosts args ret ->
-                         Mb ((ghosts :> LifetimeType) :++: args :> ret)
-                         (DistPerms (args :> ret :> LifetimeType))
+                         Mb (ghosts :++: args :> ret) (DistPerms (args :> ret))
 funPermToBlockOutputs (fun_perm :: FunPerm ghosts args ret) =
-  mbCombine @_ @_ @(args :> ret) @(ghosts :> LifetimeType) $
-  nuMultiWithElim1 (\(_ :>: l) mb_perms ->
-                     fmap (\perms ->
-                            DistPermsCons perms l $
-                            ValPerm_Conj1 $ Perm_LOwned $ PExpr_PermListNil) $
-                     mbValuePermsToDistPerms mb_perms) $
-  funPermOuts fun_perm
+  mbCombine $ fmap mbValuePermsToDistPerms $ funPermOuts fun_perm
 
 
 -- | Type-check a Crucible CFG
@@ -2877,7 +2854,7 @@ tcCFG env fun_perm@(FunPerm ghosts _ _ _ _) cfg =
   flip evalState (emptyTopPermCheckState (handleReturnType $ cfgHandle cfg)
                   (cfgBlockMap cfg) env) $
   do init_memb <- stLookupBlockID (cfgEntryBlockID cfg) <$> get
-     let init_entryID = TypedEntryID init_memb (CruCtxCons ghosts knownRepr) 0
+     let init_entryID = TypedEntryID init_memb ghosts 0
      let init_args = mkCruCtx $ handleArgTypes $ cfgHandle cfg
      modifyBlockInfo (addBlockEntry init_memb $
                       BlockEntryInfo init_entryID init_args

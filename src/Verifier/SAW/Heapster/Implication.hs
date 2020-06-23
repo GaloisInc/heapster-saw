@@ -3070,16 +3070,13 @@ mbValuePermsToExDistPerms MNil _ = ExDistPermsNil
 mbValuePermsToExDistPerms (ns :>: n) [nuP| ValPerms_Cons ps p |] =
   ExDistPermsCons (mbValuePermsToExDistPerms ns ps) n p
 
--- | Substitute arguments and a lifetime into a function permission to get the
--- existentially quantified input permissions needed on the arguments
-funPermExDistIns :: FunPerm ghosts args ret ->
-                    MapRList Name args -> ExprVar LifetimeType ->
+-- | Substitute arguments into a function permission to get the existentially
+-- quantified input permissions needed on the arguments
+funPermExDistIns :: FunPerm ghosts args ret -> MapRList Name args ->
                     ExDistPerms ghosts args
-funPermExDistIns fun_perm args l =
-  mbValuePermsToExDistPerms args $
-  fmap (varSubst (appendVarSubsts (singletonVarSubst l) (PermVarSubst args))
-        . mbCombine) $
-  mbSeparate (MNil :>: Proxy) $ funPermIns fun_perm
+funPermExDistIns fun_perm args =
+  mbValuePermsToExDistPerms args $ fmap (varSubst (PermVarSubst args)) $
+  funPermIns fun_perm
 
 -- | Prove a list of existentially-quantified distinguished permissions
 proveVarsImpl :: ExDistPerms vars as ->

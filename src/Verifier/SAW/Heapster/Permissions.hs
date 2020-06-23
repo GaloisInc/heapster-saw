@@ -1022,8 +1022,8 @@ data LLVMArrayBorrow w
 -- return value in the latter case); ghost arguments do not get permissions.
 data FunPerm ghosts args ret where
   FunPerm :: CruCtx ghosts -> CruCtx args -> TypeRepr ret ->
-             Mb (ghosts :> LifetimeType) (MbValuePerms args) ->
-             Mb (ghosts :> LifetimeType) (MbValuePerms (args :> ret)) ->
+             Mb ghosts (MbValuePerms args) ->
+             Mb ghosts (MbValuePerms (args :> ret)) ->
              FunPerm ghosts args ret
 
 -- | Extract the @args@ context from a function permission
@@ -1039,13 +1039,12 @@ funPermRet :: FunPerm ghosts args ret -> TypeRepr ret
 funPermRet (FunPerm _ _ ret _ _) = ret
 
 -- | Extract the input permissions of a function permission
-funPermIns :: FunPerm ghosts args ret ->
-              Mb (ghosts :> LifetimeType) (MbValuePerms args)
+funPermIns :: FunPerm ghosts args ret -> Mb ghosts (MbValuePerms args)
 funPermIns (FunPerm _ _ _ perms_in _) = perms_in
 
 -- | Extract the output permissions of a function permission
 funPermOuts :: FunPerm ghosts args ret ->
-               Mb (ghosts :> LifetimeType) (MbValuePerms (args :> ret))
+               Mb ghosts (MbValuePerms (args :> ret))
 funPermOuts (FunPerm _ _ _ _ perms_out) = perms_out
 
 
@@ -2071,20 +2070,18 @@ namedPermArgsAreCopyable (CruCtxCons tps tp) (PExprs_Cons args arg) =
 -- | Substitute arguments, a lifetime, and ghost values into a function
 -- permission to get the input permissions needed on the arguments
 funPermDistIns :: FunPerm ghosts args ret -> MapRList Name args ->
-                  ExprVar LifetimeType -> PermExprs ghosts ->
-                  DistPerms args
-funPermDistIns fun_perm args l ghosts =
+                  PermExprs ghosts -> DistPerms args
+funPermDistIns fun_perm args ghosts =
   varSubst (PermVarSubst args) $ mbValuePermsToDistPerms $
-  subst (consSubst (substOfExprs ghosts) (PExpr_Var l)) $ funPermIns fun_perm
+  subst (substOfExprs ghosts) $ funPermIns fun_perm
 
 -- | Substitute arguments, a lifetime, and ghost values into a function
 -- permission to get the output permissions returned by the function
 funPermDistOuts :: FunPerm ghosts args ret -> MapRList Name (args :> ret) ->
-                   ExprVar LifetimeType -> PermExprs ghosts ->
-                   DistPerms (args :> ret)
-funPermDistOuts fun_perm args l ghosts =
+                   PermExprs ghosts -> DistPerms (args :> ret)
+funPermDistOuts fun_perm args ghosts =
   varSubst (PermVarSubst args) $ mbValuePermsToDistPerms $
-  subst (consSubst (substOfExprs ghosts) (PExpr_Var l)) $ funPermOuts fun_perm
+  subst (substOfExprs ghosts) $ funPermOuts fun_perm
 
 -- | Unfold a recursive permission given a 'RecPerm' for it
 unfoldRecPerm :: RecPerm args a -> PermExprs args -> ValuePerm a

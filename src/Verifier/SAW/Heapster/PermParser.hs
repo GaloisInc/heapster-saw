@@ -810,13 +810,12 @@ parseFunPermM args ret =
     Some ghosts_ctx@(ParsedCtx _ ghosts) ->
       do spaces >> char '.'
          let args_ctx = mkArgsParsedCtx args
-         let ghosts_l_ctx = consParsedCtx "l" LifetimeRepr ghosts_ctx
          perms_in <-
-           inParsedCtxM ghosts_l_ctx $ const $
+           inParsedCtxM ghosts_ctx $ const $
            parseSortedMbValuePerms args_ctx
          spaces >> string "-o"
          perms_out <-
-           inParsedCtxM ghosts_l_ctx $ const $
+           inParsedCtxM ghosts_ctx $ const $
            parseSortedMbValuePerms (consParsedCtx "ret" ret args_ctx)
          return $ SomeFunPerm $ FunPerm ghosts args ret perms_in perms_out
 
