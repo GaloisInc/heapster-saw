@@ -2277,63 +2277,18 @@ tcEmitLLVMStmt ::
   (CtxTrans (ctx ::> tp))
 
 -- Type-check a load of an LLVM pointer
--- FIXME HERE NOW: change this to just look up a pointer perm, like stores
-tcEmitLLVMStmt arch ctx loc (LLVM_Load _ reg tp _ _) =
-  let treg = tcReg ctx reg
-      x = typedRegVar treg in
-  -- First, look for an LLVM array or field permission for offset 0
-  getAtomicLLVMPerms treg >>>= \ps ->
-  stmtEmbedImplM
-  (foldMapWithDefault implCatchM
-   (implFailMsgM "LLVM_Load: could not find permission for offset 0")
-   greturn
-   (findMaybeIndices (llvmPermContainsOffset $ bvInt 0) ps)) >>>= \(i,_) ->
-  case ps !! i of
-    Perm_LLVMField fp ->
-      -- If we found a field perm for offset 0, first extract it out of all the
-      -- other perms for x and pop all the other perms off of the stack
-      stmtEmbedImplM (implExtractConjM x ps i >>>
-                      recombinePerm x (ValPerm_Conj (deleteNth i ps))) >>>
-      -- Next, emit the typed LLVM load instruction
-      emitTypedLLVMLoad arch loc treg fp DistPermsNil >>>= \z ->
-      -- Recombine the resulting permissions and return the new ctx
-      stmtRecombinePerms >>>
-      -- Finally, convert the return value to the requested type and return the
-      -- result
-      convertRegType knownRepr loc (TypedReg z) knownRepr tp >>>= \ret ->
-      greturn (addCtxName ctx $ typedRegVar ret)
-
-    Perm_LLVMArray ap
-      | Just ix <- matchLLVMArrayField ap (bvInt 0) ->
-        -- Extract the array perm we want out of the other perms on the stack
-        -- and pop all the other perms off of the stack, then borrow the field
-        -- corresopnding to offset 0
-        stmtEmbedImplM (implExtractConjM x ps i >>>
-                        recombinePerm x (ValPerm_Conj (deleteNth i ps)) >>>
-                        implLLVMArrayIndexBorrow x ap ix) >>>= \(ap',fp) ->
-        -- Emit the typed LLVM load instruction, noting that the array
-        -- permission is on the stack below the borrowed field permission
-        emitTypedLLVMLoad arch loc treg fp (distPerms1 x $ ValPerm_Conj1 $
-                                            Perm_LLVMArray ap') >>>= \z ->
-        -- If the resulting perms on z are copyable, copy them and return the
-        -- borrow back to the array, otherwise leave things like they are
-        let z_p = llvmFieldContents fp in
-        (if permIsCopyable z_p then
-           stmtEmbedImplM (implCopyM z z_p >>>
-                           recombinePermExpl z ValPerm_True z_p >>>
-                           introLLVMFieldContentsM x z >>>
-                           implLLVMArrayIndexReturn x ap' ix) >>>
-           stmtRecombinePerms
-         else
-           stmtRecombinePerms) >>>
-        -- Finally, convert the return value to the requested type and return
-        -- the result
-        convertRegType knownRepr loc (TypedReg z) knownRepr tp >>>= \ret ->
-        greturn (addCtxName ctx $ typedRegVar ret)
-
-    _ ->
-      error ("tcEmitLLVMStmt: LLVM_Load: "
-             ++ "unexpected permission matched by llvmPermContainsOffset")
+tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp _ _) =
+  let tptr = tcReg ctx ptr in
+  -- Prove [l]ptr ((0,rw) |-> eq(y)) for some l, rw, and y
+  stmtProvePerm tptr llvmPtr0EqExPerm >>>= \impl_res ->
+  let fp = subst impl_res llvmPtr0EqEx in
+  -- Emit a TypedLLVMLoad instruction
+  emitTypedLLVMLoad arch loc tptr fp DistPermsNil >>>= \z ->
+  -- Recombine the resulting permissions onto the stack
+  stmtRecombinePerms >>>
+  -- Finally, convert the return value to the requested type and return it
+  convertRegType knownRepr loc (TypedReg z) knownRepr tp >>>= \ret ->
+  greturn (addCtxName ctx $ typedRegVar ret)
 
 
 -- Type-check a store of an LLVM pointer

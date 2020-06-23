@@ -1466,6 +1466,26 @@ llvmFieldContents0Eq rw e =
                                    llvmFieldContents = ValPerm_Eq e }
 -}
 
+-- | Create a field permission to read a known value from offset 0 of an LLVM
+-- pointer using an existential modality, lifetime, and value
+llvmPtr0EqEx :: (1 <= w, KnownNat w) =>
+                Mb (RNil :> RWModalityType :> LifetimeType :> LLVMPointerType w)
+                (LLVMFieldPerm w)
+llvmPtr0EqEx =
+  nuMulti (MNil :>: Proxy :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l :>: x) ->
+  LLVMFieldPerm { llvmFieldRW = PExpr_Var rw,
+                  llvmFieldLifetime = PExpr_Var l,
+                  llvmFieldOffset = bvInt 0,
+                  llvmFieldContents = ValPerm_Eq (PExpr_Var x) }
+
+-- | Create a permission to read a known value from offset 0 of an LLVM pointer
+-- using an existential modality, lifetime, and value, i.e., return the
+-- permission @exists rw,l,y.[l]ptr ((0,rw) |-> eq(y))@
+llvmPtr0EqExPerm :: (1 <= w, KnownNat w) =>
+                    Mb (RNil :> RWModalityType :> LifetimeType :> LLVMPointerType w)
+                    (ValuePerm (LLVMPointerType w))
+llvmPtr0EqExPerm = fmap (ValPerm_Conj1 . Perm_LLVMField) llvmPtr0EqEx
+
 -- | Create a permission to read a known value from offset 0 of an LLVM pointer
 -- in the given lifetime, i.e., return @exists y.[l]ptr ((0,R) |-> eq(e))@
 llvmRead0EqPerm :: (1 <= w, KnownNat w) => PermExpr LifetimeType ->
