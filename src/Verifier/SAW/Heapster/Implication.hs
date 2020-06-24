@@ -2705,26 +2705,25 @@ proveVarLLVMArray x ps i off len mb_ap
     let rng = BVRange off len in
     implTryProveBVProps x (llvmArrayRangeInArray ap rng) >>>
 
-    -- Step 3: pattern-match the right-hand field permissions against the left
+    -- Step 3: pattern-match the right-hand field permissions against the left,
+    -- failing if the match fails
     getPSubst >>>= \psubst ->
-    case patternMatchFieldPerms (llvmArrayFields ap)
-         (mbList $ fmap llvmArrayFields mb_ap) psubst of
-      Nothing ->
-        implFailVarM "proveVarLLVMArray" x (ValPerm_Conj1 (ps!!i))
-        (fmap (ValPerm_Conj1 . Perm_LLVMArray) mb_ap)
+    (case patternMatchFieldPerms (llvmArrayFields ap)
+          (mbList $ fmap llvmArrayFields mb_ap) psubst of
+        Nothing ->
+          implFailVarM "proveVarLLVMArray" x (ValPerm_Conj1 (ps!!i))
+          (fmap (ValPerm_Conj1 . Perm_LLVMArray) mb_ap)
+        Just psubst' -> modifyPSubst (const psubst')) >>>
 
-      Just psubst' ->
-        modifyPSubst (const psubst') >>>
-
-        -- Step 4: Copy or borrow the required array perm, depending on whether
-        -- it is copyable or not
-        if atomicPermIsCopyable (Perm_LLVMArray ap) then
-          implSimplM Proxy (SImpl_LLVMArrayCopy x ap rng) >>>
-          implPopM x (ValPerm_Conj1 $ Perm_LLVMArray ap)
-        else
-          implSimplM Proxy (SImpl_LLVMArrayBorrow x ap rng) >>>
-          implPopM x (ValPerm_Conj1 $ Perm_LLVMArray $
-                      llvmArrayAddBorrow (RangeBorrow rng) ap)
+    -- Step 4: Copy or borrow the required array perm, depending on whether it
+    -- is copyable or not
+    if atomicPermIsCopyable (Perm_LLVMArray ap) then
+      implSimplM Proxy (SImpl_LLVMArrayCopy x ap rng) >>>
+      implPopM x (ValPerm_Conj1 $ Perm_LLVMArray ap)
+    else
+      implSimplM Proxy (SImpl_LLVMArrayBorrow x ap rng) >>>
+      implPopM x (ValPerm_Conj1 $ Perm_LLVMArray $
+                  llvmArrayAddBorrow (RangeBorrow rng) ap)
 
 proveVarLLVMArray x ps i _ _ mb_ap =
   implFailVarM "proveVarLLVMArray" x (ValPerm_Conj1 $ ps!!i)
