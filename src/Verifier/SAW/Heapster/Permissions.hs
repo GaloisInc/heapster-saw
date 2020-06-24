@@ -1668,6 +1668,11 @@ llvmArrayIndexInArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
                          LLVMArrayIndex w -> [BVProp w]
 llvmArrayIndexInArray ap ix = llvmArrayBorrowInArray ap (FieldBorrow ix)
 
+-- | Shorthand for 'llvmArrayBorrowInArray' with a range
+llvmArrayRangeInArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                         BVRange w -> [BVProp w]
+llvmArrayRangeInArray ap rng = llvmArrayBorrowInArray ap (RangeBorrow rng)
+
 -- | Test if an atomic LLVM permission potentially allows a read or write of a
 -- given offset. If so, return a list of the propositions required for the read
 -- to be allowed. For LLVM field permissions, the offset of the field must
