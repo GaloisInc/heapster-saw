@@ -1317,8 +1317,9 @@ instance TransInfo info =>
        args <- translate args
        case lookupNamedPerm env (mbLift npn) of
          Just (NamedPerm_Rec rp) ->
-           return $ mkPermTypeTrans1 p (dataTypeOpenTerm
-                                        (recPermDataType rp) (transTerms args))
+           return $ mkPermTypeTrans1 p (applyOpenTermMulti
+                                        (globalOpenTerm (recPermTransType rp))
+                                        (transTerms args))
          Just (NamedPerm_Opaque op) ->
            return $ mkPermTypeTrans1 p (applyOpenTermMulti
                                         (globalOpenTerm (opaquePermTrans op))

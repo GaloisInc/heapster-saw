@@ -91,12 +91,13 @@ type SomeName = Some (Typed Name)
 -- | A parsing environment, which includes variables and function names
 data ParserEnv = ParserEnv {
   parserEnvExprVars :: [(String, SomeName)],
+  parserEnvPermVars :: [(String, SomeNamedPermName)],
   parserEnvPermEnv :: PermEnv
 }
 
 -- | Make a 'ParserEnv' with empty contexts and a given list of function names
 mkParserEnv :: PermEnv -> ParserEnv
-mkParserEnv env = ParserEnv [] env
+mkParserEnv env = ParserEnv [] [] env
 
 $(mkNuMatching [t| forall f a. NuMatching (f a) => Typed f a |])
 $(mkNuMatching [t| ParserEnv |])
@@ -107,6 +108,16 @@ instance NuMatchingAny1 f => NuMatchingAny1 (Typed f) where
 -- | Look up an expression variable by name in a 'ParserEnv'
 lookupExprVar :: String -> ParserEnv -> Maybe SomeName
 lookupExprVar str = lookup str . parserEnvExprVars
+
+-- | Look up a 'NamedPermName' by name in a 'ParserEnv', considering both
+-- its permission variables and the 'NamedPerm's in its 'PermEnv'.
+lookupNamedPermNameOrVar :: String -> ParserEnv -> Maybe SomeNamedPermName
+lookupNamedPermNameOrVar str env =
+  case ( lookup str (parserEnvPermVars env)
+       , lookupNamedPermName (parserEnvPermEnv env) str ) of
+    (Just srpn, _) -> Just srpn -- FIXME: Is shadowing here what we want?
+    (_, Just srpn) -> Just srpn
+    (Nothing, Nothing) -> Nothing
 
 {-
 instance BindState String where
@@ -158,7 +169,7 @@ instance (BindState s, BindState u) => BindState (State s u) where
 -- | Lift a 'ParserEnv' out of a binding except for its 'PermEnv', which should
 -- be unchanged from the input
 liftParserEnv :: PermEnv -> Mb ctx ParserEnv -> ParserEnv
-liftParserEnv env [nuP| ParserEnv evars _ |] =
+liftParserEnv env [nuP| ParserEnv evars pvars _ |] =
   ParserEnv
   (mapMaybe (\env_elem -> case env_elem of
                 [nuP| (str, Some (Typed tp mb_n)) |]
@@ -166,6 +177,7 @@ liftParserEnv env [nuP| ParserEnv evars _ |] =
                     Just (mbLift str, Some (Typed (mbLift tp) n))
                 _ -> Nothing)
    (mbList evars))
+  (fmap mbLift (mbList pvars))
   env
 
 -- | Lift a Parsec 'State' out of a binding except for its 'PermEnv', which
@@ -515,7 +527,7 @@ parseValPerm tp =
                parseValPerm tp) <|>
        (do n <- try (parseIdent >>= \n -> spaces >> char '<' >> return n)
            env <- getState
-           case lookupNamedPermName (parserEnvPermEnv env) n of
+           case lookupNamedPermNameOrVar n env of
              Just (SomeNamedPermName rpn)
                | Just Refl <- testEquality (namedPermNameType rpn) tp ->
                  do args <- parseExprs (namedPermNameArgs rpn)
@@ -533,6 +545,12 @@ parseValPerm tp =
      (try (spaces1 >> string "or" >> space) >> (ValPerm_Or p1 <$>
                                                 parseValPerm tp)) <|>
        return p1
+
+-- | Parse a value permission of a known type in a given context
+parseValPermInCtx :: (Stream s Identity Char, Liftable s) =>
+                     ParsedCtx ctx -> TypeRepr a ->
+                     PermParseM s (Mb ctx (ValuePerm a))
+parseValPermInCtx ctx tp = inParsedCtxM ctx $ const $ parseValPerm tp
 
 -- | Parse a @*@-separated list of atomic permissions
 parseAtomicPerms :: (Stream s Identity Char, Liftable s) => TypeRepr a ->

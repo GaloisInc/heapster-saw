@@ -1,0 +1,8 @@
+enable_experimental;
+env <- heapster_init_env_from_file "rec_perm_test.sawcore" "rec_perm_test.bc";
+
+heapster_define_recursive_perm env "W64List'" "l:lifetime, rw:rwmodality" "llvmptr 64" ["eq(llvmword(0))","[l]ptr((rw,0) |-> exists x:(bv 64).eq(llvmword(x))) * ptr((rw,8) |-> W64List'<l,rw>)"] "W64List" "Prelude.foldW64List" "Prelude.unfoldW64List";
+
+heapster_typecheck_fun env "is_elem" "(x:bv 64).arg0:eq(llvmword(x)), arg1:W64List'<always,R> -o arg0:true, arg1:true, ret:exists z:(bv 64).eq(llvmword(z))";
+
+heapster_export_coq env "rec_perm_test.v";

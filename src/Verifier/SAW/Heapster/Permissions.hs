@@ -1128,10 +1128,10 @@ data OpaquePerm args a = OpaquePerm {
 -- associated with a constructor of that datatype.
 data RecPerm args a = RecPerm {
   recPermName :: NamedPermName args a,
-  recPermDataType :: Ident,
+  recPermTransType :: Ident,
   recPermFoldFun :: Ident,
   recPermUnfoldFun :: Ident,
-  recPermCases :: [(Mb args (ValuePerm a), Ident)]
+  recPermCases :: [Mb args (ValuePerm a)]
   }
 
 -- | A list of "distinguished" permissions to named variables
@@ -2111,7 +2111,7 @@ funPermDistOuts fun_perm args ghosts =
 -- | Unfold a recursive permission given a 'RecPerm' for it
 unfoldRecPerm :: RecPerm args a -> PermExprs args -> ValuePerm a
 unfoldRecPerm rp args =
-  foldl1 ValPerm_Or $ map (subst (substOfExprs args) . fst) $ recPermCases rp
+  foldl1 ValPerm_Or $ map (subst (substOfExprs args)) $ recPermCases rp
 
 -- | Generic function to test if a permission contains a lifetime
 class ContainsLifetime a where
@@ -2667,7 +2667,7 @@ instance SubstVar s m => Substable s (OpaquePerm args a) m where
 instance SubstVar s m => Substable s (RecPerm args a) m where
   genSubst s [nuP| RecPerm rpn dt_i f_i u_i cases |] =
     RecPerm (mbLift rpn) (mbLift dt_i) (mbLift f_i) (mbLift u_i) <$>
-    mapM (\[nuP| (mb_p, i) |] -> genSubst s mb_p >>= \p -> return (p,mbLift i))
+    mapM (\[nuP| mb_p |] -> genSubst s mb_p >>= \p -> return p)
     (mbList cases)
 
 instance SubstVar s m => Substable s (ValuePerm a) m where
@@ -3378,6 +3378,14 @@ permEnvAddOpaquePerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
                         Ident -> PermEnv
 permEnvAddOpaquePerm env str args tp i =
   let np = NamedPerm_Opaque (OpaquePerm (NamedPermName str tp args) i) in
+  env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
+
+-- | Add a recursive named permission to a 'PermEnv'
+permEnvAddRecPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
+                     [Mb args (ValuePerm a)] -> 
+                     Ident -> Ident -> Ident -> PermEnv
+permEnvAddRecPerm env str args tp cases i f g =
+  let np = NamedPerm_Rec (RecPerm (NamedPermName str tp args) i f g cases) in
   env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
 
 -- | Add a global symbol with a function permission to a 'PermEnv'
