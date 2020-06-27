@@ -22,6 +22,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 
 module Verifier.SAW.Heapster.Implication where
 
@@ -319,6 +320,8 @@ data SimplImpl ps_in ps_out where
   -- >   -o x:array(off',<len',*stride,fps,[])
   -- >      * x:array(off,<len,*stride,fps,[off',len'):bs)
 
+  -- FIXME: it should be possible to return an array permission that itself has
+  -- borrows, by adding the borrows to the array permission it was borrowed from
   SImpl_LLVMArrayReturn ::
     (1 <= w, KnownNat w) =>
     ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> BVRange w ->
@@ -2300,36 +2303,42 @@ recombinePermConj x x_ps p@Perm_IsLLVMPtr
     implDropM x (ValPerm_Conj1 p) >>>
     greturn x_ps
 
-
--- FIXME HERE NOW: return fields borrowed from arrays because there is never a reason to
--- keep part of an array separate from the rest (except funcalls)
-
--- FIXME HERE NOW: return borrowed sub-arrays because there is never a reason to
--- keep part of an array separate from the rest (except funcalls)
-
-{-
--- If the permission being recombined is an LLVM field permission that has been
--- borrowed from an array, where the original contents of the array are copyable
--- and the field permission has the correct lifetime and RW modality, recombine
--- it back into the array, thereby removing the borrow
+-- If p is a field that was borrowed from an array, return it; i.e., if we are
+-- returning x:ptr((rw,off+i*stride+j) |-> p) and x has a permission of the form
+-- x:array(off,<len,*stride,fps,(i*stride+j):bs) where the jth element of fps
+-- equals ptr((rw,j) |-> p), then remove (i*stride+j) from bs
 recombinePermConj x x_ps (Perm_LLVMField fp)
-  | Just (i, ap, ix, fld_num) <- findLLVMArrayWithFieldBorrow fp x_ps
-  , fp' <- llvmArrayFields ap !! fld_num
-  , permIsCopyable (llvmFieldContents fp')
-  , llvmFieldRW fp == llvmFieldRW fp'
-  , llvmFieldLifetime fp == llvmFieldLifetime fp' =
-    implPushM x (ValPerm_Conj x_ps) >>>
-    implExtractConjM x x_ps i >>>
-    let x_ps' = take i x_ps ++ drop (i+1) x_ps in
+  | ((ap,i),ix):_ <-
+      flip mapMaybe (zip x_ps [0::Int ..]) $
+      \case (Perm_LLVMArray ap, i) ->
+              ((ap,i),) <$> matchLLVMArrayField ap (llvmFieldOffset fp)
+            _ -> Nothing
+  , fp == (llvmArrayFields ap)!!i =
+    implPushM x (ValPerm_Conj x_ps) >>> implExtractConjM x x_ps i >>>
+    let x_ps' = deleteNth i x_ps in
     implPopM x (ValPerm_Conj x_ps') >>>
-    implSimplM Proxy (SImpl_LLVMArrayIndexReturn x ap ix fld_num) >>>
-    implPushM x (ValPerm_Conj x_ps') >>>
-    let p' = Perm_LLVMArray $ llvmArrayRemIndexBorrow ix fld_num ap in
-    implInsertConjM x p' x_ps' i >>>
-    let x_ps'' = take i x_ps ++ p' : drop (i+1) x_ps in
-    implPopM x (ValPerm_Conj x_ps'') >>>
-    greturn x_ps''
--}
+    implLLVMArrayIndexReturn x ap ix >>>
+    recombinePermConj x x_ps' (Perm_LLVMArray $
+                               llvmArrayRemBorrow (FieldBorrow ix) ap)
+
+-- If p is an array that was borrowed from some other array, return it
+recombinePermConj x x_ps (Perm_LLVMArray ap)
+  | ap_rng <- llvmArrayIndexRange ap
+  , (ap',i):_ <-
+      flip mapMaybe (zip x_ps [0::Int ..])
+      (\case (Perm_LLVMArray ap', i)
+               | elem (RangeBorrow ap_rng) (llvmArrayBorrows ap') &&
+                 llvmArrayStride ap' == llvmArrayStride ap &&
+                 llvmArrayFields ap' == llvmArrayFields ap ->
+                 return (ap', i)
+             _ -> Nothing)
+  , llvmArrayBorrows ap == [] =
+    implPushM x (ValPerm_Conj x_ps) >>> implExtractConjM x x_ps i >>>
+    let x_ps' = deleteNth i x_ps in
+    implPopM x (ValPerm_Conj x_ps') >>>
+    implSimplM Proxy (SImpl_LLVMArrayReturn x ap' ap_rng) >>>
+    recombinePermConj x x_ps' (Perm_LLVMArray $
+                               llvmArrayRemBorrow (RangeBorrow ap_rng) ap')
 
 -- Default case: insert p at the end of the x_ps
 recombinePermConj x x_ps p =
@@ -2700,30 +2709,48 @@ proveVarLLVMArray x ps i off len mb_ap
     let ps_rem = deleteNth i ps in
     implPopM x (ValPerm_Conj ps_rem) >>>
 
-    -- Step 2: prove that the required indices are in the range of the LHS array
-    -- permission, including that they are not currently borrowed
+    -- Step 2: recall any borrowed field permissions that we still hold which
+    -- could be in the range of the array
     let rng = BVRange off len in
-    implTryProveBVProps x (llvmArrayRangeInArray ap rng) >>>
+    let ixs = flip mapMaybe (llvmArrayBorrows ap) $
+          \case (FieldBorrow ix)
+                  | bvCouldBeInRange (llvmArrayIndexCell ix) rng
+                  , any (\case Perm_LLVMField fp ->
+                                 bvEq (llvmFieldOffset fp)
+                                 (llvmArrayIndexByteOffset ap ix)
+                               _ -> False) ps ->
+                       return ix in
+    foldM (\ap' ix ->
+            let p = ValPerm_Conj1 $ Perm_LLVMField $
+                  llvmArrayFieldWithOffset ap' ix in
+            proveVarImpl x (fmap (const p) mb_ap) >>>
+            implSwapM x (ValPerm_Conj1 $ Perm_LLVMArray ap') x p >>>
+            implLLVMArrayIndexReturn x ap' ix >>>
+            greturn (llvmArrayRemBorrow (FieldBorrow ix) ap)) ap ixs >>>= \ap' ->
 
-    -- Step 3: pattern-match the right-hand field permissions against the left,
+    -- Step 3: prove that the required indices are in the range of the LHS array
+    -- permission, including that they are not currently borrowed
+    implTryProveBVProps x (llvmArrayRangeInArray ap' rng) >>>
+
+    -- Step 4: pattern-match the right-hand field permissions against the left,
     -- failing if the match fails
     getPSubst >>>= \psubst ->
-    (case patternMatchFieldPerms (llvmArrayFields ap)
+    (case patternMatchFieldPerms (llvmArrayFields ap')
           (mbList $ fmap llvmArrayFields mb_ap) psubst of
         Nothing ->
           implFailVarM "proveVarLLVMArray" x (ValPerm_Conj1 (ps!!i))
           (fmap (ValPerm_Conj1 . Perm_LLVMArray) mb_ap)
         Just psubst' -> modifyPSubst (const psubst')) >>>
 
-    -- Step 4: Copy or borrow the required array perm, depending on whether it
+    -- Step 5: Copy or borrow the required array perm, depending on whether it
     -- is copyable or not
-    if atomicPermIsCopyable (Perm_LLVMArray ap) then
-      implSimplM Proxy (SImpl_LLVMArrayCopy x ap rng) >>>
-      implPopM x (ValPerm_Conj1 $ Perm_LLVMArray ap)
+    if atomicPermIsCopyable (Perm_LLVMArray ap') then
+      implSimplM Proxy (SImpl_LLVMArrayCopy x ap' rng) >>>
+      implPopM x (ValPerm_Conj1 $ Perm_LLVMArray ap')
     else
-      implSimplM Proxy (SImpl_LLVMArrayBorrow x ap rng) >>>
+      implSimplM Proxy (SImpl_LLVMArrayBorrow x ap' rng) >>>
       implPopM x (ValPerm_Conj1 $ Perm_LLVMArray $
-                  llvmArrayAddBorrow (RangeBorrow rng) ap)
+                  llvmArrayAddBorrow (RangeBorrow rng) ap')
 
 proveVarLLVMArray x ps i _ _ mb_ap =
   implFailVarM "proveVarLLVMArray" x (ValPerm_Conj1 $ ps!!i)
