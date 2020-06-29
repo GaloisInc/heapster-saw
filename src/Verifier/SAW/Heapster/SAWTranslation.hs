@@ -532,7 +532,7 @@ data TypeTransInfo ctx = TypeTransInfo (ExprTransCtx ctx) PermEnv
 
 -- | Build an empty 'TypeTransInfo' from a 'PermEnv'
 emptyTypeTransInfo :: PermEnv -> TypeTransInfo RNil
-emptyTypeTransInfo = TypeTransInfo MNil 
+emptyTypeTransInfo = TypeTransInfo MNil
 
 instance TransInfo TypeTransInfo where
   infoCtx (TypeTransInfo ctx _) = ctx
