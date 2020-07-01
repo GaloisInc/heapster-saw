@@ -1,5 +1,6 @@
 -Q ../../saw-core-coq/coq/generated/CryptolToCoq   CryptolToCoq
 -Q ../../saw-core-coq/coq/handwritten/CryptolToCoq   CryptolToCoq
+-Q . Examples
 
 linked_list.v
 linked_list_proofs.v
