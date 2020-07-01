@@ -43,7 +43,7 @@ import Control.Lens hiding ((:>), Index, Empty)
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 
-import Data.Parameterized.Context hiding ((:>), empty, take, zipWith)
+import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, last)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.NatRepr
 
@@ -653,12 +653,13 @@ bvSLt (bvMatchSignedConst -> Just i1) (bvMatchSignedConst -> Just i2) =
   trace ("bvSLt " ++ show i1 ++ " " ++ show i2) (i1 < i2)
 bvSLt _ _ = False
 
--- | Test whether a bitvector expression is in a 'BVRange' for all substitutions
--- to the free variables. This is an underapproximation, meaning that it could
--- return 'False' in cases where it is actually 'True'.
+-- | Test whether a bitvector expression @e@ is in a 'BVRange' for all
+-- substitutions to the free variables. This is an underapproximation, meaning
+-- that it could return 'False' in cases where it is actually 'True'. It is
+-- implemented by testing whether @e - off < len@ using the unsigned comparison
+-- 'bvLt', where @off@ and @len@ are the offset and length of the 'BVRange'.
 bvInRange :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> BVRange w -> Bool
-bvInRange e (BVRange off len) =
-  (bvEq off e || bvLt off e) && bvLt e (bvAdd off len)
+bvInRange e (BVRange off len) = bvLt (bvSub e off) len
 
 -- | Test whether a bitvector @e@ equals @0@
 bvIsZero :: PermExpr (BVType w) -> Bool
@@ -710,12 +711,14 @@ bvCouldBeSLt (bvMatchSignedConst -> Just i1) (bvMatchSignedConst -> Just i2) =
   i1 < i2
 bvCouldBeSLt _ _ = True
 
--- | Test whether a bitvector expression is in a 'BVRange' for all substitutions
--- to the free variables. This is an overapproximation, meaning that some
--- expressions are marked as "could" be in the range when they actually cannot.
+-- | Test whether a bitvector expression @e@ is in a 'BVRange' for all
+-- substitutions to the free variables. This is an overapproximation, meaning
+-- that some expressions are marked as "could" be in the range when they
+-- actually cannot. The current algorithm tests if @e - off < len@ using the
+-- unsigned comparison 'bvCouldBeLt', where @off@ and @len@ are the offset and
+-- length of the 'BVRange'.
 bvCouldBeInRange :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> BVRange w -> Bool
-bvCouldBeInRange e (BVRange off len) =
-  (bvCouldEqual off e || bvCouldBeLt off e) && bvCouldBeLt e (bvAdd off len)
+bvCouldBeInRange e (BVRange off len) = bvCouldBeLt (bvSub e off) len
 
 -- | Test whether a 'BVProp' "could" hold for all substitutions of the free
 -- variables. This is an overapproximation, meaning that some propositions are
@@ -1292,6 +1295,11 @@ instance Eq (FunPerm ghosts args ret) where
 instance PermPretty (NamedPermName args a) where
   permPrettyM (NamedPermName str _ _) = return $ string str
 
+ppCommaSep :: [Doc] -> Doc
+ppCommaSep [] = PP.empty
+ppCommaSep ds =
+  align (fillSep (map (<> comma) (take (length ds - 1) ds) ++ [last ds]))
+
 instance PermPretty (ValuePerm a) where
   permPrettyM (ValPerm_Eq e) = ((string "eq" <>) . parens) <$> permPrettyM e
   permPrettyM (ValPerm_Or p1 p2) =
@@ -1324,8 +1332,9 @@ permPrettyLLVMField in_array (LLVMFieldPerm {..}) =
      pp_contents <- permPrettyM llvmFieldContents
      return (pp_l <>
              (if in_array then id else (string "ptr" <>) . parens)
-             (parens (pp_rw <> comma <> pp_off) </>
-              string "|->" </> pp_contents))
+             (hang 2
+              (parens (pp_rw <> comma <> pp_off) <+> string "|->"
+               </> pp_contents)))
 
 instance PermPretty (AtomicPerm a) where
   permPrettyM (Perm_LLVMField fp) = permPrettyLLVMField False fp
@@ -1336,9 +1345,9 @@ instance PermPretty (AtomicPerm a) where
        pp_flds <- mapM (permPrettyLLVMField True) llvmArrayFields
        pp_bs <- mapM permPrettyM llvmArrayBorrows
        return (string "array" <>
-               parens (sep [pp_off, string "<" <> pp_len,
-                            string "*" <> pp_stride,
-                            list pp_flds, list pp_bs]))
+               parens (ppCommaSep [pp_off, string "<" <> pp_len,
+                                   string "*" <> pp_stride,
+                                   list pp_flds, list pp_bs]))
   permPrettyM (Perm_LLVMFree e) = (string "free" <+>) <$> permPrettyM e
   permPrettyM (Perm_LLVMFunPtr fp) =
     (string "llvm_funptr" <+>) <$> permPrettyM fp

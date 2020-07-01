@@ -25,6 +25,8 @@
 
 module Verifier.SAW.Heapster.SAWTranslation where
 
+import Numeric (showHex)
+import Data.Char
 import Data.Maybe
 import Data.Either
 import Data.List
@@ -3328,6 +3330,24 @@ tcTranslateCFGTupleFun w env cfgs_and_perms =
       translateCFG env' $ tcCFG env' fun_perm cfg
 
 
+-- | Make a "coq-safe" identifier from a string that might contain
+-- non-identifier characters, where we use the SAW core notion of identifier
+-- characters as letters, digits, underscore and primes. Any disallowed
+-- character is mapped to the string @__xNN@, where @NN@ is the hexadecimal code
+-- for that character. Additionally, a SAW core identifier is not allowed to
+-- start with a prime, so a leading underscore is added in such a case.
+mkSafeIdent :: ModuleName -> String -> Ident
+mkSafeIdent mnm [] = "_"
+mkSafeIdent mnm nm =
+  let is_safe_char c = isAlphaNum c || c == '_' || c == '\'' in
+  mkIdent mnm $
+  (if nm!!0 == '\'' then ('_' :) else id) $
+  concatMap
+  (\c -> if is_safe_char c then [c] else
+           "__x" ++ showHex (ord c) "")
+  nm
+
+
 -- | Type-check a set of CFGs against their function permissions, translate the
 -- results to SAW core functions, and add them as definitions to the SAW core
 -- module with the given module name. The name of each definition will be the
@@ -3342,8 +3362,8 @@ tcTranslateAddCFGs ::
 tcTranslateAddCFGs sc mod_name w env cfgs_and_perms =
   do let (lrts, tup_fun) = tcTranslateCFGTupleFun w env cfgs_and_perms
      let tup_fun_ident =
-           mkIdent mod_name (someCFGAndPermName (head cfgs_and_perms)
-                             ++ "__tuple_fun")
+           mkSafeIdent mod_name (someCFGAndPermName (head cfgs_and_perms)
+                                 ++ "__tuple_fun")
      tup_fun_tp <- completeOpenTerm sc $
        applyOpenTerm (globalOpenTerm "Prelude.lrtTupleType") lrts
      tup_fun_tm <- completeOpenTerm sc $
@@ -3361,7 +3381,7 @@ tcTranslateAddCFGs sc mod_name w env cfgs_and_perms =
               someCFGAndPermLRT env cfg_and_perm
             tm <- completeOpenTerm sc $
               projTupleOpenTerm i (globalOpenTerm tup_fun_ident)
-            let ident = mkIdent mod_name (someCFGAndPermName cfg_and_perm)
+            let ident = mkSafeIdent mod_name (someCFGAndPermName cfg_and_perm)
             scModifyModule sc mod_name $ flip insDef $
               Def { defIdent = ident,
                     defQualifier = NoQualifier,

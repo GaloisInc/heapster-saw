@@ -25,7 +25,7 @@
 module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
-import Data.Text hiding (length, map, concat, findIndex, foldr, foldl, maximum)
+import Data.Text hiding (length, map, concat, findIndex, foldr, foldl, maximum, take, last)
 import Data.List (findIndex)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -48,7 +48,7 @@ import Data.Binding.Hobbits
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 
-import Data.Parameterized.Context hiding ((:>), empty, take, view)
+import Data.Parameterized.Context hiding ((:>), empty, take, view, last)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
 
@@ -2034,14 +2034,12 @@ tcEmitStmt ctx loc stmt =
   permGetPPInfo >>>= \ppInfo ->
   mapM (\(Some r) -> ppCruRegAndPerms ctx r)
   (stmtInputRegs stmt) >>>= \pps ->
-  stmtTraceM (const (string "Input perms:" </>
-                     encloseSep PP.empty PP.empty comma pps)) >>>
+  stmtTraceM (const (string "Input perms:" </> ppCommaSep pps)) >>>
   tcEmitStmt' ctx loc stmt >>>= \ctx' ->
   mapM (\(Some r) -> ppCruRegAndPerms ctx' r) (stmtOutputRegs
                                                (Ctx.size ctx')
                                                stmt) >>>= \pps ->
-  stmtTraceM (const (string "Output perms:" </>
-                     encloseSep PP.empty PP.empty comma pps)) >>>
+  stmtTraceM (const (string "Output perms:" </> ppCommaSep pps)) >>>
   greturn ctx'
 
 
