@@ -2,6 +2,8 @@
 enable_experimental;
 env <- heapster_init_env_from_file "linked_list.sawcore" "linked_list.bc";
 
+heapster_define_recursive_perm env "List" "X:perm(llvmptr 64), l:lifetime, rw:rwmodality" "llvmptr 64" ["eq(llvmword(0))","[l]ptr((rw,0) |-> X) * ptr((rw,8) |-> List<X,l,rw>)"] "List_def" "foldList" "unfoldList";
+
 heapster_typecheck_fun env "is_elem" "(x:bv 64).arg0:eq(llvmword(x)), arg1:List<(exists y:(bv 64).eq(llvmword(y))),always,R> -o arg0:true, arg1:true, ret:exists z:(bv 64).eq(llvmword(z))";
 
 heapster_assume_fun env "malloc" "(sz:bv 64).arg0:eq(llvmword(8*sz)) -o arg0:true, ret:array(0,<sz,*1,[(W,0) |-> true])" "mallocSpec";

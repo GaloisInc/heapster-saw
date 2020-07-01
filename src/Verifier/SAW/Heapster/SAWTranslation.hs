@@ -232,6 +232,7 @@ class TransInfo info where
   infoCtx :: info ctx -> ExprTransCtx ctx
   infoEnv :: info ctx -> PermEnv
   extTransInfo :: ExprTrans tp -> info ctx -> info (ctx :> tp)
+  lookupNamedPermTrans :: info ctx -> NamedPermName args a -> Maybe Ident
 
 -- | A "translation monad" is a 'Reader' monad with some info type that is
 -- parameterized by a translation context
@@ -530,17 +531,26 @@ piTransM x tp body_m =
 ----------------------------------------------------------------------
 
 -- | Translation info for translating types and pure expressions
-data TypeTransInfo ctx = TypeTransInfo (ExprTransCtx ctx) PermEnv
+data TypeTransInfo ctx = TypeTransInfo (ExprTransCtx ctx)
+                                       [(SomeNamedPermName, Ident)]
+                                       PermEnv
 
 -- | Build an empty 'TypeTransInfo' from a 'PermEnv'
 emptyTypeTransInfo :: PermEnv -> TypeTransInfo RNil
-emptyTypeTransInfo = TypeTransInfo MNil
+emptyTypeTransInfo = TypeTransInfo MNil []
 
 instance TransInfo TypeTransInfo where
-  infoCtx (TypeTransInfo ctx _) = ctx
-  infoEnv (TypeTransInfo _ env) = env
-  extTransInfo etrans (TypeTransInfo ctx env) =
-    TypeTransInfo (ctx :>: etrans) env
+  infoCtx (TypeTransInfo ctx _ _) = ctx
+  infoEnv (TypeTransInfo _ _ env) = env
+  extTransInfo etrans (TypeTransInfo ctx npnts env) =
+    TypeTransInfo (ctx :>: etrans) npnts env
+  lookupNamedPermTrans (TypeTransInfo _ npnts env) npn =
+    case ( lookup (SomeNamedPermName npn) npnts
+         , lookupNamedPerm env npn ) of
+      (Just t, _) -> Just t 
+      (Nothing, Just (NamedPerm_Rec rp)) -> Just (recPermTransType rp)
+      (Nothing, Just (NamedPerm_Opaque op)) -> Just (opaquePermTrans op)
+      (Nothing, Nothing) -> Nothing
 
 -- | The translation monad specific to translating types and pure expressions
 type TypeTransM = TransM TypeTransInfo
@@ -548,7 +558,7 @@ type TypeTransM = TransM TypeTransInfo
 -- | Run a translation computation in an empty expression translation context
 inEmptyCtxTransM :: TypeTransM RNil a -> TypeTransM ctx a
 inEmptyCtxTransM =
-  withInfoM (\(TypeTransInfo _ env) -> TypeTransInfo MNil env)
+  withInfoM (\(TypeTransInfo _ _ env) -> TypeTransInfo MNil [] env)
 
 instance TransInfo info => Translate info ctx (NatRepr n) OpenTerm where
   translate mb_n = return $ natOpenTerm $ mbLift $ fmap intValue mb_n
@@ -1007,6 +1017,9 @@ permTransPermEq ptrans mb_p =
 extMb :: Mb ctx a -> Mb (ctx :> tp) a
 extMb = mbCombine . fmap (nu . const)
 
+extsMb :: CruCtx ctx2 -> Mb ctx a -> Mb (ctx :++: ctx2) a
+extsMb ctx = mbCombine . fmap (nus (cruCtxProxies ctx) . const)
+
 -- | Generic function to extend the context of the translation of a permission
 class ExtPermTrans f where
   extPermTrans :: f ctx a -> f (ctx :> tp) a
@@ -1315,16 +1328,12 @@ instance TransInfo info =>
          sigmaTypeTransM "x_ex" tp_trans (\x -> inExtTransM x $
                                                 translate $ mbCombine p1)
   translate p@[nuP| ValPerm_Named npn args |] =
-    do env <- infoEnv <$> ask
+    do info <- ask
        args <- translate args
-       case lookupNamedPerm env (mbLift npn) of
-         Just (NamedPerm_Rec rp) ->
+       case lookupNamedPermTrans info (mbLift npn) of
+         Just trans -> 
            return $ mkPermTypeTrans1 p (applyOpenTermMulti
-                                        (globalOpenTerm (recPermTransType rp))
-                                        (transTerms args))
-         Just (NamedPerm_Opaque op) ->
-           return $ mkPermTypeTrans1 p (applyOpenTermMulti
-                                        (globalOpenTerm (opaquePermTrans op))
+                                        (globalOpenTerm trans)
                                         (transTerms args))
          Nothing -> error "Unknown permission name!"
   translate [nuP| ValPerm_Conj ps |] =
@@ -1631,6 +1640,12 @@ instance TransInfo (ImpTransInfo ext blocks ret ps) where
     , itiPermStack = extPermTransCtx itiPermStack
     , itiPermStackVars = mapMapRList Member_Step itiPermStackVars
     , .. }
+  lookupNamedPermTrans (ImpTransInfo {..}) npn =
+    case lookupNamedPerm itiPermEnv npn of
+      Just (NamedPerm_Rec rp) -> Just (recPermTransType rp)
+      Just (NamedPerm_Opaque op) -> Just (opaquePermTrans op)
+      Nothing -> Nothing
+  
 
 -- | Return the default catch handler of a given return type, which is just a
 -- call to @errorM@ at that type
@@ -1646,7 +1661,7 @@ impTransM :: PermTransCtx ctx ctx -> TypedBlockMapTrans ext blocks ret ->
              OpenTerm -> ImpTransM ext blocks ret ctx ctx a ->
              TypeTransM ctx a
 impTransM pctx mapTrans retType =
-  withInfoM $ \(TypeTransInfo ectx env) ->
+  withInfoM $ \(TypeTransInfo ectx _ env) ->
   ImpTransInfo { itiExprCtx = ectx,
                  itiPermCtx = mapMapRList (const $ PTrans_True) pctx,
                  itiPermStack = pctx,
@@ -1660,7 +1675,7 @@ impTransM pctx mapTrans retType =
 -- FIXME: should no longer need this...
 tpTransM :: TypeTransM ctx a -> ImpTransM ext blocks ret ps ctx a
 tpTransM =
-  withInfoM (\info -> TypeTransInfo (itiExprCtx info) (itiPermEnv info))
+  withInfoM (\info -> TypeTransInfo (itiExprCtx info) [] (itiPermEnv info))
 
 -- | Get most recently bound variable
 getTopVarM :: ImpTransM ext blocks ret ps (ctx :> tp) (ExprTrans tp)
@@ -3210,7 +3225,7 @@ translateCFG env cfg =
       ctx = typedFnHandleAllArgs h
       ghosts = typedFnHandleGhosts h
       retType = typedFnHandleRetType h in
-  flip runTransM (TypeTransInfo MNil env) $ lambdaExprCtx ctx $
+  flip runTransM (TypeTransInfo MNil [] env) $ lambdaExprCtx ctx $
   lambdaPermCtx (mbCombine $ funPermIns fun_perm) $ \pctx ->
   do retTypeTrans <-
        translateRetType retType
@@ -3258,7 +3273,7 @@ someCFGAndPermName (SomeCFGAndPerm sym _ _) = globalSymbolName sym
 someCFGAndPermLRT :: PermEnv -> SomeCFGAndPerm ext -> OpenTerm
 someCFGAndPermLRT env (SomeCFGAndPerm _ _
                        (FunPerm ghosts args ret perms_in perms_out)) =
-  flip runTransM (TypeTransInfo MNil env) $
+  flip runTransM (TypeTransInfo MNil [] env) $
   translateClosed (appendCruCtx ghosts args) >>= \ctx_trans ->
   lambdaLRTTransM "arg" ctx_trans $ \ectx ->
   inCtxTransM ectx $

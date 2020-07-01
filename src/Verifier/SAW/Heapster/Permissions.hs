@@ -404,6 +404,10 @@ data PermExprs (as :: RList CrucibleType) where
   PExprs_Nil :: PermExprs RNil
   PExprs_Cons :: PermExprs as -> PermExpr a -> PermExprs (as :> a)
 
+pExprVars :: MapRList Name as -> PermExprs as
+pExprVars MNil = PExprs_Nil
+pExprVars (ns :>: n) = PExprs_Cons (pExprVars ns) (PExpr_Var n)
+
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where
   BVFactor :: (1 <= w, KnownNat w) => Integer -> ExprVar (BVType w) ->
@@ -1079,6 +1083,11 @@ instance Eq (NamedPermName args a) where
 -- | An existentially quantified 'NamedPermName'
 data SomeNamedPermName where
   SomeNamedPermName :: NamedPermName args a -> SomeNamedPermName
+
+instance Eq SomeNamedPermName where
+  (SomeNamedPermName n1) == (SomeNamedPermName n2)
+    | Just (Refl, Refl) <- testNamedPermNameEq n1 n2 = True
+  _ == _ = False
 
 -- | Get the @n@th expression in a 'PermExprs' list
 nthPermExpr :: PermExprs args -> Member args a -> PermExpr a
