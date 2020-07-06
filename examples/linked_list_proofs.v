@@ -257,9 +257,11 @@ Proof.
 Qed.
 
 
+(*
 Arguments sorted_insert__tuple_fun /.
 Eval simpl in sorted_insert__tuple_fun.
 Print sorted_insert__tuple_fun.
+*)
 
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.

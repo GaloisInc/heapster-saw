@@ -11,4 +11,4 @@ Load "string_set.v".
 Import StringSet.
 Import SAWCorePrelude.
 
-Print insert_remove__tuple_fun.
+(* Print insert_remove__tuple_fun. *)
