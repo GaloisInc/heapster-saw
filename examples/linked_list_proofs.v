@@ -55,7 +55,7 @@ Arguments is_elem_fun /.
 
 Lemma is_elem_fun_ref : refinesFun is_elem is_elem_fun.
 Proof.
-  unfold is_elem, is_elem__tuple_fun, is_elem_fun.
+  unfold is_elem, is_elem__tuple_fun, is_elem_fun, List_def.
   prove_refinement.
 Qed.
 
@@ -111,7 +111,7 @@ Qed.
 
 Lemma is_elem_pure_ref : refinesFun is_elem (fun x l => returnM (is_elem_pure x l)).
 Proof.
-  unfold is_elem, is_elem__tuple_fun, is_elem_pure.
+  unfold is_elem, is_elem__tuple_fun, is_elem_pure, List_def.
   prove_refinement.
 Qed.
 
