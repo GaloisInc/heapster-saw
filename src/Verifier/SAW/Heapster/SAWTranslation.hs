@@ -41,6 +41,7 @@ import Control.Lens hiding ((:>),Index)
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Cont
+import What4.ProgramLoc
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
@@ -1626,7 +1627,7 @@ data ImpTransInfo ext blocks ret ps ctx =
     itiPermStackVars :: MapRList (Member ctx) ps,
     itiPermEnv :: PermEnv,
     itiBlockMapTrans :: TypedBlockMapTrans ext blocks ret,
-    itiCatchHandler :: OpenTerm,
+    itiCatchHandler :: String -> OpenTerm,
     itiReturnType :: OpenTerm
   }
 
@@ -1649,8 +1650,10 @@ instance TransInfo (ImpTransInfo ext blocks ret ps) where
 
 -- | Return the default catch handler of a given return type, which is just a
 -- call to @errorM@ at that type
-defaultCatchHandler :: OpenTerm -> OpenTerm
-defaultCatchHandler = applyOpenTerm (globalOpenTerm "Prelude.errorM")
+defaultCatchHandler :: OpenTerm -> String -> OpenTerm
+defaultCatchHandler tp str =
+  applyOpenTermMulti (globalOpenTerm "Prelude.errorM")
+  [tp, flatOpenTerm (StringLit str)]
 
 -- | The monad for translating permission implications
 type ImpTransM ext blocks ret ps = TransM (ImpTransInfo ext blocks ret ps)
@@ -1767,7 +1770,7 @@ compReturnTypeTransM =
 -- | Run a computation with a new catch handler
 withCatchHandlerM :: OpenTerm -> ImpTransM ext blocks ret ps_out ctx a ->
                      ImpTransM ext blocks ret ps_out ctx a
-withCatchHandlerM h = local (\info -> info { itiCatchHandler = h })
+withCatchHandlerM h = local (\info -> info { itiCatchHandler = const h })
 
 {-
 -- | Run 'lambdaExprTrans' in the 'ImpTransM' monad
@@ -2235,7 +2238,8 @@ translatePermImpl1 :: ImplTranslateF r ext blocks ret =>
 
 -- A failure translates to a call to the catch handler, which is the most recent
 -- Impl1_Catch, if one exists, or the SAW errorM function otherwise
-translatePermImpl1 [nuP| Impl1_Fail |] _ = itiCatchHandler <$> ask
+translatePermImpl1 [nuP| Impl1_Fail str |] _ =
+  itiCatchHandler <$> ask <*> return (mbLift str)
 
 -- A catch runs the first computation using the second as catch handler
 translatePermImpl1 [nuP| Impl1_Catch |]
@@ -2321,7 +2325,7 @@ translatePermImpl1 [nuP| Impl1_ElimLLVMFieldContents
 
 -- If e1 and e2 are already equal, short-circuit the proof construction and then
 -- elimination
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) |]
+translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) _ |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
   | mbLift (mbMap2 bvEq e1 e2) =
     do bv_tp <- typeTransType1 <$> translateClosed (mbExprType e1)
@@ -2331,12 +2335,12 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) |]
          (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop pf)])
          (translate $ mbCombine mb_impl)
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) |]
+translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   do prop_tp_trans <- translate prop
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-       , (itiCatchHandler <$> ask)
+       , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
        , lambdaTransM "eq_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans)
@@ -2344,21 +2348,21 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) |]
        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEqWithProof")
          [ return (natOpenTerm $ natVal2 prop) , translate1 e1, translate1 e2]]
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) |]
+translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   let w = natVal2 prop in
   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
   [ compReturnTypeM
   , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
     [ return (natOpenTerm w), translate1 e1, translate1 e2 ]
-  , (itiCatchHandler <$> ask)
+  , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
   , withPermStackM (:>: translateVar x)
     (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)])
     (translate $ mbCombine mb_impl)]
 
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                        prop@(BVProp_InRange e (BVRange off len)) |]
+                        prop@(BVProp_InRange e (BVRange off len)) _ |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
   | mbLift (mbMap2 bvLt (mbMap2 bvSub e off) len) =
     withPermStackM (:>: translateVar x)
@@ -2368,12 +2372,12 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
     (translate $ mbCombine mb_impl)
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                        prop@(BVProp_InRange e (BVRange off len)) |]
+                        prop@(BVProp_InRange e (BVRange off len)) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   do prop_tp_trans <- translate prop
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-       , (itiCatchHandler <$> ask)
+       , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
        , lambdaTransM "inrange_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans)
@@ -2384,23 +2388,23 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
        ]
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                        prop@(BVProp_NotInRange e (BVRange off len)) |]
+                        prop@(BVProp_NotInRange e (BVRange off len)) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   let w = natVal2 prop in
   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
   [ compReturnTypeM
   , applyMultiTransM (return $ globalOpenTerm "Prelude.bvult")
     [ return (natOpenTerm w), translate1 (mbMap2 bvSub e off), translate1 len ]
-  , (itiCatchHandler <$> ask)
+  , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
   , withPermStackM (:>: translateVar x)
     (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)])
     (translate $ mbCombine mb_impl)]
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_RangeSubset _ _) |]
+translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_RangeSubset _ _) _ |]
   [nuP| MbPermImpls_Cons _ _ |] =
   error "FIXME HERE NOW: translate Impl1_TryProveBVProp (BVProp_RangeSubset)"
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_RangesDisjoint _ _) |]
+translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_RangesDisjoint _ _) _ |]
   [nuP| MbPermImpls_Cons _ _ |] =
   error "FIXME HERE NOW: translate Impl1_TryProveBVProp (BVProp_RangesDisjoint)"
 
@@ -2770,12 +2774,13 @@ instance PermCheckExtC ext =>
 
 -- | Translate a 'TypedStmt' to a function on translation computations
 translateStmt :: PermCheckExtC ext =>
-                 Mb ctx (TypedStmt ext rets ps_in ps_out) ->
+                 ProgramLoc -> Mb ctx (TypedStmt ext rets ps_in ps_out) ->
                  ImpTransM ext blocks ret ps_out (ctx :++: rets) OpenTerm ->
                  ImpTransM ext blocks ret ps_in ctx OpenTerm
 
-translateStmt [nuP| TypedSetReg _
-                  top_e@(TypedExpr (WithAssertion _ (PartialExp pred e)) maybe_e) |] m =
+translateStmt loc [nuP| TypedSetReg _
+                      top_e@(TypedExpr
+                             (WithAssertion _ (PartialExp pred e)) maybe_e) |] m =
   do pred_trans <- translateAssertionClassifierTree pred
      etrans <- tpTransM (case maybe_e of
                             [nuP| Just e' |] -> translate e'
@@ -2785,20 +2790,20 @@ translateStmt [nuP| TypedSetReg _
         inExtTransM etrans (withPermStackM
                             (:>: Member_Base)
                             (:>: extPermTrans (exprOutPerm top_e)) m),
-        itiCatchHandler <$> ask]
+        itiCatchHandler <$> ask <*> return ("Failed WithAssertion at " ++ show loc)]
 
-translateStmt [nuP| TypedSetReg _ e |] m =
+translateStmt _ [nuP| TypedSetReg _ e |] m =
   do etrans <- tpTransM $ translate e
      let ptrans = exprOutPerm e
      inExtTransM etrans $
        withPermStackM (:>: Member_Base) (:>: extPermTrans ptrans) m
 
-translateStmt [nuP| TypedSetRegPermExpr _ e |] m =
+translateStmt _ [nuP| TypedSetRegPermExpr _ e |] m =
   do etrans <- tpTransM $ translate e
      inExtTransM etrans $
        withPermStackM (:>: Member_Base) (:>: PTrans_Eq (extMb e)) m
 
-translateStmt [nuP| stmt@(TypedCall freg fun_perm ghosts args) |] m =
+translateStmt _ [nuP| stmt@(TypedCall freg fun_perm ghosts args) |] m =
   do f_trans <- getTopPermM
      let f = case f_trans of
            PTrans_Conj [APTrans_Fun _ f_trm] -> f_trm
@@ -2829,14 +2834,14 @@ translateStmt [nuP| stmt@(TypedCall freg fun_perm ghosts args) |] m =
            m)
          ret_val]
 
-translateStmt stmt@[nuP| BeginLifetime |] m =
+translateStmt _ stmt@[nuP| BeginLifetime |] m =
   inExtTransM ETrans_Lifetime $
   withPermStackM (:>: Member_Base)
   (:>: PTrans_Conj [APTrans_LifetimePerm $ nuMulti (mbToProxy stmt :>: Proxy) $
                     const $ Perm_LOwned PExpr_PermListNil])
   m
 
-translateStmt stmt@[nuP| EndLifetime _ ps _ end_perms |] m =
+translateStmt _ stmt@[nuP| EndLifetime _ ps _ end_perms |] m =
   let end_prx = mbDistPermsToProxies end_perms
       ps_l_prx = mbDistPermsToProxies ps :>: (Proxy :: Proxy LifetimeType) in
   withPermStackM
@@ -2849,11 +2854,12 @@ translateStmt stmt@[nuP| EndLifetime _ ps _ end_perms |] m =
   m
 
 -- FIXME HERE: figure out why these asserts always translate to ite True
-translateStmt [nuP| TypedAssert e _ |] m =
+translateStmt loc [nuP| TypedAssert e _ |] m =
   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
-  [compReturnTypeM, translate1 e, m, itiCatchHandler <$> ask]
+  [compReturnTypeM, translate1 e, m,
+   itiCatchHandler <$> ask <*> return ("Failed Assert at " ++ show loc)]
 
-translateStmt [nuP| TypedLLVMStmt stmt |] m = translateLLVMStmt stmt m
+translateStmt _ [nuP| TypedLLVMStmt stmt |] m = translateLLVMStmt stmt m
 
 
 -- | Translate a 'TypedStmt' to a function on translation computations
@@ -3023,15 +3029,16 @@ instance PermCheckExtC ext =>
     [compReturnTypeM, translate1 reg,
      translate impl_tgt1, translate impl_tgt2]
   translate [nuP| TypedReturn impl_ret |] = translate impl_ret
-  translate [nuP| TypedErrorStmt _ |] = itiCatchHandler <$> ask
+  translate [nuP| TypedErrorStmt _ |] =
+    itiCatchHandler <$> ask <*> return "Error statement"
 
 
 instance PermCheckExtC ext =>
          Translate (ImpTransInfo ext blocks ret ps) ctx
          (TypedStmtSeq ext blocks ret ps) OpenTerm where
   translate [nuP| TypedImplStmt impl_seq |] = translate impl_seq
-  translate [nuP| TypedConsStmt _ stmt mb_seq |] =
-    translateStmt stmt (translate $ mbCombine mb_seq)
+  translate [nuP| TypedConsStmt loc stmt mb_seq |] =
+    translateStmt (mbLift loc) stmt (translate $ mbCombine mb_seq)
   translate [nuP| TypedTermStmt _ term_stmt |] = translate term_stmt
 
 instance PermCheckExtC ext =>

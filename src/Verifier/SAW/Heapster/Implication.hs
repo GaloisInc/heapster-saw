@@ -512,8 +512,9 @@ data SimplImpl ps_in ps_out where
 -- where each @bsi@ is itself an 'RList' of the types of the bound variables in
 -- @zsi@ and @psi@ is an 'RList' of the types of @Pi_1@ through @Pi_km@.
 data PermImpl1 ps_in ps_outs where
-  Impl1_Fail :: PermImpl1 ps RNil
-  -- ^ Failure of a permission implication, which is a proof of 0 disjuncts:
+  Impl1_Fail :: String -> PermImpl1 ps RNil
+  -- ^ Failure of a permission implication, along with a string explanation of
+  -- the failure, which is a proof of 0 disjuncts:
   --
   -- > ps -o .
 
@@ -567,9 +568,10 @@ data PermImpl1 ps_in ps_outs where
 
   Impl1_TryProveBVProp ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> BVProp w ->
-    PermImpl1 ps (RNil :> '(RNil, ps :> LLVMPointerType w))
+    String -> PermImpl1 ps (RNil :> '(RNil, ps :> LLVMPointerType w))
   -- ^ Try to prove a bitvector proposition, or fail (as in the 'Impl1_Fail'
-  -- rule) if this is not possible:
+  -- rule) if this is not possible, where the 'String' is a pretty-printing of
+  -- the proposition (for ease of translation):
   --
   -- > . -o prop(p)
 
@@ -917,7 +919,7 @@ applySimplImpl pp_info prx simpl =
   if ps_in == simplImplIn simpl then
     appendDistPerms ps (simplImplOut simpl)
   else
-    error $ flip displayS "" $ renderPretty 0.8 80 $
+    error $ renderDoc $
     vsep [string "applySimplImpl: incorrect input permissions",
           string "expected: " <> permPretty pp_info (simplImplIn simpl),
           string "actual: " <> permPretty pp_info ps_in]
@@ -943,7 +945,7 @@ mbPermSets2 ps1 ps2 =
 -- | Apply a single permission implication step to a permission set
 applyImpl1 :: PPInfo -> PermImpl1 ps_in ps_outs -> PermSet ps_in ->
               MbPermSets ps_outs
-applyImpl1 _ Impl1_Fail _ = MbPermSets_Nil
+applyImpl1 _ (Impl1_Fail _) _ = MbPermSets_Nil
 applyImpl1 _ Impl1_Catch ps = mbPermSets2 (emptyMb ps) (emptyMb ps)
 applyImpl1 _ (Impl1_Push x p) ps =
   if ps ^. varPerm x == p then
@@ -955,12 +957,12 @@ applyImpl1 pp_info (Impl1_Pop x p) ps =
     mbPermSets1 $ emptyMb $ fst $ popPerm x $ set (varPerm x) p ps
   else
     if ps ^. varPerm x == ValPerm_True then
-      error $ flip displayS "" $ renderPretty 0.8 80 $
+      error $ renderDoc $
       vsep [string "applyImpl1: Impl1_Pop: unexpected permissions on top of the stack",
             string "expected: " <> permPretty pp_info p,
             string "actual: " <> permPretty pp_info (ps ^. topDistPerm x)]
     else
-      error $ flip displayS "" $ renderPretty 0.8 80 $
+      error $ renderDoc $
       vsep [string "applyImpl1: Impl1_Pop: non-empty permissions for variable"
             <+> permPretty pp_info x <> string ":",
             permPretty pp_info (ps ^. varPerm x)]
@@ -987,7 +989,7 @@ applyImpl1 _ (Impl1_ElimLLVMFieldContents x fp) ps =
       ps)
   else
     error "applyImpl1: Impl1_ElimLLVMFieldContents: unexpected permission"
-applyImpl1 _ (Impl1_TryProveBVProp x prop) ps =
+applyImpl1 _ (Impl1_TryProveBVProp x prop _) ps =
   mbPermSets1 $ emptyMb $
   pushPerm x (ValPerm_Conj [Perm_BVProp prop]) ps
 
@@ -1101,7 +1103,7 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (PermImpl1 ps_in ps_out) m where
-  genSubst s [nuP| Impl1_Fail |] = return Impl1_Fail
+  genSubst s [nuP| Impl1_Fail str |] = return (Impl1_Fail $ mbLift str)
   genSubst s [nuP| Impl1_Catch |] = return Impl1_Catch
   genSubst s [nuP| Impl1_Push x p |] =
     Impl1_Push <$> genSubst s x <*> genSubst s p
@@ -1115,8 +1117,9 @@ instance SubstVar PermVarSubst m =>
     Impl1_Simpl <$> genSubst s simpl <*> return (mbLift prx)
   genSubst s [nuP| Impl1_ElimLLVMFieldContents x fp |] =
     Impl1_ElimLLVMFieldContents <$> genSubst s x <*> genSubst s fp
-  genSubst s [nuP| Impl1_TryProveBVProp x prop |] =
-    Impl1_TryProveBVProp <$> genSubst s x <*> genSubst s prop
+  genSubst s [nuP| Impl1_TryProveBVProp x prop prop_str |] =
+    Impl1_TryProveBVProp <$> genSubst s x <*> genSubst s prop <*>
+    return (mbLift prop_str)
 
 -- FIXME: shouldn't need the SubstVar PermVarSubst m assumption...
 instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
@@ -1730,21 +1733,21 @@ implApplyImpl1 impl1 mb_ms =
         f ns)
 
 -- | Emit debugging output using the current 'PPInfo'
-implTraceM :: (PPInfo -> Doc) -> ImplM vars s r ps ps ()
+implTraceM :: (PPInfo -> Doc) -> ImplM vars s r ps ps String
 implTraceM f =
   (f <$> view implStatePPInfo <$> gget) >>>= \doc ->
-  tracePretty doc (greturn ())
+  let str = renderDoc doc in trace str (greturn str)
 
 -- | Terminate the current proof branch with a failure
-implFailM :: ImplM vars s r ps_any ps a
-implFailM =
+implFailM :: String -> ImplM vars s r ps_any ps a
+implFailM str =
   implTraceM (const $ string "Implication failed") >>>
-  implApplyImpl1 Impl1_Fail MNil
+  implApplyImpl1 (Impl1_Fail str) MNil
 
 -- | Call 'implFailM' and also output a debugging message
 implFailMsgM :: String -> ImplM vars s r ps_any ps a
 implFailMsgM msg =
-  implTraceM (const $ string (msg ++ "; backtracking...")) >>> implFailM
+  implTraceM (const $ string (msg ++ "; backtracking...")) >>>= implFailM
 
 -- | Pretty print an implication @x:p -o (vars).p'@
 ppImpl :: PPInfo -> ExprVar tp -> ValuePerm tp ->
@@ -1761,7 +1764,7 @@ implFailVarM f x p mb_p =
   implTraceM (\i ->
                sep [string f <> colon <+> string "Could not prove",
                     ppImpl i x p mb_p <> string ";",
-                    string "backtracking..."]) >>>
+                    string "backtracking..."]) >>>=
   implFailM
 
 -- | Produce a branching proof tree that performs the first implication and, if
@@ -1841,7 +1844,9 @@ implTryProveBVProp :: (1 <= w, KnownNat w) =>
                       ExprVar (LLVMPointerType w) -> BVProp w ->
                       ImplM vars s r (ps :> LLVMPointerType w) ps ()
 implTryProveBVProp x p =
-  implApplyImpl1 (Impl1_TryProveBVProp x p)
+  getPPInfo >>>= \i ->
+  let str = renderDoc (permPretty i p) in
+  implApplyImpl1 (Impl1_TryProveBVProp x p str)
   (MNil :>: Impl1Cont (const $ greturn ()))
 
 -- | Try to prove a sequence of propositions using 'implTryProveBVProp'
@@ -2141,7 +2146,7 @@ getLifetimeCurrentPerms (PExpr_Var l) =
         Some cur_perms -> greturn $ Some $ CurrentTransPerms cur_perms l
     _ ->
       implTraceM (\i -> string "Could not prove lifetime is current:" <+>
-                        permPretty i l) >>>
+                        permPretty i l) >>>=
       implFailM
 
 -- | Prove the permissions represented by a 'LifetimeCurrentPerms'

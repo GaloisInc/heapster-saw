@@ -1578,17 +1578,19 @@ permGetPPInfo = stPPInfo <$> get
 
 -- | Emit debugging output using the current 'PPInfo'
 stmtTraceM :: (PPInfo -> Doc) ->
-              PermCheckM ext cblocks blocks ret args r ps r ps ()
+              PermCheckM ext cblocks blocks ret args r ps r ps String
 stmtTraceM f =
-  (f <$> permGetPPInfo) >>>= \doc -> tracePretty doc (greturn ())
+  (f <$> permGetPPInfo) >>>= \doc ->
+  let str = renderDoc doc in
+  trace str (greturn str)
 
 -- | Failure in the statement permission-checking monad
 stmtFailM :: (PPInfo -> Doc) -> PermCheckM ext cblocks blocks ret args r1 ps1
              (TypedStmtSeq ext blocks ret ps2) ps2 a
 stmtFailM msg =
-  stmtTraceM (\i -> string "Type-checking failure:" <+> msg i) >>>
+  stmtTraceM (\i -> string "Type-checking failure:" <+> msg i) >>>= \str ->
   gabortM (return $ TypedImplStmt $
-           PermImpl_Step Impl1_Fail MbPermImpls_Nil)
+           PermImpl_Step (Impl1_Fail str) MbPermImpls_Nil)
 
 -- | Smart constructor for applying a function on 'PermImpl's
 applyImplFun :: (PermImpl r ps -> r ps) -> PermImpl r ps -> r ps
