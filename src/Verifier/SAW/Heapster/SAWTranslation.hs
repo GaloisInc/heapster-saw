@@ -171,6 +171,9 @@ data ExprTrans (a :: CrucibleType) where
   -- | The computational content of functions is in their FunPerms, so functions
   -- themselves have no computational content
   ETrans_Fun :: ExprTrans (FunctionHandleType args ret)
+  
+  -- | The unit type has no computational content
+  ETrans_Unit :: ExprTrans UnitType
 
   -- | The translation for every other expression type is just a SAW term. Note
   -- that this construct should not be used for the types handled above.
@@ -214,6 +217,7 @@ instance IsTermTrans (ExprTrans tp) where
   transTerms ETrans_RWModality = []
   transTerms ETrans_PermList = []
   transTerms ETrans_Fun = []
+  transTerms ETrans_Unit = []
   transTerms (ETrans_Term t) = [t]
 
 instance IsTermTrans (ExprTransCtx ctx) where
@@ -587,7 +591,7 @@ instance TransInfo info =>
   translate [nuP| AnyRepr |] =
     return $ error "TypeTranslate: Any"
   translate [nuP| UnitRepr |] =
-    returnType1 unitTypeOpenTerm
+    return $ mkTypeTrans0 ETrans_Unit
   translate [nuP| BoolRepr |] =
     returnType1 $ globalOpenTerm "Prelude.Bool"
   translate [nuP| NatRepr |] =
@@ -735,7 +739,7 @@ instance TransInfo info =>
 instance TransInfo info =>
          Translate info ctx (PermExpr a) (ExprTrans a) where
   translate [nuP| PExpr_Var x |] = translate x
-  translate [nuP| PExpr_Unit |] = return $ ETrans_Term unitOpenTerm
+  translate [nuP| PExpr_Unit |] = return ETrans_Unit
   translate [nuP| PExpr_Bool True |] =
     return $ ETrans_Term $ globalOpenTerm "Prelude.True"
   translate [nuP| PExpr_Bool False |] =
@@ -2458,7 +2462,7 @@ instance (PermCheckExtC ext, TransInfo info) =>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
     [translate w, translateRWV e1, translateRWV e2]
 
-  translate [nuP| EmptyApp |] = return $ ETrans_Term unitOpenTerm
+  translate [nuP| EmptyApp |] = return ETrans_Unit
 
   -- Booleans
   translate [nuP| BoolLit True |] =
@@ -2880,7 +2884,7 @@ translateLLVMStmt [nuP| AssertLLVMWord reg _ |] m =
   m
 
 translateLLVMStmt [nuP| AssertLLVMPtr _ |] m =
-  inExtTransM (ETrans_Term unitOpenTerm) $
+  inExtTransM ETrans_Unit $
   withPermStackM mapRListTail mapRListTail m
 
 translateLLVMStmt [nuP| DestructLLVMWord _ e |] m =
@@ -2924,7 +2928,7 @@ translateLLVMStmt [nuP| TypedLLVMStore _ (mb_fp :: LLVMFieldPerm w) mb_e
                       (_ :: DistPerms ps) cur_perms |] m =
   let prx_l = mbLifetimeCurrentPermsProxies cur_perms
       prx_ps :: Proxy (ps :> LLVMPointerType w) = Proxy in
-  inExtTransM (ETrans_Term unitOpenTerm) $
+  inExtTransM ETrans_Unit $
   withPermStackM id
   (\(splitMapRList prx_ps prx_l -> (pctx :>: p_ptr, pctx_l)) ->
     appendMapRList
@@ -2964,7 +2968,7 @@ translateLLVMStmt mb_stmt@[nuP| TypedLLVMCreateFrame |] m =
   m
 
 translateLLVMStmt [nuP| TypedLLVMDeleteFrame _ _ _ |] m =
-  inExtTransM (ETrans_Term unitOpenTerm) $
+  inExtTransM ETrans_Unit $
   withPermStackM (const MNil) (const MNil) m
 
 translateLLVMStmt [nuP| TypedLLVMLoadHandle _ mb_fun_perm |] m =
