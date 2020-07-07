@@ -38,6 +38,7 @@ import GHC.TypeLits
 import qualified Data.Functor.Constant as Constant
 import Control.Applicative
 import Control.Lens hiding ((:>),Index)
+import Control.Monad.Fail
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Cont
@@ -244,6 +245,9 @@ class TransInfo info where
 newtype TransM info (ctx :: RList CrucibleType) a =
   TransM { unTransM :: Reader (info ctx) a }
   deriving (Functor, Applicative, Monad)
+
+instance MonadFail (TransM info ctx) where
+  fail = error
 
 -- | The run function for the 'TransM' monad
 runTransM :: TransM info ctx a -> info ctx -> a
