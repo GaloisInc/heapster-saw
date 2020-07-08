@@ -2544,9 +2544,8 @@ instance (PermCheckExtC ext, TransInfo info) =>
     [translate w1, translate w2, translateRWV e1, translateRWV e2]
   translate [nuP| BVTrunc w1 w2 e |] =
     ETrans_Term <$>
-    applyMultiTransM (return $ globalOpenTerm "Prelude.take")
-    [return (globalOpenTerm "Prelude.Bool"),
-     return (natOpenTerm (intValue (mbLift w2) - intValue (mbLift w1))),
+    applyMultiTransM (return $ globalOpenTerm "Prelude.bvTrunc")
+    [return (natOpenTerm (intValue (mbLift w2) - intValue (mbLift w1))),
      translate w1,
      translateRWV e]
   translate [nuP| BVZext w1 w2 e |] =
