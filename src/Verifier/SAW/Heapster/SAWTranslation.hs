@@ -238,7 +238,11 @@ class TransInfo info where
   infoCtx :: info ctx -> ExprTransCtx ctx
   infoEnv :: info ctx -> PermEnv
   extTransInfo :: ExprTrans tp -> info ctx -> info (ctx :> tp)
-  lookupNamedPermTrans :: info ctx -> NamedPermName args a -> Maybe Ident
+  -- | Look up a named permission in `info ctx` and get either the identifier
+  -- it translates to, if the permission is opaque or recursive, or its
+  -- definition, if it is a defined permission
+  lookupNamedPermTrans :: info ctx -> NamedPermName args a
+                       -> Maybe (Either Ident (Mb args (ValuePerm a)))
 
 -- | A "translation monad" is a 'Reader' monad with some info type that is
 -- parameterized by a translation context
@@ -556,9 +560,10 @@ instance TransInfo TypeTransInfo where
   lookupNamedPermTrans (TypeTransInfo _ npnts env) npn =
     case ( lookup (SomeNamedPermName npn) npnts
          , lookupNamedPerm env npn ) of
-      (Just t, _) -> Just t 
-      (Nothing, Just (NamedPerm_Rec rp)) -> Just (recPermTransType rp)
-      (Nothing, Just (NamedPerm_Opaque op)) -> Just (opaquePermTrans op)
+      (Just t, _) -> Just (Left t)
+      (Nothing, Just (NamedPerm_Rec rp)) -> Just $ Left (recPermTransType rp)
+      (Nothing, Just (NamedPerm_Opaque op)) -> Just $ Left (opaquePermTrans op)
+      (Nothing, Just (NamedPerm_Defined dp)) -> Just $ Right (definedPermDef dp)
       (Nothing, Nothing) -> Nothing
 
 -- | The translation monad specific to translating types and pure expressions
@@ -1338,12 +1343,14 @@ instance TransInfo info =>
                                                 translate $ mbCombine p1)
   translate p@[nuP| ValPerm_Named npn args |] =
     do info <- ask
-       args <- translate args
        case lookupNamedPermTrans info (mbLift npn) of
-         Just trans -> 
+         Just (Left trans_ident) -> do
+           args <- translate args
            return $ mkPermTypeTrans1 p (applyOpenTermMulti
-                                        (globalOpenTerm trans)
+                                        (globalOpenTerm trans_ident)
                                         (transTerms args))
+         Just (Right perm) ->
+           translate (unfoldDefinedPerm (DefinedPerm (mbLift npn) perm) <$> args)
          Nothing -> error "Unknown permission name!"
   translate [nuP| ValPerm_Conj ps |] =
     fmap PTrans_Conj <$> listTypeTrans <$> mapM translate (mbList ps)
@@ -1651,8 +1658,9 @@ instance TransInfo (ImpTransInfo ext blocks ret ps) where
     , .. }
   lookupNamedPermTrans (ImpTransInfo {..}) npn =
     case lookupNamedPerm itiPermEnv npn of
-      Just (NamedPerm_Rec rp) -> Just (recPermTransType rp)
-      Just (NamedPerm_Opaque op) -> Just (opaquePermTrans op)
+      Just (NamedPerm_Rec rp) -> Just $ Left (recPermTransType rp)
+      Just (NamedPerm_Opaque op) -> Just $ Left (opaquePermTrans op)
+      Just (NamedPerm_Defined dp) -> Just $ Right (definedPermDef dp)
       Nothing -> Nothing
   
 
@@ -2207,6 +2215,10 @@ translateSimplImpl _ [nuP| SImpl_UnfoldRec x rp args |] m =
                                              (transTerms args_trans
                                               ++ [transTerm1 ptrans_x])])
        m
+
+-- folding/unfolding defined permissions does not effect translations
+translateSimplImpl _ [nuP| SImpl_FoldDefined x dp args |] m = m
+translateSimplImpl _ [nuP| SImpl_UnfoldDefined x dp args |] m = m
 
 {-
 translateSimplImpl _ [nuP| SImpl_Mu _ _ _ _ |] m =

@@ -1118,11 +1118,13 @@ getPermExprsMembers (PExprs_Cons args _) =
 data NamedPerm args a
   = NamedPerm_Opaque (OpaquePerm args a)
   | NamedPerm_Rec (RecPerm args a)
+  | NamedPerm_Defined (DefinedPerm args a)
 
 -- | Extract the name back out of the interpretation of a 'NamedPerm'
 namedPermName :: NamedPerm args a -> NamedPermName args a
 namedPermName (NamedPerm_Opaque op) = opaquePermName op
 namedPermName (NamedPerm_Rec rp) = recPermName rp
+namedPermName (NamedPerm_Defined rp) = definedPermName rp
 
 -- | Extract out the argument context of the name of a 'NamedPerm'
 namedPermArgs :: NamedPerm args a -> CruCtx args
@@ -1147,6 +1149,12 @@ data RecPerm args a = RecPerm {
   recPermUnfoldFun :: Ident,
   recPermCases :: [Mb args (ValuePerm a)]
   }
+
+-- | A defined permission is a name and a permission to which it is equivalent
+data DefinedPerm args a = DefinedPerm {
+  definedPermName :: NamedPermName args a,
+  definedPermDef :: Mb args (ValuePerm a)
+}
 
 -- | A list of "distinguished" permissions to named variables
 -- FIXME: just call these VarsAndPerms or something like that...
@@ -1422,6 +1430,7 @@ $(mkNuMatching [t| SomeNamedPermName |])
 $(mkNuMatching [t| forall args a. NamedPerm args a |])
 $(mkNuMatching [t| forall args a. OpaquePerm args a |])
 $(mkNuMatching [t| forall args a. RecPerm args a |])
+$(mkNuMatching [t| forall args a. DefinedPerm args a |])
 $(mkNuMatching [t| forall ps. DistPerms ps |])
 $(mkNuMatching [t| forall ps. LifetimeCurrentPerms ps |])
 
@@ -2133,6 +2142,11 @@ unfoldRecPerm :: RecPerm args a -> PermExprs args -> ValuePerm a
 unfoldRecPerm rp args =
   foldl1 ValPerm_Or $ map (subst (substOfExprs args)) $ recPermCases rp
 
+-- | Unfold a defined permission given arguments
+unfoldDefinedPerm :: DefinedPerm args a -> PermExprs args -> ValuePerm a
+unfoldDefinedPerm dp args =
+  subst (substOfExprs args) (definedPermDef dp)
+
 -- | Generic function to test if a permission contains a lifetime
 class ContainsLifetime a where
   containsLifetime :: PermExpr LifetimeType -> a -> Bool
@@ -2680,6 +2694,7 @@ instance SubstVar s m => Substable s (NamedPermName args a) m where
 instance SubstVar s m => Substable s (NamedPerm args a) m where
   genSubst s [nuP| NamedPerm_Opaque p |] = NamedPerm_Opaque <$> genSubst s p
   genSubst s [nuP| NamedPerm_Rec p |] = NamedPerm_Rec <$> genSubst s p
+  genSubst s [nuP| NamedPerm_Defined p |] = NamedPerm_Defined<$> genSubst s p
 
 instance SubstVar s m => Substable s (OpaquePerm args a) m where
   genSubst _ [nuP| OpaquePerm n i |] = return $ OpaquePerm (mbLift n) (mbLift i)
@@ -2689,6 +2704,10 @@ instance SubstVar s m => Substable s (RecPerm args a) m where
     RecPerm (mbLift rpn) (mbLift dt_i) (mbLift f_i) (mbLift u_i) <$>
     mapM (\[nuP| mb_p |] -> genSubst s mb_p >>= \p -> return p)
     (mbList cases)
+
+instance SubstVar s m => Substable s (DefinedPerm args a) m where
+  genSubst s [nuP| DefinedPerm n p |] =
+    DefinedPerm (mbLift n) <$> genSubst s p
 
 instance SubstVar s m => Substable s (ValuePerm a) m where
   genSubst s [nuP| ValPerm_Eq e |] = ValPerm_Eq <$> genSubst s e
@@ -3406,6 +3425,13 @@ permEnvAddRecPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
                      Ident -> Ident -> Ident -> PermEnv
 permEnvAddRecPerm env str args tp cases i f g =
   let np = NamedPerm_Rec (RecPerm (NamedPermName str tp args) i f g cases) in
+  env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
+
+-- | Add a defined named permission to a 'PermEnv'
+permEnvAddDefinedPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
+                         Mb args (ValuePerm a) -> PermEnv
+permEnvAddDefinedPerm env str args tp p =
+  let np = NamedPerm_Defined (DefinedPerm (NamedPermName str tp args) p) in
   env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
 
 -- | Add a global symbol with a function permission to a 'PermEnv'
