@@ -445,6 +445,18 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:P<args> -o x:(unfold P args)
 
+  SImpl_FoldDefined :: ExprVar a -> DefinedPerm args a -> PermExprs args ->
+                       SimplImpl (RNil :> a) (RNil :> a)
+  -- ^ Fold a defined permission P<args> := Q :
+  --
+  -- > x:Q -o x:P<args>
+
+  SImpl_UnfoldDefined :: ExprVar a -> DefinedPerm args a -> PermExprs args ->
+                         SimplImpl (RNil :> a) (RNil :> a)
+  -- ^ Unfold a defined permission P<args> := Q :
+  --
+  -- > x:P<args> -o x:Q
+
 {- FIXME HERE NOW: Write the rule for proving one recursive perm implies another
 
   SImpl_Mu ::
@@ -789,6 +801,10 @@ simplImplIn (SImpl_FoldRec x rp args) =
   distPerms1 x (unfoldRecPerm rp args)
 simplImplIn (SImpl_UnfoldRec x rp args) =
   distPerms1 x (ValPerm_Named (recPermName rp) args)
+simplImplIn (SImpl_FoldDefined x dp args) =
+  distPerms1 x (unfoldDefinedPerm dp args)
+simplImplIn (SImpl_UnfoldDefined x dp args) =
+  distPerms1 x (ValPerm_Named (definedPermName dp) args)
 -- simplImplIn (SImpl_Mu x p1 _ _) = distPerms1 x (ValPerm_Mu p1)
 simplImplIn (SImpl_NamedArgAlways x pn args memb _) =
   case nthPermExpr args memb of
@@ -926,7 +942,12 @@ simplImplOut (SImpl_LCurrentTrans l1 _ l3) =
   distPerms1 l1 (ValPerm_Conj [Perm_LCurrent l3])
 simplImplOut (SImpl_FoldRec x rp args) =
   distPerms1 x (ValPerm_Named (recPermName rp) args)
-simplImplOut (SImpl_UnfoldRec x rp args) = distPerms1 x (unfoldRecPerm rp args)
+simplImplOut (SImpl_UnfoldRec x rp args) =
+  distPerms1 x (unfoldRecPerm rp args)
+simplImplOut (SImpl_FoldDefined x dp args) =
+  distPerms1 x (ValPerm_Named (definedPermName dp) args)
+simplImplOut (SImpl_UnfoldDefined x dp args) =
+  distPerms1 x (unfoldDefinedPerm dp args)
 -- simplImplOut (SImpl_Mu x _ p2 _) = distPerms1 x (ValPerm_Mu p2)
 simplImplOut (SImpl_NamedArgAlways x rp args memb l) =
   distPerms1 x (ValPerm_Named (namedPermName rp)
@@ -1123,6 +1144,10 @@ instance SubstVar PermVarSubst m =>
     SImpl_FoldRec <$> genSubst s x <*> genSubst s rp <*> genSubst s args
   genSubst s [nuP| SImpl_UnfoldRec x rp args |] =
     SImpl_UnfoldRec <$> genSubst s x <*> genSubst s rp <*> genSubst s args
+  genSubst s [nuP| SImpl_FoldDefined x dp args |] =
+    SImpl_FoldDefined <$> genSubst s x <*> genSubst s dp <*> genSubst s args
+  genSubst s [nuP| SImpl_UnfoldDefined x dp args |] =
+    SImpl_UnfoldDefined <$> genSubst s x <*> genSubst s dp <*> genSubst s args
   genSubst s [nuP| SImpl_NamedArgAlways x rp args memb l |] =
     SImpl_NamedArgAlways <$> genSubst s x <*> genSubst s rp <*>
     genSubst s args <*> genSubst s memb <*> genSubst s l
@@ -1919,8 +1944,8 @@ elimOrsExistsM x =
       implElimExistsM x mb_p >>> elimOrsExistsM x
     _ -> greturn p
 
--- | Eliminate disjunctives, existentials, and recusive permissions on the top
--- of the stack
+-- | Eliminate disjunctives, existentials, recusive permissions, and
+-- defined permissions on the top of the stack
 elimOrsExistsRecsM :: ExprVar a ->
                       ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
 elimOrsExistsRecsM x =
@@ -1930,14 +1955,17 @@ elimOrsExistsRecsM x =
     ValPerm_Exists mb_p ->
       implElimExistsM x mb_p >>> elimOrsExistsM x
     ValPerm_Named npn args ->
-      implNamedPermIsRecursive npn >>>= \is_rec ->
-      if is_rec then
-        implUnfoldRecM x npn args >>> elimOrsExistsRecsM x
-      else greturn p
+      implLookupNamedPerm npn >>= \case
+        NamedPerm_Rec _ ->
+          implUnfoldRecM x npn args >>> elimOrsExistsRecsM x
+        NamedPerm_Defined _ ->
+          implUnfoldDefinedM x npn args >>> elimOrsExistsRecsM x
+        _ -> greturn p
     _ -> greturn p
 
--- | Eliminate any disjunctions, existentials, or recursive permissions for a
--- variable and then return the resulting "simple" permission
+-- | Eliminate any disjunctions, existentials, recursive permissions, or
+-- defined permissions for a variable and then return the resulting "simple"
+-- permission
 getSimpleVarPerm :: ExprVar a -> ImplM vars s r ps ps (ValuePerm a)
 getSimpleVarPerm x =
   getPerm x >>>= \p_init ->
@@ -1945,9 +1973,9 @@ getSimpleVarPerm x =
   elimOrsExistsRecsM x >>>= \p ->
   implPopM x p >>> greturn p
 
--- | Eliminate any disjunctions, existentials, or recursive permissions for any
--- variables in the supplied expression and substitute any equality permissions
--- for those variables
+-- | Eliminate any disjunctions, existentials, recursive permissions, or
+-- defined permissions for any variables in the supplied expression and
+-- substitute any equality permissions for those variables
 getEqualsExpr :: PermExpr a -> ImplM vars s r ps ps (PermExpr a)
 getEqualsExpr e@(PExpr_Var x) =
   getSimpleVarPerm x >>>= \p ->
@@ -2100,6 +2128,29 @@ implUnfoldRecM x npn args =
     _ -> error ("implUnfoldRecM: not a recursive permission: "
                 ++ namedPermNameName npn)
 
+-- | For a defined permission @P<args> := Q@, build a proof of @P<args>@ from
+-- one of @Q@
+implFoldDefinedM :: ExprVar a -> NamedPermName args a -> PermExprs args ->
+                    ImplM vars s r (ps :> a) (ps :> a) ()
+implFoldDefinedM x npn args =
+  implLookupNamedPerm npn >>>= \np ->
+  case np of
+    NamedPerm_Defined dp -> implSimplM Proxy (SImpl_FoldDefined x dp args)
+    _ -> error ("implFoldDefinedM: not a defined permission: "
+                ++ namedPermNameName npn)
+
+-- | For a defined permission @P<args> := Q@, build a proof of @Q@ from one
+-- of @P<args>@, returning the resulting permission @Q@
+implUnfoldDefinedM :: ExprVar a -> NamedPermName args a -> PermExprs args ->
+                      ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
+implUnfoldDefinedM x npn args =
+  implLookupNamedPerm npn >>>= \np ->
+  case np of
+    NamedPerm_Defined dp ->
+      implSimplM Proxy (SImpl_UnfoldDefined x dp args) >>>
+      greturn (unfoldDefinedPerm dp args)
+    _ -> error ("implUnfoldDefinedM: not a defined permission: "
+                ++ namedPermNameName npn)
 
 -- | FIXME: document this!
 implSplitLifetimeM :: KnownRepr TypeRepr a => ExprVar a -> ValuePerm a ->
@@ -3086,10 +3137,38 @@ proveVarImplH x p@(ValPerm_Eq (PExpr_Var y)) mb_p =
   "proveVarImpl: incomplete psubst: introCast" >>>= \p' ->
   introCastM x y p'
 
--- To prove P<args1> |- P<args2>, just need to equalize the args
-proveVarImplH x (ValPerm_Named npn args) [nuP| ValPerm_Named mb_npn mb_args |]
-  | Just (Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn) =
-    proveNamedArgs x npn args mb_args
+proveVarImplH x p@(ValPerm_Named npn args) mb_p =
+  implLookupNamedPerm npn >>= \np ->
+  case (np, mb_p) of
+    
+    -- If the LHS is a defined permission, unfold it
+    (NamedPerm_Defined dp, _) ->
+      implUnfoldDefinedM x npn args >>>= \p' ->
+        proveVarImplH x p' mb_p
+    
+    (_, [nuP| ValPerm_Named mb_npn mb_args |]) ->
+      implLookupNamedPerm (mbLift mb_npn) >>= \case
+      
+        -- If the RHS is a defined permission, unfold it
+        NamedPerm_Defined dp ->
+          proveVarImplH x p (fmap (unfoldDefinedPerm dp) mb_args) >>>
+          partialSubstForceM mb_args
+          "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
+          implFoldDefinedM x (mbLift mb_npn) args
+          
+        -- To prove P<args1> |- P<args2>, just need to equalize the args
+        _ | Just (Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn) ->
+          proveNamedArgs x npn args mb_args
+          
+        -- FIXME HERE NOW: figure out how to prove P1<args1> |- P2<args2> for P1 != P2
+        _ -> error "FIXME HERE NOW: implement P1<args1> |- P2<args2>!"
+        
+    -- If the LHS is recursive but the RHS is not, unfold the left and recurse
+    (NamedPerm_Rec rp, _) ->
+      implSetRecRecurseLeftM >>> implUnfoldRecM x npn args >>>= \p' ->
+        proveVarImplH x p' mb_p
+    _ ->
+      implFailVarM "proveVarImplH" x p mb_p
 
 {- FIXME: This is an example of how we used embedMbImplM to prove the body
    of one mu from another; remove it when we have used it for arrays
@@ -3102,20 +3181,8 @@ proveVarImplH x (ValPerm_Mu p_body) [nuP| ValPerm_Mu mb_p'_body |] =
   implSimplM Proxy (SImpl_Mu x p_body p'_body mb_impl)
 -}
 
--- FIXME HERE NOW: figure out how to prove P1<args1> |- P2<args2> for P1 != P2
-proveVarImplH x (ValPerm_Named npn args) [nuP| ValPerm_Named mb_npn mb_args |] =
-  error "FIXME HERE NOW: implement P1<args1> |- P2<args2>!"
-
--- If the LHS is recursive but the RHS is not, unfold the left and recurse
-proveVarImplH x p@(ValPerm_Named npn args) mb_p =
-  implNamedPermIsRecursive npn >>>= \is_rec ->
-  if is_rec then
-    (implSetRecRecurseLeftM >>> implUnfoldRecM x npn args >>>= \p' ->
-      proveVarImplH x p' mb_p)
-  else
-    implFailVarM "proveVarImplH" x p mb_p
-
--- If the RHS is recursive but the LHS is not, unfold the right and recurse
+-- If the RHS is recursive but the LHS is not, unfold the right and recurse,
+-- or if the RHS is a defined permission, unfold it
 proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn mb_args |] =
   implLookupNamedPerm (mbLift mb_npn) >>>= \np ->
   case np of
@@ -3125,6 +3192,11 @@ proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn mb_args |] =
       partialSubstForceM mb_args
       "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
       implFoldRecM x (mbLift mb_npn) args
+    NamedPerm_Defined dp ->
+      proveVarImplH x p (fmap (unfoldDefinedPerm dp) mb_args) >>>
+      partialSubstForceM mb_args
+      "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
+      implFoldDefinedM x (mbLift mb_npn) args
     _ ->
       implFailVarM "proveVarImplH" x p mb_p
 
