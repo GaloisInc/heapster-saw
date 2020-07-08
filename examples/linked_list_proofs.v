@@ -265,6 +265,6 @@ Print sorted_insert__tuple_fun.
 
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.
-  unfold sorted_insert, sorted_insert__tuple_fun, malloc, mallocSpec, noErrorsSpec.
+  unfold sorted_insert, sorted_insert__tuple_fun, mallocSpec, noErrorsSpec.
   prove_refinement.
 Qed.
