@@ -46,6 +46,7 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, last)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.NatRepr
+import Data.Parameterized.TraversableFC
 
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
@@ -2816,6 +2817,9 @@ subst s mb = runIdentity $ genSubst s mb
 newtype PermVarSubst (ctx :: RList CrucibleType) =
   PermVarSubst { unPermVarSubst :: MapRList Name ctx }
 
+emptyVarSubst :: PermVarSubst RNil
+emptyVarSubst = PermVarSubst MNil
+
 singletonVarSubst :: ExprVar a -> PermVarSubst (RNil :> a)
 singletonVarSubst x = PermVarSubst (empty :>: x)
 
@@ -2852,6 +2856,21 @@ instance SubstVar PermVarSubst Identity where
 varSubst :: Substable PermVarSubst a Identity => PermVarSubst ctx ->
             Mb ctx a -> a
 varSubst s mb = runIdentity $ genSubst s mb
+
+-- | Build a list of all possible 'PermVarSubst's of variables in a 'NameMap'
+-- for variables listed in a 'CruCtx'
+allPermVarSubsts :: NameMap TypeRepr -> CruCtx ctx -> [PermVarSubst ctx]
+allPermVarSubsts nmap = helper (NameMap.assocs nmap) where
+  helper :: [NameAndElem TypeRepr] -> CruCtx ctx -> [PermVarSubst ctx]
+  helper _ CruCtxNil = return emptyVarSubst
+  helper ns_ts (CruCtxCons ctx tp) =
+    helper ns_ts ctx >>= \subst ->
+    map (consVarSubst subst) (getVarsOfType ns_ts tp)
+  getVarsOfType :: [NameAndElem TypeRepr] -> TypeRepr tp -> [Name tp]
+  getVarsOfType [] _ = []
+  getVarsOfType (NameAndElem n tp':ns_ts) tp
+    | Just Refl <- testEquality tp tp' = n : (getVarsOfType ns_ts tp)
+  getVarsOfType (_:ns_ts) tp = getVarsOfType ns_ts tp
 
 
 ----------------------------------------------------------------------
@@ -3379,18 +3398,33 @@ data PermEnvGlobalEntry where
                         ValuePerm (LLVMPointerType w) -> [OpenTerm] ->
                         PermEnvGlobalEntry
 
+-- | A "hint" from the user about how to type-check the inputs to a block
+data BlockEntryHint blocks init ret args where
+  BlockEntryHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
+                    BlockID blocks args -> CruCtx ghosts ->
+                    Mb ghosts (MbValuePerms (CtxToRList args)) ->
+                    BlockEntryHint blocks init ret args
+
+-- | A "hint" from the user for type-checking
+data Hint where
+  Hint_BlockEntry :: BlockEntryHint blocks init ret args -> Hint
+
 -- | A permission environment that maps function names, permission names, and
 -- 'GlobalSymbols' to their respective permission structures
 data PermEnv = PermEnv {
   permEnvFunPerms :: [PermEnvFunEntry],
   permEnvNamedPerms :: [SomeNamedPerm],
-  permEnvGlobalSyms :: [PermEnvGlobalEntry]
+  permEnvGlobalSyms :: [PermEnvGlobalEntry],
+  permEnvHints :: [Hint]
   }
 
 $(mkNuMatching [t| forall args ret. SomeFunPerm args ret |])
 $(mkNuMatching [t| PermEnvFunEntry |])
 $(mkNuMatching [t| SomeNamedPerm |])
 $(mkNuMatching [t| PermEnvGlobalEntry |])
+$(mkNuMatching [t| forall blocks init ret args.
+                BlockEntryHint blocks init ret args |])
+$(mkNuMatching [t| Hint |])
 $(mkNuMatching [t| PermEnv |])
 
 -- | Add an opaque named permission to a 'PermEnv'
@@ -3421,6 +3455,10 @@ permEnvAddGlobalSymFun env sym (w :: f w) fun_perm t =
 permEnvAddGlobalSyms :: PermEnv -> [PermEnvGlobalEntry] -> PermEnv
 permEnvAddGlobalSyms env entries = env { permEnvGlobalSyms =
                                            entries ++ permEnvGlobalSyms env }
+
+-- | Add a 'Hint' to a 'PermEnv'
+permEnvAddHint :: PermEnv -> Hint -> PermEnv
+permEnvAddHint env hint = env { permEnvHints = hint : permEnvHints env }
 
 -- | Look up a 'FnHandle' by name in a 'PermEnv'
 lookupFunHandle :: PermEnv -> String -> Maybe SomeHandle
@@ -3475,6 +3513,33 @@ lookupGlobalSymbol env = helper (permEnvGlobalSyms env) where
       Just (p, t)
   helper (_:entries) sym w = helper entries sym w
   helper [] _ _ = Nothing
+
+-- | Look up a 'BlockEntryHint' for a 'BlockID' in a 'FnHandle'
+lookupBlockEntryHint :: PermEnv -> FnHandle init ret ->
+                        Assignment CtxRepr blocks -> BlockID blocks args ->
+                        Maybe (BlockEntryHint blocks init ret args)
+lookupBlockEntryHint env h blocks blkID =
+  listToMaybe $
+  mapMaybe (\hint -> case hint of
+               Hint_BlockEntry be_hint@(BlockEntryHint h' blocks' blkID' _ _)
+                 | Just Refl <- testEquality (handleID h) (handleID h')
+                 , Just Refl <- testEquality blocks blocks'
+                 , Just Refl <- testEquality blkID blkID' -> return be_hint
+               _ -> Nothing) $
+  permEnvHints env
+
+-- | Look up all 'BlockEntryHint's for a 'CFG'
+lookupBlockEntryHints :: PermEnv -> CFG ext blocks init ret ->
+                         [Some (BlockEntryHint blocks init ret)]
+lookupBlockEntryHints env cfg =
+  mapMaybe (\hint -> case hint of
+               Hint_BlockEntry be_hint@(BlockEntryHint h blocks blkID' _ _)
+                 | Just Refl <- testEquality (handleID h) (handleID $ cfgHandle cfg)
+                 , Just Refl <- testEquality blocks (fmapFC blockInputs
+                                                     (cfgBlockMap cfg)) ->
+                   return $ Some be_hint
+               _ -> Nothing) $
+  permEnvHints env
 
 
 ----------------------------------------------------------------------

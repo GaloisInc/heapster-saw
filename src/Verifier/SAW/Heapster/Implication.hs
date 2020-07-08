@@ -617,6 +617,41 @@ $(mkNuMatching [t| forall ps_in ps_outs. PermImpl1 ps_in ps_outs |])
 $(mkNuMatching [t| forall r bs_pss. NuMatchingAny1 r => MbPermImpls r bs_pss |])
 $(mkNuMatching [t| forall r ps. NuMatchingAny1 r => PermImpl r ps |])
 
+
+-- | Test if a 'PermImpl' "succeeds", meaning there is at least one non-failing
+-- branch. If it does succeed, return a heuristic number for how "well" it
+-- succeeds; e.g., rate a 'PermImpl' higher if all disjunctive branches succeed,
+-- that is, if both children of every 'Impl1_ElimOr' succeed. Return 0 if the
+-- 'PermImpl' does not succeed at all.
+permImplSucceeds :: PermImpl r ps -> Int
+permImplSucceeds (PermImpl_Done _) = 2
+permImplSucceeds (PermImpl_Step (Impl1_Fail _) _) = 0
+permImplSucceeds (PermImpl_Step Impl1_Catch
+                  (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2)) =
+  max (mbLift $ fmap permImplSucceeds mb_impl1)
+  (mbLift $ fmap permImplSucceeds mb_impl2)
+permImplSucceeds (PermImpl_Step (Impl1_Push _ _) (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_Pop _ _) (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_ElimOr _ _ _)
+                  (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2)) =
+  max (mbLift (fmap permImplSucceeds mb_impl1))
+  (mbLift (fmap permImplSucceeds mb_impl2))
+permImplSucceeds (PermImpl_Step (Impl1_ElimExists _ _)
+                  (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_Simpl _ _)
+                  (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMFieldContents _ _)
+                  (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_TryProveBVProp _ _ _)
+                  (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
+
+
 -- FIXME: no longer needed...?
 traversePermImpl :: MonadStrongBind m => (forall ps. r1 ps -> m (r2 ps)) ->
                     PermImpl r1 ps -> m (PermImpl r2 ps)

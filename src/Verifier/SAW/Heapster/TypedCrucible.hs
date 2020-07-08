@@ -26,7 +26,7 @@ module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
 import Data.Text hiding (length, map, concat, findIndex, foldr, foldl, maximum, take, last)
-import Data.List (findIndex)
+import Data.List (findIndex, maximumBy)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Type.Equality
@@ -2615,8 +2615,25 @@ tcJumpTarget ctx (JumpTarget blkID arg_tps args) =
 
   -- First test if we have already visited the given block
   if blockInfoVisited blkInfo then
-    -- If so, then this is a reverse jump, i.e., a loop
-    error "Cannot handle reverse jumps (FIXME)"
+    -- If so, then jump to the first entry point, assuming there is one
+    case blockInfoEntries blkInfo of
+      [] -> error "tcJumpTarget: visited block has no entrypoints!"
+      (BlockEntryInfo entryID _ mb_perms_in _):_ ->
+        let ghosts = entryGhosts entryID
+            all_ghosts_substs = allPermVarSubsts varTypes ghosts
+            args_t = tcRegs ctx args
+            args_subst = typedRegsToVarSubst args_t in
+        forM all_ghosts_substs
+        (\ghost_subst ->
+          let subst = appendVarSubsts ghost_subst args_subst
+              perms_in = varSubst subst mb_perms_in
+              target_t = TypedJumpTarget entryID (mkCruCtx arg_tps) perms_in in
+          pcmRunImplM CruCtxNil target_t
+          (proveVarsImpl $ distPermsToExDistPerms perms_in)) >>>= \impls ->
+        -- FIXME HERE: choose the first "best possible" result before computing
+        -- all the other ones
+        return (fst $ maximumBy (\(_,i1) (_,i2) -> compare i1 i2) $
+                map (\impl -> (impl, permImplSucceeds impl)) impls)
 
   else
     -- If not, we can make a new entrypoint that takes all of the current
@@ -2784,13 +2801,20 @@ tcEmitBlock is_scc blk =
      !block_t <- tcBlock is_scc memb blk
      modifyBlockInfo (blockInfoMapSetBlock memb block_t)
 
+-- | Convert permissions on the real arguments of a block to a 'DistPerms' for
+-- all the arguments of the block
+argPermsToBlockPerms :: CruCtx ghosts -> Mb ghosts (MbValuePerms args) ->
+                        MbDistPerms (ghosts :++: args)
+argPermsToBlockPerms ghosts arg_perms =
+  mbValuePermsToDistPerms $
+  fmap (appendValuePerms (trueValuePerms ghosts)) $
+  mbCombine arg_perms
+
 -- | Convert the input permissions on just the normal arguments of a 'FunPerm'
 -- to a set of permissions on the ghost and normal arguments
 funPermToBlockInputs :: FunPerm ghosts args ret -> MbDistPerms (ghosts :++: args)
 funPermToBlockInputs fun_perm =
-  mbValuePermsToDistPerms $
-  fmap (appendValuePerms (trueValuePerms $ funPermGhosts fun_perm)) $
-  mbCombine $ funPermIns fun_perm
+  argPermsToBlockPerms (funPermGhosts fun_perm) (funPermIns fun_perm)
 
 -- | Convert the output permissions on just the normal and return arguments of a 'FunPerm'
 -- to a set of permissions on the ghost, normal, and return arguments
@@ -2815,6 +2839,20 @@ tcCFG env fun_perm@(FunPerm ghosts _ _ _ _) cfg =
                       BlockEntryInfo init_entryID init_args
                       (funPermToBlockInputs fun_perm)
                       (funPermToBlockOutputs fun_perm))
+     -- FIXME HERE NOW: need to add the correct output permissions, which
+     -- require a ghost context for each hint that matches the top-level ghost
+     -- context for the entire CFG
+     {-
+     forM_ (lookupBlockEntryHints env cfg) $ \hint -> case hint of
+       Some (BlockEntryHint _ _ h_blkID h_ghosts h_perms) ->
+         do h_memb <- stLookupBlockID h_blkID <$> get
+            let h_entryID = TypedEntryID h_memb h_ghosts 0
+            let h_args = mkCruCtx $ blockInputs (cfgBlockMap cfg !
+                                                 blockIDIndex h_blkID)
+            modifyBlockInfo (addBlockEntry h_memb $
+                             BlockEntryInfo h_entryID h_args
+                             (argPermsToBlockPerms h_perms)
+                             (funPermToBlockOutputs fun_perm)) -}
      !(init_st) <- get
      mapM_ (visit cfg) (trace "visiting CFG..." $ cfgWeakTopologicalOrdering cfg)
      !final_st <- get

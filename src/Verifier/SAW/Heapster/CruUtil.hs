@@ -222,6 +222,9 @@ instance NuMatchingAny1 f => NuMatching (Assignment f ctx) where
     -- here?
     isoMbTypeRepr viewAssign viewToAssign
 
+instance NuMatchingAny1 f => NuMatchingAny1 (Assignment f) where
+  nuMatchingAny1Proof = nuMatchingProof
+
 instance Closable (Assignment TypeRepr ctx) where
   toClosed = unsafeClose
 
@@ -258,6 +261,8 @@ $(mkNuMatching [t| forall f. NuMatchingAny1 f => UB.UndefinedBehavior f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => Poison.Poison f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => BadBehavior f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => LLVMSafetyAssertion f |])
+
+$(mkNuMatching [t| forall blocks tp. BlockID blocks tp |])
 
 -- FIXME: Hobbits does not yet support mkNuMatching for empty types!
 --- $(mkNuMatching [t| forall f. NoAssertionClassifier f |])
