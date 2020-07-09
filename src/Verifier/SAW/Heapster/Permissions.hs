@@ -3384,19 +3384,6 @@ instance AbstractVars (FunPerm ghosts args ret) where
     `clMbMbApplyM` abstractPEVars ns1 ns2 perms_in
     `clMbMbApplyM` abstractPEVars ns1 ns2 perms_out
 
-{- FIXME HERE NOW: do we need these instances?
-instance AbstractVars FunTypeEnvEntry where
-  abstractPEVars ns1 ns2 (FunTypeEnvEntry h fun_perm) =
-    absVarsReturnH ns1 ns2
-    ($(mkClosed [| FunTypeEnvEntry |]) `clApply` toClosed h)
-    `clMbMbApplyM` abstractPEVars ns1 ns2 fun_perm
-
-instance AbstractVars FunTypeEnv where
-  abstractPEVars ns1 ns2 (FunTypeEnv entries) =
-    absVarsReturnH ns1 ns2
-    $(mkClosed [| FunTypeEnv |]) `clMbMbApplyM` abstractPEVars ns1 ns2 entries
--}
-
 instance AbstractVars (NamedPermName args a) where
   abstractPEVars ns1 ns2 (NamedPermName n tp args) =
     absVarsReturnH ns1 ns2
