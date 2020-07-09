@@ -2633,12 +2633,17 @@ tcJumpTarget ctx (JumpTarget blkID arg_tps args) =
               perms_out =
                 varSubst subst $ mbSeparate (MNil :>: Proxy) mb_perms_out
               target_t = TypedJumpTarget entryID (mkCruCtx arg_tps) perms_in in
-          -- FIXME HERE NOW: test that perms_out = stRetPerms; maybe need to add
-          -- a CruCtx to stRetPerms so we can cast it? Or maybe we do that above
-          -- when we build a subst for some of the vars in mb_perms_out from
-          -- stRetPerms?
-          pcmRunImplM CruCtxNil target_t
-          (proveVarsImpl $ distPermsToExDistPerms perms_in)) >>>= \impls ->
+          -- Test that perms_out agrees with stRetPerms
+          case stRetPerms st of
+            Some (RetPerms ret_perms)
+              | [nuP| Just Refl |] <- mbMap2 testEquality ret_perms perms_out ->
+                pcmRunImplM CruCtxNil target_t (proveVarsImpl $
+                                                distPermsToExDistPerms perms_in)
+            _ -> greturn (PermImpl_Step
+                          (Impl1_Fail
+                           "Incorrect output permissions for substitution")
+                          MbPermImpls_Nil)
+        ) >>>= \impls ->
         -- FIXME HERE: choose the first "best possible" result before computing
         -- all the other ones
         return (fst $ maximumBy (\(_,i1) (_,i2) -> compare i1 i2) $
