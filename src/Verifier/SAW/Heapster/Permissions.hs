@@ -3420,14 +3420,13 @@ data PermEnvGlobalEntry where
 -- | A "hint" from the user about how to type-check the inputs to a block
 data BlockEntryHint blocks init ret args where
   BlockEntryHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
-                    BlockID blocks args -> CruCtx ghosts -> CruCtx top_args ->
-                    Mb (ghosts :++: CtxToRList args) (PermVarSubst top_args) ->
-                    Mb ghosts (MbValuePerms (CtxToRList args)) ->
+                    BlockID blocks args -> CruCtx top_args -> CruCtx ghosts ->
+                    MbValuePerms ((top_args :++: ghosts) :++: CtxToRList args) ->
                     BlockEntryHint blocks init ret args
 
 -- | Extract the 'BlockID' from a 'BlockEntryHint'
 blockEntryHintBlockID :: BlockEntryHint blocks init ret args -> BlockID blocks args
-blockEntryHintBlockID (BlockEntryHint _ _ blkID _ _ _ _) = blkID
+blockEntryHintBlockID (BlockEntryHint _ _ blkID _ _ _) = blkID
 
 
 -- | A "hint" from the user for type-checking
@@ -3554,7 +3553,7 @@ lookupBlockEntryHint :: PermEnv -> FnHandle init ret ->
 lookupBlockEntryHint env h blocks blkID =
   listToMaybe $
   mapMaybe (\hint -> case hint of
-               Hint_BlockEntry be_hint@(BlockEntryHint h' blocks' blkID' _ _ _ _)
+               Hint_BlockEntry be_hint@(BlockEntryHint h' blocks' blkID' _ _ _)
                  | Just Refl <- testEquality (handleID h) (handleID h')
                  , Just Refl <- testEquality blocks blocks'
                  , Just Refl <- testEquality blkID blkID' -> return be_hint
@@ -3566,7 +3565,7 @@ lookupBlockEntryHints :: PermEnv -> CFG ext blocks init ret ->
                          [Some (BlockEntryHint blocks init ret)]
 lookupBlockEntryHints env cfg =
   mapMaybe (\hint -> case hint of
-               Hint_BlockEntry be_hint@(BlockEntryHint h blocks blkID' _ _ _ _)
+               Hint_BlockEntry be_hint@(BlockEntryHint h blocks blkID' _ _ _)
                  | Just Refl <- testEquality (handleID h) (handleID $ cfgHandle cfg)
                  , Just Refl <- testEquality blocks (fmapFC blockInputs
                                                      (cfgBlockMap cfg)) ->

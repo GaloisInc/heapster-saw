@@ -2829,7 +2829,9 @@ argPermsToBlockPerms ghosts arg_perms =
 -- to a set of permissions on the ghost and normal arguments
 funPermToBlockInputs :: FunPerm ghosts args ret -> MbDistPerms (ghosts :++: args)
 funPermToBlockInputs fun_perm =
-  argPermsToBlockPerms (funPermGhosts fun_perm) (funPermIns fun_perm)
+  mbValuePermsToDistPerms $
+  fmap (appendValuePerms (trueValuePerms $ funPermGhosts fun_perm)) $
+  mbCombine $ funPermIns fun_perm
 
 -- | Convert the output permissions on just the normal and return arguments of a 'FunPerm'
 -- to a set of permissions on the ghost, normal, and return arguments
@@ -2866,25 +2868,27 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
        fmap catMaybes $
        forM (lookupBlockEntryHints env cfg) $ \hint -> case hint of
        Some (BlockEntryHint
-             _ _ h_blkID h_ghosts h_topargs h_topsubst h_perms_in)
+             _ _ h_blkID h_topargs h_ghosts h_perms_in)
          | Just Refl <- testEquality h_topargs (appendCruCtx ghosts inits) ->
            do h_memb <- stLookupBlockID h_blkID <$> get
-              let h_entryID = TypedEntryID h_memb h_ghosts 0
+              let h_entryID =
+                    TypedEntryID h_memb (appendCruCtx h_topargs h_ghosts) 0
               let h_args = mkCruCtx $ blockInputs (cfgBlockMap cfg !
                                                    blockIDIndex h_blkID)
               let h_allargs = appendCruCtx h_ghosts h_args
               let h_perms_out =
+                    mbCombine $ mbCombine $
+                    fmap (nuMulti (cruCtxProxies h_args) . const) $
                     mbCombine $
-                    fmap (\s -> varSubst s $
-                                mbSeparate (MNil :>: Proxy) perms_out)
-                    h_topsubst
+                    fmap (nuMulti (cruCtxProxies h_ghosts) . const) $
+                    mbSeparate (MNil :>: Proxy) perms_out
               modifyBlockInfo (addBlockEntry h_memb $
                                BlockEntryInfo h_entryID h_args
-                               (argPermsToBlockPerms h_ghosts h_perms_in)
+                               (mbValuePermsToDistPerms h_perms_in)
                                h_perms_out)
               return (Just hint)
        _ ->
-         -- FIXME HERE: warn the user that the hint did not match
+         -- FIXME HERE NOW: warn the user that the hint did not match
          return Nothing
 
      -- Visit all the nodes in a weak topological order, meaning that we visit a
