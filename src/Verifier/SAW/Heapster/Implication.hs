@@ -3290,7 +3290,7 @@ mbValuePermsToExDistPerms (ns :>: n) [nuP| ValPerms_Cons ps p |] =
 funPermExDistIns :: FunPerm ghosts args ret -> MapRList Name args ->
                     ExDistPerms ghosts args
 funPermExDistIns fun_perm args =
-  mbValuePermsToExDistPerms args $ fmap (varSubst (PermVarSubst args)) $
+  mbValuePermsToExDistPerms args $ fmap (varSubst (permVarSubstOfNames args)) $
   funPermIns fun_perm
 
 -- | Prove a list of existentially-quantified distinguished permissions

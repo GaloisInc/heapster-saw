@@ -25,8 +25,8 @@
 module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
-import Data.Text hiding (length, map, concat, findIndex, foldr, foldl, maximum, take, last)
-import Data.List (findIndex, maximumBy)
+-- import Data.Text hiding (length, map, concat, findIndex, foldr, foldl, maximum, take, last)
+import Data.List (findIndex, maximumBy, filter)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Type.Equality
@@ -51,6 +51,7 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Parameterized.Context hiding ((:>), empty, take, view, last)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
+import Data.Parameterized.TraversableF
 
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
@@ -105,7 +106,7 @@ typedRegsToVars (TypedRegsCons regs (TypedReg x)) = typedRegsToVars regs :>: x
 
 -- | Turn a sequence of typed registers into a variable substitution
 typedRegsToVarSubst :: TypedRegs ctx -> PermVarSubst ctx
-typedRegsToVarSubst = PermVarSubst . typedRegsToVars
+typedRegsToVarSubst = permVarSubstOfNames . typedRegsToVars
 
 -- | A typed register along with its value if that is known statically
 data RegWithVal a
@@ -2554,7 +2555,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PtrEq _ r1 r2) =
 tcEmitLLVMStmt _arch _ctx _loc _stmt =
   error "tcEmitLLVMStmt: unimplemented statement"
 
--- FIXME HERE NOW: need to handle PtrEq, PtrLe, and PtrSubtract
+-- FIXME HERE: need to handle PtrEq, PtrLe, and PtrSubtract
 
 
 ----------------------------------------------------------------------
@@ -2618,7 +2619,9 @@ tcJumpTarget ctx (JumpTarget blkID arg_tps args) =
     -- If so, then jump to the first entry point, assuming there is one
     case blockInfoEntries blkInfo of
       [] -> error "tcJumpTarget: visited block has no entrypoints!"
-      (BlockEntryInfo entryID _ mb_perms_in _):_ ->
+      (BlockEntryInfo entryID _ mb_perms_in mb_perms_out):_ ->
+        -- FIXME HERE NOW: use mb_perms_out to substitute for some ghosts; also
+        -- make sure that mb_perms_out agrees with stRetPerms
         let ghosts = entryGhosts entryID
             all_ghosts_substs = allPermVarSubsts varTypes ghosts
             args_t = tcRegs ctx args
@@ -2627,7 +2630,13 @@ tcJumpTarget ctx (JumpTarget blkID arg_tps args) =
         (\ghost_subst ->
           let subst = appendVarSubsts ghost_subst args_subst
               perms_in = varSubst subst mb_perms_in
+              perms_out =
+                varSubst subst $ mbSeparate (MNil :>: Proxy) mb_perms_out
               target_t = TypedJumpTarget entryID (mkCruCtx arg_tps) perms_in in
+          -- FIXME HERE NOW: test that perms_out = stRetPerms; maybe need to add
+          -- a CruCtx to stRetPerms so we can cast it? Or maybe we do that above
+          -- when we build a subst for some of the vars in mb_perms_out from
+          -- stRetPerms?
           pcmRunImplM CruCtxNil target_t
           (proveVarsImpl $ distPermsToExDistPerms perms_in)) >>>= \impls ->
         -- FIXME HERE: choose the first "best possible" result before computing
@@ -2638,6 +2647,7 @@ tcJumpTarget ctx (JumpTarget blkID arg_tps args) =
   else
     -- If not, we can make a new entrypoint that takes all of the current
     -- permissions as input
+    -- FIXME HERE: don't add a new entrypoint if we have a block entry hint
     case (getAllPerms (stCurPerms st), stRetPerms st) of
       (Some ghost_perms, Some (RetPerms ret_perms)) ->
         -- Get the types of all variables we hold permissions on, and then use
@@ -2829,32 +2839,59 @@ tcCFG :: PermCheckExtC ext => PermEnv ->
          FunPerm ghosts (CtxToRList inits) ret ->
          CFG ext blocks inits ret ->
          TypedCFG ext (CtxCtxToRList blocks) ghosts (CtxToRList inits) ret
-tcCFG env fun_perm@(FunPerm ghosts _ _ _ _) cfg =
+tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits ret) =
   flip evalState (emptyTopPermCheckState (handleReturnType $ cfgHandle cfg)
                   (cfgBlockMap cfg) env) $
-  do init_memb <- stLookupBlockID (cfgEntryBlockID cfg) <$> get
+  do
+     -- First, add a block entrypoint for the initial block of the function
+     init_memb <- stLookupBlockID (cfgEntryBlockID cfg) <$> get
      let init_entryID = TypedEntryID init_memb ghosts 0
-     let init_args = mkCruCtx $ handleArgTypes $ cfgHandle cfg
+     let perms_out = funPermToBlockOutputs fun_perm
+     -- let init_args = mkCruCtx $ handleArgTypes $ cfgHandle cfg
      modifyBlockInfo (addBlockEntry init_memb $
-                      BlockEntryInfo init_entryID init_args
+                      BlockEntryInfo init_entryID inits
                       (funPermToBlockInputs fun_perm)
-                      (funPermToBlockOutputs fun_perm))
-     -- FIXME HERE NOW: need to add the correct output permissions, which
-     -- require a ghost context for each hint that matches the top-level ghost
-     -- context for the entire CFG
-     {-
-     forM_ (lookupBlockEntryHints env cfg) $ \hint -> case hint of
-       Some (BlockEntryHint _ _ h_blkID h_ghosts h_perms) ->
-         do h_memb <- stLookupBlockID h_blkID <$> get
-            let h_entryID = TypedEntryID h_memb h_ghosts 0
-            let h_args = mkCruCtx $ blockInputs (cfgBlockMap cfg !
-                                                 blockIDIndex h_blkID)
-            modifyBlockInfo (addBlockEntry h_memb $
-                             BlockEntryInfo h_entryID h_args
-                             (argPermsToBlockPerms h_perms)
-                             (funPermToBlockOutputs fun_perm)) -}
+                      perms_out)
+
+     -- Next, add entrypoints for all the block entry hints, keeping track of
+     -- the hints that we actually used
+     --
+     -- FIXME: why does GHC need this type to be given?
+     block_entry_hints :: [Some (BlockEntryHint _ inits ret)] <-
+       fmap catMaybes $
+       forM (lookupBlockEntryHints env cfg) $ \hint -> case hint of
+       Some (BlockEntryHint
+             _ _ h_blkID h_ghosts h_topargs h_topsubst h_perms_in)
+         | Just Refl <- testEquality h_topargs (appendCruCtx ghosts inits) ->
+           do h_memb <- stLookupBlockID h_blkID <$> get
+              let h_entryID = TypedEntryID h_memb h_ghosts 0
+              let h_args = mkCruCtx $ blockInputs (cfgBlockMap cfg !
+                                                   blockIDIndex h_blkID)
+              let h_allargs = appendCruCtx h_ghosts h_args
+              let h_perms_out =
+                    mbCombine $
+                    fmap (\s -> varSubst s $
+                                mbSeparate (MNil :>: Proxy) perms_out)
+                    h_topsubst
+              modifyBlockInfo (addBlockEntry h_memb $
+                               BlockEntryInfo h_entryID h_args
+                               (argPermsToBlockPerms h_ghosts h_perms_in)
+                               h_perms_out)
+              return (Just hint)
+       _ ->
+         -- FIXME HERE: warn the user that the hint did not match
+         return Nothing
+
+     -- Visit all the nodes in a weak topological order, meaning that we visit a
+     -- node before its successors with the exception that blocks with block
+     -- entry hints can be visited first
+     let nodeSuccessors node =
+           filter (\node' -> notElem node' $
+                             map (fmapF blockEntryHintBlockID) block_entry_hints) $
+           cfgSuccessors cfg node
      !(init_st) <- get
-     mapM_ (visit cfg) (trace "visiting CFG..." $ cfgWeakTopologicalOrdering cfg)
+     mapM_ (visit cfg) (trace "visiting CFG..." $
+                        weakTopologicalOrdering nodeSuccessors (cfgStart cfg))
      !final_st <- get
      trace "visiting complete!" $ return $ TypedCFG
        { tpcfgHandle = TypedFnHandle ghosts (cfgHandle cfg)

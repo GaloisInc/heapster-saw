@@ -2127,7 +2127,7 @@ namedPermArgsAreCopyable (CruCtxCons tps tp) (PExprs_Cons args arg) =
 funPermDistIns :: FunPerm ghosts args ret -> MapRList Name args ->
                   PermExprs ghosts -> DistPerms args
 funPermDistIns fun_perm args ghosts =
-  varSubst (PermVarSubst args) $ mbValuePermsToDistPerms $
+  varSubst (permVarSubstOfNames args) $ mbValuePermsToDistPerms $
   subst (substOfExprs ghosts) $ funPermIns fun_perm
 
 -- | Substitute arguments, a lifetime, and ghost values into a function
@@ -2135,7 +2135,7 @@ funPermDistIns fun_perm args ghosts =
 funPermDistOuts :: FunPerm ghosts args ret -> MapRList Name (args :> ret) ->
                    PermExprs ghosts -> DistPerms (args :> ret)
 funPermDistOuts fun_perm args ghosts =
-  varSubst (PermVarSubst args) $ mbValuePermsToDistPerms $
+  varSubst (permVarSubstOfNames args) $ mbValuePermsToDistPerms $
   subst (substOfExprs ghosts) $ funPermOuts fun_perm
 
 -- | Unfold a recursive permission given a 'RecPerm' for it
@@ -2831,27 +2831,40 @@ subst s mb = runIdentity $ genSubst s mb
 -- * Variable Substitutions
 ----------------------------------------------------------------------
 
+-- FIXME HERE: PermVarSubst and other types should just be instances of a
+-- MapRList, except it is annoying to build NuMatching instances for MapRList
+-- because there are different ways one might do it, so we need to use
+-- OVERLAPPING and/or INCOHERENT pragmas for them
+
 -- | Like a substitution but assigns variables instead of arbitrary expressions
 -- to bound variables
-newtype PermVarSubst (ctx :: RList CrucibleType) =
-  PermVarSubst { unPermVarSubst :: MapRList Name ctx }
+data PermVarSubst (ctx :: RList CrucibleType) where
+  PermVarSubst_Nil :: PermVarSubst RNil
+  PermVarSubst_Cons :: PermVarSubst ctx -> Name tp -> PermVarSubst (ctx :> tp)
 
 emptyVarSubst :: PermVarSubst RNil
-emptyVarSubst = PermVarSubst MNil
+emptyVarSubst = PermVarSubst_Nil
 
 singletonVarSubst :: ExprVar a -> PermVarSubst (RNil :> a)
-singletonVarSubst x = PermVarSubst (empty :>: x)
+singletonVarSubst x = PermVarSubst_Cons emptyVarSubst x
 
 consVarSubst :: PermVarSubst ctx -> ExprVar a -> PermVarSubst (ctx :> a)
-consVarSubst (PermVarSubst elems) n = PermVarSubst (elems :>: n)
+consVarSubst = PermVarSubst_Cons
+
+permVarSubstOfNames :: MapRList Name ctx -> PermVarSubst ctx
+permVarSubstOfNames MNil = PermVarSubst_Nil
+permVarSubstOfNames (ns :>: n) = PermVarSubst_Cons (permVarSubstOfNames ns) n
 
 varSubstLookup :: PermVarSubst ctx -> Member ctx a -> ExprVar a
-varSubstLookup (PermVarSubst m) memb = mapRListLookup memb m
+varSubstLookup (PermVarSubst_Cons _ x) Member_Base = x
+varSubstLookup (PermVarSubst_Cons s _) (Member_Step memb) =
+  varSubstLookup s memb
 
 appendVarSubsts :: PermVarSubst ctx1 -> PermVarSubst ctx2 ->
                    PermVarSubst (ctx1 :++: ctx2)
-appendVarSubsts (PermVarSubst es1) (PermVarSubst es2) =
-  PermVarSubst (appendMapRList es1 es2)
+appendVarSubsts es1 PermVarSubst_Nil = es1
+appendVarSubsts es1 (PermVarSubst_Cons es2 x) =
+  PermVarSubst_Cons (appendVarSubsts es1 es2) x
 
 varSubstVar :: PermVarSubst ctx -> Mb ctx (ExprVar a) -> ExprVar a
 varSubstVar s mb_x =
@@ -3420,9 +3433,15 @@ data PermEnvGlobalEntry where
 -- | A "hint" from the user about how to type-check the inputs to a block
 data BlockEntryHint blocks init ret args where
   BlockEntryHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
-                    BlockID blocks args -> CruCtx ghosts ->
+                    BlockID blocks args -> CruCtx ghosts -> CruCtx top_args ->
+                    Mb (ghosts :++: CtxToRList args) (PermVarSubst top_args) ->
                     Mb ghosts (MbValuePerms (CtxToRList args)) ->
                     BlockEntryHint blocks init ret args
+
+-- | Extract the 'BlockID' from a 'BlockEntryHint'
+blockEntryHintBlockID :: BlockEntryHint blocks init ret args -> BlockID blocks args
+blockEntryHintBlockID (BlockEntryHint _ _ blkID _ _ _ _) = blkID
+
 
 -- | A "hint" from the user for type-checking
 data Hint where
@@ -3437,6 +3456,7 @@ data PermEnv = PermEnv {
   permEnvHints :: [Hint]
   }
 
+$(mkNuMatching [t| forall ctx. PermVarSubst ctx |])
 $(mkNuMatching [t| forall args ret. SomeFunPerm args ret |])
 $(mkNuMatching [t| PermEnvFunEntry |])
 $(mkNuMatching [t| SomeNamedPerm |])
@@ -3547,7 +3567,7 @@ lookupBlockEntryHint :: PermEnv -> FnHandle init ret ->
 lookupBlockEntryHint env h blocks blkID =
   listToMaybe $
   mapMaybe (\hint -> case hint of
-               Hint_BlockEntry be_hint@(BlockEntryHint h' blocks' blkID' _ _)
+               Hint_BlockEntry be_hint@(BlockEntryHint h' blocks' blkID' _ _ _ _)
                  | Just Refl <- testEquality (handleID h) (handleID h')
                  , Just Refl <- testEquality blocks blocks'
                  , Just Refl <- testEquality blkID blkID' -> return be_hint
@@ -3559,7 +3579,7 @@ lookupBlockEntryHints :: PermEnv -> CFG ext blocks init ret ->
                          [Some (BlockEntryHint blocks init ret)]
 lookupBlockEntryHints env cfg =
   mapMaybe (\hint -> case hint of
-               Hint_BlockEntry be_hint@(BlockEntryHint h blocks blkID' _ _)
+               Hint_BlockEntry be_hint@(BlockEntryHint h blocks blkID' _ _ _ _)
                  | Just Refl <- testEquality (handleID h) (handleID $ cfgHandle cfg)
                  , Just Refl <- testEquality blocks (fmapFC blockInputs
                                                      (cfgBlockMap cfg)) ->

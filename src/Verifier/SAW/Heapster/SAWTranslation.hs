@@ -2773,7 +2773,7 @@ translateCallEntryID nm entryID mb_perms =
        TypedEntryTrans entry Nothing ->
          translate $
          fmap (\perms ->
-                varSubst (PermVarSubst $ distPermsVars perms) $
+                varSubst (permVarSubstOfNames $ distPermsVars perms) $
                 typedEntryBody entryID entry) mb_perms
 
 instance PermCheckExtC ext =>
