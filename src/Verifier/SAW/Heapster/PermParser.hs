@@ -22,6 +22,8 @@ import Data.Functor.Constant
 import Data.Functor.Compose
 import Data.Type.Equality
 import GHC.TypeLits
+import Control.Monad.Fail (MonadFail)
+import qualified Control.Monad.Fail as Fail
 import Control.Monad.Identity
 import Control.Monad.Reader
 import Data.Binding.Hobbits
@@ -837,20 +839,33 @@ parseFunPermM args ret =
            parseSortedMbValuePerms (consParsedCtx "ret" ret args_ctx)
          return $ SomeFunPerm $ FunPerm ghosts args ret perms_in perms_out
 
--- | Run the 'parseFunPermM' parsing computation on a 'String'
-parseFunPermString :: PermEnv -> CruCtx args -> TypeRepr ret ->
-                      String -> Either ParseError (SomeFunPerm args ret)
-parseFunPermString env args ret str =
-  runParser (parseFunPermM args ret) (mkParserEnv env) "" str
+----------------------------------------------------------------------
+-- * Top-level Entrypoints for Parsing Things
+----------------------------------------------------------------------
 
--- | Parse a type context from a 'String'
-parseCtxString :: PermEnv -> String -> Either ParseError (Some CruCtx)
-parseCtxString env str =
-  runParser parseCtx (mkParserEnv env) "" str >>= \some_ctx ->
+-- | Parse the sort of object named by the supplied 'String', calling 'fail' if
+-- there is a parsing error
+runPermParseM :: (Stream s Identity t, MonadFail m) =>
+                 String -> PermEnv -> PermParseM s a -> s -> m a
+runPermParseM obj env m str =
+  case runParser m (mkParserEnv env) "" str of
+    Left err -> Fail.fail ("Error parsing " ++ obj ++ ": " ++ show err)
+    Right a -> return a
+
+-- | Parse a 'FunPerm' named by the first 'String' from the second 'String'
+parseFunPermString :: MonadFail m => String -> PermEnv -> CruCtx args ->
+                      TypeRepr ret -> String -> m (SomeFunPerm args ret)
+parseFunPermString nm env args ret str =
+  runPermParseM nm env (parseFunPermM args ret) str
+
+-- | Parse a type context named by the first 'String' from the second 'String'
+parseCtxString :: MonadFail m => String -> PermEnv -> String -> m (Some CruCtx)
+parseCtxString nm env str =
+  runPermParseM nm env parseCtx str >>= \some_ctx ->
   case some_ctx of
     Some (ParsedCtx _ ctx) -> return $ Some ctx
 
--- | Parse a type from a 'String'
-parseTypeString :: PermEnv -> String -> Either ParseError (Some TypeRepr)
-parseTypeString env str =
-  runParser parseType (mkParserEnv env) "" str
+-- | Parse a type named by the first 'String' from the second 'String'
+parseTypeString :: MonadFail m => String -> PermEnv -> String ->
+                   m (Some TypeRepr)
+parseTypeString nm env str = runPermParseM nm env parseType str
