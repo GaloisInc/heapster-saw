@@ -6,7 +6,7 @@ Makefile.coq: _CoqProject
 include Makefile.coq
 
 %.bc: %.c
-	clang -emit-llvm -c $<
+	clang -emit-llvm -g -c $<
 
 linked_list.v: linked_list.bc linked_list.saw linked_list.sawcore
 	stack exec saw linked_list.saw
