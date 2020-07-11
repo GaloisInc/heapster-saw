@@ -35,6 +35,7 @@ import Text.Parsec.Error
 import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, Empty)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.Some
+import Data.Parameterized.TraversableF
 
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.MemModel
@@ -668,8 +669,10 @@ parseBVRange =
 ----------------------------------------------------------------------
 
 -- | A sequence of variable names and their types
-data ParsedCtx ctx =
-  ParsedCtx (MapRList (Constant String) ctx) (CruCtx ctx)
+data ParsedCtx ctx = ParsedCtx {
+  parsedCtxNames :: MapRList (Constant String) ctx,
+  parsedCtxCtx :: CruCtx ctx
+  }
 
 -- | Remove the last variable in a 'ParsedCtx'
 parsedCtxUncons :: ParsedCtx (ctx :> tp) -> ParsedCtx ctx
@@ -689,6 +692,12 @@ singletonParsedCtx x tp =
 -- | An empty 'ParsedCtx'
 emptyParsedCtx :: ParsedCtx RNil
 emptyParsedCtx = ParsedCtx MNil CruCtxNil
+
+-- | Append two 'ParsedCtx's
+appendParsedCtx :: ParsedCtx ctx1 -> ParsedCtx ctx2 ->
+                   ParsedCtx (ctx1 :++: ctx2)
+appendParsedCtx (ParsedCtx ns1 ctx1) (ParsedCtx ns2 ctx2) =
+  ParsedCtx (appendMapRList ns1 ns2) (appendCruCtx ctx1 ctx2)
 
 -- | Add a variable name and type to the beginning of an unknown 'ParsedCtx'
 preconsSomeParsedCtx :: String -> Some TypeRepr -> Some ParsedCtx ->
@@ -738,9 +747,11 @@ parseDistPerms =
            <|>
            return (Some $ distPerms1 x p)
 
--- | Helper type for 'parseValuePerms'
+-- | Helper type for 'parseValuePerms' that represents whether a pair @x:p@ has
+-- been parsed yet for a specific variable @x@ and, if so, contains that @p@
 data VarPermSpec a = VarPermSpec (Name a) (Maybe (ValuePerm a))
 
+-- | A sequence of variables @x@ and what pairs @x:p@ have been parsed so far
 type VarPermSpecs = MapRList VarPermSpec
 
 -- | Build a 'VarPermSpecs' from a list of names
@@ -852,18 +863,30 @@ runPermParseM obj env m str =
     Left err -> Fail.fail ("Error parsing " ++ obj ++ ": " ++ show err)
     Right a -> return a
 
+-- | Parse a permission set @x1:p1, x2:p2, ...@ for the variables in the
+-- supplied context
+parsePermsString :: MonadFail m => String -> PermEnv -> ParsedCtx ctx ->
+                    String -> m (MbValuePerms ctx)
+parsePermsString nm env ctx =
+  runPermParseM nm env (parseSortedMbValuePerms ctx)
+
 -- | Parse a 'FunPerm' named by the first 'String' from the second 'String'
 parseFunPermString :: MonadFail m => String -> PermEnv -> CruCtx args ->
                       TypeRepr ret -> String -> m (SomeFunPerm args ret)
 parseFunPermString nm env args ret str =
   runPermParseM nm env (parseFunPermM args ret) str
 
+-- | Parse a type context @x1:tp1, x2:tp2, ...@ named by the first 'String' from
+-- the second 'String' and return a 'ParsedCtx', which contains both the
+-- variable names @xi@ and their types @tpi@
+parseParsedCtxString :: MonadFail m => String -> PermEnv -> String ->
+                        m (Some ParsedCtx)
+parseParsedCtxString nm env str = runPermParseM nm env parseCtx str
+
 -- | Parse a type context named by the first 'String' from the second 'String'
 parseCtxString :: MonadFail m => String -> PermEnv -> String -> m (Some CruCtx)
 parseCtxString nm env str =
-  runPermParseM nm env parseCtx str >>= \some_ctx ->
-  case some_ctx of
-    Some (ParsedCtx _ ctx) -> return $ Some ctx
+  fmapF parsedCtxCtx <$> parseParsedCtxString nm env str
 
 -- | Parse a type named by the first 'String' from the second 'String'
 parseTypeString :: MonadFail m => String -> PermEnv -> String ->
