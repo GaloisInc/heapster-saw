@@ -45,7 +45,8 @@ import Control.Monad.Cont
 import What4.ProgramLoc
 
 import Data.Binding.Hobbits
-import Data.Binding.Hobbits.Mb (mbLift2)
+import Data.Binding.Hobbits.Liftable()
+import Data.Binding.Hobbits.Mb (extMb, mbLift2)
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Type.RList (mapRListTail)
@@ -1024,9 +1025,6 @@ permTransPermEq :: PermTrans ctx a -> Mb ctx (ValuePerm a) -> Bool
 permTransPermEq ptrans mb_p =
   permTransPerm (mbToProxy mb_p) ptrans == mb_p
 
--- FIXME HERE: move this to Hobbits
-extMb :: Mb ctx a -> Mb (ctx :> tp) a
-extMb = mbCombine . fmap (nu . const)
 
 extsMb :: CruCtx ctx2 -> Mb ctx a -> Mb (ctx :++: ctx2) a
 extsMb ctx = mbCombine . fmap (nus (cruCtxProxies ctx) . const)

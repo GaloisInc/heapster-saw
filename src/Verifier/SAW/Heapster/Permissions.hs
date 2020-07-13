@@ -40,6 +40,8 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Lens hiding ((:>), Index, Empty)
 
+import Data.Binding.Hobbits.Liftable
+-- import Data.Binding.Hobbits.MonadBind as MB
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 
@@ -51,7 +53,7 @@ import Data.Parameterized.TraversableFC
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
-import Lang.Crucible.Types
+import Lang.Crucible.Types hiding ((:>))
 import Lang.Crucible.FunctionHandle
 import Lang.Crucible.LLVM.MemModel
 import Lang.Crucible.CFG.Core
@@ -68,7 +70,6 @@ import Debug.Trace
 ----------------------------------------------------------------------
 
 -- FIXME HERE: move all of the below to Hobbits!
-
 type RNil = 'RNil
 type (:>) = '(:>)
 
@@ -115,6 +116,7 @@ instance (MonadStrongBind m, BindState s) => MonadStrongBind (StateT s m) where
   strongMbM mb_m = StateT $ \s ->
     strongMbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
     return (fmap fst mb_as, bindState (fmap snd mb_as))
+
 
 -- | A monad whose effects are closed
 class Monad m => MonadClosed m where
@@ -223,13 +225,6 @@ instance PermPretty (MapRList Name (ctx :: RList CrucibleType)) where
     do pp_ns <- permPrettyM ns
        pp_n <- permPrettyM n
        return (pp_ns <> comma <+> pp_n)
-
--- FIXME: move to Hobbits...?
-{-
-instance TraversableFC MapRList where
-  traverseFC _ MNil = pure MNil
-  traverseFC f (xs :>: x) = (:>:) <$> traverseFC f xs <*> f x
--}
 
 -- FIXME: this is just TraversableFC without having an orphan instance...
 traverseMapRList :: Applicative m => (forall a. f a -> m (g a)) ->
@@ -1222,12 +1217,6 @@ instance Eq (DistPerms ps) where
     case testEquality perms1 perms2 of
       Just _ -> True
       Nothing -> False
-
--- FIXME: move to Hobbits!
-instance Eq a => Eq (Mb ctx a) where
-  mb1 == mb2 =
-    mbLift $ nuMultiWithElim (\_ (_ :>: a1 :>: a2) ->
-                               a1 == a2) (MNil :>: mb1 :>: mb2)
 
 instance Eq (ValuePerm a) where
   (ValPerm_Eq e1) == (ValPerm_Eq e2) = e1 == e2

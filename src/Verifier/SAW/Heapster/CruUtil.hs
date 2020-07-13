@@ -74,25 +74,6 @@ projReifiesObj (ReifiesObj prx) = reflect prx
 unsafeMbTypeRepr :: MbTypeRepr a
 unsafeMbTypeRepr = isoMbTypeRepr mkReifiesObj projReifiesObj
 
--- FIXME: move to Hobbits
-instance Closable Bool where
-  toClosed True = $(mkClosed [| True |])
-  toClosed False = $(mkClosed [| False |])
-
--- FIXME: move to Hobbits
-instance Closable Char where
-  toClosed = unsafeClose
-
--- FIXME: move to Hobbits
-instance Closable Int where
-  toClosed = unsafeClose
-
--- FIXME: move to Hobbits
-instance Closable a => Closable [a] where
-  toClosed [] = $(mkClosed [| [] |])
-  toClosed (a:as) =
-    $(mkClosed [| (:) |]) `clApply` toClosed a `clApply` toClosed as
-
 instance NuMatching Ident where
   nuMatchingProof = unsafeMbTypeRepr
 
@@ -254,7 +235,6 @@ $(mkNuMatching [t| forall blocks tp. BlockID blocks tp |])
 
 instance NuMatching (NoAssertionClassifier f) where
   nuMatchingProof = unsafeMbTypeRepr
-
 
 instance Closable (BadBehavior e) where
   toClosed = unsafeClose
