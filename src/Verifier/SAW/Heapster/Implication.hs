@@ -41,6 +41,7 @@ import Control.Monad.Trans
 import Control.Monad.State
 import Control.Monad.Trans.Maybe
 
+import Data.Binding.Hobbits.Mb (mbLift2)
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 
@@ -60,10 +61,6 @@ import Verifier.SAW.Heapster.Permissions
 
 import Debug.Trace
 
-
--- | FIXME: figure out a better name and move to Hobbits
-mbMap2 :: (a -> b -> c) -> Mb ctx a -> Mb ctx b -> Mb ctx c
-mbMap2 f mb1 mb2 = fmap f mb1 `mbApply` mb2
 
 ----------------------------------------------------------------------
 -- * Permission Implications
@@ -1580,7 +1577,7 @@ embedMbImplM :: Mb ctx (PermSet ps_in) ->
 embedMbImplM mb_ps_in mb_m =
   gget >>>= \s ->
   liftGenStateContM $
-  strongMbM (mbMap2
+  strongMbM (mbLift2
        (\ps_in m ->
          runImplM CruCtxNil ps_in
          (view implStatePermEnv s) (view implStatePPInfo s)

@@ -21,6 +21,7 @@ import Data.Reflection
 import Data.List.NonEmpty (NonEmpty(..))
 
 import Data.Binding.Hobbits
+import Data.Binding.Hobbits.NuMatching
 
 import What4.ProgramLoc
 import Data.Parameterized.Context hiding ((:>), empty, take, view)
@@ -53,22 +54,6 @@ import Verifier.SAW.OpenTerm
 ----------------------------------------------------------------------
 -- * Building 'NuMatching' and 'Closable' Instances for Crucible Types
 ----------------------------------------------------------------------
-
--- | Typeclass for lifting the 'NuMatching' constraint to functors on arbitrary
--- kinds that do not require any constraints on their input types
-class NuMatchingAny1 (f :: k -> Type) where
-  nuMatchingAny1Proof :: MbTypeRepr (f a)
-
-instance {-# INCOHERENT #-} NuMatchingAny1 f => NuMatching (f a) where
-  nuMatchingProof = nuMatchingAny1Proof
-
--- FIXME: move to Hobbits
-instance NuMatchingAny1 Name where
-  nuMatchingAny1Proof = nuMatchingProof
-
--- FIXME: move to Hobbits
-instance NuMatchingAny1 ((:~:) a) where
-  nuMatchingAny1Proof = nuMatchingProof
 
 -- | A reification of an object of type @a@ at type level
 data ReifiesObj a = forall s. Reifies s a => ReifiesObj (Proxy s)
