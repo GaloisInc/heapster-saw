@@ -45,6 +45,7 @@ import Control.Monad.Reader
 import Text.PrettyPrint.ANSI.Leijen (pretty)
 
 import Data.Binding.Hobbits
+import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Binding.Hobbits.Mb (mbLift2)

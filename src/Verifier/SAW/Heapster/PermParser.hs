@@ -27,6 +27,7 @@ import qualified Control.Monad.Fail as Fail
 import Control.Monad.Identity
 import Control.Monad.Reader
 import Data.Binding.Hobbits
+import Data.Binding.Hobbits.MonadBind
 
 import Text.Parsec
 import Text.Parsec.Error
