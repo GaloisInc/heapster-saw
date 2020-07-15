@@ -41,7 +41,7 @@ import Control.Monad.Trans
 import Control.Monad.State
 import Control.Monad.Trans.Maybe
 
-import Data.Binding.Hobbits.Mb
+import Data.Binding.Hobbits.Mb (mbMap2)
 import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap

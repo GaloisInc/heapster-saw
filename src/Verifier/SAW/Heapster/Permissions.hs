@@ -40,6 +40,7 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Lens hiding ((:>), Index, Empty)
 
+import Data.Binding.Hobbits.Closed
 import Data.Binding.Hobbits.Liftable
 import Data.Binding.Hobbits.MonadBind as MB
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
@@ -67,6 +68,9 @@ import Debug.Trace
 ----------------------------------------------------------------------
 -- * Pretty-printing
 ----------------------------------------------------------------------
+
+type RNil = 'RNil
+type (:>) = '(:>)
 
 newtype StringF a = StringF { unStringF :: String }
 
