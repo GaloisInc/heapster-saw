@@ -48,7 +48,7 @@ import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
-import Data.Binding.Hobbits.Mb (mbLift2)
+import Data.Binding.Hobbits.Mb (mbMap2)
 
 import Data.Parameterized.Context hiding ((:>), empty, take, view, last)
 import qualified Data.Parameterized.Context as Ctx
@@ -2577,9 +2577,9 @@ buildInputPermsH :: Mb ghosts (DistPerms ghosts) ->
                     Mb ghosts (MapRList Name args) ->
                     MbDistPerms (ghosts :++: args)
 buildInputPermsH mb_perms mb_args =
-  mbCombine $ mbLift2 (\perms args ->
-                         nuMulti args $ \arg_vars ->
-                         appendDistPerms perms (mkEqVarPerms arg_vars args))
+  mbCombine $ mbMap2 (\perms args ->
+                        nuMulti args $ \arg_vars ->
+                        appendDistPerms perms (mkEqVarPerms arg_vars args))
   mb_perms mb_args
 
 buildInputPerms :: PPInfo -> MapRList Name (ghosts :: RList CrucibleType) ->
@@ -2638,7 +2638,7 @@ tcJumpTarget ctx (JumpTarget blkID arg_tps args) =
           -- Test that perms_out agrees with stRetPerms
           case stRetPerms st of
             Some (RetPerms ret_perms)
-              | [nuP| Just Refl |] <- mbLift2 testEquality ret_perms perms_out ->
+              | [nuP| Just Refl |] <- mbMap2 testEquality ret_perms perms_out ->
                 pcmRunImplM CruCtxNil target_t (proveVarsImpl $
                                                 distPermsToExDistPerms perms_in)
             _ -> greturn (PermImpl_Step

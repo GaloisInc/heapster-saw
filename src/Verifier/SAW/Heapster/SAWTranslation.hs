@@ -46,7 +46,7 @@ import What4.ProgramLoc
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.Liftable()
-import Data.Binding.Hobbits.Mb (extMb, mbLift2)
+import Data.Binding.Hobbits.Mb (extMb, mbMap2)
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Type.RList (mapRListTail)
@@ -996,7 +996,7 @@ permCtxToTerms =
 permTransPerm :: MapRList Proxy ctx -> PermTrans ctx a -> Mb ctx (ValuePerm a)
 permTransPerm _ (PTrans_Eq e) = fmap ValPerm_Eq e
 permTransPerm prxs (PTrans_Conj ts) =
-  fmap ValPerm_Conj $ foldr (mbLift2 (:)) (nuMulti prxs $ const []) $
+  fmap ValPerm_Conj $ foldr (mbMap2 (:)) (nuMulti prxs $ const []) $
   map (atomicPermTransPerm prxs) ts
 permTransPerm _ (PTrans_Term p _) = p
 
@@ -1079,11 +1079,11 @@ offsetLLVMAtomicPermTrans :: Mb ctx (PermExpr (BVType w)) ->
                              AtomicPermTrans ctx (LLVMPointerType w) ->
                              Maybe (AtomicPermTrans ctx (LLVMPointerType w))
 offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMField fld ptrans) =
-  Just $ APTrans_LLVMField (mbLift2 offsetLLVMFieldPerm mb_off fld) ptrans
+  Just $ APTrans_LLVMField (mbMap2 offsetLLVMFieldPerm mb_off fld) ptrans
 offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMArray
                                   (LLVMArrayPermTrans ap len flds bs t)) =
   Just $ APTrans_LLVMArray $
-  LLVMArrayPermTrans (mbLift2 offsetLLVMArrayPerm mb_off ap) len flds bs t
+  LLVMArrayPermTrans (mbMap2 offsetLLVMArrayPerm mb_off ap) len flds bs t
 offsetLLVMAtomicPermTrans _ (APTrans_LLVMFree _) = Nothing
 offsetLLVMAtomicPermTrans _ (APTrans_LLVMFunPtr _ _) = Nothing
 offsetLLVMAtomicPermTrans _ p@APTrans_IsLLVMPtr = Just p
@@ -1099,7 +1099,7 @@ llvmArrayTransAddBorrow :: LLVMArrayBorrowTrans ctx w ->
                            LLVMArrayPermTrans ctx w
 llvmArrayTransAddBorrow b arr_trans =
   arr_trans { llvmArrayTransPerm =
-                mbLift2 llvmArrayAddBorrow (llvmArrayBorrowTransBorrow b)
+                mbMap2 llvmArrayAddBorrow (llvmArrayBorrowTransBorrow b)
                 (llvmArrayTransPerm arr_trans)
             , llvmArrayTransBorrows = b : llvmArrayTransBorrows arr_trans }
 
@@ -1107,7 +1107,7 @@ llvmArrayTransAddBorrow b arr_trans =
 llvmArrayTransFindBorrowIx :: Mb ctx (LLVMArrayBorrow w) ->
                              LLVMArrayPermTrans ctx w -> Int
 llvmArrayTransFindBorrowIx b arr_trans =
-  mbLift $ mbLift2 llvmArrayFindBorrow b (llvmArrayTransPerm arr_trans)
+  mbLift $ mbMap2 llvmArrayFindBorrow b (llvmArrayTransPerm arr_trans)
 
 -- | Find the index in the list of borrows of a specific borrow
 llvmArrayTransFindBorrow :: Mb ctx (LLVMArrayBorrow w) ->
@@ -1123,7 +1123,7 @@ llvmArrayTransRemBorrow :: LLVMArrayBorrowTrans ctx w ->
 llvmArrayTransRemBorrow b_trans arr_trans =
   let b = llvmArrayBorrowTransBorrow b_trans in
   arr_trans { llvmArrayTransPerm =
-                mbLift2 llvmArrayRemBorrow b (llvmArrayTransPerm arr_trans)
+                mbMap2 llvmArrayRemBorrow b (llvmArrayTransPerm arr_trans)
             , llvmArrayTransBorrows =
                 deleteNth (llvmArrayTransFindBorrowIx b arr_trans)
                 (llvmArrayTransBorrows arr_trans) }
@@ -1194,19 +1194,19 @@ permTransInLifetime _ p@(PTrans_Eq _) = p
 permTransInLifetime l (PTrans_Conj ps) =
   PTrans_Conj $ map (atomicPermTransInLifetime l) ps
 permTransInLifetime l (PTrans_Term p t) =
-  PTrans_Term (mbLift2 inLifetime l p) t
+  PTrans_Term (mbMap2 inLifetime l p) t
 
 -- | Like 'permTransInLifetime' but for atomic permission translations
 atomicPermTransInLifetime :: Mb ctx (PermExpr LifetimeType) ->
                      AtomicPermTrans ctx a ->
                      AtomicPermTrans ctx a
 atomicPermTransInLifetime l (APTrans_LLVMField fld ptrans) =
-  APTrans_LLVMField (mbLift2 inLifetime l fld) $
+  APTrans_LLVMField (mbMap2 inLifetime l fld) $
   permTransInLifetime l ptrans
 atomicPermTransInLifetime l (APTrans_LLVMArray
                              (LLVMArrayPermTrans ap len flds bs t)) =
   APTrans_LLVMArray $
-  LLVMArrayPermTrans (mbLift2 inLifetime l ap) len
+  LLVMArrayPermTrans (mbMap2 inLifetime l ap) len
   (fmap (map (atomicPermTransInLifetime l)) flds)
   bs
   t
@@ -1215,7 +1215,7 @@ atomicPermTransInLifetime _ p@(APTrans_LLVMFunPtr _ _) = p
 atomicPermTransInLifetime _ p@APTrans_IsLLVMPtr = p
 atomicPermTransInLifetime _ p@(APTrans_LLVMFrame _) = p
 atomicPermTransInLifetime l (APTrans_LifetimePerm p) =
-  APTrans_LifetimePerm $ mbLift2 inLifetime l p
+  APTrans_LifetimePerm $ mbMap2 inLifetime l p
 atomicPermTransInLifetime _ p@(APTrans_Fun _ _) = p
 atomicPermTransInLifetime _ p@(APTrans_BVProp _) = p
 
@@ -1288,7 +1288,7 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
   -- represented as bvslt (e-off) len = True
   translate prop@[nuP| BVProp_InRange e (BVRange off len) |] =
     do let w = natVal4 e
-       t_sub <- translate1 (mbLift2 bvSub e off)
+       t_sub <- translate1 (mbMap2 bvSub e off)
        t_len <- translate1 len
        return $ flip mkTypeTrans1 (BVPropTrans prop)
          (dataTypeOpenTerm "Prelude.EqP"
@@ -1407,7 +1407,7 @@ translateLLVMArrayBorrow :: (1 <= w, KnownNat w, TransInfo info) =>
                             TransM info ctx (TypeTrans
                                              (LLVMArrayBorrowTrans ctx w))
 translateLLVMArrayBorrow mb_ap mb_b =
-  do let mb_prop = mbLift2 llvmArrayBorrowInArrayBase mb_ap mb_b
+  do let mb_prop = mbMap2 llvmArrayBorrowInArrayBase mb_ap mb_b
      prop_trans <- translate mb_prop
      return (LLVMArrayBorrowTrans mb_b <$> prop_trans)
 
@@ -1889,7 +1889,7 @@ translateSimplImpl _ [nuP| SImpl_IntroOrL _ p1 p2 |] m =
      tp2 <- translate p2
      withPermStackM id
        (\(ps :>: p_top) ->
-         ps :>: PTrans_Term (mbLift2 ValPerm_Or p1 p2) (leftTrans tp1 tp2 p_top))
+         ps :>: PTrans_Term (mbMap2 ValPerm_Or p1 p2) (leftTrans tp1 tp2 p_top))
        m
 
 translateSimplImpl _ [nuP| SImpl_IntroOrR _ p1 p2 |] m =
@@ -1897,7 +1897,7 @@ translateSimplImpl _ [nuP| SImpl_IntroOrR _ p1 p2 |] m =
      tp2 <- translate p2
      withPermStackM id
        (\(ps :>: p_top) ->
-         ps :>: PTrans_Term (mbLift2 ValPerm_Or p1 p2) (rightTrans tp1 tp2 p_top))
+         ps :>: PTrans_Term (mbMap2 ValPerm_Or p1 p2) (rightTrans tp1 tp2 p_top))
        m
 
 translateSimplImpl _ [nuP| SImpl_IntroExists _ e p |] m =
@@ -1977,14 +1977,14 @@ translateSimplImpl _ [nuP| SImpl_CastLLVMWord _ _ e2 |] m =
 translateSimplImpl _ [nuP| SImpl_InvertLLVMOffsetEq mb_x mb_off mb_y |] m =
   withPermStackM
   ((:>: translateVar mb_y) . mapRListTail)
-  ((:>: PTrans_Eq (mbLift2 (\x off -> PExpr_LLVMOffset x $
+  ((:>: PTrans_Eq (mbMap2 (\x off -> PExpr_LLVMOffset x $
                                      bvNegate off) mb_x mb_off)) . mapRListTail)
   m
 
 translateSimplImpl _ [nuP| SImpl_OffsetLLVMWord _ mb_e mb_off mb_x |] m =
   withPermStackM
   ((:>: translateVar mb_x) . mapRListTail . mapRListTail)
-  ((:>: PTrans_Eq (mbLift2 (\e off -> PExpr_LLVMWord $ bvAdd e off)
+  ((:>: PTrans_Eq (mbMap2 (\e off -> PExpr_LLVMWord $ bvAdd e off)
                    mb_e mb_off)) . mapRListTail . mapRListTail)
   m
 
@@ -2007,7 +2007,7 @@ translateSimplImpl _ [nuP| SImpl_CastLLVMFieldOffset _ _ mb_off |] m =
     let (mb_fld,ptrans') =
           unPTransLLVMField "translateSimplImpl: SImpl_CastLLVMPtr" ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
-                          (mbLift2 (\fld off -> fld { llvmFieldOffset = off })
+                          (mbMap2 (\fld off -> fld { llvmFieldOffset = off })
                            mb_fld mb_off)
                           ptrans'])
   m
@@ -2025,7 +2025,7 @@ translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeCurrent _ _ _ mb_l |] m =
           unPTransLLVMField
           "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent" ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
-                          (mbLift2 (\fp l -> fp { llvmFieldLifetime = l })
+                          (mbMap2 (\fp l -> fp { llvmFieldLifetime = l })
                            mb_fld mb_l)
                           ptrans'])
   m
@@ -2037,7 +2037,7 @@ translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeAlways _ _ mb_l |] m =
           unPTransLLVMField
           "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent" ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
-                          (mbLift2 (\fp l -> fp { llvmFieldLifetime = l })
+                          (mbMap2 (\fp l -> fp { llvmFieldLifetime = l })
                            mb_fld mb_l)
                           ptrans'])
   m
@@ -2070,7 +2070,7 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayCopy _ mb_ap mb_rng |] m =
                "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans in
          pctx :>: PTrans_Conj [APTrans_LLVMArray ap t] :>:
          PTrans_Conj [APTrans_LLVMArray
-                      (mbLift2 $ \ap rng ->
+                      (mbMap2 $ \ap rng ->
                         ap { llvmArrayOffset = bvRangeOffset rng,
                              llvmArrayLen = bvRangeLength rng })
                       (applyOpenTermMulti
@@ -2188,7 +2188,7 @@ translateSimplImpl _ [nuP| SImpl_LCurrentTrans l1 l2 l3 |] m =
 
 translateSimplImpl _ [nuP| SImpl_FoldRec x rp args |] m =
   do args_trans <- translate args
-     ttrans <- translate $ mbLift2 ValPerm_Named (fmap recPermName rp) args
+     ttrans <- translate $ mbMap2 ValPerm_Named (fmap recPermName rp) args
      let fold_ident = mbLift $ fmap recPermFoldFun rp
      withPermStackM id
        (\(pctx :>: ptrans_x) ->
@@ -2200,7 +2200,7 @@ translateSimplImpl _ [nuP| SImpl_FoldRec x rp args |] m =
 
 translateSimplImpl _ [nuP| SImpl_UnfoldRec x rp args |] m =
   do args_trans <- translate args
-     ttrans <- translate $ mbLift2 unfoldRecPerm rp args
+     ttrans <- translate $ mbMap2 unfoldRecPerm rp args
      let unfold_ident = mbLift $ fmap recPermUnfoldFun rp
      withPermStackM id
        (\(pctx :>: ptrans_x) ->
@@ -2284,7 +2284,7 @@ translatePermImpl1 [nuP| Impl1_Pop x p |] [nuP| MbPermImpls_Cons _ mb_impl |] =
 -- An or elimination performs a pattern-match on an Either
 translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |]
   [nuP| MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2 |] =
-  do assertTopPermM "Impl1_ElimOr" x (mbLift2 ValPerm_Or p1 p2)
+  do assertTopPermM "Impl1_ElimOr" x (mbMap2 ValPerm_Or p1 p2)
      tp1 <- translate p1
      tp2 <- translate p2
      tp_ret <- compReturnTypeTransM
@@ -2342,7 +2342,7 @@ translatePermImpl1 [nuP| Impl1_ElimLLVMFieldContents
 -- elimination
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) _ |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
-  | mbLift (mbLift2 bvEq e1 e2) =
+  | mbLift (mbMap2 bvEq e1 e2) =
     do bv_tp <- typeTransType1 <$> translateClosed (mbExprType e1)
        e1_trans <- translate1 e1
        let pf = ctorOpenTerm "Prelude.ReflP" [bv_tp, e1_trans]
@@ -2379,7 +2379,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) prop_str
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
                         prop@(BVProp_InRange e (BVRange off len)) _ |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
-  | mbLift (mbLift2 bvLt (mbLift2 bvSub e off) len) =
+  | mbLift (mbMap2 bvLt (mbMap2 bvSub e off) len) =
     withPermStackM (:>: translateVar x)
     (:>: bvPropPerm (BVPropTrans prop
                      (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
@@ -2399,7 +2399,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
            (translate $ mbCombine mb_impl))
        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvultWithProof")
          [ return (natOpenTerm $ natVal2 prop)
-         , translate1 (mbLift2 bvSub e off), translate1 len]
+         , translate1 (mbMap2 bvSub e off), translate1 len]
        ]
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
@@ -2409,7 +2409,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
   [ compReturnTypeM
   , applyMultiTransM (return $ globalOpenTerm "Prelude.bvult")
-    [ return (natOpenTerm w), translate1 (mbLift2 bvSub e off), translate1 len ]
+    [ return (natOpenTerm w), translate1 (mbMap2 bvSub e off), translate1 len ]
   , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
   , withPermStackM (:>: translateVar x)
     (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)])
@@ -2908,7 +2908,7 @@ translateLLVMStmt [nuP| OffsetLLVMValue x off |] m =
   inExtTransM ETrans_LLVM $
   withPermStackM (:>: Member_Base)
   (:>: (PTrans_Eq $ extMb $
-        mbLift2 PExpr_LLVMOffset (fmap typedRegVar x) off))
+        mbMap2 PExpr_LLVMOffset (fmap typedRegVar x) off))
   m
 
 translateLLVMStmt [nuP| TypedLLVMLoad _ (mb_fp :: LLVMFieldPerm w)
@@ -2943,7 +2943,7 @@ translateLLVMStmt [nuP| TypedLLVMStore _ (mb_fp :: LLVMFieldPerm w) mb_e
   (\(splitMapRList prx_ps prx_l -> (pctx :>: p_ptr, pctx_l)) ->
     appendMapRList
     (pctx :>: PTrans_Conj [APTrans_LLVMField
-                           (extMb $ mbLift2 (\fp e ->
+                           (extMb $ mbMap2 (\fp e ->
                                              fp { llvmFieldContents =
                                                     ValPerm_Eq e })
                             mb_fp mb_e)
@@ -2985,7 +2985,7 @@ translateLLVMStmt [nuP| TypedLLVMLoadHandle _ mb_fun_perm |] m =
   inExtTransM ETrans_Fun $
   withPermStackM ((:>: Member_Base) . mapRListTail)
   (\(pctx :>: PTrans_Conj [APTrans_LLVMFunPtr mb_fun_perm' t]) ->
-    case mbLift2 funPermEq3 (extMb mb_fun_perm) mb_fun_perm' of
+    case mbMap2 funPermEq3 (extMb mb_fun_perm) mb_fun_perm' of
       [nuP| Just (Refl, Refl, Refl) |] ->
         pctx :>: PTrans_Conj [APTrans_Fun (extMb mb_fun_perm) t]
       _ -> error ("translateLLVMStmt: TypedLLVMLoadHandle: "
@@ -3015,7 +3015,7 @@ instance PermCheckExtC ext =>
          (TypedRet ret ps) OpenTerm where
   translate [nuP| TypedRet tp r mb_perms |] =
     do let perms =
-             mbLift2
+             mbMap2
              (\reg mbps -> varSubst (singletonVarSubst $ typedRegVar reg) mbps)
              r mb_perms
        assertPermStackEqM "TypedRet" perms

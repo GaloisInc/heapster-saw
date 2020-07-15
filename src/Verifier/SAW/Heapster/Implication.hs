@@ -41,7 +41,7 @@ import Control.Monad.Trans
 import Control.Monad.State
 import Control.Monad.Trans.Maybe
 
-import Data.Binding.Hobbits.Mb (mbLift2)
+import Data.Binding.Hobbits.Mb
 import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
@@ -1578,7 +1578,7 @@ embedMbImplM :: Mb ctx (PermSet ps_in) ->
 embedMbImplM mb_ps_in mb_m =
   gget >>>= \s ->
   liftGenStateContM $
-  strongMbM (mbLift2
+  strongMbM (mbMap2
        (\ps_in m ->
          runImplM CruCtxNil ps_in
          (view implStatePermEnv s) (view implStatePPInfo s)
