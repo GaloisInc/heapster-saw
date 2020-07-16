@@ -1848,6 +1848,15 @@ implPushMultiM DistPermsNil = greturn ()
 implPushMultiM (DistPermsCons ps x p) =
   implPushMultiM ps >>> implPushM x p
 
+-- | For each permission @x:p@ in a list of permissions, either prove @x:eq(x)@
+-- by reflexivity if @p=eq(x)@ or push @x:p@ if @x@ has permissions @p@
+implPushOrReflMultiM :: DistPerms ps -> ImplM vars s r ps RNil ()
+implPushOrReflMultiM DistPermsNil = greturn ()
+implPushOrReflMultiM (DistPermsCons ps x (ValPerm_Eq (PExpr_Var x')))
+  | x == x' = implPushOrReflMultiM ps >>> introEqReflM x
+implPushOrReflMultiM (DistPermsCons ps x p) =
+  implPushOrReflMultiM ps >>> implPushM x p
+
 -- | Pop a permission from the top of the stack back to the primary permission
 -- for a variable, assuming that the primary permission for that variable is
 -- empty, i.e., is the @true@ permission
@@ -3306,3 +3315,11 @@ proveVarsImplAppend :: ExDistPerms vars ps' ->
 proveVarsImplAppend ExDistPermsNil = return ()
 proveVarsImplAppend (ExDistPermsCons ps x p) =
   proveVarsImplAppend ps >>> proveVarImpl x p
+
+-- | Prove a list of existentially-quantified distinguished permissions where
+-- some of the variables holding the permissions could themselves be
+-- existentially-quantified. This only works in a limited set of cases for what
+-- permissions are on the existentially-quantified variables.
+proveExVarsImpl :: Mb vars (DistPerms as) ->
+                   ImplM vars s r as RNil (PermVarSubst vars)
+proveExVarsImpl _ = error "FIXME HERE NOWNOW"

@@ -1989,6 +1989,12 @@ trueValuePerms CruCtxNil = ValPerms_Nil
 trueValuePerms (CruCtxCons ctx _) =
   ValPerms_Cons (trueValuePerms ctx) ValPerm_True
 
+-- | Create a list of @eq(xi)@ permissions from a list of variables @x1,x2,...@
+eqValuePerms :: MapRList Name ps -> ValuePerms ps
+eqValuePerms MNil = ValPerms_Nil
+eqValuePerms (xs :>: x) =
+  ValPerms_Cons (eqValuePerms xs) (ValPerm_Eq (PExpr_Var x))
+
 -- | Append two lists of permissions
 appendValuePerms :: ValuePerms ps1 -> ValuePerms ps2 -> ValuePerms (ps1 :++: ps2)
 appendValuePerms ps1 ValPerms_Nil = ps1
@@ -2043,6 +2049,21 @@ appendDistPerms :: DistPerms ps1 -> DistPerms ps2 -> DistPerms (ps1 :++: ps2)
 appendDistPerms ps1 DistPermsNil = ps1
 appendDistPerms ps1 (DistPermsCons ps2 x p) =
   DistPermsCons (appendDistPerms ps1 ps2) x p
+
+-- | Filter a list of distinguished permissions using a predicate
+filterDistPerms :: (forall a. Name a -> ValuePerm a -> Bool) ->
+                   DistPerms ps -> Some DistPerms
+filterDistPerms _ DistPermsNil = Some DistPermsNil
+filterDistPerms pred (DistPermsCons ps x p)
+  | pred x p
+  , Some ps' <- filterDistPerms pred ps = Some (DistPermsCons ps' x p)
+filterDistPerms pred (DistPermsCons ps _ _) = filterDistPerms pred ps
+
+-- | Build a list of distinguished permissions from a list of variables
+buildDistPerms :: (forall a. Name a -> ValuePerm a) -> MapRList Name ps ->
+                  DistPerms ps
+buildDistPerms _ MNil = DistPermsNil
+buildDistPerms f (ns :>: n) = DistPermsCons (buildDistPerms f ns) n (f n)
 
 -- | Split a list of distinguished permissions into two
 splitDistPerms :: f ps1 -> MapRList g ps2 -> DistPerms (ps1 :++: ps2) ->
@@ -3068,12 +3089,17 @@ absVarsReturnH fs1 fs2 cl_a =
            `clApply` closedProxies fs1 `clApply` closedProxies fs2
            `clApply` cl_a)
 
+-- FIXME: Hobbits should have a Closable instance for MapRList that replaces
+-- this; that instance should use a Closable1 class for the first type argument
+-- of MapRList, which here is Proxy
 closedProxies :: MapRList f args -> Closed (MapRList Proxy args)
 closedProxies MNil = $(mkClosed [| MNil |])
 closedProxies (args :>: _) =
   $(mkClosed [| (:>:) |]) `clApply` closedProxies args
   `clApply` $(mkClosed [| Proxy |])
 
+-- FIXME: a more general version of this (call it something like findMember?)
+-- should go to Hobbits
 nameMember :: forall (ctx :: RList k) (a :: k).
               MapRList Name ctx -> Name a -> Maybe (Member ctx a)
 nameMember MNil _ = Nothing
@@ -3613,6 +3639,12 @@ setVarPerm x p =
   case p' of
     ValPerm_True -> p
     _ -> error "setVarPerm: permission for variable already set!"
+
+-- | Get a permission list for multiple variables
+varPermsMulti :: MapRList Name ns -> PermSet ps -> DistPerms ns
+varPermsMulti MNil _ = DistPermsNil
+varPermsMulti (ns :>: n) ps =
+  DistPermsCons (varPermsMulti ns ps) n (ps ^. varPerm n)
 
 -- | Initialize the primary permission of a variable to @true@ if it is not set
 initVarPerm :: ExprVar a -> PermSet ps -> PermSet ps
