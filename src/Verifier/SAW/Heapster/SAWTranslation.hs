@@ -3339,8 +3339,40 @@ tcTranslateAddCFGs sc mod_name w env cfgs_and_perms =
 ----------------------------------------------------------------------
 
 -- | Translate a 'FunPerm' to the SAW core type it represents
-translateCompleteFunPerm :: SharedContext -> PermEnv ->
+translateCompleteFunPerm :: SharedContext -> TypeTransInfo RNil ->
                             FunPerm ghosts args ret -> IO Term
 translateCompleteFunPerm sc env fun_perm =
   completeOpenTerm sc $
-  runTransM (translate $ emptyMb fun_perm) (emptyTypeTransInfo env)
+  runTransM (translate $ emptyMb fun_perm) env
+
+-- | Translate a 'TypeRepr' to the SAW core type it represents
+translateCompleteType :: SharedContext -> TypeTransInfo RNil ->
+                         TypeRepr tp -> IO Term
+translateCompleteType sc env typ_perm =
+  completeOpenTerm sc $
+  typeTransType1 $
+  runTransM (translate $ emptyMb typ_perm) env
+
+-- | Translate a 'TypeRepr' within the given context of type arguments to the
+-- SAW core type it represents
+translateCompleteTypeInCtx :: SharedContext -> TypeTransInfo RNil ->
+                              CruCtx args -> Mb args (TypeRepr a) -> IO Term
+translateCompleteTypeInCtx sc env args ret =
+  completeOpenTerm sc $
+  runTransM (piExprCtx args (typeTransType1 <$> translate ret')) env
+  where ret' = mbCombine . emptyMb $ ret
+
+-- | Translate a function with arguments and return type given by 'ValuePerm's
+-- to the SAW core type it represents. Note that unlike
+-- 'translateCompleteFunPerm', this does not wrap the return type with CompM.
+translateCompletePureFun :: SharedContext -> TypeTransInfo RNil
+                         -> CruCtx ctx -- ^ Type arguments
+                         -> Mb ctx (ValuePerms args) -- ^ Input perms
+                         -> Mb ctx (ValuePerm ret) -- ^ Return type perm
+                         -> IO Term
+translateCompletePureFun sc env ctx args ret =
+  completeOpenTerm sc $
+  runTransM (piExprCtx ctx $ piPermCtx args' $ const $
+              typeTransType1 <$> translate ret') env
+  where args' = mbCombine . emptyMb $ args
+        ret'  = mbCombine . emptyMb $ ret
