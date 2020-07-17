@@ -1211,6 +1211,26 @@ data DistPerms ps where
 
 type MbDistPerms ps = Mb ps (DistPerms ps)
 
+-- | Combine a list of variable names and a list of permissions into a list of
+-- distinguished permissions
+valuePermsToDistPerms :: MapRList Name ps -> ValuePerms ps -> DistPerms ps
+valuePermsToDistPerms MNil _ = DistPermsNil
+valuePermsToDistPerms (ns :>: n) (ValPerms_Cons ps p) =
+  DistPermsCons (valuePermsToDistPerms ns ps) n p
+
+-- | Convert a list of permissions inside bindings for variables into a list of
+-- distinguished permissions for those variables
+mbValuePermsToDistPerms :: MbValuePerms ps -> MbDistPerms ps
+mbValuePermsToDistPerms = nuMultiWithElim1 valuePermsToDistPerms
+
+distPermsToValuePerms :: DistPerms ps -> ValuePerms ps
+distPermsToValuePerms DistPermsNil = ValPerms_Nil
+distPermsToValuePerms (DistPermsCons dperms _ p) =
+  ValPerms_Cons (distPermsToValuePerms dperms) p
+
+mbDistPermsToValuePerms :: Mb ctx (DistPerms ps) -> Mb ctx (ValuePerms ps)
+mbDistPermsToValuePerms = fmap distPermsToValuePerms
+
 -- | A special-purpose 'DistPerms' that specifies a list of permissions needed
 -- to prove that a lifetime is current
 data LifetimeCurrentPerms ps_l where
@@ -1417,8 +1437,20 @@ instance PermPretty (AtomicPerm a) where
   permPrettyM (Perm_BVProp prop) = permPrettyM prop
 
 instance PermPretty (FunPerm ghosts args ret) where
-  permPrettyM fun_perm =
-    return $ string "<FunPerm (FIXME)>" -- FIXME HERE: implement
+  permPrettyM (FunPerm _ _ _ mb_ps_in mb_ps_out) =
+    -- this pretty prints the context of ghost variables
+    permPrettyM (fmap FunPermIns mb_ps_in `mbApply` mb_ps_out)
+
+-- | The permissions of a 'FunPerm' inside its context of ghost variables
+data FunPermIns args ret where
+  FunPermIns :: MbValuePerms args -> MbValuePerms (args :> ret) ->
+                FunPermIns args ret
+
+instance PermPretty (FunPermIns args ret) where
+  permPrettyM (FunPermIns ps_in ps_out) =
+    do pp_ps_in  <- permPrettyExprMb (const id) (mbValuePermsToDistPerms ps_in )
+       pp_ps_out <- permPrettyExprMb (const id) (mbValuePermsToDistPerms ps_out)
+       return $ pp_ps_in <+> string "-o" <+> pp_ps_out
 
 instance PermPretty (BVRange w) where
   permPrettyM (BVRange e1 e2) =
@@ -2070,26 +2102,6 @@ permListToDistPerms (PExpr_PermListCons (PExpr_Var x) p l) =
   case permListToDistPerms l of
     Some perms -> Some $ DistPermsCons perms x p
 permListToDistPerms (PExpr_PermListCons _ _ l) = permListToDistPerms l
-
--- | Combine a list of variable names and a list of permissions into a list of
--- distinguished permissions
-valuePermsToDistPerms :: MapRList Name ps -> ValuePerms ps -> DistPerms ps
-valuePermsToDistPerms MNil _ = DistPermsNil
-valuePermsToDistPerms (ns :>: n) (ValPerms_Cons ps p) =
-  DistPermsCons (valuePermsToDistPerms ns ps) n p
-
--- | Convert a list of permissions inside bindings for variables into a list of
--- distinguished permissions for those variables
-mbValuePermsToDistPerms :: MbValuePerms ps -> MbDistPerms ps
-mbValuePermsToDistPerms = nuMultiWithElim1 valuePermsToDistPerms
-
-distPermsToValuePerms :: DistPerms ps -> ValuePerms ps
-distPermsToValuePerms DistPermsNil = ValPerms_Nil
-distPermsToValuePerms (DistPermsCons dperms _ p) =
-  ValPerms_Cons (distPermsToValuePerms dperms) p
-
-mbDistPermsToValuePerms :: Mb ctx (DistPerms ps) -> Mb ctx (ValuePerms ps)
-mbDistPermsToValuePerms = fmap distPermsToValuePerms
 
 distPermsToProxies :: DistPerms ps -> MapRList Proxy ps
 distPermsToProxies (DistPermsNil) = MNil
