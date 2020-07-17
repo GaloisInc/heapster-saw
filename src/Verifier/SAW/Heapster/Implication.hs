@@ -1863,7 +1863,7 @@ implFailM str =
 -- | Call 'implFailM' and also output a debugging message
 implFailMsgM :: String -> ImplM vars s r ps_any ps a
 implFailMsgM msg =
-  implTraceM (const $ string (msg ++ "; backtracking...")) >>>= implFailM
+  implTraceM (const $ string msg) >>>= implFailM
 
 -- | Pretty print an implication @x:p -o (vars).p'@
 ppImpl :: PPInfo -> ExprVar tp -> ValuePerm tp ->
@@ -1879,8 +1879,7 @@ implFailVarM :: String -> ExprVar tp -> ValuePerm tp -> Mb vars (ValuePerm tp) -
 implFailVarM f x p mb_p =
   implTraceM (\i ->
                sep [string f <> colon <+> string "Could not prove",
-                    ppImpl i x p mb_p <> string ";",
-                    string "backtracking..."]) >>>=
+                    ppImpl i x p mb_p]) >>>=
   implFailM
 
 -- | Produce a branching proof tree that performs the first implication and, if
@@ -3046,21 +3045,23 @@ proveVarAtomicImpl :: ExprVar a -> [AtomicPerm a] ->
                       Mb vars (AtomicPerm a) ->
                       ImplM vars s r (ps :> a) (ps :> a) ()
 
-proveVarAtomicImpl x ps [nuP| Perm_LLVMField mb_fp |] =
+proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMField mb_fp |] =
   partialSubstForceM (fmap llvmFieldOffset mb_fp)
   "proveVarPtrPerms: incomplete psubst: LLVM field offset" >>>= \off ->
   foldMapWithDefault implCatchM
-  (implFailMsgM "proveVarAtomicImpl: no cases to prove field")
+  (implFailVarM "proveVarAtomicImpl" x (ValPerm_Conj ps) (fmap
+                                                          ValPerm_Conj1 mb_p))
   (\(i,_) -> proveVarLLVMField x ps i off mb_fp)
   (findMaybeIndices (llvmPermContainsOffset off) ps)
 
-proveVarAtomicImpl x ps [nuP| Perm_LLVMArray mb_ap |] =
+proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMArray mb_ap |] =
   partialSubstForceM (fmap llvmArrayOffset mb_ap)
   "proveVarPtrPerms: incomplete psubst: LLVM array offset" >>>= \off ->
   partialSubstForceM (fmap llvmArrayLen mb_ap)
   "proveVarPtrPerms: incomplete psubst: LLVM array length" >>>= \len ->
   foldMapWithDefault implCatchM
-  (implFailMsgM "proveVarAtomicImpl: no cases to prove array")
+  (implFailVarM "proveVarAtomicImpl" x (ValPerm_Conj ps) (fmap
+                                                          ValPerm_Conj1 mb_p))
   (\(i,_) -> proveVarLLVMArray x ps i off len mb_ap)
   (findMaybeIndices (llvmPermContainsOffset off) ps)
 
@@ -3448,7 +3449,7 @@ proveExVarImpl _ mb_x mb_p@[nuP| ValPerm_Conj [Perm_LLVMFrame mb_fperms] |]
     case maybe_n of
       Just n -> setVarM memb (PExpr_Var n) >>> proveVarImpl n mb_p
       Nothing ->
-        implFailMsgM "No LLVM frame pointer in scope"
+        implFailMsgM "proveExVarImpl: No LLVM frame pointer in scope"
 
 -- Otherwise we fail
 proveExVarImpl _ mb_x mb_p =
