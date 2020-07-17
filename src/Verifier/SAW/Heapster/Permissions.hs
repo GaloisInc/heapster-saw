@@ -995,6 +995,9 @@ data ValuePerms as where
   ValPerms_Nil :: ValuePerms RNil
   ValPerms_Cons :: ValuePerms as -> ValuePerm a -> ValuePerms (as :> a)
 
+singletonValuePerms :: ValuePerm a -> ValuePerms (RNil :> a)
+singletonValuePerms = ValPerms_Cons ValPerms_Nil
+
 -- | A binding of 0 or more variables, each with permissions
 type MbValuePerms ctx = Mb ctx (ValuePerms ctx)
 
