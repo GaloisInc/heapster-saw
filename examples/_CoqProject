@@ -10,3 +10,5 @@ xor_swap_rust.v
 xor_swap_rust_proofs.v
 string_set.v
 string_set_proofs.v
+loops.v
+loops_proofs.v

@@ -23,5 +23,5 @@ xor_swap_rust.v: xor_swap_rust.bc xor_swap_rust.saw
 string_set.v: string_set.bc string_set.saw string_set.sawcore
 	stack exec saw string_set.saw
 
-loop.v: loop.bc loop.saw loop.sawcore
-	stack exec saw string_set.saw
+loops.v: loops.bc loops.saw loops.sawcore
+	stack exec saw loops.saw
