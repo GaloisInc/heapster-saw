@@ -129,6 +129,14 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:eq(y) -o y:eq(x)
 
+  SImpl_InvTransEq :: ExprVar a -> ExprVar a -> PermExpr a ->
+                      SimplImpl (RNil :> a :> a) (RNil :> a)
+  -- ^ Prove @x:eq(y)@ by proving equality permissions for both @x@ and @y@ to
+  -- the same expression, thereby implementing a form of transitivity of
+  -- equality where the second equality is inversted:
+  --
+  -- > x:eq(e) * y:eq(e) -o x:eq(y)
+
   -- FIXME HERE: remove this in favor of SImpl_Copy
   SImpl_CopyEq :: ExprVar a -> PermExpr a ->
                   SimplImpl (RNil :> a) (RNil :> a :> a)
@@ -708,6 +716,8 @@ simplImplIn (SImpl_IntroExists x e p) =
 simplImplIn (SImpl_Cast x y p) = distPerms2 x (ValPerm_Eq $ PExpr_Var y) y p
 simplImplIn (SImpl_IntroEqRefl x) = DistPermsNil
 simplImplIn (SImpl_InvertEq x y) = distPerms1 x (ValPerm_Eq $ PExpr_Var y)
+simplImplIn (SImpl_InvTransEq x y e) =
+  distPerms2 x (ValPerm_Eq e) y (ValPerm_Eq e)
 simplImplIn (SImpl_CopyEq x e) = distPerms1 x (ValPerm_Eq e)
 simplImplIn (SImpl_LLVMWordEq x y e) =
   distPerms2 x (ValPerm_Eq (PExpr_LLVMWord (PExpr_Var y))) y (ValPerm_Eq e)
@@ -845,6 +855,7 @@ simplImplOut (SImpl_IntroExists x _ p) = distPerms1 x (ValPerm_Exists p)
 simplImplOut (SImpl_Cast x _ p) = distPerms1 x p
 simplImplOut (SImpl_IntroEqRefl x) = distPerms1 x (ValPerm_Eq $ PExpr_Var x)
 simplImplOut (SImpl_InvertEq x y) = distPerms1 y (ValPerm_Eq $ PExpr_Var x)
+simplImplOut (SImpl_InvTransEq x y e) = distPerms1 x (ValPerm_Eq $ PExpr_Var y)
 simplImplOut (SImpl_CopyEq x e) = distPerms2 x (ValPerm_Eq e) x (ValPerm_Eq e)
 simplImplOut (SImpl_LLVMWordEq x y e) =
   distPerms1 x (ValPerm_Eq (PExpr_LLVMWord e))
@@ -1084,6 +1095,8 @@ instance SubstVar PermVarSubst m =>
     SImpl_IntroEqRefl <$> genSubst s x
   genSubst s [nuP| SImpl_InvertEq x y |] =
     SImpl_InvertEq <$> genSubst s x <*> genSubst s y
+  genSubst s [nuP| SImpl_InvTransEq x y e |] =
+    SImpl_InvTransEq <$> genSubst s x <*> genSubst s y <*> genSubst s e
   genSubst s [nuP| SImpl_CopyEq x e |] =
     SImpl_CopyEq <$> genSubst s x <*> genSubst s e
   genSubst s [nuP| SImpl_LLVMWordEq x y e |] =
@@ -2060,6 +2073,13 @@ introEqReflM x = implSimplM Proxy (SImpl_IntroEqRefl x)
 invertEqM :: ExprVar a -> ExprVar a -> ImplM vars s r (ps :> a) (ps :> a) ()
 invertEqM x y = implSimplM Proxy (SImpl_InvertEq x y)
 
+-- | Prove @x:eq(y)@ by proving equality permissions for both @x@ and @y@ to the
+-- same expression, thereby implementing a form of transitivity of equality
+-- where the second equality is inversted:
+invTransEqM :: ExprVar a -> ExprVar a -> PermExpr a ->
+               ImplM vars s r (ps :> a) (ps :> a :> a) ()
+invTransEqM x y e = implSimplM Proxy (SImpl_InvTransEq x y e)
+
 -- | Copy an @x:eq(e)@ permission on the top of the stack
 introEqCopyM :: ExprVar a -> PermExpr a ->
                 ImplM vars s r (ps :> a :> a) (ps :> a) ()
@@ -2605,6 +2625,21 @@ proveVarEqH x (PExpr_Var y) psubst mb_e =
   partialSubstForceM mb_e
   "proveVarEqH: incomplete psubst" >>>= \e ->
   introCastM x y (ValPerm_Eq e)
+
+-- Prove x:eq(e) |- x:eq(y) when psubst assigned y=e' by proving x:eq(e')
+-- FIXME: we should more generally apply psubst to the RHS before calling proveVarEqH
+proveVarEqH x e psubst [nuP| PExpr_Var mb_y |]
+  | Left memb <- mbNameBoundP mb_y
+  , Just e' <- psubstLookup psubst memb =
+    proveVarEqH x e psubst (fmap (const e') mb_y)
+
+-- Prove x:eq(e) |- x:eq(y) by first proving y:eq(e) and then using inverse
+-- transitivity
+proveVarEqH x e psubst [nuP| PExpr_Var mb_y |]
+  | Right y <- mbNameBoundP mb_y =
+    introEqCopyM x e >>> implPopM x (ValPerm_Eq e) >>>
+    proveVarImpl y (fmap (const $ ValPerm_Eq e) mb_y) >>>
+    invTransEqM x y e
 
 -- Otherwise give up!
 proveVarEqH x e _ mb_e =
