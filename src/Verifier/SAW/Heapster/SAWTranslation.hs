@@ -2260,6 +2260,14 @@ translatePermImpl1 [nuP| Impl1_Simpl simpl prx |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   translateSimplImpl (mbLift prx) simpl $ translate $ mbCombine mb_impl
 
+-- A let binding becomes a let binding
+translatePermImpl1 [nuP| Impl1_LetBind _ e |]
+  [nuP| MbPermImpls_Cons _ mb_impl |] =
+  do etrans <- translate e
+     inExtTransM etrans $
+       withPermStackM (:>: Member_Base) (:>: PTrans_Eq (extMb e)) $
+       translate $ mbCombine mb_impl
+
 translatePermImpl1 [nuP| Impl1_ElimLLVMFieldContents
                         _ mb_fld |] [nuP| MbPermImpls_Cons _ mb_impl |] =
   inExtTransM ETrans_LLVM $
@@ -2697,7 +2705,7 @@ translateApply nm f perms =
 --
 -- FIXME: check that the supplied perms match those expected by the entryID
 translateCallEntryID :: (PermCheckExtC ext,
-                         ps ~ ((tops :++: ghosts) :++: args)) =>
+                         ps ~ ((tops :++: args) :++: ghosts)) =>
                         String -> TypedEntryID blocks args ghosts ->
                         Mb ctx (DistPerms ps) ->
                         ImpTransM ext blocks tops ret ps ctx OpenTerm
@@ -3068,8 +3076,8 @@ translateEntryLRT :: TypedEntry ext blocks tops ret args ->
                      TypeTransM ctx OpenTerm
 translateEntryLRT (TypedEntry entryID tops args ret is_scc perms_in perms_out _) =
   trace "translateEntryLRT starting..." $ inEmptyCtxTransM $
-  translateClosed (appendCruCtx (appendCruCtx tops
-                                 (entryGhosts entryID)) args) >>= \arg_tps ->
+  translateClosed (appendCruCtx (appendCruCtx tops args)
+                   (entryGhosts entryID)) >>= \arg_tps ->
   lambdaLRTTransM "arg" arg_tps $ \ectx ->
   inCtxTransM ectx $
   translate perms_in >>= \perms_in_tps ->
@@ -3130,7 +3138,7 @@ translateEntryBody :: PermCheckExtC ext =>
 translateEntryBody mapTrans (TypedEntry entryID tops args ret _ in_perms
                              ret_perms stmts) =
   inEmptyCtxTransM $
-  lambdaExprCtx (appendCruCtx (appendCruCtx tops (entryGhosts entryID)) args) $
+  lambdaExprCtx (appendCruCtx (appendCruCtx tops args) (entryGhosts entryID)) $
   lambdaPermCtx in_perms $ \pctx ->
   do retType <- translateRetType ret ret_perms
      impTransM (members pctx) pctx mapTrans retType $ translate stmts

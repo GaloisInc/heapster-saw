@@ -63,6 +63,48 @@ import Verifier.SAW.Heapster.CruUtil
 import Debug.Trace
 
 
+-- | FIXME: figure out a better name and move to Hobbits
+mbMap2 :: (a -> b -> c) -> Mb ctx a -> Mb ctx b -> Mb ctx c
+mbMap2 f mb1 mb2 = fmap f mb1 `mbApply` mb2
+
+-- FIXME: move to Hobbits
+foldrMapRList :: (forall a. f a -> r -> r) -> r -> MapRList f ctx -> r
+foldrMapRList _ r MNil = r
+foldrMapRList f r (xs :>: x) = f x $ foldrMapRList f r xs
+
+-- FIXME: move to Hobbits!
+$(mkNuMatching [t| forall f. NuMatchingAny1 f => NameAndElem f |])
+$(mkNuMatching [t| forall a b. NuMatching a => Constant a b |])
+
+instance NuMatching a => NuMatchingAny1 (Constant a) where
+  nuMatchingAny1Proof = nuMatchingProof
+
+-- | Helper function for writing 'FreeVars' instances.
+--
+-- FIXME: some version of this should be in Hobbits!
+liftNameMap :: forall ctx f a. NuMatchingAny1 f =>
+               (forall a. Mb ctx (f a) -> Maybe (f a)) ->
+               Mb ctx (NameMap f) -> NameMap f
+liftNameMap lifter = helper . fmap NameMap.assocs where
+  helper :: Mb ctx [NameAndElem f] -> NameMap f
+  helper [nuP| [] |] = NameMap.empty
+  helper [nuP| (NameAndElem mb_n mb_f):mb_elems |]
+    | Right n <- mbNameBoundP mb_n
+    , Just f <- lifter mb_f
+    = NameMap.insert n f (helper mb_elems)
+  helper [nuP| _:mb_elems |] = helper mb_elems
+
+-- FIXME: move to a new module in Hobbits called NameSet
+type NameSet k = NameMap (Constant () :: k -> Type)
+
+-- FIXME: move to the new Hobbits NameSet module and call it something
+-- appropriate like names
+nameSetNames :: NameSet k -> Some (MapRList (Name :: k -> Type))
+nameSetNames s =
+  foldl (\(Some rets) (NameAndElem r _) -> Some (rets :>: r)) (Some MNil) $
+  NameMap.assocs s
+
+
 ----------------------------------------------------------------------
 -- * Monads that Support Name-Binding
 ----------------------------------------------------------------------
@@ -271,7 +313,7 @@ instance PermPretty a => PermPretty (Mb (ctx :: RList Type) a) where
 ----------------------------------------------------------------------
 
 -- | The Haskell type of expression variables
-type ExprVar (a :: CrucibleType) = Name a
+type ExprVar = (Name :: CrucibleType -> Type)
 
 -- | Crucible type for lifetimes; we give them a Crucible type so they can be
 -- existentially bound in the same way as other Crucible objects
@@ -1958,6 +2000,22 @@ llvmFrameDeletionPerms ((asLLVMOffset -> Just (x,off), sz):fperm')
 llvmFrameDeletionPerms _ =
   error "llvmFrameDeletionPerms: unexpected LLVM word allocated in frame"
 
+-- | Extend a 'PartialSubst' to make two 'LLVMFramePerm's equal, returning
+-- 'Nothing' if that is not possible
+matchFramePerms :: PartialSubst vars -> LLVMFramePerm w ->
+                   Mb vars (LLVMFramePerm w) -> Maybe (PartialSubst vars)
+matchFramePerms psubst [] [nuP| [] |] = return psubst
+matchFramePerms psubst ((e,i):fperms) [nuP| ((mb_e,mb_i)):mb_fperms |]
+  | mbLift mb_i == i
+  , Just e' <- partialSubst psubst mb_e
+  , e == e'
+  = matchFramePerms psubst fperms mb_fperms
+matchFramePerms psubst ((e,i):fperms) [nuP| ((PExpr_Var mb_x,mb_i)):mb_fperms |]
+  | mbLift mb_i == i
+  , Left memb <- mbNameBoundP mb_x
+  = matchFramePerms (psubstSet memb e psubst) fperms mb_fperms
+matchFramePerms _ _ _ = Nothing
+
 -- | Build a 'DistPerms' with just one permission
 distPerms1 :: ExprVar a -> ValuePerm a -> DistPerms (RNil :> a)
 distPerms1 x p = DistPermsCons DistPermsNil x p
@@ -2076,6 +2134,16 @@ splitDistPerms _ = helper where
     let (perms1, perms2) = helper prxs ps in
     (perms1, DistPermsCons perms2 x p)
 
+-- | Split a list of value permissions in bindings into two
+splitMbValuePerms :: f ps1 -> MapRList g ps2 ->
+                     Mb vars (ValuePerms (ps1 :++: ps2)) ->
+                     (Mb vars (ValuePerms ps1), Mb vars (ValuePerms ps2))
+splitMbValuePerms _ MNil mb_perms =
+  (mb_perms, fmap (const ValPerms_Nil) mb_perms)
+splitMbValuePerms prx (ps2 :>: _) [nuP| ValPerms_Cons mb_perms p |] =
+  let (ret1, ret2) = splitMbValuePerms prx ps2 mb_perms in
+  (ret1, mbMap2 ValPerms_Cons ret2 p)
+
 -- | Lens for the top permission in a 'DistPerms' stack
 distPermsHead :: ExprVar a -> Lens' (DistPerms (ps :> a)) (ValuePerm a)
 distPermsHead x =
@@ -2168,6 +2236,109 @@ unfoldRecPerm rp args =
 unfoldDefinedPerm :: DefinedPerm args a -> PermExprs args -> ValuePerm a
 unfoldDefinedPerm dp args =
   subst (substOfExprs args) (definedPermDef dp)
+
+
+-- | Generic function to get free variables
+class FreeVars a where
+  freeVars :: a -> NameSet CrucibleType
+
+instance FreeVars a => FreeVars [a] where
+  freeVars = foldr (NameMap.union . freeVars) NameMap.empty
+
+instance (FreeVars a, FreeVars b) => FreeVars (a,b) where
+  freeVars (a,b) = NameMap.union (freeVars a) (freeVars b)
+
+instance FreeVars (PermExpr a) where
+  freeVars (PExpr_Var x) = NameMap.singleton x (Constant ())
+  freeVars PExpr_Unit = NameMap.empty
+  freeVars (PExpr_Bool _) = NameMap.empty
+  freeVars (PExpr_Nat _) = NameMap.empty
+  freeVars (PExpr_BV factors _) = freeVars factors
+  freeVars (PExpr_Struct elems) = freeVars elems
+  freeVars PExpr_Always = NameMap.empty
+  freeVars (PExpr_LLVMWord e) = freeVars e
+  freeVars (PExpr_LLVMOffset ptr off) =
+    NameMap.insert ptr (Constant ()) (freeVars off)
+  freeVars (PExpr_Fun _) = NameMap.empty
+  freeVars PExpr_PermListNil = NameMap.empty
+  freeVars (PExpr_PermListCons e p ps) =
+    NameMap.union (freeVars e) $ NameMap.union (freeVars p) (freeVars ps)
+  freeVars (PExpr_RWModality _) = NameMap.empty
+  freeVars (PExpr_ValPerm p) = freeVars p
+
+instance FreeVars (BVFactor w) where
+  freeVars (BVFactor _ x) = NameMap.singleton x (Constant ())
+
+instance FreeVars (PermExprs as) where
+  freeVars PExprs_Nil = NameMap.empty
+  freeVars (PExprs_Cons es e) = NameMap.union (freeVars es) (freeVars e)
+
+instance FreeVars (BVRange w) where
+  freeVars (BVRange off len) = NameMap.union (freeVars off) (freeVars len)
+
+instance FreeVars (BVProp w) where
+  freeVars (BVProp_Eq e1 e2) = NameMap.union (freeVars e1) (freeVars e2)
+  freeVars (BVProp_Neq e1 e2) = NameMap.union (freeVars e1) (freeVars e2)
+  freeVars (BVProp_InRange e rng) = NameMap.union (freeVars e) (freeVars rng)
+  freeVars (BVProp_NotInRange e rng) =
+    NameMap.union (freeVars e) (freeVars rng)
+  freeVars (BVProp_RangeSubset rng1 rng2) =
+    NameMap.union (freeVars rng1) (freeVars rng2)
+  freeVars (BVProp_RangesDisjoint rng1 rng2) =
+    NameMap.union (freeVars rng1) (freeVars rng2)
+
+instance FreeVars (AtomicPerm tp) where
+  freeVars (Perm_LLVMField fp) = freeVars fp
+  freeVars (Perm_LLVMArray ap) = freeVars ap
+  freeVars (Perm_LLVMFree e) = freeVars e
+  freeVars (Perm_LLVMFunPtr fun_perm) = freeVars fun_perm
+  freeVars Perm_IsLLVMPtr = NameMap.empty
+  freeVars (Perm_LLVMFrame fperms) = freeVars $ map fst fperms
+  freeVars (Perm_LOwned ps) = freeVars ps
+  freeVars (Perm_LCurrent l) = freeVars l
+  freeVars (Perm_Fun fun_perm) = freeVars fun_perm
+  freeVars (Perm_BVProp prop) = freeVars prop
+
+instance FreeVars (ValuePerm tp) where
+  freeVars (ValPerm_Eq e) = freeVars e
+  freeVars (ValPerm_Or p1 p2) = NameMap.union (freeVars p1) (freeVars p2)
+  freeVars (ValPerm_Exists mb_p) =
+    liftNameMap (const $ Just $ Constant ()) $ fmap freeVars mb_p
+  freeVars (ValPerm_Named _ args) = freeVars args
+  freeVars (ValPerm_Var x) = NameMap.singleton x (Constant ())
+  freeVars (ValPerm_Conj ps) = freeVars ps
+
+instance FreeVars (ValuePerms tps) where
+  freeVars ValPerms_Nil = NameMap.empty
+  freeVars (ValPerms_Cons ps p) = NameMap.union (freeVars ps) (freeVars p)
+
+instance FreeVars (LLVMFieldPerm w) where
+  freeVars (LLVMFieldPerm {..}) =
+    foldr1 NameMap.union [freeVars llvmFieldRW, freeVars llvmFieldLifetime,
+                          freeVars llvmFieldOffset, freeVars llvmFieldContents]
+
+instance FreeVars (LLVMArrayPerm w) where
+  freeVars (LLVMArrayPerm {..}) =
+    foldr1 NameMap.union [freeVars llvmArrayOffset,
+                          freeVars llvmArrayLen,
+                          freeVars llvmArrayFields,
+                          freeVars llvmArrayBorrows]
+
+instance FreeVars (LLVMArrayIndex w) where
+  freeVars (LLVMArrayIndex cell _) = freeVars cell
+
+instance FreeVars (LLVMArrayBorrow w) where
+  freeVars (FieldBorrow ix) = freeVars ix
+  freeVars (RangeBorrow rng) = freeVars rng
+
+instance FreeVars (FunPerm ghosts args ret) where
+  freeVars (FunPerm _ _ _ perms_in perms_out) =
+    NameMap.union
+    (liftNameMap (const $ Just $ Constant ()) $
+     fmap freeVars $ mbCombine perms_in)
+    (liftNameMap (const $ Just $ Constant ()) $
+     fmap freeVars $ mbCombine perms_out)
+
 
 -- | Generic function to test if a permission contains a lifetime
 class ContainsLifetime a where
@@ -3100,16 +3271,24 @@ closedProxies (args :>: _) =
 
 -- FIXME: a more general version of this (call it something like findMember?)
 -- should go to Hobbits
+--
+-- NOTE: this finds the left-most occurrence
 nameMember :: forall (ctx :: RList k) (a :: k).
               MapRList Name ctx -> Name a -> Maybe (Member ctx a)
 nameMember MNil _ = Nothing
-nameMember (_ :>: n1) n2 | Just Refl <- cmpName n1 n2 = Just Member_Base
-nameMember (ns :>: _) n = fmap Member_Step $ nameMember ns n
+nameMember (ns1 :>: n1) n2 =
+  case nameMember ns1 n2 of
+    Just memb -> Just $ Member_Step memb
+    Nothing | Just Refl <- cmpName n1 n2 -> Just Member_Base
+    Nothing -> Nothing
 
 -- | Class for types that support abstracting out all permission and expression
 -- variables. If the abstraction succeeds, we get a closed element of the type
 -- inside a binding for those permission and expression variables that are free
 -- in the original input.
+--
+-- NOTE: if a variable occurs more than once, we associate it with the left-most
+-- occurrence, i.e., the earliest binding
 class AbstractVars a where
   abstractPEVars :: MapRList Name (pctx :: RList Type) ->
                     MapRList Name (ectx :: RList CrucibleType) -> a ->
@@ -3447,7 +3626,7 @@ data PermEnvGlobalEntry where
 data BlockEntryHint blocks init ret args where
   BlockEntryHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
                     BlockID blocks args -> CruCtx top_args -> CruCtx ghosts ->
-                    MbValuePerms ((top_args :++: ghosts) :++: CtxToRList args) ->
+                    MbValuePerms ((top_args :++: CtxToRList args) :++: ghosts) ->
                     BlockEntryHint blocks init ret args
 
 -- | Extract the 'BlockID' from a 'BlockEntryHint'
@@ -3645,6 +3824,31 @@ varPermsMulti :: MapRList Name ns -> PermSet ps -> DistPerms ns
 varPermsMulti MNil _ = DistPermsNil
 varPermsMulti (ns :>: n) ps =
   DistPermsCons (varPermsMulti ns ps) n (ps ^. varPerm n)
+
+-- | Compute all the variables that are needed to express the permissions on
+-- some input list @ns@ of variables, which includes all variables that are free
+-- in the permissions associated with @ns@ as well as all the variables
+-- transitively needed by the permissions of those variables. Every variable in
+-- the returned list is guaranteed to be listed /after/ (i.e., to the right of
+-- where) it is used.
+varPermsNeededVars :: MapRList ExprVar ns -> PermSet ps ->
+                      Some (MapRList ExprVar)
+varPermsNeededVars ns = helper NameMap.empty ns
+  where
+    helper :: NameSet CrucibleType -> MapRList ExprVar ns -> PermSet ps ->
+              Some (MapRList ExprVar)
+    helper seen_vars ns perms =
+      let seen_vars' =
+            foldrMapRList (\n -> NameMap.insert n (Constant ())) seen_vars ns
+          ns_perms = distPermsToValuePerms (varPermsMulti ns perms)
+          free_vars = freeVars ns_perms
+          new_vars = NameMap.difference free_vars seen_vars' in
+      case nameSetNames new_vars of
+        Some MNil -> Some MNil
+        Some new_ns ->
+          case helper seen_vars' new_ns perms of
+            Some rest ->
+              Some $ appendMapRList new_ns rest
 
 -- | Initialize the primary permission of a variable to @true@ if it is not set
 initVarPerm :: ExprVar a -> PermSet ps -> PermSet ps

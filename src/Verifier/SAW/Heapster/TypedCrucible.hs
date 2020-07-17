@@ -85,11 +85,6 @@ internalLoc loc = mkProgramLoc (plFunction loc) InternalPos
 
 
 -- FIXME: move to Hobbits
-foldrMapRList :: (forall a. f a -> r -> r) -> r -> MapRList f ctx -> r
-foldrMapRList _ r MNil = r
-foldrMapRList f r (xs :>: x) = f x $ foldrMapRList f r xs
-
--- FIXME: move to Hobbits
 extMbMulti :: MapRList f ctx2 -> Mb ctx1 a -> Mb (ctx1 :++: ctx2) a
 extMbMulti ns mb = mbCombine $ fmap (nuMulti ns . const) mb
 
@@ -197,8 +192,8 @@ data TypedJumpTarget blocks tops ps where
      TypedJumpTarget ::
        TypedEntryID blocks args ghosts ->
        Proxy tops -> CruCtx args ->
-       DistPerms ((tops :++: ghosts) :++: args) ->
-       TypedJumpTarget blocks tops ((tops :++: ghosts) :++: args)
+       DistPerms ((tops :++: args) :++: ghosts) ->
+       TypedJumpTarget blocks tops ((tops :++: args) :++: ghosts)
 
 
 $(mkNuMatching [t| forall tp. TypedReg tp |])
@@ -907,10 +902,10 @@ data TypedEntry ext blocks tops ret args where
   TypedEntry ::
     !(TypedEntryID blocks args ghosts) ->
     !(CruCtx tops) -> !(CruCtx args) -> !(TypeRepr ret) ->
-    !Bool -> !(MbValuePerms ((tops :++: ghosts) :++: args)) ->
-    !(Mb ((tops :++: ghosts) :++: args :> ret) (ValuePerms (tops :> ret))) ->
-    !(Mb ((tops :++: ghosts) :++: args)
-      (TypedStmtSeq ext blocks tops ret ((tops :++: ghosts) :++: args))) ->
+    !Bool -> !(MbValuePerms ((tops :++: args) :++: ghosts)) ->
+    !(Mb ((tops :++: args) :++: ghosts :> ret) (ValuePerms (tops :> ret))) ->
+    !(Mb ((tops :++: args) :++: ghosts)
+      (TypedStmtSeq ext blocks tops ret ((tops :++: args) :++: ghosts))) ->
     TypedEntry ext blocks tops ret args
 
 typedEntryIndex :: TypedEntry ext blocks tops ret args -> Int
@@ -923,9 +918,9 @@ typedEntryIsSCC (TypedEntry _ _ _ _ is_scc _ _ _) = is_scc
 -- @ghosts@ argument. It is an error if the wrong 'TypedEntryID' is given.
 typedEntryBody :: TypedEntryID blocks args ghosts ->
                   TypedEntry ext blocks tops ret args ->
-                  Mb ((tops :++: ghosts) :++: args)
+                  Mb ((tops :++: args) :++: ghosts)
                   (TypedStmtSeq ext blocks tops ret
-                   ((tops :++: ghosts) :++: args))
+                   ((tops :++: args) :++: ghosts))
 typedEntryBody entryID (TypedEntry entryID' _ _ _ _ _ _ body)
   | Just Refl <- testEquality entryID entryID' = body
 typedEntryBody _ _ = error "typedEntryBody"
@@ -1013,9 +1008,11 @@ type PermCheckExtC ext =
 
 -- | Extension-specific state
 data PermCheckExtState ext where
+  -- | No extension-specific state for the empty extension
+  PermCheckExtState_Unit :: PermCheckExtState ()
+
   -- | The extension-specific state for LLVM is the current frame pointer, if it
   -- exists
-  PermCheckExtState_Unit :: PermCheckExtState ()
   PermCheckExtState_LLVM :: Maybe (TypedReg (LLVMFrameType (ArchWidth arch))) ->
                             PermCheckExtState (LLVM arch)
 
@@ -1023,6 +1020,13 @@ data PermCheckExtState ext where
 emptyPermCheckExtState :: ExtRepr ext -> PermCheckExtState ext
 emptyPermCheckExtState ExtRepr_Unit = PermCheckExtState_Unit
 emptyPermCheckExtState ExtRepr_LLVM = PermCheckExtState_LLVM Nothing
+
+-- | Get all the names contained in a 'PermCheckExtState'
+permCheckExtStateNames :: PermCheckExtState ext -> Some (MapRList ExprVar)
+permCheckExtStateNames (PermCheckExtState_LLVM (Just treg)) =
+  Some (MNil :>: typedRegVar treg)
+permCheckExtStateNames (PermCheckExtState_LLVM Nothing) = Some MNil
+permCheckExtStateNames (PermCheckExtState_Unit) = Some MNil
 
 -- | The local state maintained while type-checking is the current permission
 -- set and the permissions required on return from the entire function.
@@ -1053,7 +1057,7 @@ data BlockEntryInfo blocks tops ret args where
     entryInfoID :: TypedEntryID blocks args ghosts,
     entryInfoTops :: CruCtx tops,
     entryInfoArgs :: CruCtx args,
-    entryInfoPermsIn :: MbValuePerms ((tops :++: ghosts) :++: args)
+    entryInfoPermsIn :: MbValuePerms ((tops :++: args) :++: ghosts)
   } -> BlockEntryInfo blocks tops ret args
 
 -- | Extract the 'BlockID' from entrypoint info
@@ -1087,7 +1091,7 @@ blockInfoVisited _ = False
 -- | Add a new 'BlockEntryInfo' to a 'BlockInfo' and return its 'TypedEntryID'.
 -- This assumes that the block has not been visited; if it has, it is an error.
 blockInfoAddEntry :: CruCtx tops -> CruCtx args -> CruCtx ghosts ->
-                     MbDistPerms ((tops :++: ghosts) :++: args) ->
+                     MbDistPerms ((tops :++: args) :++: ghosts) ->
                      BlockInfo ext blocks tops ret args ->
                      (BlockInfo ext blocks tops ret args,
                       TypedEntryID blocks args ghosts)
@@ -1127,7 +1131,7 @@ emptyBlockInfoMap asgn =
 -- visited; if it has, it is an error.
 blockInfoMapAddEntry :: Member blocks args ->
                         CruCtx tops -> CruCtx args -> CruCtx ghosts ->
-                        MbDistPerms ((tops :++: ghosts) :++: args) ->
+                        MbDistPerms ((tops :++: args) :++: ghosts) ->
                         BlockInfoMap ext blocks tops ret ->
                         (BlockInfoMap ext blocks tops ret,
                          TypedEntryID blocks args ghosts)
@@ -1167,30 +1171,6 @@ buildBlockIDMap (viewAssign -> AssignEmpty) = Ctx.empty
 buildBlockIDMap (viewAssign -> AssignExtend asgn _) =
   Ctx.extend (fmapFC extendBlockIDTrans $ buildBlockIDMap asgn)
   (BlockIDTrans Member_Base)
-
-{-
-FIXME HERE NOWNOW:
-- add tops type argument to basically everything: monads + TypedCFG datatypes
-- change existing stRetPerms -> stTopArgs :: MapRList Name tops
-- add stRetPerms :: MbDistPerms (tops :> ret) to TopPermCheckState
-- add a getRetPerms accessor to substitute stTopArgs for tops in stRetPerms
-- remove entryInfoPermsOut field
-- change TypedRet to require ps = tops
-
-- simplify tcJumpTarget case for new entrypoints to filter out the normal and
-  top args from the new ghosts, noting that the normal args can duplicate the
-  top args and each other, so those duplicating normal args need eq perms
-
-- figure out how to resolve the ghost args in the back edge case; since they are
-  not really part of the computation, they should somehow be easy; they should
-  actually each be one of these cases:
-  + they have true permissions, in which case they can become normal evars in
-    proveVarsImpl
-  + they are LLVM pointers with non-trivial permissions, in which case, because
-    they are ghost arguments, there should be a corresponding variable in scope
-    with the same permissions as on the loop entry, because the register is not
-    accessible in the body of the loop
--}
 
 -- | Top-level state, maintained outside of permission-checking single blocks
 data TopPermCheckState ext cblocks blocks tops ret =
@@ -1396,7 +1376,7 @@ getNextEntryID memb ghosts =
   greturn (TypedEntryID memb ghosts (max_ix + 1))
 
 insNewBlockEntry :: Member blocks args -> CruCtx args -> CruCtx ghosts ->
-                    Closed (MbValuePerms ((tops :++: ghosts) :++: args)) ->
+                    Closed (MbValuePerms ((tops :++: args) :++: ghosts)) ->
                     PermCheckM ext cblocks blocks tops ret r ps r ps
                     (TypedEntryID blocks args ghosts)
 insNewBlockEntry memb args ghosts perms_in =
@@ -2662,15 +2642,13 @@ abstractPermsRet xs args ret_perms =
 tcJumpTarget :: CtxTrans ctx -> JumpTarget cblocks ctx ->
                 StmtPermCheckM ext cblocks blocks tops ret RNil RNil
                 (PermImpl (TypedJumpTarget blocks tops) RNil)
-tcJumpTarget ctx (JumpTarget blkID args_tps
-                  (args :: Assignment (Reg ctx) args)) =
+tcJumpTarget ctx (JumpTarget blkID args_tps args) =
   top_get >>>= \top_st ->
   gget >>>= \st ->
-  let varTypes = stVarTypes st
-      ppInfo = stPPInfo st
-      tops_ns = stTopVars st
+  let tops_ns = stTopVars st
       args_t = tcRegs ctx args
-      args_ns = typedRegsToVars args_t in
+      args_ns = typedRegsToVars args_t
+      tops_args_ns = appendMapRList tops_ns args_ns in
   tcBlockID blkID >>>= \memb ->
   lookupBlockInfo memb >>>= \blkInfo ->
 
@@ -2684,45 +2662,45 @@ tcJumpTarget ctx (JumpTarget blkID args_tps
 
         -- Substitute the top-level and normal args into the input perms
         let ghosts = entryGhosts entryID
-            ex_perms_in =
-              varSubst (permVarSubstOfNames tops_ns) $
-              mbSeparate (cruCtxProxies ghosts) $
-              fmap (varSubst $ permVarSubstOfNames args_ns) $
-              mbSeparate args_ns $
+            ghosts_prxs = cruCtxProxies ghosts
+            ex_perms =
+              varSubst (permVarSubstOfNames tops_args_ns) $
+              mbSeparate ghosts_prxs $
               mbValuePermsToDistPerms entry_perms_in in
         stmtTraceM (\i ->
                      string ("tcJumpTarget " ++ show blkID ++ " (visited)") </>
                      string "Input perms: " <+>
-                     hang 2 (permPretty i ex_perms_in)) >>>
+                     hang 2 (permPretty i ex_perms)) >>>
 
         -- Prove the required input perms for this entrypoint and return the
         -- jump target inside an implication
         pcmRunImplM ghosts
         (\ghosts_subst ->
           TypedJumpTarget entryID Proxy (mkCruCtx args_tps) $
-          varSubst ghosts_subst ex_perms_in)
-        (proveExVarsImpl ex_perms_in)
+          varSubst ghosts_subst ex_perms)
+        (proveExVarsImpl ex_perms >>> getDistPerms >>>= \proved_perms ->
+          greturn (permVarSubstOfNames $ distPermsVars $ snd $
+                   splitDistPerms tops_args_ns ghosts_prxs proved_perms))
 
   else
     -- If not, we can make a new entrypoint that takes all of the current
     -- permissions as input
     --
-    -- Step 1: compute the ghosts arguments as all variables in varTypes other
-    -- than the top-level and normal arguments
+    -- Step 1: compute the ghosts arguments as all variables needed in the
+    -- permissions for the top-level and normal arguments
+    (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
     let tops_set =
           foldrMapRList (\n ->
-                          NameMap.insert n (Constant ())) NameMap.empty tops_ns
-        non_ghosts =
-          foldrMapRList (\n ->
-                          NameMap.insert n (Constant ())) tops_set args_ns in
-    case foldr (\(NameAndElem n _) (Some gs) ->
-                 if NameMap.member n non_ghosts then Some gs else
-                   Some (gs :>: n)) (Some MNil) (NameMap.assocs varTypes) of
-      Some ghosts_ns ->
+                          NameMap.insert n (Constant ()))
+          NameMap.empty tops_ns
+        cur_perms = stCurPerms st in
+    case varPermsNeededVars (appendMapRList tops_args_ns ext_ns) cur_perms of
+      Some ghosts_ns' ->
         -- Step 2: compute the permissions for the three sorts of arguments,
         -- where each normal argument that is also in the top-level arguments
         -- gets eq permissions
-        let cur_perms = stCurPerms st
+        let ghosts_ns = appendMapRList ext_ns ghosts_ns'
+            cur_perms = stCurPerms st
             tops_perms = varPermsMulti tops_ns cur_perms
             ghosts_perms = varPermsMulti ghosts_ns cur_perms
             args_perms =
@@ -2730,30 +2708,24 @@ tcJumpTarget ctx (JumpTarget blkID args_tps
                                       ValPerm_Eq (PExpr_Var n)
                                     else cur_perms ^. varPerm n) args_ns
             perms_in = appendDistPerms (appendDistPerms
-                                        tops_perms ghosts_perms) args_perms in
+                                        tops_perms args_perms) ghosts_perms in
         stmtTraceM (\i ->
                      string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
                      string "Input perms: " <+>
                      hang 2 (permPretty i perms_in)) >>>
 
         -- Step 3: abstract all the variables out of the input permissions. Note
-        -- that we put the args variables first in the list of names being
-        -- abstracted because abstractVars uses the right-most occurrence of any
-        -- variable that occurs multiple times in the variable list and we want
-        -- our eq perms for our args to map to our tops, not our args
-        let tops_ghosts_ns = appendMapRList tops_ns ghosts_ns
-            cl_mb_perms_in' =
-              case abstractVars (appendMapRList args_ns tops_ghosts_ns)
+        -- that abstractVars uses the left-most occurrence of any variable that
+        -- occurs multiple times in the variable list and we want our eq perms
+        -- for our args to map to our tops, not our args, so this order works
+        -- for what we want
+        let cl_mb_perms_in =
+              case abstractVars
+                   (appendMapRList (appendMapRList tops_ns args_ns) ghosts_ns)
                    (distPermsToValuePerms perms_in) of
                 Just ps -> ps
                 Nothing ->
-                  error "tcJumpTarget: unexpected free variable in perms_in"
-            cl_mb_perms_in =
-              $(mkClosed
-                [| \tops_ghosts_prxs ->
-                  mbCombine . mbSwap .
-                  mbSeparate @_ @(CtxToRList args) tops_ghosts_prxs |]) `clApply`
-              closedProxies tops_ghosts_ns `clApply` cl_mb_perms_in' in
+                  error "tcJumpTarget: unexpected free variable in perms_in" in
 
         -- Step 4: insert a new block entrypoint that has all the permissions we
         -- constructed above as input permissions
@@ -2850,20 +2822,20 @@ tcBlockEntry is_scc blk (BlockEntryInfo {..}) =
   let args_prxs = cruCtxProxies entryInfoArgs
       ghosts_prxs = cruCtxProxies $ entryGhosts entryInfoID
       ret_perms =
-        mbCombine $ extMbMulti args_prxs $ extMbMulti ghosts_prxs $
+        mbCombine $ extMbMulti ghosts_prxs $ extMbMulti args_prxs $
         mbSeparate (MNil :>: Proxy) stRetPerms in
   fmap (TypedEntry entryInfoID stTopCtx entryInfoArgs stRetType is_scc
         entryInfoPermsIn ret_perms) $
   liftInnerToTopM $ strongMbM $
   flip nuMultiWithElim1 (mbValuePermsToDistPerms
                          entryInfoPermsIn) $ \ns perms ->
-  let (tops_ghosts, args_ns) = splitMapRList Proxy args_prxs ns
-      (tops_ns, ghosts_ns) = splitMapRList Proxy ghosts_prxs tops_ghosts
+  let (tops_args, ghosts_ns) = splitMapRList Proxy ghosts_prxs ns
+      (tops_ns, args_ns) = splitMapRList Proxy args_prxs tops_args
       ctx = mkCtxTrans (blockInputs blk) args_ns in
   runPermCheckM tops_ns (distPermSet perms) $
   setVarTypes ns (appendCruCtx
-                  (appendCruCtx stTopCtx (entryGhosts entryInfoID))
-                  entryInfoArgs) >>>
+                  (appendCruCtx stTopCtx entryInfoArgs)
+                  (entryGhosts entryInfoID)) >>>
   stmtTraceM (\i ->
                string "Type-checking block" <+> pretty (blockID blk) <>
                comma <+> string "entrypoint" <+> int (entryIndex entryInfoID)
