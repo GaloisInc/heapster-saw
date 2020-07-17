@@ -1016,8 +1016,8 @@ applyImpl1 pp_info (Impl1_Push x p) ps =
   else
     error $ renderDoc (string "applyImpl1: Impl1_Push" <+>
                        permPretty pp_info x <+> colon </>
-                       string "expected: " <+> permPretty pp_info p </>
-                       string "found: " <+>
+                       string "expected:" <+> permPretty pp_info p </>
+                       string "found:" <+>
                        permPretty pp_info (ps ^. varPerm x))
 applyImpl1 pp_info (Impl1_Pop x p) ps =
   if ps ^. topDistPerm x == p && ps ^. varPerm x == ValPerm_True then
@@ -1776,7 +1776,7 @@ implGetVarType n =
   case NameMap.lookup n varTypes of
     Just tp -> greturn tp
     Nothing ->
-      implTraceM (\i -> string "Could not find type for variable: " <+>
+      implTraceM (\i -> string "Could not find type for variable:" <+>
                         permPretty i n) >>>
       error "implGetVarType"
 
@@ -3374,13 +3374,12 @@ proveVarsImplAppend (ExDistPermsCons ps x p) =
 
 -- | Prove a list of existentially-quantified distinguished permissions where
 -- some of the variables holding the permissions could themselves be
--- existentially-quantified. This only works in a limited set of cases depending
--- on what permissions are on the existentially-quantified variables.
+-- existentially-quantified. This only works when each existentially-quantified
+-- variable is fully determined by proving the earlier implications in the list.
 proveExVarsImpl :: Mb vars (DistPerms ps) -> ImplM vars s r ps RNil ()
 proveExVarsImpl [nuP| DistPermsNil |] = greturn ()
 proveExVarsImpl [nuP| DistPermsCons ps x p |] =
-  getPSubst >>>= \psubst ->
-  proveExVarsImpl ps >>> proveExVarImpl psubst x p
+  proveExVarsImpl ps >>> getPSubst >>>= \psubst -> proveExVarImpl psubst x p
 
 -- | Prove an existentially-quantified permission where the variable holding the
 -- permission could itself be existentially-quantified. This only works in a
@@ -3417,5 +3416,9 @@ proveExVarImpl _ mb_x mb_p@[nuP| ValPerm_Conj [Perm_LLVMFrame mb_fperms] |]
         implFailMsgM "No LLVM frame pointer in scope"
 
 -- Otherwise we fail
-proveExVarImpl _ _ _ =
-  implFailMsgM "proveExVarImpl: existential variable not resolved"
+proveExVarImpl _ mb_x mb_p =
+  implTraceM (\i -> string "proveExVarImpl: existential variable" <+>
+                    permPretty i mb_x <+>
+                    string "not resolved when trying to prove:" </>
+                    permPretty i mb_p) >>>=
+  implFailM
