@@ -1,4 +1,4 @@
 
-module loop where
+module loops where
 
 import Prelude;
