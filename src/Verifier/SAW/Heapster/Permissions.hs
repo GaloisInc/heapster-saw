@@ -1426,7 +1426,7 @@ instance PermPretty (AtomicPerm a) where
                                    list pp_flds, list pp_bs]))
   permPrettyM (Perm_LLVMFree e) = (string "free" <+>) <$> permPrettyM e
   permPrettyM (Perm_LLVMFunPtr fp) =
-    (string "llvm_funptr" <+>) <$> permPrettyM fp
+    (\pp -> string "llvmfunptr" <+> parens pp) <$> permPrettyM fp
   permPrettyM Perm_IsLLVMPtr = return (string "is_llvmptr")
   permPrettyM (Perm_LLVMFrame fperm) =
     do pps <- mapM (\(e,i) -> (<> (colon <> integer i)) <$> permPrettyM e) fperm
@@ -1448,9 +1448,16 @@ data FunPermIns args ret where
 
 instance PermPretty (FunPermIns args ret) where
   permPrettyM (FunPermIns ps_in ps_out) =
-    do pp_ps_in  <- permPrettyExprMb (const id) (mbValuePermsToDistPerms ps_in )
-       pp_ps_out <- permPrettyExprMb (const id) (mbValuePermsToDistPerms ps_out)
-       return $ pp_ps_in <+> string "-o" <+> pp_ps_out
+    let dps_in  = mbValuePermsToDistPerms ps_in
+        dps_out = mbValuePermsToDistPerms ps_out
+        mb = fmap (,) (mbCombine (fmap (nu . const) dps_in)) `mbApply` dps_out
+    in fmap mbLift $ strongMbM $
+       flip nuMultiWithElim1 mb $ \(arg_ns :>: ret_n) (ps_in, ps_out) ->
+       local (ppInfoAddExprName "ret" ret_n) $
+       local (ppInfoAddExprNames "arg" arg_ns) $
+       do pp_ps_in  <- permPrettyM ps_in
+          pp_ps_out <- permPrettyM ps_out
+          return $ pp_ps_in <+> string "-o" <+> pp_ps_out
 
 instance PermPretty (BVRange w) where
   permPrettyM (BVRange e1 e2) =
