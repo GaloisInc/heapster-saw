@@ -2252,7 +2252,7 @@ funPermDistOuts fun_perm args ghosts =
 -- | Unfold a recursive permission given a 'RecPerm' for it
 unfoldRecPerm :: RecPerm args a -> PermExprs args -> ValuePerm a
 unfoldRecPerm rp args =
-  foldl1 ValPerm_Or $ map (subst (substOfExprs args)) $ recPermCases rp
+  foldr1 ValPerm_Or $ map (subst (substOfExprs args)) $ recPermCases rp
 
 -- | Unfold a defined permission given arguments
 unfoldDefinedPerm :: DefinedPerm args a -> PermExprs args -> ValuePerm a
