@@ -40,11 +40,15 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Lens hiding ((:>), Index, Empty)
 
+import Data.Binding.Hobbits.Mb (mbMap2)
 import Data.Binding.Hobbits.Closed
 import Data.Binding.Hobbits.Liftable
 import Data.Binding.Hobbits.MonadBind as MB
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
+import Data.Binding.Hobbits.NameSet (NameSet, names)
+import Data.Binding.Hobbits.NuMatching
+import Data.Binding.Hobbits.NuMatchingInstances
 
 import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, last)
 import qualified Data.Parameterized.Context as Ctx
@@ -64,48 +68,6 @@ import Verifier.SAW.OpenTerm
 import Verifier.SAW.Heapster.CruUtil
 
 import Debug.Trace
-
-
--- | FIXME: figure out a better name and move to Hobbits
-mbMap2 :: (a -> b -> c) -> Mb ctx a -> Mb ctx b -> Mb ctx c
-mbMap2 f mb1 mb2 = fmap f mb1 `mbApply` mb2
-
--- FIXME: move to Hobbits
-foldrMapRList :: (forall a. f a -> r -> r) -> r -> MapRList f ctx -> r
-foldrMapRList _ r MNil = r
-foldrMapRList f r (xs :>: x) = f x $ foldrMapRList f r xs
-
--- FIXME: move to Hobbits!
-$(mkNuMatching [t| forall f. NuMatchingAny1 f => NameAndElem f |])
-$(mkNuMatching [t| forall a b. NuMatching a => Constant a b |])
-
-instance NuMatching a => NuMatchingAny1 (Constant a) where
-  nuMatchingAny1Proof = nuMatchingProof
-
--- | Helper function for writing 'FreeVars' instances.
---
--- FIXME: some version of this should be in Hobbits!
-liftNameMap :: forall ctx f a. NuMatchingAny1 f =>
-               (forall a. Mb ctx (f a) -> Maybe (f a)) ->
-               Mb ctx (NameMap f) -> NameMap f
-liftNameMap lifter = helper . fmap NameMap.assocs where
-  helper :: Mb ctx [NameAndElem f] -> NameMap f
-  helper [nuP| [] |] = NameMap.empty
-  helper [nuP| (NameAndElem mb_n mb_f):mb_elems |]
-    | Right n <- mbNameBoundP mb_n
-    , Just f <- lifter mb_f
-    = NameMap.insert n f (helper mb_elems)
-  helper [nuP| _:mb_elems |] = helper mb_elems
-
--- FIXME: move to a new module in Hobbits called NameSet
-type NameSet k = NameMap (Constant () :: k -> Type)
-
--- FIXME: move to the new Hobbits NameSet module and call it something
--- appropriate like names
-nameSetNames :: NameSet k -> Some (MapRList (Name :: k -> Type))
-nameSetNames s =
-  foldl (\(Some rets) (NameAndElem r _) -> Some (rets :>: r)) (Some MNil) $
-  NameMap.assocs s
 
 
 ----------------------------------------------------------------------
@@ -2249,7 +2211,7 @@ instance FreeVars (ValuePerm tp) where
   freeVars (ValPerm_Eq e) = freeVars e
   freeVars (ValPerm_Or p1 p2) = NameMap.union (freeVars p1) (freeVars p2)
   freeVars (ValPerm_Exists mb_p) =
-    liftNameMap (const $ Just $ Constant ()) $ fmap freeVars mb_p
+    NameMap.liftNameMap (const $ Just $ Constant ()) $ fmap freeVars mb_p
   freeVars (ValPerm_Named _ args) = freeVars args
   freeVars (ValPerm_Var x) = NameMap.singleton x (Constant ())
   freeVars (ValPerm_Conj ps) = freeVars ps
@@ -2280,9 +2242,9 @@ instance FreeVars (LLVMArrayBorrow w) where
 instance FreeVars (FunPerm ghosts args ret) where
   freeVars (FunPerm _ _ _ perms_in perms_out) =
     NameMap.union
-    (liftNameMap (const $ Just $ Constant ()) $
+    (NameMap.liftNameMap (const $ Just $ Constant ()) $
      fmap freeVars $ mbCombine perms_in)
-    (liftNameMap (const $ Just $ Constant ()) $
+    (NameMap.liftNameMap (const $ Just $ Constant ()) $
      fmap freeVars $ mbCombine perms_out)
 
 
@@ -3789,7 +3751,7 @@ varPermsNeededVars ns = helper NameMap.empty ns
           ns_perms = distPermsToValuePerms (varPermsMulti ns perms)
           free_vars = freeVars ns_perms
           new_vars = NameMap.difference free_vars seen_vars' in
-      case nameSetNames new_vars of
+      case names new_vars of
         Some MNil -> Some MNil
         Some new_ns ->
           case helper seen_vars' new_ns perms of
