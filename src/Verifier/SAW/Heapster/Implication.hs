@@ -3190,6 +3190,29 @@ proveVarConjImpl x ps [nuP| mb_p : mb_ps |] =
 -- * Proving Permission Implications
 ----------------------------------------------------------------------
 
+-- | Prove @x:P<args> |- x:p@ for a recursive permission @P@ on the left,
+-- assuming that a proof of @x:P<args>@ is on the top of the stack, by unfolding
+-- @P<args>@ to @p'@ and then proving @x:p' |- x:p@
+proveVarImplRecLeft :: ExprVar a -> NamedPermName args a -> PermExprs args ->
+                       Mb vars (ValuePerm a) ->
+                       ImplM vars s r (ps :> a) (ps :> a) ()
+proveVarImplRecLeft x npn args mb_p =
+  implSetRecRecurseLeftM >>>
+  implUnfoldRecM x npn args >>>= \p' -> proveVarImplH x p' mb_p
+
+-- | Prove @x:p |- x:P<args>@ for a recursive permission @P@ on the right,
+-- assuming that a proof of @x:p@ is on the top of the stack, by first proving
+-- @x:p |- x:p'@, where @p'@ is the unfolding of @P<args>@, and then folding @P@
+proveVarImplRecRight :: ExprVar a -> ValuePerm a -> RecPerm args a ->
+                        Mb vars (PermExprs args) ->
+                        ImplM vars s r (ps :> a) (ps :> a) ()
+proveVarImplRecRight x p rp mb_args =
+  implSetRecRecurseRightM >>>
+  proveVarImplH x p (fmap (unfoldRecPerm rp) mb_args) >>>
+  partialSubstForceM mb_args
+  "proveVarImplRecRight: incomplete psubst: implFold" >>>= \args ->
+  implFoldRecM x (recPermName rp) args
+
 -- | Prove @x:p'@, where @p@ may have existentially-quantified variables in it
 proveVarImpl :: ExprVar a -> Mb vars (ValuePerm a) ->
                 ImplM vars s r (ps :> a) ps ()
@@ -3233,33 +3256,44 @@ proveVarImplH x p@(ValPerm_Eq (PExpr_Var y)) mb_p =
   "proveVarImpl: incomplete psubst: introCast" >>>= \p' ->
   introCastM x y p'
 
+-- If proving P<args1> |- P<args2> for the same named permission, we just need
+-- to equalize the arguments
+proveVarImplH x p@(ValPerm_Named npn args)
+                   mb_p@[nuP| ValPerm_Named mb_npn mb_args |]
+  | Just (Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn) =
+    proveNamedArgs x npn args mb_args
+
+-- Otherwise, if proving P1<args1> |- P2<args2>, we need to unfold any defined
+-- and/or recursive permissions and see if we can make it work
 proveVarImplH x p@(ValPerm_Named npn args)
                    mb_p@[nuP| ValPerm_Named mb_npn mb_args |] =
-  implLookupNamedPerm npn >>= \case
-    NamedPerm_Defined dp ->
+  implLookupNamedPerm npn >>= \np_lhs ->
+  implLookupNamedPerm (mbLift mb_npn) >>= \np_rhs ->
+  case (np_lhs, np_rhs) of
+    (NamedPerm_Defined dp, _) ->
       -- If the LHS is a defined permission, unfold it
       implUnfoldDefinedM x npn args >>>= \p' ->
-        proveVarImplH x p' mb_p
-    _ -> implLookupNamedPerm (mbLift mb_npn) >>= \case
-      NamedPerm_Defined dp ->
-        -- If the RHS is a defined permission, unfold it
-        proveVarImplH x p (fmap (unfoldDefinedPerm dp) mb_args) >>>
-        partialSubstForceM mb_args
-        "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
-        implFoldDefinedM x (mbLift mb_npn) args
-      _ -> case testNamedPermNameEq npn (mbLift mb_npn) of
-        -- To prove P<args1> |- P<args2>, just need to equalize the args
-        Just (Refl, Refl) -> proveNamedArgs x npn args mb_args
-        -- FIXME HERE NOW: figure out how to prove P1<args1> |- P2<args2> for P1 != P2
-        _ -> error "FIXME HERE NOW: implement P1<args1> |- P2<args2>!"
+      proveVarImplH x p' mb_p
+    (_, NamedPerm_Defined dp) ->
+      -- If the RHS is a defined permission, unfold it
+      proveVarImplH x p (fmap (unfoldDefinedPerm dp) mb_args) >>>
+      partialSubstForceM mb_args
+      "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
+      implFoldDefinedM x (mbLift mb_npn) args
+    (NamedPerm_Rec _, NamedPerm_Rec rp_rhs) ->
+      implCatchM
+      (proveVarImplRecLeft x npn args mb_p)
+      (proveVarImplRecRight x p rp_rhs mb_args)
+    (NamedPerm_Rec _, _) -> proveVarImplRecLeft x npn args mb_p
+    (_, NamedPerm_Rec rp) -> proveVarImplRecRight x p rp mb_args
+    _ -> implFailVarM "proveVarImplH" x p mb_p
 
 -- If the LHS is recursive but the RHS is not, unfold the left and recurse,
 -- or if the LHS is a defined permission, unfold it
 proveVarImplH x p@(ValPerm_Named npn args) mb_p =
   implLookupNamedPerm npn >>= \case
-    NamedPerm_Rec rp ->
-      implSetRecRecurseLeftM >>> implUnfoldRecM x npn args >>>= \p' ->
-        proveVarImplH x p' mb_p
+    NamedPerm_Rec _ ->
+      proveVarImplRecLeft x npn args mb_p
     NamedPerm_Defined dp ->
       implUnfoldDefinedM x npn args >>>= \p' ->
         proveVarImplH x p' mb_p
@@ -3282,11 +3316,7 @@ proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn mb_args |] =
   implLookupNamedPerm (mbLift mb_npn) >>>= \np ->
   case np of
     NamedPerm_Rec rp ->
-      implSetRecRecurseRightM >>>
-      proveVarImplH x p (fmap (unfoldRecPerm rp) mb_args) >>>
-      partialSubstForceM mb_args
-      "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
-      implFoldRecM x (mbLift mb_npn) args
+      proveVarImplRecRight x p rp mb_args
     NamedPerm_Defined dp ->
       proveVarImplH x p (fmap (unfoldDefinedPerm dp) mb_args) >>>
       partialSubstForceM mb_args
