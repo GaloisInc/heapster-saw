@@ -858,9 +858,10 @@ parseFunPermM args ret =
 -- | Parse the sort of object named by the supplied 'String', calling 'fail' if
 -- there is a parsing error
 runPermParseM :: (Stream s Identity t, MonadFail m) =>
-                 String -> PermEnv -> PermParseM s a -> s -> m a
-runPermParseM obj env m str =
-  case runParser m (mkParserEnv env) "" str of
+                 String -> PermEnv -> [(String, SomeNamedPermName)] ->
+                 PermParseM s a -> s -> m a
+runPermParseM obj env pvars m str =
+  case runParser m (ParserEnv [] pvars env) "" str of
     Left err -> Fail.fail ("Error parsing " ++ obj ++ ": " ++ show err)
     Right a -> return a
 
@@ -869,20 +870,28 @@ runPermParseM obj env m str =
 parsePermsString :: MonadFail m => String -> PermEnv -> ParsedCtx ctx ->
                     String -> m (MbValuePerms ctx)
 parsePermsString nm env ctx =
-  runPermParseM nm env (parseSortedMbValuePerms ctx)
+  runPermParseM nm env [] (parseSortedMbValuePerms ctx)
+
+-- | Parse a permission of the given type within the given context and with
+-- the given named permission variables in scope
+parsePermInCtxString :: MonadFail m => String -> PermEnv -> 
+                        [(String, SomeNamedPermName)] -> ParsedCtx ctx ->
+                        TypeRepr a -> String -> m (Mb ctx (ValuePerm a))
+parsePermInCtxString nm env pvars ctx tp =
+  runPermParseM nm env pvars (parseValPermInCtx ctx tp)
 
 -- | Parse a 'FunPerm' named by the first 'String' from the second 'String'
 parseFunPermString :: MonadFail m => String -> PermEnv -> CruCtx args ->
                       TypeRepr ret -> String -> m (SomeFunPerm args ret)
 parseFunPermString nm env args ret str =
-  runPermParseM nm env (parseFunPermM args ret) str
+  runPermParseM nm env [] (parseFunPermM args ret) str
 
 -- | Parse a type context @x1:tp1, x2:tp2, ...@ named by the first 'String' from
 -- the second 'String' and return a 'ParsedCtx', which contains both the
 -- variable names @xi@ and their types @tpi@
 parseParsedCtxString :: MonadFail m => String -> PermEnv -> String ->
                         m (Some ParsedCtx)
-parseParsedCtxString nm env str = runPermParseM nm env parseCtx str
+parseParsedCtxString nm env str = runPermParseM nm env [] parseCtx str
 
 -- | Parse a type context named by the first 'String' from the second 'String'
 parseCtxString :: MonadFail m => String -> PermEnv -> String -> m (Some CruCtx)
@@ -892,4 +901,4 @@ parseCtxString nm env str =
 -- | Parse a type named by the first 'String' from the second 'String'
 parseTypeString :: MonadFail m => String -> PermEnv -> String ->
                    m (Some TypeRepr)
-parseTypeString nm env str = runPermParseM nm env parseType str
+parseTypeString nm env str = runPermParseM nm env [] parseType str

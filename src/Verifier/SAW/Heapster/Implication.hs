@@ -23,6 +23,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE PatternGuards #-}
 
 module Verifier.SAW.Heapster.Implication where
 
@@ -129,6 +130,14 @@ data SimplImpl ps_in ps_out where
   -- ^ Invert an @x:eq(y)@ permission into a @y:eq(x)@ permission:
   --
   -- > x:eq(y) -o y:eq(x)
+
+  SImpl_InvTransEq :: ExprVar a -> ExprVar a -> PermExpr a ->
+                      SimplImpl (RNil :> a :> a) (RNil :> a)
+  -- ^ Prove @x:eq(y)@ by proving equality permissions for both @x@ and @y@ to
+  -- the same expression, thereby implementing a form of transitivity of
+  -- equality where the second equality is inversted:
+  --
+  -- > x:eq(e) * y:eq(e) -o x:eq(y)
 
   -- FIXME HERE: remove this in favor of SImpl_Copy
   SImpl_CopyEq :: ExprVar a -> PermExpr a ->
@@ -565,6 +574,13 @@ data PermImpl1 ps_in ps_outs where
                  PermImpl1 (ps :++: ps_in) (RNil :> '(RNil, ps :++: ps_out))
   -- ^ Apply a 'SimplImpl'
 
+  Impl1_LetBind :: TypeRepr tp -> PermExpr tp ->
+                   PermImpl1 ps (RNil :> '(RNil :> tp, ps :> tp))
+  -- ^ Let-bind a fresh variable @x@ to expression @e@, leaving an equality
+  -- permission on top of the stack:
+  --
+  -- > ps -o x. ps * x:eq(e)
+
   Impl1_ElimLLVMFieldContents ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMFieldPerm w ->
     PermImpl1 (ps :> LLVMPointerType w)
@@ -654,6 +670,9 @@ permImplSucceeds (PermImpl_Step (Impl1_ElimExists _ _)
 permImplSucceeds (PermImpl_Step (Impl1_Simpl _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_LetBind _ _)
+                  (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMFieldContents _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
@@ -699,6 +718,8 @@ simplImplIn (SImpl_IntroExists x e p) =
 simplImplIn (SImpl_Cast x y p) = distPerms2 x (ValPerm_Eq $ PExpr_Var y) y p
 simplImplIn (SImpl_IntroEqRefl x) = DistPermsNil
 simplImplIn (SImpl_InvertEq x y) = distPerms1 x (ValPerm_Eq $ PExpr_Var y)
+simplImplIn (SImpl_InvTransEq x y e) =
+  distPerms2 x (ValPerm_Eq e) y (ValPerm_Eq e)
 simplImplIn (SImpl_CopyEq x e) = distPerms1 x (ValPerm_Eq e)
 simplImplIn (SImpl_LLVMWordEq x y e) =
   distPerms2 x (ValPerm_Eq (PExpr_LLVMWord (PExpr_Var y))) y (ValPerm_Eq e)
@@ -836,6 +857,7 @@ simplImplOut (SImpl_IntroExists x _ p) = distPerms1 x (ValPerm_Exists p)
 simplImplOut (SImpl_Cast x _ p) = distPerms1 x p
 simplImplOut (SImpl_IntroEqRefl x) = distPerms1 x (ValPerm_Eq $ PExpr_Var x)
 simplImplOut (SImpl_InvertEq x y) = distPerms1 y (ValPerm_Eq $ PExpr_Var x)
+simplImplOut (SImpl_InvTransEq x y e) = distPerms1 x (ValPerm_Eq $ PExpr_Var y)
 simplImplOut (SImpl_CopyEq x e) = distPerms2 x (ValPerm_Eq e) x (ValPerm_Eq e)
 simplImplOut (SImpl_LLVMWordEq x y e) =
   distPerms1 x (ValPerm_Eq (PExpr_LLVMWord e))
@@ -1001,11 +1023,15 @@ applyImpl1 :: PPInfo -> PermImpl1 ps_in ps_outs -> PermSet ps_in ->
               MbPermSets ps_outs
 applyImpl1 _ (Impl1_Fail _) _ = MbPermSets_Nil
 applyImpl1 _ Impl1_Catch ps = mbPermSets2 (emptyMb ps) (emptyMb ps)
-applyImpl1 _ (Impl1_Push x p) ps =
+applyImpl1 pp_info (Impl1_Push x p) ps =
   if ps ^. varPerm x == p then
     mbPermSets1 $ emptyMb $ pushPerm x p $ set (varPerm x) ValPerm_True ps
   else
-    error "applyImpl1: Impl1_Push: unexpected permission"
+    error $ renderDoc (string "applyImpl1: Impl1_Push" <+>
+                       permPretty pp_info x <+> colon </>
+                       string "expected:" <+> permPretty pp_info p </>
+                       string "found:" <+>
+                       permPretty pp_info (ps ^. varPerm x))
 applyImpl1 pp_info (Impl1_Pop x p) ps =
   if ps ^. topDistPerm x == p && ps ^. varPerm x == ValPerm_True then
     mbPermSets1 $ emptyMb $ fst $ popPerm x $ set (varPerm x) p ps
@@ -1033,6 +1059,9 @@ applyImpl1 _ (Impl1_ElimExists x p_body) ps =
     error "applyImpl1: Impl1_ElimExists: unexpected permission"
 applyImpl1 pp_info (Impl1_Simpl simpl prx) ps =
   mbPermSets1 $ emptyMb $ applySimplImpl pp_info prx simpl ps
+applyImpl1 pp_info (Impl1_LetBind tp e) ps =
+  MbPermSets_Cons MbPermSets_Nil (CruCtxCons CruCtxNil tp) $
+  nu $ \x -> pushPerm x (ValPerm_Eq e) ps
 applyImpl1 _ (Impl1_ElimLLVMFieldContents x fp) ps =
   if ps ^. topDistPerm x == ValPerm_Conj [Perm_LLVMField fp] then
     (mbPermSets1 $ nu $ \y ->
@@ -1068,6 +1097,8 @@ instance SubstVar PermVarSubst m =>
     SImpl_IntroEqRefl <$> genSubst s x
   genSubst s [nuP| SImpl_InvertEq x y |] =
     SImpl_InvertEq <$> genSubst s x <*> genSubst s y
+  genSubst s [nuP| SImpl_InvTransEq x y e |] =
+    SImpl_InvTransEq <$> genSubst s x <*> genSubst s y <*> genSubst s e
   genSubst s [nuP| SImpl_CopyEq x e |] =
     SImpl_CopyEq <$> genSubst s x <*> genSubst s e
   genSubst s [nuP| SImpl_LLVMWordEq x y e |] =
@@ -1173,6 +1204,8 @@ instance SubstVar PermVarSubst m =>
     Impl1_ElimExists <$> genSubst s x <*> genSubst s p_body
   genSubst s [nuP| Impl1_Simpl simpl prx |] =
     Impl1_Simpl <$> genSubst s simpl <*> return (mbLift prx)
+  genSubst s [nuP| Impl1_LetBind tp e |] =
+    Impl1_LetBind (mbLift tp) <$> genSubst s e
   genSubst s [nuP| Impl1_ElimLLVMFieldContents x fp |] =
     Impl1_ElimLLVMFieldContents <$> genSubst s x <*> genSubst s fp
   genSubst s [nuP| Impl1_TryProveBVProp x prop prop_str |] =
@@ -1585,6 +1618,12 @@ embedMbImplM mb_ps_in mb_m =
          (view implStateNameTypes s) (return . fst) m)
       mb_ps_in mb_m)
 
+-- | Look up the type of an existential variable
+getExVarType :: Member vars tp -> ImplM vars s r ps ps (TypeRepr tp)
+getExVarType memb =
+  (view implStateVars <$> gget) >>>= \varTypes ->
+  greturn (cruCtxLookup varTypes memb)
+
 -- | Look up the current partial substitution
 getPSubst :: ImplM vars s r ps ps (PartialSubst vars)
 getPSubst = view implStatePSubst <$> gget
@@ -1745,6 +1784,27 @@ gmapRetAndPerms f_perms f_impl =
 -}
 
 
+-- | Look up the type of a free variable
+implGetVarType :: Name a -> ImplM vars s r ps ps (TypeRepr a)
+implGetVarType n =
+  (view implStateNameTypes <$> gget) >>>= \varTypes ->
+  case NameMap.lookup n varTypes of
+    Just tp -> greturn tp
+    Nothing ->
+      implTraceM (\i -> string "Could not find type for variable:" <+>
+                        permPretty i n) >>>
+      error "implGetVarType"
+
+-- | Find the first variable of a specific type
+implFindVarOfType :: TypeRepr a -> ImplM vars s r ps ps (Maybe (Name a))
+implFindVarOfType tp =
+  (view implStateNameTypes <$> gget) >>>= \varTypes ->
+  return (foldr (\(NameAndElem n tp') rest ->
+                  case testEquality tp tp' of
+                    Just Refl -> return n
+                    Nothing -> rest) Nothing
+          (NameMap.assocs varTypes))
+
 -- | Remember the types associated with a list of 'Name's, and also ensure those
 -- names have permissions
 implSetNameTypes :: MapRList Name ctx -> CruCtx ctx -> ImplM vars s r ps ps ()
@@ -1805,7 +1865,7 @@ implFailM str =
 -- | Call 'implFailM' and also output a debugging message
 implFailMsgM :: String -> ImplM vars s r ps_any ps a
 implFailMsgM msg =
-  implTraceM (const $ string (msg ++ "; backtracking...")) >>>= implFailM
+  implTraceM (const $ string msg) >>>= implFailM
 
 -- | Pretty print an implication @x:p -o (vars).p'@
 ppImpl :: PPInfo -> ExprVar tp -> ValuePerm tp ->
@@ -1821,8 +1881,7 @@ implFailVarM :: String -> ExprVar tp -> ValuePerm tp -> Mb vars (ValuePerm tp) -
 implFailVarM f x p mb_p =
   implTraceM (\i ->
                sep [string f <> colon <+> string "Could not prove",
-                    ppImpl i x p mb_p <> string ";",
-                    string "backtracking..."]) >>>=
+                    ppImpl i x p mb_p]) >>>=
   implFailM
 
 -- | Produce a branching proof tree that performs the first implication and, if
@@ -1845,6 +1904,15 @@ implPushMultiM :: DistPerms ps -> ImplM vars s r ps RNil ()
 implPushMultiM DistPermsNil = greturn ()
 implPushMultiM (DistPermsCons ps x p) =
   implPushMultiM ps >>> implPushM x p
+
+-- | For each permission @x:p@ in a list of permissions, either prove @x:eq(x)@
+-- by reflexivity if @p=eq(x)@ or push @x:p@ if @x@ has permissions @p@
+implPushOrReflMultiM :: DistPerms ps -> ImplM vars s r ps RNil ()
+implPushOrReflMultiM DistPermsNil = greturn ()
+implPushOrReflMultiM (DistPermsCons ps x (ValPerm_Eq (PExpr_Var x')))
+  | x == x' = implPushOrReflMultiM ps >>> introEqReflM x
+implPushOrReflMultiM (DistPermsCons ps x p) =
+  implPushOrReflMultiM ps >>> implPushM x p
 
 -- | Pop a permission from the top of the stack back to the primary permission
 -- for a variable, assuming that the primary permission for that variable is
@@ -1878,6 +1946,14 @@ implSimplM :: Proxy ps -> SimplImpl ps_in ps_out ->
 implSimplM prx simpl =
   implApplyImpl1 (Impl1_Simpl simpl prx)
   (MNil :>: Impl1Cont (const $ greturn ()))
+
+-- | Bind a new variable @x@ that is set to the supplied expression @e@, and
+-- push permissions @x:eq(e)@. Return @x@.
+implLetBindVar :: TypeRepr tp -> PermExpr tp ->
+                  ImplM vars s r (ps :> tp) ps (Name tp)
+implLetBindVar tp e =
+  implApplyImpl1 (Impl1_LetBind tp e)
+  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n))
 
 -- | Eliminate a permission @x:ptr((rw,off) |-> p)@ into permissions
 -- @x:ptr((rw,off) |-> eq(y))@ and @y:p@ for a fresh variable @y@, returning the
@@ -1997,6 +2073,13 @@ introEqReflM x = implSimplM Proxy (SImpl_IntroEqRefl x)
 -- | Invert a proof of @x:eq(y)@ on the top of the stack to one of @y:eq(x)@
 invertEqM :: ExprVar a -> ExprVar a -> ImplM vars s r (ps :> a) (ps :> a) ()
 invertEqM x y = implSimplM Proxy (SImpl_InvertEq x y)
+
+-- | Prove @x:eq(y)@ by proving equality permissions for both @x@ and @y@ to the
+-- same expression, thereby implementing a form of transitivity of equality
+-- where the second equality is inversted:
+invTransEqM :: ExprVar a -> ExprVar a -> PermExpr a ->
+               ImplM vars s r (ps :> a) (ps :> a :> a) ()
+invTransEqM x y e = implSimplM Proxy (SImpl_InvTransEq x y e)
 
 -- | Copy an @x:eq(e)@ permission on the top of the stack
 introEqCopyM :: ExprVar a -> PermExpr a ->
@@ -2544,6 +2627,21 @@ proveVarEqH x (PExpr_Var y) psubst mb_e =
   "proveVarEqH: incomplete psubst" >>>= \e ->
   introCastM x y (ValPerm_Eq e)
 
+-- Prove x:eq(e) |- x:eq(y) when psubst assigned y=e' by proving x:eq(e')
+-- FIXME: we should more generally apply psubst to the RHS before calling proveVarEqH
+proveVarEqH x e psubst [nuP| PExpr_Var mb_y |]
+  | Left memb <- mbNameBoundP mb_y
+  , Just e' <- psubstLookup psubst memb =
+    proveVarEqH x e psubst (fmap (const e') mb_y)
+
+-- Prove x:eq(e) |- x:eq(y) by first proving y:eq(e) and then using inverse
+-- transitivity
+proveVarEqH x e psubst [nuP| PExpr_Var mb_y |]
+  | Right y <- mbNameBoundP mb_y =
+    introEqCopyM x e >>> implPopM x (ValPerm_Eq e) >>>
+    proveVarImpl y (fmap (const $ ValPerm_Eq e) mb_y) >>>
+    invTransEqM x y e
+
 -- Otherwise give up!
 proveVarEqH x e _ mb_e =
   implFailVarM "proveVarEqH" x (ValPerm_Eq e) (fmap ValPerm_Eq mb_e)
@@ -2949,21 +3047,23 @@ proveVarAtomicImpl :: ExprVar a -> [AtomicPerm a] ->
                       Mb vars (AtomicPerm a) ->
                       ImplM vars s r (ps :> a) (ps :> a) ()
 
-proveVarAtomicImpl x ps [nuP| Perm_LLVMField mb_fp |] =
+proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMField mb_fp |] =
   partialSubstForceM (fmap llvmFieldOffset mb_fp)
   "proveVarPtrPerms: incomplete psubst: LLVM field offset" >>>= \off ->
   foldMapWithDefault implCatchM
-  (implFailMsgM "proveVarAtomicImpl: no cases to prove field")
+  (implFailVarM "proveVarAtomicImpl" x (ValPerm_Conj ps) (fmap
+                                                          ValPerm_Conj1 mb_p))
   (\(i,_) -> proveVarLLVMField x ps i off mb_fp)
   (findMaybeIndices (llvmPermContainsOffset off) ps)
 
-proveVarAtomicImpl x ps [nuP| Perm_LLVMArray mb_ap |] =
+proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMArray mb_ap |] =
   partialSubstForceM (fmap llvmArrayOffset mb_ap)
   "proveVarPtrPerms: incomplete psubst: LLVM array offset" >>>= \off ->
   partialSubstForceM (fmap llvmArrayLen mb_ap)
   "proveVarPtrPerms: incomplete psubst: LLVM array length" >>>= \len ->
   foldMapWithDefault implCatchM
-  (implFailMsgM "proveVarAtomicImpl: no cases to prove array")
+  (implFailVarM "proveVarAtomicImpl" x (ValPerm_Conj ps) (fmap
+                                                          ValPerm_Conj1 mb_p))
   (\(i,_) -> proveVarLLVMArray x ps i off len mb_ap)
   (findMaybeIndices (llvmPermContainsOffset off) ps)
 
@@ -3010,10 +3110,10 @@ proveVarAtomicImpl x ps mb_p@[nuP| Perm_IsLLVMPtr |] =
 
 proveVarAtomicImpl x aps@[Perm_LLVMFrame
                           fperms] mb_ap@[nuP| Perm_LLVMFrame mb_fperms |] =
-  partialSubstForceM mb_fperms
-  "proveVarAtomicImpl: incomplete frame perms" >>>= \fperms' ->
-  if fperms == fperms' then greturn () else
-    proveVarAtomicImplFail x aps mb_ap
+  getPSubst >>>= \psubst ->
+  case matchFramePerms psubst fperms mb_fperms of
+    Just psubst' -> modifyPSubst (const psubst') >>> greturn ()
+    Nothing -> proveVarAtomicImplFail x aps mb_ap
 
 proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned (PExpr_Var z) |]
   | Left memb <- mbNameBoundP z
@@ -3304,3 +3404,59 @@ proveVarsImplAppend :: ExDistPerms vars ps' ->
 proveVarsImplAppend ExDistPermsNil = return ()
 proveVarsImplAppend (ExDistPermsCons ps x p) =
   proveVarsImplAppend ps >>> proveVarImpl x p
+
+
+----------------------------------------------------------------------
+-- * Proving Permission Implications for Existential Variables
+----------------------------------------------------------------------
+
+-- | Prove a list of existentially-quantified distinguished permissions where
+-- some of the variables holding the permissions could themselves be
+-- existentially-quantified. This only works when each existentially-quantified
+-- variable is fully determined by proving the earlier implications in the list.
+proveExVarsImpl :: Mb vars (DistPerms ps) -> ImplM vars s r ps RNil ()
+proveExVarsImpl [nuP| DistPermsNil |] = greturn ()
+proveExVarsImpl [nuP| DistPermsCons ps x p |] =
+  proveExVarsImpl ps >>> getPSubst >>>= \psubst -> proveExVarImpl psubst x p
+
+-- | Prove an existentially-quantified permission where the variable holding the
+-- permission could itself be existentially-quantified. This only works in a
+-- limited set of cases depending on what permissions are on an
+-- existentially-quantified variable.
+proveExVarImpl :: PartialSubst vars -> Mb vars (Name tp) ->
+                  Mb vars (ValuePerm tp) -> ImplM vars s r (ps :> tp) ps ()
+
+-- If the variable is instantiated to another variable, just call proveVarImpl
+proveExVarImpl psubst mb_x mb_p
+  | Just (PExpr_Var n) <- partialSubst psubst (fmap PExpr_Var mb_x)
+  = proveVarImpl n mb_p
+
+-- If the variable is instantiated to a non-variable expression, bind a fresh
+-- variable for it and then call proveVarImpl
+proveExVarImpl psubst mb_x mb_p
+  | Just e <- partialSubst psubst (fmap PExpr_Var mb_x) =
+    (case mbNameBoundP mb_x of
+        Left memb -> getExVarType memb
+        Right x -> implGetVarType x) >>>= \tp ->
+    implLetBindVar tp e >>>= \n ->
+    implPopM n (ValPerm_Eq e) >>>
+    proveVarImpl n mb_p
+
+-- Special case: if proving an LLVM frame permission, look for an LLVM frame in
+-- the current context and use it
+proveExVarImpl _ mb_x mb_p@[nuP| ValPerm_Conj [Perm_LLVMFrame mb_fperms] |]
+  | Left memb <- mbNameBoundP mb_x =
+    getExVarType memb >>>= \x_tp ->
+    implFindVarOfType x_tp >>>= \maybe_n ->
+    case maybe_n of
+      Just n -> setVarM memb (PExpr_Var n) >>> proveVarImpl n mb_p
+      Nothing ->
+        implFailMsgM "proveExVarImpl: No LLVM frame pointer in scope"
+
+-- Otherwise we fail
+proveExVarImpl _ mb_x mb_p =
+  implTraceM (\i -> string "proveExVarImpl: existential variable" <+>
+                    permPretty i mb_x <+>
+                    string "not resolved when trying to prove:" </>
+                    permPretty i mb_p) >>>=
+  implFailM
