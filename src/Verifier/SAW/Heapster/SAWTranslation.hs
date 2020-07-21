@@ -3221,20 +3221,21 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
 -- * Translating Sets of CFGs
 ----------------------------------------------------------------------
 
--- | An existentially quantified pair of a 'CFG' its function permission
+-- | An existentially quantified tuple of a 'CFG', its function permission, and
+-- a 'String' name we want to translate it to
 data SomeCFGAndPerm ext where
-  SomeCFGAndPerm :: GlobalSymbol -> CFG ext blocks inits ret ->
+  SomeCFGAndPerm :: GlobalSymbol -> String -> CFG ext blocks inits ret ->
                     FunPerm ghosts (CtxToRList inits) ret ->
                     SomeCFGAndPerm ext
 
 someCFGAndPermSym :: SomeCFGAndPerm ext -> GlobalSymbol
-someCFGAndPermSym (SomeCFGAndPerm sym _ _) = sym
+someCFGAndPermSym (SomeCFGAndPerm sym _ _ _) = sym
 
-someCFGAndPermName :: SomeCFGAndPerm ext -> String
-someCFGAndPermName (SomeCFGAndPerm sym _ _) = globalSymbolName sym
+someCFGAndPermToName :: SomeCFGAndPerm ext -> String
+someCFGAndPermToName (SomeCFGAndPerm _ nm _ _) = nm
 
 someCFGAndPermLRT :: PermEnv -> SomeCFGAndPerm ext -> OpenTerm
-someCFGAndPermLRT env (SomeCFGAndPerm _ _
+someCFGAndPermLRT env (SomeCFGAndPerm _ _ _
                        (FunPerm ghosts args ret perms_in perms_out)) =
   flip runTransM (TypeTransInfo MNil [] env) $
   translateClosed (appendCruCtx ghosts args) >>= \ctx_trans ->
@@ -3250,7 +3251,7 @@ someCFGAndPermPtrPerm :: (1 <= ArchWidth arch, KnownNat (ArchWidth arch),
                           w ~ ArchWidth arch) =>
                          NatRepr w -> SomeCFGAndPerm (LLVM arch) ->
                          ValuePerm (LLVMPointerType w)
-someCFGAndPermPtrPerm w (SomeCFGAndPerm _ _ fun_perm) =
+someCFGAndPermPtrPerm w (SomeCFGAndPerm _ _ _ fun_perm) =
   withKnownNat w $ ValPerm_Conj1 $ Perm_LLVMFunPtr fun_perm
 
 
@@ -3274,7 +3275,7 @@ tcTranslateCFGTupleFun w env cfgs_and_perms =
         lrts in
   (lrts_tm ,) $
   lambdaOpenTermMulti (zip
-                       (map someCFGAndPermName cfgs_and_perms)
+                       (map someCFGAndPermToName cfgs_and_perms)
                        (map (applyOpenTerm
                              (globalOpenTerm
                               "Prelude.lrtToType")) lrts)) $ \funs ->
@@ -3288,7 +3289,7 @@ tcTranslateCFGTupleFun w env cfgs_and_perms =
         cfgs_and_perms funs in
   tupleOpenTerm $ flip map (zip cfgs_and_perms funs) $ \(cfg_and_perm, fun) ->
   case cfg_and_perm of
-    SomeCFGAndPerm sym cfg fun_perm ->
+    SomeCFGAndPerm _ _ cfg fun_perm ->
       translateCFG env' $ tcCFG env' fun_perm cfg
 
 
@@ -3324,7 +3325,7 @@ tcTranslateAddCFGs ::
 tcTranslateAddCFGs sc mod_name w env cfgs_and_perms =
   do let (lrts, tup_fun) = tcTranslateCFGTupleFun w env cfgs_and_perms
      let tup_fun_ident =
-           mkSafeIdent mod_name (someCFGAndPermName (head cfgs_and_perms)
+           mkSafeIdent mod_name (someCFGAndPermToName (head cfgs_and_perms)
                                  ++ "__tuple_fun")
      tup_fun_tp <- completeOpenTerm sc $
        applyOpenTerm (globalOpenTerm "Prelude.lrtTupleType") lrts
@@ -3343,7 +3344,7 @@ tcTranslateAddCFGs sc mod_name w env cfgs_and_perms =
               someCFGAndPermLRT env cfg_and_perm
             tm <- completeOpenTerm sc $
               projTupleOpenTerm i (globalOpenTerm tup_fun_ident)
-            let ident = mkSafeIdent mod_name (someCFGAndPermName cfg_and_perm)
+            let ident = mkSafeIdent mod_name (someCFGAndPermToName cfg_and_perm)
             scModifyModule sc mod_name $ flip insDef $
               Def { defIdent = ident,
                     defQualifier = NoQualifier,
