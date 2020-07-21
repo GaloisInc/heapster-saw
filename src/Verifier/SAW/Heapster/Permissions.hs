@@ -40,8 +40,15 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Lens hiding ((:>), Index, Empty)
 
+import Data.Binding.Hobbits.Mb (mbMap2)
+import Data.Binding.Hobbits.Closed
+import Data.Binding.Hobbits.Liftable
+import Data.Binding.Hobbits.MonadBind as MB
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
+import Data.Binding.Hobbits.NameSet (NameSet, SomeNames(..), names)
+import Data.Binding.Hobbits.NuMatching
+import Data.Binding.Hobbits.NuMatchingInstances
 
 import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, last)
 import qualified Data.Parameterized.Context as Ctx
@@ -51,7 +58,7 @@ import Data.Parameterized.TraversableFC
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
-import Lang.Crucible.Types
+import Lang.Crucible.Types hiding ((:>))
 import Lang.Crucible.FunctionHandle
 import Lang.Crucible.LLVM.MemModel
 import Lang.Crucible.CFG.Core
@@ -63,120 +70,12 @@ import Verifier.SAW.Heapster.CruUtil
 import Debug.Trace
 
 
--- | FIXME: figure out a better name and move to Hobbits
-mbMap2 :: (a -> b -> c) -> Mb ctx a -> Mb ctx b -> Mb ctx c
-mbMap2 f mb1 mb2 = fmap f mb1 `mbApply` mb2
-
--- FIXME: move to Hobbits
-foldrMapRList :: (forall a. f a -> r -> r) -> r -> MapRList f ctx -> r
-foldrMapRList _ r MNil = r
-foldrMapRList f r (xs :>: x) = f x $ foldrMapRList f r xs
-
--- FIXME: move to Hobbits!
-$(mkNuMatching [t| forall f. NuMatchingAny1 f => NameAndElem f |])
-$(mkNuMatching [t| forall a b. NuMatching a => Constant a b |])
-
-instance NuMatching a => NuMatchingAny1 (Constant a) where
-  nuMatchingAny1Proof = nuMatchingProof
-
--- | Helper function for writing 'FreeVars' instances.
---
--- FIXME: some version of this should be in Hobbits!
-liftNameMap :: forall ctx f a. NuMatchingAny1 f =>
-               (forall a. Mb ctx (f a) -> Maybe (f a)) ->
-               Mb ctx (NameMap f) -> NameMap f
-liftNameMap lifter = helper . fmap NameMap.assocs where
-  helper :: Mb ctx [NameAndElem f] -> NameMap f
-  helper [nuP| [] |] = NameMap.empty
-  helper [nuP| (NameAndElem mb_n mb_f):mb_elems |]
-    | Right n <- mbNameBoundP mb_n
-    , Just f <- lifter mb_f
-    = NameMap.insert n f (helper mb_elems)
-  helper [nuP| _:mb_elems |] = helper mb_elems
-
--- FIXME: move to a new module in Hobbits called NameSet
-type NameSet k = NameMap (Constant () :: k -> Type)
-
--- FIXME: move to the new Hobbits NameSet module and call it something
--- appropriate like names
-nameSetNames :: NameSet k -> Some (MapRList (Name :: k -> Type))
-nameSetNames s =
-  foldl (\(Some rets) (NameAndElem r _) -> Some (rets :>: r)) (Some MNil) $
-  NameMap.assocs s
-
-
-----------------------------------------------------------------------
--- * Monads that Support Name-Binding
-----------------------------------------------------------------------
-
--- FIXME HERE: move all of the below to Hobbits!
-
-type RNil = 'RNil
-type (:>) = '(:>)
-
-class Monad m => MonadBind m where
-  mbM :: NuMatching a => Mb ctx (m a) -> m (Mb ctx a)
-
-nuM :: (MonadBind m, NuMatching b) => (Name a -> m b) -> m (Binding a b)
-nuM = mbM . nu
-
-instance MonadBind Identity where
-  mbM = Identity . fmap runIdentity
-
-instance MonadBind Maybe where
-  mbM [nuP| Just x |] = return x
-  mbM [nuP| Nothing |] = Nothing
-
-instance MonadBind m => MonadBind (ReaderT r m) where
-  mbM mb = ReaderT $ \r -> mbM $ fmap (flip runReaderT r) mb
-
--- | A version of 'MonadBind' that does not require a 'NuMatching' instance on
--- the element type of the multi-binding in the monad
-class MonadBind m => MonadStrongBind m where
-  strongMbM :: Mb ctx (m a) -> m (Mb ctx a)
-
-instance MonadStrongBind Identity where
-  strongMbM = Identity . fmap runIdentity
-
-instance MonadStrongBind m => MonadStrongBind (ReaderT r m) where
-  strongMbM mb = ReaderT $ \r -> strongMbM $ fmap (flip runReaderT r) mb
-
--- | State types that can incorporate name-bindings
-class NuMatching s => BindState s where
-  bindState :: Mb ctx s -> s
-
-instance BindState (Closed s) where
-  bindState = mbLift
-
-instance (MonadBind m, BindState s) => MonadBind (StateT s m) where
-  mbM mb_m = StateT $ \s ->
-    mbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
-    return (fmap fst mb_as, bindState (fmap snd mb_as))
-
-instance (MonadStrongBind m, BindState s) => MonadStrongBind (StateT s m) where
-  strongMbM mb_m = StateT $ \s ->
-    strongMbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
-    return (fmap fst mb_as, bindState (fmap snd mb_as))
-
--- | A monad whose effects are closed
-class Monad m => MonadClosed m where
-  closedM :: Closed (m a) -> m (Closed a)
-
-instance MonadClosed Identity where
-  closedM = Identity . clApply $(mkClosed [| runIdentity |])
-
-instance (MonadClosed m, Closable s) => MonadClosed (StateT s m) where
-  closedM clm =
-    do s <- get
-       cl_a_s <- lift $ closedM ($(mkClosed [| runStateT |]) `clApply` clm
-                                 `clApply` toClosed s)
-       put (snd $ unClosed cl_a_s)
-       return ($(mkClosed [| fst |]) `clApply` cl_a_s)
-
-
 ----------------------------------------------------------------------
 -- * Pretty-printing
 ----------------------------------------------------------------------
+
+type RNil = 'RNil
+type (:>) = '(:>)
 
 newtype StringF a = StringF { unStringF :: String }
 
@@ -265,13 +164,6 @@ instance PermPretty (MapRList Name (ctx :: RList CrucibleType)) where
     do pp_ns <- permPrettyM ns
        pp_n <- permPrettyM n
        return (pp_ns <> comma <+> pp_n)
-
--- FIXME: move to Hobbits...?
-{-
-instance TraversableFC MapRList where
-  traverseFC _ MNil = pure MNil
-  traverseFC f (xs :>: x) = (:>:) <$> traverseFC f xs <*> f x
--}
 
 -- FIXME: this is just TraversableFC without having an orphan instance...
 traverseMapRList :: Applicative m => (forall a. f a -> m (g a)) ->
@@ -1287,12 +1179,6 @@ instance Eq (DistPerms ps) where
     case testEquality perms1 perms2 of
       Just _ -> True
       Nothing -> False
-
--- FIXME: move to Hobbits!
-instance Eq a => Eq (Mb ctx a) where
-  mb1 == mb2 =
-    mbLift $ nuMultiWithElim (\_ (_ :>: a1 :>: a2) ->
-                               a1 == a2) (MNil :>: mb1 :>: mb2)
 
 instance Eq (ValuePerm a) where
   (ValPerm_Eq e1) == (ValPerm_Eq e2) = e1 == e2
@@ -2325,7 +2211,7 @@ instance FreeVars (ValuePerm tp) where
   freeVars (ValPerm_Eq e) = freeVars e
   freeVars (ValPerm_Or p1 p2) = NameMap.union (freeVars p1) (freeVars p2)
   freeVars (ValPerm_Exists mb_p) =
-    liftNameMap (const $ Just $ Constant ()) $ fmap freeVars mb_p
+    NameMap.liftNameMap (const $ Just $ Constant ()) $ fmap freeVars mb_p
   freeVars (ValPerm_Named _ args) = freeVars args
   freeVars (ValPerm_Var x) = NameMap.singleton x (Constant ())
   freeVars (ValPerm_Conj ps) = freeVars ps
@@ -2356,9 +2242,9 @@ instance FreeVars (LLVMArrayBorrow w) where
 instance FreeVars (FunPerm ghosts args ret) where
   freeVars (FunPerm _ _ _ perms_in perms_out) =
     NameMap.union
-    (liftNameMap (const $ Just $ Constant ()) $
+    (NameMap.liftNameMap (const $ Just $ Constant ()) $
      fmap freeVars $ mbCombine perms_in)
-    (liftNameMap (const $ Just $ Constant ()) $
+    (NameMap.liftNameMap (const $ Just $ Constant ()) $
      fmap freeVars $ mbCombine perms_out)
 
 
@@ -3865,9 +3751,9 @@ varPermsNeededVars ns = helper NameMap.empty ns
           ns_perms = distPermsToValuePerms (varPermsMulti ns perms)
           free_vars = freeVars ns_perms
           new_vars = NameMap.difference free_vars seen_vars' in
-      case nameSetNames new_vars of
-        Some MNil -> Some MNil
-        Some new_ns ->
+      case names new_vars of
+        SomeNames MNil -> Some MNil
+        SomeNames new_ns ->
           case helper seen_vars' new_ns perms of
             Some rest ->
               Some $ appendMapRList new_ns rest

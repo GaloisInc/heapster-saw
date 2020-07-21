@@ -45,8 +45,11 @@ import Control.Monad.Cont
 import What4.ProgramLoc
 
 import Data.Binding.Hobbits
+import Data.Binding.Hobbits.Liftable()
+import Data.Binding.Hobbits.Mb (extMb, mbMap2)
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
+import Data.Type.RList (mapRListTail)
 
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
@@ -82,11 +85,6 @@ import Verifier.SAW.Heapster.Implication
 import Verifier.SAW.Heapster.TypedCrucible
 
 import Debug.Trace
-
-
--- | FIXME HERE: move to Hobbits!
-mapRListTail :: MapRList f (ctx :> a) -> MapRList f ctx
-mapRListTail (xs :>: _) = xs
 
 
 ----------------------------------------------------------------------
@@ -1036,9 +1034,6 @@ permTransPermEq :: PermTrans ctx a -> Mb ctx (ValuePerm a) -> Bool
 permTransPermEq ptrans mb_p =
   permTransPerm (mbToProxy mb_p) ptrans == mb_p
 
--- FIXME HERE: move this to Hobbits
-extMb :: Mb ctx a -> Mb (ctx :> tp) a
-extMb = mbCombine . fmap (nu . const)
 
 extsMb :: CruCtx ctx2 -> Mb ctx a -> Mb (ctx :++: ctx2) a
 extsMb ctx = mbCombine . fmap (nus (cruCtxProxies ctx) . const)

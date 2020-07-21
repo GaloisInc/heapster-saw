@@ -45,8 +45,10 @@ import Control.Monad.Reader
 import Text.PrettyPrint.ANSI.Leijen (pretty)
 
 import Data.Binding.Hobbits
+import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
+import Data.Binding.Hobbits.Mb (mbMap2)
 
 import Data.Parameterized.Context hiding ((:>), empty, take, view, last)
 import qualified Data.Parameterized.Context as Ctx
@@ -2615,8 +2617,8 @@ buildInputPermsH :: Mb ghosts (DistPerms ghosts) ->
                     MbDistPerms (ghosts :++: args)
 buildInputPermsH mb_perms mb_args =
   mbCombine $ mbMap2 (\perms args ->
-                       nuMulti args $ \arg_vars ->
-                       appendDistPerms perms (mkEqVarPerms arg_vars args))
+                        nuMulti args $ \arg_vars ->
+                        appendDistPerms perms (mkEqVarPerms arg_vars args))
   mb_perms mb_args
 
 buildInputPerms :: PPInfo -> MapRList Name (ghosts :: RList CrucibleType) ->
