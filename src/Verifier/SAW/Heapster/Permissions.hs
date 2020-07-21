@@ -46,7 +46,7 @@ import Data.Binding.Hobbits.Liftable
 import Data.Binding.Hobbits.MonadBind as MB
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
-import Data.Binding.Hobbits.NameSet (NameSet, names)
+import Data.Binding.Hobbits.NameSet (NameSet, SomeNames(..), names)
 import Data.Binding.Hobbits.NuMatching
 import Data.Binding.Hobbits.NuMatchingInstances
 
@@ -3752,8 +3752,8 @@ varPermsNeededVars ns = helper NameMap.empty ns
           free_vars = freeVars ns_perms
           new_vars = NameMap.difference free_vars seen_vars' in
       case names new_vars of
-        Some MNil -> Some MNil
-        Some new_ns ->
+        SomeNames MNil -> Some MNil
+        SomeNames new_ns ->
           case helper seen_vars' new_ns perms of
             Some rest ->
               Some $ appendMapRList new_ns rest
