@@ -46,7 +46,8 @@ import Data.Binding.Hobbits.Liftable
 import Data.Binding.Hobbits.MonadBind as MB
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
-import Data.Binding.Hobbits.NameSet (NameSet, SomeNames(..), names)
+import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..), toList)
+import qualified Data.Binding.Hobbits.NameSet as NameSet
 import Data.Binding.Hobbits.NuMatching
 import Data.Binding.Hobbits.NuMatchingInstances
 
@@ -2151,56 +2152,56 @@ class FreeVars a where
   freeVars :: a -> NameSet CrucibleType
 
 instance FreeVars a => FreeVars [a] where
-  freeVars = foldr (NameMap.union . freeVars) NameMap.empty
+  freeVars = foldr (NameSet.union . freeVars) NameSet.empty
 
 instance (FreeVars a, FreeVars b) => FreeVars (a,b) where
-  freeVars (a,b) = NameMap.union (freeVars a) (freeVars b)
+  freeVars (a,b) = NameSet.union (freeVars a) (freeVars b)
 
 instance FreeVars (PermExpr a) where
-  freeVars (PExpr_Var x) = NameMap.singleton x (Constant ())
-  freeVars PExpr_Unit = NameMap.empty
-  freeVars (PExpr_Bool _) = NameMap.empty
-  freeVars (PExpr_Nat _) = NameMap.empty
+  freeVars (PExpr_Var x) = NameSet.singleton x
+  freeVars PExpr_Unit = NameSet.empty
+  freeVars (PExpr_Bool _) = NameSet.empty
+  freeVars (PExpr_Nat _) = NameSet.empty
   freeVars (PExpr_BV factors _) = freeVars factors
   freeVars (PExpr_Struct elems) = freeVars elems
-  freeVars PExpr_Always = NameMap.empty
+  freeVars PExpr_Always = NameSet.empty
   freeVars (PExpr_LLVMWord e) = freeVars e
   freeVars (PExpr_LLVMOffset ptr off) =
-    NameMap.insert ptr (Constant ()) (freeVars off)
-  freeVars (PExpr_Fun _) = NameMap.empty
-  freeVars PExpr_PermListNil = NameMap.empty
+    NameSet.insert ptr (freeVars off)
+  freeVars (PExpr_Fun _) = NameSet.empty
+  freeVars PExpr_PermListNil = NameSet.empty
   freeVars (PExpr_PermListCons e p ps) =
-    NameMap.union (freeVars e) $ NameMap.union (freeVars p) (freeVars ps)
-  freeVars (PExpr_RWModality _) = NameMap.empty
+    NameSet.union (freeVars e) $ NameSet.union (freeVars p) (freeVars ps)
+  freeVars (PExpr_RWModality _) = NameSet.empty
   freeVars (PExpr_ValPerm p) = freeVars p
 
 instance FreeVars (BVFactor w) where
-  freeVars (BVFactor _ x) = NameMap.singleton x (Constant ())
+  freeVars (BVFactor _ x) = NameSet.singleton x
 
 instance FreeVars (PermExprs as) where
-  freeVars PExprs_Nil = NameMap.empty
-  freeVars (PExprs_Cons es e) = NameMap.union (freeVars es) (freeVars e)
+  freeVars PExprs_Nil = NameSet.empty
+  freeVars (PExprs_Cons es e) = NameSet.union (freeVars es) (freeVars e)
 
 instance FreeVars (BVRange w) where
-  freeVars (BVRange off len) = NameMap.union (freeVars off) (freeVars len)
+  freeVars (BVRange off len) = NameSet.union (freeVars off) (freeVars len)
 
 instance FreeVars (BVProp w) where
-  freeVars (BVProp_Eq e1 e2) = NameMap.union (freeVars e1) (freeVars e2)
-  freeVars (BVProp_Neq e1 e2) = NameMap.union (freeVars e1) (freeVars e2)
-  freeVars (BVProp_InRange e rng) = NameMap.union (freeVars e) (freeVars rng)
+  freeVars (BVProp_Eq e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
+  freeVars (BVProp_Neq e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
+  freeVars (BVProp_InRange e rng) = NameSet.union (freeVars e) (freeVars rng)
   freeVars (BVProp_NotInRange e rng) =
-    NameMap.union (freeVars e) (freeVars rng)
+    NameSet.union (freeVars e) (freeVars rng)
   freeVars (BVProp_RangeSubset rng1 rng2) =
-    NameMap.union (freeVars rng1) (freeVars rng2)
+    NameSet.union (freeVars rng1) (freeVars rng2)
   freeVars (BVProp_RangesDisjoint rng1 rng2) =
-    NameMap.union (freeVars rng1) (freeVars rng2)
+    NameSet.union (freeVars rng1) (freeVars rng2)
 
 instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMField fp) = freeVars fp
   freeVars (Perm_LLVMArray ap) = freeVars ap
   freeVars (Perm_LLVMFree e) = freeVars e
   freeVars (Perm_LLVMFunPtr fun_perm) = freeVars fun_perm
-  freeVars Perm_IsLLVMPtr = NameMap.empty
+  freeVars Perm_IsLLVMPtr = NameSet.empty
   freeVars (Perm_LLVMFrame fperms) = freeVars $ map fst fperms
   freeVars (Perm_LOwned ps) = freeVars ps
   freeVars (Perm_LCurrent l) = freeVars l
@@ -2209,28 +2210,28 @@ instance FreeVars (AtomicPerm tp) where
 
 instance FreeVars (ValuePerm tp) where
   freeVars (ValPerm_Eq e) = freeVars e
-  freeVars (ValPerm_Or p1 p2) = NameMap.union (freeVars p1) (freeVars p2)
+  freeVars (ValPerm_Or p1 p2) = NameSet.union (freeVars p1) (freeVars p2)
   freeVars (ValPerm_Exists mb_p) =
-    NameMap.liftNameMap (const $ Just $ Constant ()) $ fmap freeVars mb_p
+    NameSet.liftNameSet $ fmap freeVars mb_p
   freeVars (ValPerm_Named _ args) = freeVars args
-  freeVars (ValPerm_Var x) = NameMap.singleton x (Constant ())
+  freeVars (ValPerm_Var x) = NameSet.singleton x
   freeVars (ValPerm_Conj ps) = freeVars ps
 
 instance FreeVars (ValuePerms tps) where
-  freeVars ValPerms_Nil = NameMap.empty
-  freeVars (ValPerms_Cons ps p) = NameMap.union (freeVars ps) (freeVars p)
+  freeVars ValPerms_Nil = NameSet.empty
+  freeVars (ValPerms_Cons ps p) = NameSet.union (freeVars ps) (freeVars p)
 
 instance FreeVars (LLVMFieldPerm w) where
   freeVars (LLVMFieldPerm {..}) =
-    foldr1 NameMap.union [freeVars llvmFieldRW, freeVars llvmFieldLifetime,
-                          freeVars llvmFieldOffset, freeVars llvmFieldContents]
+    NameSet.unions [freeVars llvmFieldRW, freeVars llvmFieldLifetime,
+                    freeVars llvmFieldOffset, freeVars llvmFieldContents]
 
 instance FreeVars (LLVMArrayPerm w) where
   freeVars (LLVMArrayPerm {..}) =
-    foldr1 NameMap.union [freeVars llvmArrayOffset,
-                          freeVars llvmArrayLen,
-                          freeVars llvmArrayFields,
-                          freeVars llvmArrayBorrows]
+    NameSet.unions [freeVars llvmArrayOffset,
+                    freeVars llvmArrayLen,
+                    freeVars llvmArrayFields,
+                    freeVars llvmArrayBorrows]
 
 instance FreeVars (LLVMArrayIndex w) where
   freeVars (LLVMArrayIndex cell _) = freeVars cell
@@ -2241,11 +2242,9 @@ instance FreeVars (LLVMArrayBorrow w) where
 
 instance FreeVars (FunPerm ghosts args ret) where
   freeVars (FunPerm _ _ _ perms_in perms_out) =
-    NameMap.union
-    (NameMap.liftNameMap (const $ Just $ Constant ()) $
-     fmap freeVars $ mbCombine perms_in)
-    (NameMap.liftNameMap (const $ Just $ Constant ()) $
-     fmap freeVars $ mbCombine perms_out)
+    NameSet.union
+    (NameSet.liftNameSet $ fmap freeVars $ mbCombine perms_in)
+    (NameSet.liftNameSet $ fmap freeVars $ mbCombine perms_out)
 
 
 -- | Generic function to test if a permission contains a lifetime
@@ -3741,22 +3740,27 @@ varPermsMulti (ns :>: n) ps =
 -- where) it is used.
 varPermsNeededVars :: MapRList ExprVar ns -> PermSet ps ->
                       Some (MapRList ExprVar)
-varPermsNeededVars ns = helper NameMap.empty ns
+varPermsNeededVars ns =
+  helper NameSet.empty (mapRListToList $ mapMapRList (Constant . SomeName) ns)
   where
-    helper :: NameSet CrucibleType -> MapRList ExprVar ns -> PermSet ps ->
+    namesListToNames :: [SomeName CrucibleType] -> Some (MapRList ExprVar)
+    namesListToNames =
+      foldr (\(SomeName n) (Some ns) -> Some (ns :>: n)) (Some MNil) . reverse
+    helper :: NameSet CrucibleType -> [SomeName CrucibleType] -> PermSet ps ->
               Some (MapRList ExprVar)
     helper seen_vars ns perms =
       let seen_vars' =
-            foldrMapRList (\n -> NameMap.insert n (Constant ())) seen_vars ns
-          ns_perms = distPermsToValuePerms (varPermsMulti ns perms)
-          free_vars = freeVars ns_perms
-          new_vars = NameMap.difference free_vars seen_vars' in
-      case names new_vars of
-        SomeNames MNil -> Some MNil
-        SomeNames new_ns ->
-          case helper seen_vars' new_ns perms of
-            Some rest ->
-              Some $ appendMapRList new_ns rest
+            foldr (\(SomeName n) -> NameSet.insert n) seen_vars ns
+          free_vars =
+            NameSet.unions $
+            map (\(SomeName n) -> freeVars (perms ^. varPerm n)) ns
+          new_vars = NameSet.difference free_vars seen_vars' in
+      case toList new_vars of
+        [] -> Some MNil
+        new_ns ->
+          case (namesListToNames new_ns, helper seen_vars' new_ns perms) of
+            (Some ns', Some rest) ->
+              Some $ appendMapRList ns' rest
 
 -- | Initialize the primary permission of a variable to @true@ if it is not set
 initVarPerm :: ExprVar a -> PermSet ps -> PermSet ps
