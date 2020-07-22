@@ -808,7 +808,7 @@ parseSortedValuePerms var_specs =
        do spaces >> char ':'
           p <- parseValPerm tp
           var_specs' <- setVarSpecsPermM var n p var_specs
-          try (spaces >> comma >> parseSortedValuePerms var_specs') <|>
+          (try (spaces >> comma) >> parseSortedValuePerms var_specs') <|>
             return (varSpecsToPerms var_specs'))
 
 -- | Run a parsing computation inside a name-binding for expressions variables
