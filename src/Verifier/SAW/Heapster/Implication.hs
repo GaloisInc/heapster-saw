@@ -3263,6 +3263,8 @@ proveVarImplH x p@(ValPerm_Eq (PExpr_Var y)) mb_p =
 proveVarImplH x p@(ValPerm_Named npn args)
                    mb_p@[nuP| ValPerm_Named mb_npn mb_args |]
   | Just (Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn) =
+    (if permIsCopyable p then implCopyM x p >>> implPopM x p
+     else greturn ()) >>>
     proveNamedArgs x npn args mb_args
 
 -- Otherwise, if proving P1<args1> |- P2<args2>, we need to unfold any defined
