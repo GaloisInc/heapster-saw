@@ -566,7 +566,7 @@ parseAtomicPerms tp =
 -- | Parse an atomic permission of a specific type
 parseAtomicPerm :: (Stream s Identity Char, Liftable s) => TypeRepr a ->
                    PermParseM s (AtomicPerm a)
-parseAtomicPerm (LLVMPointerRepr w)
+parseAtomicPerm tp@(LLVMPointerRepr w)
   | Left LeqProof <- decideLeq oneRepr w =
     withKnownNat w
     ((Perm_LLVMField <$> parseLLVMFieldPerm False) <|>
@@ -584,7 +584,23 @@ parseAtomicPerm (LLVMPointerRepr w)
          SomeFunPerm fun_perm <- parseFunPermM args (LLVMPointerRepr w) 
          spaces >> char ')'
          return $ Perm_LLVMFunPtr fun_perm) <|>     
-     Perm_BVProp <$> parseBVProp)
+     (Perm_BVProp <$> parseBVProp) <?>
+     ("atomic permission of type " ++ show tp))
+
+parseAtomicPerm tp@(LLVMFrameRepr w)
+  | Left LeqProof <- decideLeq oneRepr w =
+    withKnownNat w
+    ((do try (string "llvmframe") >> spaces >> char '['
+         fperm <-
+           sepBy (do spaces
+                     e <- parseExpr knownRepr
+                     spaces >> char ':' >> spaces
+                     i <- integer
+                     return (e,i))
+           (spaces >> comma)
+         spaces >> char ']'
+         return $ Perm_LLVMFrame fperm) <?>
+     ("atomic permission of type " ++ show tp))
 
 -- | Parse a field permission @[l]ptr((rw,off) |-> p)@. If the 'Bool' flag is
 -- 'True', the field permission is being parsed as part of an array permission,
