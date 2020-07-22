@@ -2955,14 +2955,15 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      -- all links to a block with a block entry hint and then add a dummy start
      -- node, represented by Nothing, that has the function start block and also
      -- all blocks with hints as successors.
-     let hint_nodes = map (Just . fmapF blockEntryHintBlockID) block_entry_hints
+     let hint_blocks = map (fmapF blockEntryHintBlockID) block_entry_hints
+     let hint_nodes = map Just hint_blocks
      let nodeSuccessors (Just node) =
            filter (\node' -> notElem node' hint_nodes) $
            map Just $ cfgSuccessors cfg node
          nodeSuccessors Nothing = Just (cfgStart cfg) : hint_nodes
      !(init_st) <- get
-     mapM_ (visit cfg) (trace "visiting CFG..." $
-                        weakTopologicalOrdering nodeSuccessors Nothing)
+     mapM_ (visit cfg hint_blocks) $ trace "visiting CFG..." $
+       weakTopologicalOrdering nodeSuccessors Nothing
      !final_st <- get
      trace "visiting complete!" $ return $ TypedCFG
        { tpcfgHandle = TypedFnHandle ghosts (cfgHandle cfg)
@@ -2974,18 +2975,20 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
        , tpcfgEntryBlockID = init_entryID }
   where
     visit :: PermCheckExtC ext => CFG ext cblocks inits ret ->
+             [Some (BlockID cblocks)] ->
              WTOComponent (Maybe (Some (BlockID cblocks))) ->
              TopPermCheckM ext cblocks blocks tops ret ()
-    visit cfg (Vertex Nothing) = return ()
-    visit cfg (Vertex (Just (Some blkID))) =
+    visit cfg _ (Vertex Nothing) = return ()
+    visit cfg scc_blocks (Vertex (Just (Some blkID))) =
       do blkIx <- memberLength <$> stLookupBlockID blkID <$> get
          () <- trace ("Visiting block: " ++ show blkIx) $ return ()
-         !ret <- tcEmitBlock False (getBlock blkID (cfgBlockMap cfg))
+         let is_scc = elem (Some blkID) scc_blocks
+         !ret <- tcEmitBlock is_scc (getBlock blkID (cfgBlockMap cfg))
          !s <- get
          trace ("Visiting block " ++ show blkIx ++ " complete") $ return ret
-    visit cfg (SCC (Just (Some blkID)) comps) =
+    visit cfg scc_blocks (SCC (Just (Some blkID)) comps) =
       tcEmitBlock True (getBlock blkID (cfgBlockMap cfg)) >>
-      mapM_ (visit cfg) comps
-    visit cfg (SCC Nothing comps) =
+      mapM_ (visit cfg scc_blocks) comps
+    visit cfg scc_blocks (SCC Nothing comps) =
       -- NOTE: this should never actually happen, as nothing jumps to Nothing
-      mapM_ (visit cfg) comps
+      mapM_ (visit cfg scc_blocks) comps
