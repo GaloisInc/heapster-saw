@@ -68,12 +68,6 @@ mkReifiesObj a = reify a ReifiesObj
 projReifiesObj :: ReifiesObj a -> a
 projReifiesObj (ReifiesObj prx) = reflect prx
 
--- | Builds an 'MbTypeRepr' proof for use in a 'NuMatching' instance. This proof
--- is unsafe because it does no renaming of fresh names, so should only be used
--- for types that are guaranteed not to contain any 'Name' or 'Mb' values.
-unsafeMbTypeRepr :: MbTypeRepr a
-unsafeMbTypeRepr = isoMbTypeRepr mkReifiesObj projReifiesObj
-
 instance NuMatching Ident where
   nuMatchingProof = unsafeMbTypeRepr
 
