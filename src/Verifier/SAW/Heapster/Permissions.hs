@@ -1317,7 +1317,7 @@ instance PermPretty (AtomicPerm a) where
   permPrettyM Perm_IsLLVMPtr = return (string "is_llvmptr")
   permPrettyM (Perm_LLVMFrame fperm) =
     do pps <- mapM (\(e,i) -> (<> (colon <> integer i)) <$> permPrettyM e) fperm
-       return (string "LLVMframe" <+> list pps)
+       return (string "llvmframe" <+> list pps)
   permPrettyM (Perm_LOwned ps) = (string "lowned" <+>) <$> permPrettyM ps
   permPrettyM (Perm_LCurrent l) = (string "lcurrent" <+>) <$> permPrettyM l
   permPrettyM (Perm_Fun fun_perm) = permPrettyM fun_perm
