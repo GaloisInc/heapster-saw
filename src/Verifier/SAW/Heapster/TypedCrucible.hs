@@ -2948,16 +2948,21 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
          -- FIXME HERE NOW: warn the user that the hint did not match
          return Nothing
 
-     -- Visit all the nodes in a weak topological order, meaning that we visit a
-     -- node before its successors with the exception that blocks with block
-     -- entry hints can be visited first
-     let nodeSuccessors node =
-           filter (\node' -> notElem node' $
-                             map (fmapF blockEntryHintBlockID) block_entry_hints) $
-           cfgSuccessors cfg node
+     -- Visit all the blocks in a weak topological order, meaning that we visit
+     -- a block before its successors (the blocks it could jump to) in the CFG.
+     -- The exception is that blocks with block entry hints should be visited
+     -- first, before any blocks that jump to them. To ensure this, we remove
+     -- all links to a block with a block entry hint and then add a dummy start
+     -- node, represented by Nothing, that has the function start block and also
+     -- all blocks with hints as successors.
+     let hint_nodes = map (Just . fmapF blockEntryHintBlockID) block_entry_hints
+     let nodeSuccessors (Just node) =
+           filter (\node' -> notElem node' hint_nodes) $
+           map Just $ cfgSuccessors cfg node
+         nodeSuccessors Nothing = Just (cfgStart cfg) : hint_nodes
      !(init_st) <- get
      mapM_ (visit cfg) (trace "visiting CFG..." $
-                        weakTopologicalOrdering nodeSuccessors (cfgStart cfg))
+                        weakTopologicalOrdering nodeSuccessors Nothing)
      !final_st <- get
      trace "visiting complete!" $ return $ TypedCFG
        { tpcfgHandle = TypedFnHandle ghosts (cfgHandle cfg)
@@ -2969,14 +2974,18 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
        , tpcfgEntryBlockID = init_entryID }
   where
     visit :: PermCheckExtC ext => CFG ext cblocks inits ret ->
-             WTOComponent (Some (BlockID cblocks)) ->
+             WTOComponent (Maybe (Some (BlockID cblocks))) ->
              TopPermCheckM ext cblocks blocks tops ret ()
-    visit cfg (Vertex (Some blkID)) =
+    visit cfg (Vertex Nothing) = return ()
+    visit cfg (Vertex (Just (Some blkID))) =
       do blkIx <- memberLength <$> stLookupBlockID blkID <$> get
          () <- trace ("Visiting block: " ++ show blkIx) $ return ()
          !ret <- tcEmitBlock False (getBlock blkID (cfgBlockMap cfg))
          !s <- get
          trace ("Visiting block " ++ show blkIx ++ " complete") $ return ret
-    visit cfg (SCC (Some blkID) comps) =
+    visit cfg (SCC (Just (Some blkID)) comps) =
       tcEmitBlock True (getBlock blkID (cfgBlockMap cfg)) >>
+      mapM_ (visit cfg) comps
+    visit cfg (SCC Nothing comps) =
+      -- NOTE: this should never actually happen, as nothing jumps to Nothing
       mapM_ (visit cfg) comps
