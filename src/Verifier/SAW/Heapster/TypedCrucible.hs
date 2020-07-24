@@ -2522,7 +2522,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_ResolveGlobal w _ gsym) =
       greturn (addCtxName ctx ret)
     Nothing ->
       stmtFailM (const $ string ("LLVM_ResolveGlobal: no perms for global "
-                                 ++ show gsym))
+                                 ++ globalSymbolName gsym))
 
 tcEmitLLVMStmt arch ctx loc (LLVM_PtrEq _ r1 r2) =
   let x1 = tcReg ctx r1
