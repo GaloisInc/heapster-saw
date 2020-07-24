@@ -2416,6 +2416,8 @@ recombinePerm' x _ p@ValPerm_True = implDropM x p
 recombinePerm' x ValPerm_True p = implPopM x p
 recombinePerm' x (ValPerm_Eq (PExpr_Var y)) _
   | y == x = error "recombinePerm: variable x has permission eq(x)!"
+recombinePerm' x (ValPerm_Eq e1) p@(ValPerm_Eq e2)
+  | e1 == e2 = implDropM x p
 recombinePerm' x x_p@(ValPerm_Eq (PExpr_Var y)) p =
   implPushM x x_p >>> introEqCopyM x (PExpr_Var y) >>> implPopM x x_p >>>
   invertEqM x y >>> implSwapM x p y (ValPerm_Eq (PExpr_Var x)) >>>
@@ -2428,14 +2430,16 @@ recombinePerm' x x_p@(ValPerm_Eq (PExpr_LLVMOffset y off)) (ValPerm_Conj ps) =
   castLLVMPtrM x ps (bvNegate off) y >>>
   getPerm y >>>= \y_p ->
   recombinePermExpl y y_p (ValPerm_Conj $ mapMaybe (offsetLLVMAtomicPerm off) ps)
-recombinePerm' x (ValPerm_Eq e1) p@(ValPerm_Eq e2)
-  | e1 == e2 = implDropM x p
-recombinePerm' _ _ (ValPerm_Eq _) =
+recombinePerm' x p p'@(ValPerm_Eq _) =
   -- NOTE: we could handle this by swapping the stack with the variable perm and
   -- calling recombinePerm again, but this could potentially create permission
   -- equality cycles with, e.g., x:eq(y) * y:eq(x). Plus, we don't expect any
   -- functions or typed instructions to return equality permissions unless it is
   -- for a new, fresh variable, in which case the above cases will handle it
+  implTraceM (\i ->
+               string "recombinePerm: unexpected equality permission being recombined" </>
+               permPretty i x <+> colon <+> permPretty i p <+>
+               string "<-" <+> permPretty i p') >>>
   error "recombinePerm: unexpected equality permission being recombined"
 recombinePerm' x x_p (ValPerm_Or _ _) =
   elimOrsExistsM x >>>= \p' -> recombinePermExpl x x_p p'
