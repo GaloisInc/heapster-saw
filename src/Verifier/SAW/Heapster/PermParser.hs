@@ -611,9 +611,9 @@ parseLLVMFieldPerm :: (Stream s Identity Char, Liftable s,
                        KnownNat w, 1 <= w) =>
                       Bool -> PermParseM s (LLVMFieldPerm w)
 parseLLVMFieldPerm in_array =
-  do llvmFieldLifetime <- (do try (string "[")
+  do llvmFieldLifetime <- (do try (spaces >> string "[")
                               l <- parseExpr knownRepr
-                              string "]"
+                              spaces >> string "]"
                               return l) <|> return PExpr_Always
      if in_array then try (spaces >> char '(' >> return ())
        else try (spaces >> string "ptr" >> spaces >> char '(' >>
