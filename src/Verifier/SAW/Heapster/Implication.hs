@@ -2428,6 +2428,8 @@ recombinePerm' x x_p@(ValPerm_Eq (PExpr_LLVMOffset y off)) (ValPerm_Conj ps) =
   castLLVMPtrM x ps (bvNegate off) y >>>
   getPerm y >>>= \y_p ->
   recombinePermExpl y y_p (ValPerm_Conj $ mapMaybe (offsetLLVMAtomicPerm off) ps)
+recombinePerm' x (ValPerm_Eq e1) p@(ValPerm_Eq e2)
+  | e1 == e2 = implDropM x p
 recombinePerm' _ _ (ValPerm_Eq _) =
   -- NOTE: we could handle this by swapping the stack with the variable perm and
   -- calling recombinePerm again, but this could potentially create permission
@@ -3230,6 +3232,31 @@ proveVarImpl x mb_p =
 proveVarImplH :: ExprVar a -> ValuePerm a ->
                  Mb vars (ValuePerm a) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
+
+-- Prove x:p |- x:z for existential variable z by setting z = p
+proveVarImplH x p [nuP| ValPerm_Var z |]
+  | Left memb <- mbNameBoundP z =
+    getPSubst >>>= \psubst ->
+    case psubstLookup psubst memb of
+      Just (PExpr_ValPerm p') ->
+        let mb_p' = fmap (const p') z in
+        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        proveVarImplH x p mb_p'
+      Just (PExpr_Var z') ->
+        let mb_p' = fmap (const $ ValPerm_Var z') z in
+        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        proveVarImplH x p mb_p'
+      Nothing ->
+        setVarM memb (PExpr_ValPerm p) >>>
+        if permIsCopyable p then
+          implCopyM x p >>> implPopM x p
+        else
+          greturn ()
+
+-- Prove x:z |- x:z for variable z by reflexivity
+proveVarImplH x (ValPerm_Var z) [nuP| ValPerm_Var mb_z' |]
+  | Right z' <- mbNameBoundP mb_z'
+  , z' == z = greturn ()
 
 -- Prove an empty conjunction trivially
 proveVarImplH x p [nuP| ValPerm_Conj [] |] = implPopM x p >>> introConjM x
