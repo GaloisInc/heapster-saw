@@ -3237,31 +3237,6 @@ proveVarImplH :: ExprVar a -> ValuePerm a ->
                  Mb vars (ValuePerm a) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
 
--- Prove x:p |- x:z for existential variable z by setting z = p
-proveVarImplH x p [nuP| ValPerm_Var z |]
-  | Left memb <- mbNameBoundP z =
-    getPSubst >>>= \psubst ->
-    case psubstLookup psubst memb of
-      Just (PExpr_ValPerm p') ->
-        let mb_p' = fmap (const p') z in
-        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
-        proveVarImplH x p mb_p'
-      Just (PExpr_Var z') ->
-        let mb_p' = fmap (const $ ValPerm_Var z') z in
-        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
-        proveVarImplH x p mb_p'
-      Nothing ->
-        setVarM memb (PExpr_ValPerm p) >>>
-        if permIsCopyable p then
-          implCopyM x p >>> implPopM x p
-        else
-          greturn ()
-
--- Prove x:z |- x:z for variable z by reflexivity
-proveVarImplH x (ValPerm_Var z) [nuP| ValPerm_Var mb_z' |]
-  | Right z' <- mbNameBoundP mb_z'
-  , z' == z = greturn ()
-
 -- Prove an empty conjunction trivially
 proveVarImplH x p [nuP| ValPerm_Conj [] |] = implPopM x p >>> introConjM x
 
@@ -3418,6 +3393,31 @@ proveVarImplH x p@(ValPerm_Eq _) mb_p@[nuP| ValPerm_Conj _ |] =
 
 proveVarImplH x (ValPerm_Conj ps) [nuP| ValPerm_Conj mb_ps |] =
   proveVarConjImpl x ps mb_ps
+
+-- Prove x:p |- x:z for existential variable z by setting z = p
+proveVarImplH x p [nuP| ValPerm_Var z |]
+  | Left memb <- mbNameBoundP z =
+    getPSubst >>>= \psubst ->
+    case psubstLookup psubst memb of
+      Just (PExpr_ValPerm p') ->
+        let mb_p' = fmap (const p') z in
+        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        proveVarImplH x p mb_p'
+      Just (PExpr_Var z') ->
+        let mb_p' = fmap (const $ ValPerm_Var z') z in
+        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        proveVarImplH x p mb_p'
+      Nothing ->
+        setVarM memb (PExpr_ValPerm p) >>>
+        if permIsCopyable p then
+          implCopyM x p >>> implPopM x p
+        else
+          greturn ()
+
+-- Prove x:z |- x:z for variable z by reflexivity
+proveVarImplH x (ValPerm_Var z) [nuP| ValPerm_Var mb_z' |]
+  | Right z' <- mbNameBoundP mb_z'
+  , z' == z = greturn ()
 
 -- Fail if nothing else matched
 proveVarImplH x p mb_p = implFailVarM "proveVarImplH" x p mb_p
