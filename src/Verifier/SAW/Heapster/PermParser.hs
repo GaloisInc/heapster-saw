@@ -293,6 +293,7 @@ parseTypeKnown =
   spaces >>
   (parseInParens parseTypeKnown <|>
    (try (string "unit") >> return (Some $ mkKnownReprObj UnitRepr)) <|>
+   (try (string "bool") >> return (Some $ mkKnownReprObj BoolRepr)) <|>
    (try (string "nat") >> return (Some $ mkKnownReprObj NatRepr)) <|>
    (do try (string "bv" >> spaces1)
        w <- parseNatRepr
