@@ -2299,6 +2299,13 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) _ |]
          (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop pf)])
          (translate $ mbCombine mb_impl)
 
+-- If e1 and e2 are definitely not equal, short-circuit the proof construction
+-- and then elimination
+translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_Eq e1 e2) prop_str |]
+  [nuP| MbPermImpls_Cons _ mb_impl |]
+  | not $ mbLift (mbMap2 bvCouldEqual e1 e2) =
+    itiCatchHandler <$> ask <*> return (mbLift prop_str)
+
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   do prop_tp_trans <- translate prop
