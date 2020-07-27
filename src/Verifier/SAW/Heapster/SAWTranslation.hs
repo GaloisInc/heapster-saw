@@ -87,6 +87,21 @@ import Verifier.SAW.Heapster.TypedCrucible
 import Debug.Trace
 
 
+-- FIXME HERE: move these to OpenTerm.hs
+
+-- | Build a non-dependent function type
+arrowOpenTerm :: String -> OpenTerm -> OpenTerm -> OpenTerm
+arrowOpenTerm x tp body = piOpenTerm x tp (const body)
+
+-- | Return the SAW core type @String@ of strings
+stringTypeOpenTerm :: OpenTerm
+stringTypeOpenTerm = globalOpenTerm "Prelude.String"
+
+-- | Build a SAW core string literal
+stringLitOpenTerm :: String -> OpenTerm
+stringLitOpenTerm = flatOpenTerm . StringLit
+
+
 ----------------------------------------------------------------------
 -- * Translation Monads
 ----------------------------------------------------------------------
@@ -639,7 +654,7 @@ instance TransInfo info =>
   translate [nuP| CharRepr |] =
     return $ error "TypeTranslate: CharRepr"
   translate [nuP| StringRepr |] =
-    returnType1 $ globalOpenTerm "Prelude.String"
+    returnType1 stringTypeOpenTerm
   translate [nuP| FunctionHandleRepr _ _ |] =
     -- NOTE: function permissions translate to the SAW function, but the
     -- function handle itself has no SAW translation
@@ -1792,7 +1807,9 @@ compReturnTypeTransM =
 -- | Run a computation with a new catch handler
 withCatchHandlerM :: OpenTerm -> ImpTransM ext blocks tops ret ps_out ctx a ->
                      ImpTransM ext blocks tops ret ps_out ctx a
-withCatchHandlerM h = local (\info -> info { itiCatchHandler = const h })
+withCatchHandlerM h =
+  local (\info -> info { itiCatchHandler =
+                           applyOpenTerm h . stringLitOpenTerm })
 
 -- | The typeclass for the implication translation of a functor at any
 -- permission set inside any binding to an 'OpenTerm'
@@ -2201,8 +2218,9 @@ translatePermImpl1 [nuP| Impl1_Fail str |] _ =
 translatePermImpl1 [nuP| Impl1_Catch |]
   [nuP| MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2 |] =
   do compMType <- compReturnTypeM
-     letTransM "catchpoint" compMType
-       (translate $ mbCombine mb_impl2)
+     letTransM "catchpoint" (arrowOpenTerm "msg" stringTypeOpenTerm compMType)
+       (lambdaOpenTermTransM "msg" stringTypeOpenTerm $
+        const $ translate $ mbCombine mb_impl2)
        (\handler -> withCatchHandlerM handler $ translate $ mbCombine mb_impl1)
 
 -- A push moves the given permission from x to the top of the perm stack
