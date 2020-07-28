@@ -1914,9 +1914,25 @@ translateSimplImpl _ [nuP| SImpl_CopyConj x _ i |] m =
 translateSimplImpl _ [nuP| SImpl_InsertConj x _ _ i |] m =
   withPermStackM mapRListTail
   (\(pctx :>: ptransi :>: ptrans) ->
-    let ps = unPTransConj "translateSimplImpl: SImpl_CopyConj" ptrans
-        pi = unPTransConj1 "translateSimplImpl: SImpl_CopyConj" ptransi in
+    let ps = unPTransConj "translateSimplImpl: SImpl_InsertConj" ptrans
+        pi = unPTransConj1 "translateSimplImpl: SImpl_InsertConj" ptransi in
     pctx :>: PTrans_Conj (take (mbLift i) ps ++ pi : drop (mbLift i) ps))
+  m
+
+translateSimplImpl _ [nuP| SImpl_AppendConjs _ _ _ |] m =
+  withPermStackM mapRListTail
+  (\(pctx :>: ptrans1 :>: ptrans2) ->
+    let ps1 = unPTransConj "translateSimplImpl: SImpl_AppendConjs" ptrans1
+        ps2 = unPTransConj "translateSimplImpl: SImpl_AppendConjs" ptrans2 in
+    pctx :>: PTrans_Conj (ps1 ++ ps2))
+  m
+
+translateSimplImpl _ [nuP| SImpl_SplitConjs x _ mb_i |] m =
+  let i = mbLift mb_i in
+  withPermStackM (:>: translateVar x)
+  (\(pctx :>: ptrans) ->
+    let ps = unPTransConj "translateSimplImpl: SImpl_SplitConjs" ptrans in
+    pctx :>: PTrans_Conj (take i ps) :>: PTrans_Conj (drop i ps))
   m
 
 translateSimplImpl _ [nuP| SImpl_ConstFunPerm x _ mb_fun_perm ident |] m =

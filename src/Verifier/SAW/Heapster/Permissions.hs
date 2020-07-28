@@ -822,6 +822,13 @@ data AtomicPerm (a :: CrucibleType) where
   Perm_IsLLVMPtr :: (1 <= w, KnownNat w) =>
                     AtomicPerm (LLVMPointerType w)
 
+  -- | An LLVM shape permission is an LLVM shape plus arguments to that shape
+  -- plus an offset stating where that LLVM shape is in memory relative to the
+  -- pointer value that has the LLVM shape permission
+  Perm_LLVMShape :: (1 <= w, KnownNat w) =>
+                    LLVMShape args w -> PermExprs args -> PermExpr (BVType w) ->
+                    AtomicPerm (LLVMPointerType w)
+
   -- | Permission to allocate (via @alloca@) on an LLVM stack frame, and
   -- permission to delete that stack frame if we have exclusive permissions to
   -- all the given LLVM pointer objects
@@ -1053,17 +1060,20 @@ getPermExprsMembers (PExprs_Cons args _) =
   ++ [Some Member_Base]
 
 -- | The semantics of a named permission, which can can either be an opaque
--- named permission or a recursive named permission
-data NamedPerm args a
-  = NamedPerm_Opaque (OpaquePerm args a)
-  | NamedPerm_Rec (RecPerm args a)
-  | NamedPerm_Defined (DefinedPerm args a)
+-- named permission, a recursive named permission, a defined permission, or an
+-- LLVM shape
+data NamedPerm args a where
+  NamedPerm_Opaque :: OpaquePerm args a -> NamedPerm args a
+  NamedPerm_Rec :: RecPerm args a -> NamedPerm args a
+  NamedPerm_Defined :: DefinedPerm args a -> NamedPerm args a
+  NamedPerm_LLVMShape :: LLVMShape args w -> NamedPerm args (LLVMPointerType w)
 
 -- | Extract the name back out of the interpretation of a 'NamedPerm'
 namedPermName :: NamedPerm args a -> NamedPermName args a
 namedPermName (NamedPerm_Opaque op) = opaquePermName op
 namedPermName (NamedPerm_Rec rp) = recPermName rp
-namedPermName (NamedPerm_Defined rp) = definedPermName rp
+namedPermName (NamedPerm_Defined dp) = definedPermName dp
+namedPermName (NamedPerm_LLVMShape shape) = llvmShapeName shape
 
 -- | Extract out the argument context of the name of a 'NamedPerm'
 namedPermArgs :: NamedPerm args a -> CruCtx args
@@ -1094,6 +1104,30 @@ data DefinedPerm args a = DefinedPerm {
   definedPermName :: NamedPermName args a,
   definedPermDef :: Mb args (ValuePerm a)
 }
+
+-- | An LLVM shape is like a defined permission but where the permissions are
+-- required to be LLVM fields, arrays, and/or other LLVM shapes and the argument
+-- context always ends with @l:lifetime, rw:rwmodality, off:bv w@
+data LLVMShape args w = LLVMShape {
+  llvmShapeName :: NamedPermName args (LLVMPointerType w),
+  llvmShapePerms :: Mb args [AtomicPerm (LLVMPointerType w)]
+}
+
+-- | Extract out the argument context of the name of an 'LLVMShape'
+llvmShapeArgs :: LLVMShape args w -> CruCtx args
+llvmShapeArgs = namedPermNameArgs . llvmShapeName
+
+-- | Test if two 'LLVMShape's of possibly different types are equal
+testLLVMShapeEq :: LLVMShape args1 w1 -> LLVMShape args2 w2 ->
+                   Maybe (args1 :~: args2, w1 :~: w2)
+testLLVMShapeEq shape1 shape2 =
+  case testNamedPermNameEq (llvmShapeName shape1) (llvmShapeName shape2) of
+    Just (Refl, Refl) -> Just (Refl, Refl)
+    Nothing -> Nothing
+
+-- | An existentially quantified 'LLVMShape'
+data SomeLLVMShape where
+  SomeLLVMShape :: LLVMShape args w -> SomeLLVMShape
 
 -- | A list of "distinguished" permissions to named variables
 -- FIXME: just call these VarsAndPerms or something like that...
@@ -1224,6 +1258,10 @@ instance Eq (AtomicPerm a) where
   (Perm_Fun _) == _ = False
   (Perm_BVProp p1) == (Perm_BVProp p2) = p1 == p2
   (Perm_BVProp _) == _ = False
+  (Perm_LLVMShape shape1 args1 off1) == (Perm_LLVMShape shape2 args2 off2)
+    | Just (Refl, Refl) <- testLLVMShapeEq shape1 shape2 =
+      args1 == args2 && off1 == off2
+  (Perm_LLVMShape _ _ _) == _ = False
 
 instance Eq (ValuePerms as) where
   ValPerms_Nil == ValPerms_Nil = True
@@ -1322,6 +1360,16 @@ instance PermPretty (AtomicPerm a) where
   permPrettyM (Perm_LCurrent l) = (string "lcurrent" <+>) <$> permPrettyM l
   permPrettyM (Perm_Fun fun_perm) = permPrettyM fun_perm
   permPrettyM (Perm_BVProp prop) = permPrettyM prop
+  permPrettyM (Perm_LLVMShape shape args (bvMatchConst -> Just 0)) =
+    do n_pp <- permPrettyM $ llvmShapeName shape
+       args_pp <- permPrettyM args
+       return (n_pp <> char '<' <> args_pp <> char '>')
+  permPrettyM (Perm_LLVMShape shape args off) =
+    do n_pp <- permPrettyM $ llvmShapeName shape
+       args_pp <- permPrettyM args
+       off_pp <- permPrettyM off
+       return (n_pp <> char '<' <> args_pp <> char '>' <> char '@' <>
+               parens off_pp)
 
 instance PermPretty (FunPerm ghosts args ret) where
   permPrettyM (FunPerm _ _ _ mb_ps_in mb_ps_out) =
@@ -1403,6 +1451,7 @@ $(mkNuMatching [t| forall args a. NamedPerm args a |])
 $(mkNuMatching [t| forall args a. OpaquePerm args a |])
 $(mkNuMatching [t| forall args a. RecPerm args a |])
 $(mkNuMatching [t| forall args a. DefinedPerm args a |])
+$(mkNuMatching [t| forall args w. LLVMShape args w |])
 $(mkNuMatching [t| forall ps. DistPerms ps |])
 $(mkNuMatching [t| forall ps. LifetimeCurrentPerms ps |])
 
@@ -1449,6 +1498,11 @@ isLLVMFieldPerm _ = False
 isLLVMArrayPerm :: AtomicPerm (LLVMPointerType w) -> Bool
 isLLVMArrayPerm (Perm_LLVMArray _) = True
 isLLVMArrayPerm _ = False
+
+-- | Test if an 'AtomicPerm' is an LLVM shape
+isLLVMShapePerm :: AtomicPerm a -> Bool
+isLLVMShapePerm (Perm_LLVMShape _ _ _) = True
+isLLVMShapePerm _ = False
 
 -- | Existential permission @x:eq(word(e))@ for some @e@
 llvmExEqWord :: (1 <= w, KnownNat w) =>
@@ -1828,6 +1882,8 @@ offsetLLVMAtomicPerm off (Perm_LLVMArray ap) =
 offsetLLVMAtomicPerm _ (Perm_LLVMFree _) = Nothing
 offsetLLVMAtomicPerm _ (Perm_LLVMFunPtr _) = Nothing
 offsetLLVMAtomicPerm _ p@Perm_IsLLVMPtr = Just p
+offsetLLVMAtomicPerm off (Perm_LLVMShape shape args off') =
+  Just $ Perm_LLVMShape shape args $ bvAdd off' off
 
 -- | Add an offset to a field permission
 offsetLLVMFieldPerm :: (1 <= w, KnownNat w) =>
@@ -2105,6 +2161,8 @@ atomicPermIsCopyable (Perm_LOwned _) = False
 atomicPermIsCopyable (Perm_LCurrent _) = True
 atomicPermIsCopyable (Perm_Fun _) = True
 atomicPermIsCopyable (Perm_BVProp _) = True
+atomicPermIsCopyable (Perm_LLVMShape shape args off) =
+  all atomicPermIsCopyable $ unfoldLLVMShape shape args off
 
 -- | 'permIsCopyable' for the arguments of a named permission
 namedPermArgIsCopyable :: TypeRepr a -> PermExpr a -> Bool
@@ -2146,6 +2204,14 @@ unfoldDefinedPerm :: DefinedPerm args a -> PermExprs args -> ValuePerm a
 unfoldDefinedPerm dp args =
   subst (substOfExprs args) (definedPermDef dp)
 
+-- | Unfold an LLVM shape with the given arguments at the given offset
+unfoldLLVMShape :: (1 <= w, KnownNat w) =>
+                   LLVMShape args w -> PermExprs args -> PermExpr (BVType w) ->
+                   [AtomicPerm (LLVMPointerType w)]
+unfoldLLVMShape shape args off =
+  mapMaybe (offsetLLVMAtomicPerm off) $
+  subst (substOfExprs args) (llvmShapePerms shape)
+
 
 -- | Generic function to get free variables
 class FreeVars a where
@@ -2156,6 +2222,9 @@ instance FreeVars a => FreeVars [a] where
 
 instance (FreeVars a, FreeVars b) => FreeVars (a,b) where
   freeVars (a,b) = NameSet.union (freeVars a) (freeVars b)
+
+instance FreeVars a => FreeVars (Mb ctx a) where
+  freeVars = NameSet.liftNameSet . fmap freeVars
 
 instance FreeVars (PermExpr a) where
   freeVars (PExpr_Var x) = NameSet.singleton x
@@ -2207,6 +2276,9 @@ instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LCurrent l) = freeVars l
   freeVars (Perm_Fun fun_perm) = freeVars fun_perm
   freeVars (Perm_BVProp prop) = freeVars prop
+  freeVars (Perm_LLVMShape shape args off) =
+    NameSet.unions [freeVars (llvmShapePerms shape),
+                    freeVars args, freeVars off]
 
 instance FreeVars (ValuePerm tp) where
   freeVars (ValPerm_Eq e) = freeVars e
@@ -2248,6 +2320,9 @@ instance FreeVars (FunPerm ghosts args ret) where
 
 
 -- | Generic function to test if a permission contains a lifetime
+--
+-- FIXME: this should be replaced by a function that tests if a lifetime
+-- variable is in the freeVArs of an expression
 class ContainsLifetime a where
   containsLifetime :: PermExpr LifetimeType -> a -> Bool
 
@@ -2284,6 +2359,8 @@ instance ContainsLifetime (AtomicPerm a) where
   containsLifetime l (Perm_LCurrent l') = l == l'
   containsLifetime _ (Perm_Fun _) = False
   containsLifetime _ (Perm_BVProp _) = False
+  containsLifetime l (Perm_LLVMShape shape args off) =
+    any (containsLifetime l) (unfoldLLVMShape shape args off)
 
 instance ContainsLifetime (LLVMFieldPerm w) where
   containsLifetime l fp =
@@ -2337,6 +2414,8 @@ instance InLifetime (AtomicPerm a) where
   inLifetime _ p@(Perm_LCurrent _) = p
   inLifetime _ p@(Perm_Fun _) = p
   inLifetime _ p@(Perm_BVProp _) = p
+  inLifetime l (Perm_LLVMShape shape args off) =
+    Perm_LLVMShape shape (inLifetimeArgs l (llvmShapeArgs shape) args) off
 
 instance InLifetime (LLVMFieldPerm w) where
   inLifetime l fp = fp { llvmFieldLifetime = l }
@@ -2394,6 +2473,8 @@ instance MinLtEndPerms (AtomicPerm a) where
   minLtEndPerms _ p@(Perm_LCurrent _) = p
   minLtEndPerms _ p@(Perm_Fun _) = p
   minLtEndPerms _ p@(Perm_BVProp _) = p
+  minLtEndPerms l (Perm_LLVMShape shape args off) =
+    Perm_LLVMShape shape (minLtEndPermsArgs l (llvmShapeArgs shape) args) off
 
 instance MinLtEndPerms (LLVMFieldPerm w) where
   minLtEndPerms l fp = fp { llvmFieldRW = PExpr_Read, llvmFieldLifetime = l }
@@ -2698,6 +2779,21 @@ instance (NuMatching a, Substable s a m) => Substable s [a] m where
 instance (Substable s a m, Substable s b m) => Substable s (a,b) m where
   genSubst s ab = (,) <$> genSubst s (fmap fst ab) <*> genSubst s (fmap snd ab)
 
+instance (Substable s a m,
+          Substable s b m, Substable s c m) => Substable s (a,b,c) m where
+  genSubst s abc =
+    (,,) <$> genSubst s (fmap (\(a,_,_) -> a) abc)
+    <*> genSubst s (fmap (\(_,b,_) -> b) abc)
+    <*> genSubst s (fmap (\(_,_,c) -> c) abc)
+
+instance (Substable s a m, Substable s b m,
+          Substable s c m, Substable s d m) => Substable s (a,b,c,d) m where
+  genSubst s abcd =
+    (,,,) <$> genSubst s (fmap (\(a,_,_,_) -> a) abcd)
+    <*> genSubst s (fmap (\(_,b,_,_) -> b) abcd)
+    <*> genSubst s (fmap (\(_,_,c,_) -> c) abcd)
+    <*> genSubst s (fmap (\(_,_,_,d) -> d) abcd)
+
 instance (NuMatching a, Substable s a m) => Substable s (Maybe a) m where
   genSubst s [nuP| Just a |] = Just <$> genSubst s a
   genSubst _ [nuP| Nothing |] = return Nothing
@@ -2787,6 +2883,8 @@ instance SubstVar s m => Substable s (AtomicPerm a) m where
     Perm_Fun <$> genSubst s fperm
   genSubst s [nuP| Perm_BVProp prop |] =
     Perm_BVProp <$> genSubst s prop
+  genSubst s [nuP| Perm_LLVMShape shape args off |] =
+    Perm_LLVMShape <$> genSubst s shape <*> genSubst s args <*> genSubst s off
 
 instance SubstVar s m => Substable s (NamedPermName args a) m where
   genSubst _ mb_rpn = return $ mbLift mb_rpn
@@ -2794,7 +2892,9 @@ instance SubstVar s m => Substable s (NamedPermName args a) m where
 instance SubstVar s m => Substable s (NamedPerm args a) m where
   genSubst s [nuP| NamedPerm_Opaque p |] = NamedPerm_Opaque <$> genSubst s p
   genSubst s [nuP| NamedPerm_Rec p |] = NamedPerm_Rec <$> genSubst s p
-  genSubst s [nuP| NamedPerm_Defined p |] = NamedPerm_Defined<$> genSubst s p
+  genSubst s [nuP| NamedPerm_Defined p |] = NamedPerm_Defined <$> genSubst s p
+  genSubst s [nuP| NamedPerm_LLVMShape shape |] =
+    NamedPerm_LLVMShape <$> genSubst s shape
 
 instance SubstVar s m => Substable s (OpaquePerm args a) m where
   genSubst _ [nuP| OpaquePerm n i |] = return $ OpaquePerm (mbLift n) (mbLift i)
@@ -2808,6 +2908,10 @@ instance SubstVar s m => Substable s (RecPerm args a) m where
 instance SubstVar s m => Substable s (DefinedPerm args a) m where
   genSubst s [nuP| DefinedPerm n p |] =
     DefinedPerm (mbLift n) <$> genSubst s p
+
+instance SubstVar s m => Substable s (LLVMShape shape a) m where
+  genSubst s [nuP| LLVMShape n perms |] =
+    LLVMShape (mbLift n) <$> genSubst s perms
 
 instance SubstVar s m => Substable s (ValuePerm a) m where
   genSubst s [nuP| ValPerm_Eq e |] = ValPerm_Eq <$> genSubst s e
@@ -3413,6 +3517,11 @@ instance AbstractVars (AtomicPerm a) where
   abstractPEVars ns1 ns2 (Perm_BVProp prop) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_BVProp |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 prop
+  abstractPEVars ns1 ns2 (Perm_LLVMShape shape args off) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMShape |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 shape
+    `clMbMbApplyM` abstractPEVars ns1 ns2 args
+    `clMbMbApplyM` abstractPEVars ns1 ns2 off
 
 instance AbstractVars (ValuePerm a) where
   abstractPEVars ns1 ns2 (ValPerm_Eq e) =
@@ -3479,6 +3588,12 @@ instance AbstractVars (LLVMArrayBorrow w) where
   abstractPEVars ns1 ns2 (RangeBorrow r) =
     absVarsReturnH ns1 ns2 $(mkClosed [| RangeBorrow |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 r
+
+instance AbstractVars (LLVMShape args w) where
+  abstractPEVars ns1 ns2 (LLVMShape n perms) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| LLVMShape |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 n
+    `clMbMbApplyM` abstractPEVars ns1 ns2 perms
 
 instance AbstractVars (DistPerms ps) where
   abstractPEVars ns1 ns2 DistPermsNil =
@@ -3586,6 +3701,15 @@ permEnvAddDefinedPerm env str args tp p =
   let np = NamedPerm_Defined (DefinedPerm (NamedPermName str tp args) p) in
   env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
 
+-- | Add a defined named atmomic permission to a 'PermEnv'
+permEnvAddLLVMShapePerm :: (1 <= w, KnownNat w) =>
+                           PermEnv -> String -> CruCtx args ->
+                           Mb args [AtomicPerm (LLVMPointerType w)] -> PermEnv
+permEnvAddLLVMShapePerm env str args p =
+  let np = NamedPerm_LLVMShape (LLVMShape
+                                (NamedPermName str knownRepr args) p) in
+  env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
+
 -- | Add a global symbol with a function permission to a 'PermEnv'
 permEnvAddGlobalSymFun :: (1 <= w, KnownNat w) => PermEnv -> GlobalSymbol ->
                           f w -> FunPerm ghosts args ret -> OpenTerm -> PermEnv
@@ -3632,6 +3756,16 @@ lookupNamedPermName env str =
               namedPermNameName (namedPermName np) == str) (permEnvNamedPerms env) of
     Just (SomeNamedPerm np) -> Just (SomeNamedPermName (namedPermName np))
     Nothing -> Nothing
+
+-- | Look up an 'LLVMShape' by name in a 'PermEnv'
+lookupLLVMShape :: PermEnv -> String -> Maybe SomeLLVMShape
+lookupLLVMShape env str =
+  case find (\(SomeNamedPerm np) ->
+              namedPermNameName (namedPermName np) == str)
+       (permEnvNamedPerms env) of
+    Just (SomeNamedPerm (NamedPerm_LLVMShape shape)) ->
+      Just (SomeLLVMShape shape)
+    _ -> Nothing
 
 -- | Look up the 'NamedPerm' for a 'NamedPermName' in a 'PermEnv'
 lookupNamedPerm :: PermEnv -> NamedPermName args a -> Maybe (NamedPerm args a)

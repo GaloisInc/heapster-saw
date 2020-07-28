@@ -585,7 +585,8 @@ parseAtomicPerm tp@(LLVMPointerRepr w)
          SomeFunPerm fun_perm <- parseFunPermM args (LLVMPointerRepr w) 
          spaces >> char ')'
          return $ Perm_LLVMFunPtr fun_perm) <|>     
-     (Perm_BVProp <$> parseBVProp) <?>
+     (Perm_BVProp <$> parseBVProp) <|>
+     parseLLVMShapePerm w <?>
      ("atomic permission of type " ++ show tp))
 
 parseAtomicPerm tp@(LLVMFrameRepr w)
@@ -602,6 +603,32 @@ parseAtomicPerm tp@(LLVMFrameRepr w)
          spaces >> char ']'
          return $ Perm_LLVMFrame fperm) <?>
      ("atomic permission of type " ++ show tp))
+
+parseAtomicPerm tp =
+  fail ("Expecting atomic permission of type " ++ show tp)
+
+
+-- | Parse a @P<args>@ form as an atomic permission
+parseLLVMShapePerm :: (Stream s Identity Char, Liftable s,
+                       1 <= w, KnownNat w) =>
+                      NatRepr w -> PermParseM s (AtomicPerm (LLVMPointerType w))
+parseLLVMShapePerm w =
+  do n <- try (parseIdent >>= \n -> spaces >> char '<' >> return n)
+     let tp = LLVMPointerRepr w
+     env <- parserEnvPermEnv <$> getState
+     case lookupLLVMShape env n of
+       Just (SomeLLVMShape shape)
+         | Just Refl <- testEquality (namedPermNameType $
+                                      llvmShapeName shape) tp ->
+             do args <- parseExprs (llvmShapeArgs shape)
+                spaces >> char '>'
+                return $ Perm_LLVMShape shape args (bvInt 0)
+       Just (SomeLLVMShape _) ->
+         fail ("LLVM shape permission " ++ n ++ " has incorrect type")
+       _ | Just _ <- lookupNamedPermName env n ->
+           fail ("Named permission " ++ n ++ " is not an LLVM shape permission")
+       Nothing ->
+         fail ("Unknown LLVM shape permission '" ++ n ++ "'")
 
 -- | Parse a field permission @[l]ptr((rw,off) |-> p)@. If the 'Bool' flag is
 -- 'True', the field permission is being parsed as part of an array permission,

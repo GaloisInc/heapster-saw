@@ -183,6 +183,18 @@ data SimplImpl ps_in ps_out where
   -- > x:p * x:(p0 * ... * p(n-1))
   -- >   -o x:(p0 * ... * p(i-1) * p * pi * ... * p(n-1))
 
+  SImpl_AppendConjs :: ExprVar a -> [AtomicPerm a] -> [AtomicPerm a] ->
+                       SimplImpl (RNil :> a :> a) (RNil :> a)
+  -- ^ Combine the top two conjunctive permissions on the stack:
+  --
+  -- > x:(p1 * ... * pi) * x:(pi+1 * ... * pn) -o x:(p1 * ... * pn)
+
+  SImpl_SplitConjs :: ExprVar a -> [AtomicPerm a] -> Int ->
+                      SimplImpl (RNil :> a) (RNil :> a :> a)
+  -- ^ Split the conjunctive permissions on the top of the stack in two:
+  --
+  -- > x:(p1 * ... * pn) -o x:(p1 * ... * pi) * x:(pi+1 * ... * pn)
+
   SImpl_ConstFunPerm ::
     args ~ CtxToRList cargs =>
     ExprVar (FunctionHandleType cargs ret) ->
@@ -464,6 +476,24 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:P<args> -o x:Q
 
+  SImpl_FoldLLVMShape :: (1 <= w, KnownNat w) =>
+                         ExprVar (LLVMPointerType w) -> LLVMShape args w ->
+                         PermExprs args -> PermExpr (BVType w) ->
+                         SimplImpl (RNil :> LLVMPointerType w)
+                         (RNil :> LLVMPointerType w)
+  -- ^ Fold an LLVM shape permission P<args> := Q :
+  --
+  -- > x:Q -o x:P<args>
+
+  SImpl_UnfoldLLVMShape :: (1 <= w, KnownNat w) =>
+                           ExprVar (LLVMPointerType w) -> LLVMShape args w ->
+                           PermExprs args -> PermExpr (BVType w) ->
+                           SimplImpl (RNil :> LLVMPointerType w)
+                           (RNil :> LLVMPointerType w)
+  -- ^ Unfold a defined atomic permission P<args> := Q :
+  --
+  -- > x:P<args> -o x:Q
+
 {- FIXME HERE NOW: Write the rule for proving one recursive perm implies another
 
   SImpl_Mu ::
@@ -728,6 +758,10 @@ simplImplIn (SImpl_ExtractConj x ps i) = distPerms1 x (ValPerm_Conj ps)
 simplImplIn (SImpl_CopyConj x ps i) = distPerms1 x (ValPerm_Conj ps)
 simplImplIn (SImpl_InsertConj x p ps i) =
   distPerms2 x (ValPerm_Conj [p]) x (ValPerm_Conj ps)
+simplImplIn (SImpl_AppendConjs x ps1 ps2) =
+  distPerms2 x (ValPerm_Conj ps1) x (ValPerm_Conj ps2)
+simplImplIn (SImpl_SplitConjs x ps _) =
+  distPerms1 x (ValPerm_Conj ps)
 simplImplIn (SImpl_ConstFunPerm x h _ _) =
   distPerms1 x (ValPerm_Eq $ PExpr_Fun h)
 simplImplIn (SImpl_CastLLVMWord x e1 e2) =
@@ -824,6 +858,10 @@ simplImplIn (SImpl_FoldDefined x dp args) =
   distPerms1 x (unfoldDefinedPerm dp args)
 simplImplIn (SImpl_UnfoldDefined x dp args) =
   distPerms1 x (ValPerm_Named (definedPermName dp) args)
+simplImplIn (SImpl_FoldLLVMShape x shape args off) =
+  distPerms1 x (ValPerm_Conj $ unfoldLLVMShape shape args off)
+simplImplIn (SImpl_UnfoldLLVMShape x shape args off) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMShape shape args off)
 -- simplImplIn (SImpl_Mu x p1 _ _) = distPerms1 x (ValPerm_Mu p1)
 simplImplIn (SImpl_NamedArgAlways x pn args memb _) =
   case nthPermExpr args memb of
@@ -872,6 +910,10 @@ simplImplOut (SImpl_CopyConj x ps i) =
     error "simplImplOut: SImpl_CopyConj: permission not copyable"
 simplImplOut (SImpl_InsertConj x p ps i) =
   distPerms1 x (ValPerm_Conj (take i ps ++ p : drop i ps))
+simplImplOut (SImpl_AppendConjs x ps1 ps2) =
+  distPerms1 x (ValPerm_Conj (ps1 ++ ps2))
+simplImplOut (SImpl_SplitConjs x ps i) =
+  distPerms2 x (ValPerm_Conj (take i ps)) x (ValPerm_Conj (drop i ps))
 simplImplOut (SImpl_ConstFunPerm x _ fun_perm _) =
   distPerms1 x (ValPerm_Conj1 $ Perm_Fun fun_perm)
 simplImplOut (SImpl_CastLLVMWord x _ e2) =
@@ -968,6 +1010,10 @@ simplImplOut (SImpl_FoldDefined x dp args) =
   distPerms1 x (ValPerm_Named (definedPermName dp) args)
 simplImplOut (SImpl_UnfoldDefined x dp args) =
   distPerms1 x (unfoldDefinedPerm dp args)
+simplImplOut (SImpl_FoldLLVMShape x shape args off) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMShape shape args off)
+simplImplOut (SImpl_UnfoldLLVMShape x shape args off) =
+  distPerms1 x (ValPerm_Conj $ unfoldLLVMShape shape args off)
 -- simplImplOut (SImpl_Mu x _ p2 _) = distPerms1 x (ValPerm_Mu p2)
 simplImplOut (SImpl_NamedArgAlways x rp args memb l) =
   distPerms1 x (ValPerm_Named (namedPermName rp)
@@ -1112,6 +1158,10 @@ instance SubstVar PermVarSubst m =>
   genSubst s [nuP| SImpl_InsertConj x p ps i |] =
     SImpl_InsertConj <$> genSubst s x <*> genSubst s p <*>
     genSubst s ps <*> return (mbLift i)
+  genSubst s [nuP| SImpl_AppendConjs x ps1 ps2 |] =
+    SImpl_AppendConjs <$> genSubst s x <*> genSubst s ps1 <*> genSubst s ps2
+  genSubst s [nuP| SImpl_SplitConjs x ps i |] =
+    SImpl_SplitConjs <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
   genSubst s [nuP| SImpl_ConstFunPerm x h fun_perm ident |] =
     SImpl_ConstFunPerm <$> genSubst s x <*> return (mbLift h) <*>
     genSubst s fun_perm <*> return (mbLift ident)
@@ -1177,6 +1227,12 @@ instance SubstVar PermVarSubst m =>
     SImpl_FoldDefined <$> genSubst s x <*> genSubst s dp <*> genSubst s args
   genSubst s [nuP| SImpl_UnfoldDefined x dp args |] =
     SImpl_UnfoldDefined <$> genSubst s x <*> genSubst s dp <*> genSubst s args
+  genSubst s [nuP| SImpl_FoldLLVMShape x shape args off |] =
+    SImpl_FoldLLVMShape <$> genSubst s x <*> genSubst s shape
+    <*> genSubst s args <*> genSubst s off
+  genSubst s [nuP| SImpl_UnfoldLLVMShape x shape args off |] =
+    SImpl_UnfoldLLVMShape <$> genSubst s x <*> genSubst s shape
+    <*> genSubst s args <*> genSubst s off
   genSubst s [nuP| SImpl_NamedArgAlways x rp args memb l |] =
     SImpl_NamedArgAlways <$> genSubst s x <*> genSubst s rp <*>
     genSubst s args <*> genSubst s memb <*> genSubst s l
@@ -2112,6 +2168,17 @@ implExtractConjM :: ExprVar a -> [AtomicPerm a] -> Int ->
                     ImplM vars s r (ps :> a :> a) (ps :> a) ()
 implExtractConjM x ps i = implSimplM Proxy (SImpl_ExtractConj x ps i)
 
+-- | Combine the top two conjunctive permissions on the stack
+implAppendConjsM :: ExprVar a -> [AtomicPerm a] -> [AtomicPerm a] ->
+                    ImplM vars s r (ps :> a) (ps :> a :> a) ()
+implAppendConjsM x ps1 ps2 = implSimplM Proxy (SImpl_AppendConjs x ps1 ps2)
+
+-- | Split the conjuctive permissions on the top of the stack into the first @i@
+-- and the remaining conjuncts after those
+implSplitConjsM :: ExprVar a -> [AtomicPerm a] -> Int ->
+                   ImplM vars s r (ps :> a :> a) (ps :> a) ()
+implSplitConjsM x ps i = implSimplM Proxy (SImpl_SplitConjs x ps i)
+
 -- | Copy @i@th atomic permission in the conjunct on the top of the stack,
 -- assuming that conjunction contains the given atomic permissions and that the
 -- given conjunct is copyable, and put the copied atomic permission just below
@@ -2232,6 +2299,24 @@ implUnfoldDefinedM x npn args =
       greturn (unfoldDefinedPerm dp args)
     _ -> error ("implUnfoldDefinedM: not a defined permission: "
                 ++ namedPermNameName npn)
+
+-- | For an LLVM shape @P<args>:=Q@, build a proof of @P<args>@ from one of @Q@
+implFoldLLVMShapeM :: (1 <= w, KnownNat w) =>
+                      ExprVar (LLVMPointerType w) -> LLVMShape args w ->
+                      PermExprs args -> PermExpr (BVType w) ->
+                      ImplM vars s r (ps :> LLVMPointerType w)
+                      (ps :> LLVMPointerType w) ()
+implFoldLLVMShapeM x shape args off =
+  implSimplM Proxy (SImpl_FoldLLVMShape x shape args off)
+
+-- | For an LLVM shape @P<args>:=Q@, build a proof of @Q@ from one of @P<args>@
+implUnfoldLLVMShapeM :: (1 <= w, KnownNat w) =>
+                        ExprVar (LLVMPointerType w) -> LLVMShape args w ->
+                        PermExprs args -> PermExpr (BVType w) ->
+                        ImplM vars s r (ps :> LLVMPointerType w)
+                        (ps :> LLVMPointerType w) ()
+implUnfoldLLVMShapeM x shape args off =
+  implSimplM Proxy (SImpl_UnfoldLLVMShape x shape args off)
 
 -- | FIXME: document this!
 implSplitLifetimeM :: KnownRepr TypeRepr a => ExprVar a -> ValuePerm a ->
@@ -3357,6 +3442,48 @@ proveVarImplH x p [nuP| ValPerm_Exists mb_p |] =
   let e = fromMaybe (zeroOfType knownRepr) maybe_e in
   partialSubstForceM mb_p "proveVarImpl: incomplete psubst: introExists" >>>=
   introExistsM x e
+
+-- If there is an LLVM shape perm on the LHS, unfold it
+proveVarImplH x p@(ValPerm_Conj ps) mb_p
+  | Just i <- findIndex isLLVMShapePerm ps
+  , shape_p@(Perm_LLVMShape shape args off) <- ps!!i =
+    implExtractConjM x ps i >>>
+    implSwapM x (ValPerm_Conj1 shape_p) x (ValPerm_Conj $ deleteNth i ps) >>>
+    implUnfoldLLVMShapeM x shape args off >>>
+    implAppendConjsM x (deleteNth i ps) (unfoldLLVMShape shape args off) >>>
+    implPopM x (ValPerm_Conj
+                (deleteNth i ps ++ unfoldLLVMShape shape args off)) >>>
+    proveVarImpl x mb_p
+
+-- If there is an LLVM shape perm on the RHS, prove the unfolded version and
+-- then fold it
+proveVarImplH x p [nuP| ValPerm_Conj mb_ps |]
+  | Just i <- findIndex (mbLift . fmap isLLVMShapePerm) (mbList mb_ps)
+  , [nuP| Perm_LLVMShape mb_shape mb_args mb_off |] <- fmap (!!i) mb_ps =
+
+    -- Remove the LLVM shape perm from the RHS perms and add the N permissions
+    -- in its unfolding to the end of the list, then prove that new perms list
+    let mb_ps_unfolded =
+          fmap unfoldLLVMShape mb_shape `mbApply` mb_args `mbApply` mb_off
+        mb_ps' =
+          fmap (\ps -> (deleteNth i ps ++)) mb_ps `mbApply` mb_ps_unfolded in
+    implPopM x p >>>
+    proveVarImpl x (fmap ValPerm_Conj mb_ps') >>>
+
+    -- Get the resulting permissions, extract out the last N permissions, and
+    -- fold those last N permissions into the named LLVM shape
+    (partialSubstForceM
+     (fmap (,,,) mb_shape `mbApply` mb_args `mbApply` mb_off `mbApply` mb_ps)
+     "proveVarImpl: incomplete psubst: fold LLVM shape") >>>= \(shape, args,
+                                                                off, ps') ->
+    let num_orig_ps = length (mbList mb_ps) - 1
+        orig_ps = take num_orig_ps ps'
+        unfolded_ps = drop num_orig_ps ps' in
+    implSplitConjsM x ps' num_orig_ps >>>
+    implFoldLLVMShapeM x shape args off >>>
+    implSwapM x (ValPerm_Conj orig_ps) x (ValPerm_Conj1 $
+                                          Perm_LLVMShape shape args off) >>>
+    implInsertConjM x (Perm_LLVMShape shape args off) orig_ps i
 
 -- Prove x:(p1 * .. * pn) from x:eq(y+off) by proving y:(p1 + off * ...) and
 -- then casting the result
