@@ -622,7 +622,11 @@ parseLLVMShapePerm w =
                                       llvmShapeName shape) tp ->
              do args <- parseExprs (llvmShapeArgs shape)
                 spaces >> char '>'
-                return $ Perm_LLVMShape shape args (bvInt 0)
+                off <-
+                  (try (spaces >> char '@') >>
+                   (parseBVExpr <|> parseInParens parseBVExpr))
+                  <|> return (bvInt 0)
+                return $ Perm_LLVMShape shape args off
        Just (SomeLLVMShape _) ->
          fail ("LLVM shape permission " ++ n ++ " has incorrect type")
        _ | Just _ <- lookupNamedPermName env n ->
@@ -923,6 +927,14 @@ parsePermInCtxString :: MonadFail m => String -> PermEnv ->
                         TypeRepr a -> String -> m (Mb ctx (ValuePerm a))
 parsePermInCtxString nm env pvars ctx tp =
   runPermParseM nm env pvars (parseValPermInCtx ctx tp)
+
+-- | Parse a sequence of atomic permissions within the given context and with
+-- the given named permission variables in scope
+parseAtomicPermsInCtxString :: MonadFail m => String -> PermEnv ->
+                               [(String, SomeNamedPermName)] -> ParsedCtx ctx ->
+                               TypeRepr a -> String -> m (Mb ctx [AtomicPerm a])
+parseAtomicPermsInCtxString nm env pvars ctx tp =
+  runPermParseM nm env pvars (inParsedCtxM ctx $ const $ parseAtomicPerms tp)
 
 -- | Parse a 'FunPerm' named by the first 'String' from the second 'String'
 parseFunPermString :: MonadFail m => String -> PermEnv -> CruCtx args ->
