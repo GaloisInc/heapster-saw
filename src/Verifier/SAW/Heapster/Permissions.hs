@@ -282,59 +282,59 @@ pattern ValuePermRepr a <-
 -- | Expressions that are considered "pure" for use in permissions. Note that
 -- these are in a normal form, that makes them easier to analyze.
 data PermExpr (a :: CrucibleType) where
+  -- | A variable of any type
   PExpr_Var :: ExprVar a -> PermExpr a
-  -- ^ A variable of any type
 
+  -- | A unit literal
   PExpr_Unit :: PermExpr UnitType
-  -- ^ A unit literal
 
+  -- | A literal Boolean number
   PExpr_Bool :: Bool -> PermExpr BoolType
-  -- ^ A literal Boolean number
 
+  -- | A literal natural number
   PExpr_Nat :: Integer -> PermExpr NatType
-  -- ^ A literal natural number
 
-  PExpr_BV :: (1 <= w, KnownNat w) =>
-              [BVFactor w] -> Integer -> PermExpr (BVType w)
-  -- ^ A bitvector expression is a linear expression in @N@ variables, i.e., sum
+  -- | A bitvector expression is a linear expression in @N@ variables, i.e., sum
   -- of constant times variable factors plus a constant
   --
   -- FIXME: make the offset a 'Natural'
+  PExpr_BV :: (1 <= w, KnownNat w) =>
+              [BVFactor w] -> Integer -> PermExpr (BVType w)
 
+  -- | A struct expression is an expression for each argument of the struct type
   PExpr_Struct :: PermExprs (CtxToRList args) -> PermExpr (StructType args)
-  -- ^ A struct expression is an expression for each argument of the struct type
 
+  -- | The @always@ lifetime that is always current
   PExpr_Always :: PermExpr LifetimeType
-  -- ^ The @always@ lifetime that is always current
 
+  -- | An LLVM value that represents a word, i.e., whose region identifier is 0
   PExpr_LLVMWord :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
                     PermExpr (LLVMPointerType w)
-  -- ^ An LLVM value that represents a word, i.e., whose region identifier is 0
 
+  -- | An LLVM value built by adding an offset to an LLVM variable
   PExpr_LLVMOffset :: (1 <= w, KnownNat w) =>
                       ExprVar (LLVMPointerType w) ->
                       PermExpr (BVType w) ->
                       PermExpr (LLVMPointerType w)
-  -- ^ An LLVM value built by adding an offset to an LLVM variable
 
+  -- | A literal function pointer
   PExpr_Fun :: FnHandle args ret -> PermExpr (FunctionHandleType args ret)
-  -- ^ A literal function pointer
 
+  -- | An empty list of expressions plus permissions
   PExpr_PermListNil :: PermExpr PermListType
-  -- ^ An empty list of expressions plus permissions
 
-  PExpr_PermListCons :: KnownRepr TypeRepr a => PermExpr a -> ValuePerm a ->
-                        PermExpr PermListType -> PermExpr PermListType
-  -- ^ A cons of an expression and permission for that expression onto a
+  -- | A cons of an expression and permission for that expression onto a
   -- permission list
   --
   -- FIXME: turn the 'KnownRepr' constraint into a normal 'TypeRepr' argument
+  PExpr_PermListCons :: KnownRepr TypeRepr a => PermExpr a -> ValuePerm a ->
+                        PermExpr PermListType -> PermExpr PermListType
 
+  -- | A read/write modality 
   PExpr_RWModality :: RWModality -> PermExpr RWModalityType
-  -- ^ A read/write modality 
 
+  -- | A permission as an expression
   PExpr_ValPerm :: ValuePerm a -> PermExpr (ValuePermType a)
-  -- ^ A permission as an expression
 
 
 -- | A sequence of permission expressions
@@ -348,12 +348,12 @@ pExprVars (ns :>: n) = PExprs_Cons (pExprVars ns) (PExpr_Var n)
 
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where
-  BVFactor :: (1 <= w, KnownNat w) => Integer -> ExprVar (BVType w) ->
-              BVFactor w
-  -- ^ A variable of type @'BVType' w@ multiplied by a constant @i@, which
+  -- | A variable of type @'BVType' w@ multiplied by a constant @i@, which
   -- should be in the range @0 <= i < 2^w@
   --
   -- FIXME: make the constant a 'Natural'
+  BVFactor :: (1 <= w, KnownNat w) => Integer -> ExprVar (BVType w) ->
+              BVFactor w
 
 -- | Whether a permission allows reads or writes
 data RWModality
@@ -775,23 +775,23 @@ data BVRange w = BVRange { bvRangeOffset :: PermExpr (BVType w),
 
 -- | Propositions about bitvectors
 data BVProp w
+    -- | True iff the two expressions are equal
   = BVProp_Eq (PermExpr (BVType w)) (PermExpr (BVType w))
-    -- ^ True iff the two expressions are equal
+    -- | True iff the two expressions are not equal
   | BVProp_Neq (PermExpr (BVType w)) (PermExpr (BVType w))
-    -- ^ True iff the two expressions are not equal
-  | BVProp_InRange (PermExpr (BVType w)) (BVRange w)
-    -- ^ True iff the first expression is greater than or equal to the second
+    -- | True iff the first expression is greater than or equal to the second
     -- and less than the third, i.e., in the half-closed interval @[e2,e3)@
+  | BVProp_InRange (PermExpr (BVType w)) (BVRange w)
+    -- | True iff the first expression is *not* in the given range
   | BVProp_NotInRange (PermExpr (BVType w)) (BVRange w)
-    -- ^ True iff the first expression is *not* in the given range
-  | BVProp_RangeSubset (BVRange w) (BVRange w)
-    -- ^ True iff the first and second expressions form an interval that is
+    -- | True iff the first and second expressions form an interval that is
     -- contained in that formed by the third and fourth, i.e., iff @[e1,e2)@ is
     -- a subset of @[e3,e4)@
-  | BVProp_RangesDisjoint (BVRange w) (BVRange w)
-    -- ^ True iff the first and second expressions form an interval that is
+  | BVProp_RangeSubset (BVRange w) (BVRange w)
+    -- | True iff the first and second expressions form an interval that is
     -- disjoint from that formed by the third and fourth, i.e., iff @[e1,e2)@
     -- and @[e3,e4)@ do not overlap
+  | BVProp_RangesDisjoint (BVRange w) (BVRange w)
   deriving Eq
 
 -- | An atomic permission is a value permission that is not one of the compound
