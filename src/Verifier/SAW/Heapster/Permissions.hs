@@ -282,59 +282,59 @@ pattern ValuePermRepr a <-
 -- | Expressions that are considered "pure" for use in permissions. Note that
 -- these are in a normal form, that makes them easier to analyze.
 data PermExpr (a :: CrucibleType) where
+  -- | A variable of any type
   PExpr_Var :: ExprVar a -> PermExpr a
-  -- ^ A variable of any type
 
+  -- | A unit literal
   PExpr_Unit :: PermExpr UnitType
-  -- ^ A unit literal
 
+  -- | A literal Boolean number
   PExpr_Bool :: Bool -> PermExpr BoolType
-  -- ^ A literal Boolean number
 
+  -- | A literal natural number
   PExpr_Nat :: Integer -> PermExpr NatType
-  -- ^ A literal natural number
 
-  PExpr_BV :: (1 <= w, KnownNat w) =>
-              [BVFactor w] -> Integer -> PermExpr (BVType w)
-  -- ^ A bitvector expression is a linear expression in @N@ variables, i.e., sum
+  -- | A bitvector expression is a linear expression in @N@ variables, i.e., sum
   -- of constant times variable factors plus a constant
   --
   -- FIXME: make the offset a 'Natural'
+  PExpr_BV :: (1 <= w, KnownNat w) =>
+              [BVFactor w] -> Integer -> PermExpr (BVType w)
 
+  -- | A struct expression is an expression for each argument of the struct type
   PExpr_Struct :: PermExprs (CtxToRList args) -> PermExpr (StructType args)
-  -- ^ A struct expression is an expression for each argument of the struct type
 
+  -- | The @always@ lifetime that is always current
   PExpr_Always :: PermExpr LifetimeType
-  -- ^ The @always@ lifetime that is always current
 
+  -- | An LLVM value that represents a word, i.e., whose region identifier is 0
   PExpr_LLVMWord :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
                     PermExpr (LLVMPointerType w)
-  -- ^ An LLVM value that represents a word, i.e., whose region identifier is 0
 
+  -- | An LLVM value built by adding an offset to an LLVM variable
   PExpr_LLVMOffset :: (1 <= w, KnownNat w) =>
                       ExprVar (LLVMPointerType w) ->
                       PermExpr (BVType w) ->
                       PermExpr (LLVMPointerType w)
-  -- ^ An LLVM value built by adding an offset to an LLVM variable
 
+  -- | A literal function pointer
   PExpr_Fun :: FnHandle args ret -> PermExpr (FunctionHandleType args ret)
-  -- ^ A literal function pointer
 
+  -- | An empty list of expressions plus permissions
   PExpr_PermListNil :: PermExpr PermListType
-  -- ^ An empty list of expressions plus permissions
 
-  PExpr_PermListCons :: KnownRepr TypeRepr a => PermExpr a -> ValuePerm a ->
-                        PermExpr PermListType -> PermExpr PermListType
-  -- ^ A cons of an expression and permission for that expression onto a
+  -- | A cons of an expression and permission for that expression onto a
   -- permission list
   --
   -- FIXME: turn the 'KnownRepr' constraint into a normal 'TypeRepr' argument
+  PExpr_PermListCons :: KnownRepr TypeRepr a => PermExpr a -> ValuePerm a ->
+                        PermExpr PermListType -> PermExpr PermListType
 
+  -- | A read/write modality 
   PExpr_RWModality :: RWModality -> PermExpr RWModalityType
-  -- ^ A read/write modality 
 
+  -- | A permission as an expression
   PExpr_ValPerm :: ValuePerm a -> PermExpr (ValuePermType a)
-  -- ^ A permission as an expression
 
 
 -- | A sequence of permission expressions
