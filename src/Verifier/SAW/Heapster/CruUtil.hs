@@ -27,6 +27,7 @@ import What4.ProgramLoc
 import Data.Parameterized.Context hiding ((:>), empty, take, view)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
+import Data.Parameterized.BoolRepr
 
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 
@@ -95,6 +96,15 @@ globalSymbolName (GlobalSymbol (L.Symbol str)) = str
 
 instance NuMatching (SymbolRepr tp) where
   nuMatchingProof = unsafeMbTypeRepr
+
+instance NuMatching (BoolRepr tp) where
+  nuMatchingProof = unsafeMbTypeRepr
+
+instance Closable (BoolRepr tp) where
+  toClosed = unsafeClose
+
+instance Liftable (BoolRepr tp) where
+  mbLift = unClosed . mbLift . fmap toClosed
 
 instance NuMatching (NatRepr tp) where
   nuMatchingProof = unsafeMbTypeRepr

@@ -586,7 +586,7 @@ parseAtomicPerm tp@(LLVMPointerRepr w)
          spaces >> char ')'
          return $ Perm_LLVMFunPtr fun_perm) <|>     
      (Perm_BVProp <$> parseBVProp) <|>
-     parseLLVMShapePerm w <?>
+     parseLLVMNamedPerm w <?>
      ("atomic permission of type " ++ show tp))
 
 parseAtomicPerm tp@(LLVMFrameRepr w)
@@ -608,26 +608,24 @@ parseAtomicPerm tp =
   fail ("Expecting atomic permission of type " ++ show tp)
 
 
--- | Parse a @P<args>@ form as an atomic permission
-parseLLVMShapePerm :: (Stream s Identity Char, Liftable s,
+-- | Parse a @P<args>@ form as an LLVM named permission
+parseLLVMNamedPerm :: (Stream s Identity Char, Liftable s,
                        1 <= w, KnownNat w) =>
                       NatRepr w -> PermParseM s (AtomicPerm (LLVMPointerType w))
-parseLLVMShapePerm w =
+parseLLVMNamedPerm w =
   do n <- try (parseIdent >>= \n -> spaces >> char '<' >> return n)
      let tp = LLVMPointerRepr w
      env <- parserEnvPermEnv <$> getState
-     case lookupLLVMShape env n of
-       Just (SomeLLVMShape shape)
-         | Just Refl <- testEquality (namedPermNameType $
-                                      llvmShapeName shape) tp ->
-             do args <- parseExprs (llvmShapeArgs shape)
+     case lookupAtomicNamedPermName env n of
+       Just (SomeAtomicNamedPermName n)
+         | Just Refl <- testEquality (namedPermNameType n) tp ->
+             do args <- parseExprs (namedPermNameArgs n)
                 spaces >> char '>'
-                off <-
-                  (try (spaces >> char '@') >>
-                   (parseBVExpr <|> parseInParens parseBVExpr))
-                  <|> return (bvInt 0)
-                return $ Perm_LLVMShape shape args off
-       Just (SomeLLVMShape _) ->
+                (do try (spaces >> char '@')
+                    off <- (parseBVExpr <|> parseInParens parseBVExpr)
+                    return $ Perm_LLVMNamed n args off)
+                  <|> return (Perm_AtomicNamed n args)
+       Just (SomeAtomicNamedPermName _) ->
          fail ("LLVM shape permission " ++ n ++ " has incorrect type")
        _ | Just _ <- lookupNamedPermName env n ->
            fail ("Named permission " ++ n ++ " is not an LLVM shape permission")
