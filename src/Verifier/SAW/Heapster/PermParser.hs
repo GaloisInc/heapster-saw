@@ -37,6 +37,7 @@ import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, Empty)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.Some
 import Data.Parameterized.TraversableF
+import Data.Parameterized.BoolRepr
 
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.MemModel
@@ -537,13 +538,15 @@ parseValPerm tp =
                | Just Refl <- testEquality (namedPermNameType rpn) tp ->
                  do args <- parseExprs (namedPermNameArgs rpn)
                     spaces >> char '>'
-                    return $ ValPerm_Named rpn args
+                    off <- parsePermOffset tp
+                    return $ ValPerm_Named rpn args off
              Just (SomeNamedPermName rpn) ->
                fail ("Named permission " ++ n ++ " has incorrect type")
              Nothing ->
                fail ("Unknown named permission '" ++ n ++ "'")) <|>
        (ValPerm_Conj <$> parseAtomicPerms tp) <|>
-       (ValPerm_Var <$> parseExprVarOfType (ValuePermRepr tp)) <?>
+       (ValPerm_Var <$> parseExprVarOfType (ValuePermRepr tp)
+        <*> parsePermOffset tp) <?>
        ("permission of type " ++ show tp)
      -- FIXME: I think the SAW lexer can't handle "\/" in strings...?
      -- try (spaces >> string "\\/" >> (ValPerm_Or p1 <$> parseValPerm tp)) <|>
@@ -586,7 +589,7 @@ parseAtomicPerm tp@(LLVMPointerRepr w)
          spaces >> char ')'
          return $ Perm_LLVMFunPtr fun_perm) <|>     
      (Perm_BVProp <$> parseBVProp) <|>
-     parseLLVMNamedPerm w <?>
+     parseAtomicNamedPerm tp <?>
      ("atomic permission of type " ++ show tp))
 
 parseAtomicPerm tp@(LLVMFrameRepr w)
@@ -605,32 +608,43 @@ parseAtomicPerm tp@(LLVMFrameRepr w)
      ("atomic permission of type " ++ show tp))
 
 parseAtomicPerm tp =
-  fail ("Expecting atomic permission of type " ++ show tp)
+  parseAtomicNamedPerm tp <?>
+  ("Expecting atomic permission of type " ++ show tp)
 
+
+-- | Parse a @\@e@ string as a 'PermOffset'
+parsePermOffset :: (Stream s Identity Char, Liftable s) =>
+                   TypeRepr a -> PermParseM s (PermOffset a)
+parsePermOffset (LLVMPointerRepr w) =
+  withKnownNat w
+  ((do try (spaces >> char '@')
+       e <- (parseBVExpr <|> parseInParens parseBVExpr)
+       return $ LLVMPermOffset e)
+   <|> return NoPermOffset)
+parsePermOffset _ = return NoPermOffset
 
 -- | Parse a @P<args>@ form as an LLVM named permission
-parseLLVMNamedPerm :: (Stream s Identity Char, Liftable s,
-                       1 <= w, KnownNat w) =>
-                      NatRepr w -> PermParseM s (AtomicPerm (LLVMPointerType w))
-parseLLVMNamedPerm w =
+parseAtomicNamedPerm :: (Stream s Identity Char, Liftable s) =>
+                        TypeRepr a -> PermParseM s (AtomicPerm a)
+parseAtomicNamedPerm tp =
   do n <- try (parseIdent >>= \n -> spaces >> char '<' >> return n)
-     let tp = LLVMPointerRepr w
      env <- parserEnvPermEnv <$> getState
-     case lookupAtomicNamedPermName env n of
-       Just (SomeAtomicNamedPermName n)
-         | Just Refl <- testEquality (namedPermNameType n) tp ->
-             do args <- parseExprs (namedPermNameArgs n)
+     case lookupNamedPermName env n of
+       Just (SomeNamedPermName npn)
+         | Just Refl <- testEquality (namedPermNameType npn) tp
+         , TrueRepr <- nameIsConjRepr npn ->
+             do args <- parseExprs (namedPermNameArgs npn)
                 spaces >> char '>'
-                (do try (spaces >> char '@')
-                    off <- (parseBVExpr <|> parseInParens parseBVExpr)
-                    return $ Perm_LLVMNamed n args off)
-                  <|> return (Perm_AtomicNamed n args)
-       Just (SomeAtomicNamedPermName _) ->
-         fail ("LLVM shape permission " ++ n ++ " has incorrect type")
-       _ | Just _ <- lookupNamedPermName env n ->
-           fail ("Named permission " ++ n ++ " is not an LLVM shape permission")
+                off <- parsePermOffset tp
+                return (Perm_NamedConj npn args off)
+       Just (SomeNamedPermName npn)
+         | Just Refl <- testEquality (namedPermNameType npn) tp ->
+         fail ("Non-conjoinable permission name '" ++ n
+               ++ "' used in conjunctive context")
+       Just (SomeNamedPermName _) ->
+         fail ("Permission name '" ++ n ++ "' has incorrect type")
        Nothing ->
-         fail ("Unknown LLVM shape permission '" ++ n ++ "'")
+         fail ("Unknown permission name '" ++ n ++ "'")
 
 -- | Parse a field permission @[l]ptr((rw,off) |-> p)@. If the 'Bool' flag is
 -- 'True', the field permission is being parsed as part of an array permission,

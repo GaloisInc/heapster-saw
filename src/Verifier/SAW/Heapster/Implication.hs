@@ -50,6 +50,8 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
+import Data.Parameterized.BoolRepr
+
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.MemModel
 import Lang.Crucible.CFG.Core
@@ -62,17 +64,6 @@ import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
 
 import Debug.Trace
-
-{-
-FIXME HERE NOWNOW:
-- add sorts to named perms and namedpermnames
-- remove llvmshape type
-- Perm_LLVMShape -> Perm_LLVMNamed
-- add Perm_AtomicNamed atomic permission
-- add unfoldNamedPerm, which requires the NameSort to be non-opaque
-- add a general offsetLLVMPerm (for perms not containing eq or non-atomic names)
-- maybe change some of our other atomic perms -> named atomic perms?
--}
 
 
 ----------------------------------------------------------------------
@@ -246,14 +237,15 @@ data SimplImpl ps_in ps_out where
     SimplImpl (RNil :> LLVMPointerType w :> LLVMPointerType w)
     (RNil :> LLVMPointerType w)
 
-  -- | Cast a conjunction @y:(p1 * ... * pn)@ of LLVM type on the top of the
-  -- stack to @x:(p1 - off * ... * pn - off)@ using a proof of @x:eq(y+off)@
-  -- just below it on the stack:
+  -- | Cast a permission @y:p@ of LLVM type on the top of the stack to @x:(p -
+  -- off)@ using a proof of @x:eq(y+off)@ just below it on the stack:
   --
-  -- > x:eq(y+off) * y:(p1 * ... * pn) -o x:(p1 - off * ... * pn - off)
+  -- > x:eq(y+off) * y:p -o x:(p - off)
+  --
+  -- FIXME: change this to work for arbitrary types with 'offsetPerm'
   SImpl_CastLLVMPtr ::
     (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> [AtomicPerm (LLVMPointerType w)] ->
+    ExprVar (LLVMPointerType w) -> ValuePerm (LLVMPointerType w) ->
     PermExpr (BVType w) -> ExprVar (LLVMPointerType w) ->
     SimplImpl (RNil :> LLVMPointerType w :> LLVMPointerType w)
     (RNil :> LLVMPointerType w)
@@ -468,48 +460,30 @@ data SimplImpl ps_in ps_out where
   -- > x:(unfold P args) -o x:P<args>
   SImpl_FoldNamed :: NameSortCanFold ns ~ 'True =>
                      ExprVar a -> NamedPerm ns args a -> PermExprs args ->
-                     SimplImpl (RNil :> a) (RNil :> a)
+                     PermOffset a -> SimplImpl (RNil :> a) (RNil :> a)
 
   -- | Unfold a named permission (other than an opaque permission):
   --
   -- > x:P<args> -o x:(unfold P args)
   SImpl_UnfoldNamed :: NameSortCanFold ns ~ 'True =>
                        ExprVar a -> NamedPerm ns args a -> PermExprs args ->
-                       SimplImpl (RNil :> a) (RNil :> a)
+                       PermOffset a -> SimplImpl (RNil :> a) (RNil :> a)
 
   -- | Map a named permission that is conjoinable to a conjunction:
   --
   -- > x:P<args> -o x:ValPerm_Conj [P<args>]
-  SImpl_NamedToConj :: NameSortIsConj ns ~ 'True =>
-                       ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+  SImpl_NamedToConj :: NameSortIsConj ns ~ 'True => ExprVar a ->
+                       NamedPermName ns args a -> PermExprs args ->
+                       PermOffset a ->
                        SimplImpl (RNil :> a) (RNil :> a)
 
   -- | Map a conjuctive named permission to a named permission:
   --
   -- > x:ValPerm_Conj [P<args>] -o x:P<args>
-  SImpl_NamedFromConj :: NameSortIsConj ns ~ 'True =>
-                         ExprVar a -> NamedPerm ns args a -> PermExprs args ->
-                         SimplImpl (RNil :> a) (RNil :> a)
+  SImpl_NamedFromConj :: NameSortIsConj ns ~ 'True => ExprVar a ->
+                         NamedPermName ns args a -> PermExprs args ->
+                         PermOffset a -> SimplImpl (RNil :> a) (RNil :> a)
 
-  -- | Fold an LLVM named permission:
-  --
-  -- > x:(unfold P args off) -o x:P<args>@off
-  SImpl_FoldLLVMNamed :: (1 <= w, KnownNat w, NameSortCanFold ns ~ 'True) =>
-                         ExprVar (LLVMPointerType w) ->
-                         NamedPermName ns args (LLVMPointerType w) ->
-                         PermExprs args -> PermExpr (BVType w) ->
-                         SimplImpl (RNil :> LLVMPointerType w)
-                         (RNil :> LLVMPointerType w)
-
-  -- | Unold an LLVM named permission:
-  --
-  -- > x:P<args>@off -o x:(unfold P args off)
-  SImpl_UnfoldLLVMNamed :: (1 <= w, KnownNat w, NameSortCanFold ns ~ 'True) =>
-                           ExprVar (LLVMPointerType w) ->
-                           NamedPermName ns args (LLVMPointerType w) ->
-                           PermExprs args -> PermExpr (BVType w) ->
-                           SimplImpl (RNil :> LLVMPointerType w)
-                           (RNil :> LLVMPointerType w)
 
 {- FIXME HERE NOW: Write the rule for proving one recursive perm implies another
 
@@ -528,21 +502,24 @@ data SimplImpl ps_in ps_out where
   -- | Weaken an @always@ lifetime argument of a named permission:
   --
   -- > x:P<args1,always,args2> -o x:P<args1,l,args2>
-  SImpl_NamedArgAlways :: ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+  SImpl_NamedArgAlways :: ExprVar a -> NamedPermName ns args a ->
+                          PermExprs args -> PermOffset a ->
                           Member args LifetimeType -> PermExpr LifetimeType ->
                           SimplImpl (RNil :> a) (RNil :> a)
 
   -- | Weaken a lifetime argument @l1@ of a named permission:
   --
   -- > x:P<args1,l1,args2> * l1:[l2]lcurrent -o x:P<args1,l2,args2>
-  SImpl_NamedArgCurrent :: ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+  SImpl_NamedArgCurrent :: ExprVar a -> NamedPermName ns args a ->
+                           PermExprs args -> PermOffset a ->
                            Member args LifetimeType -> PermExpr LifetimeType ->
                            SimplImpl (RNil :> a :> LifetimeType) (RNil :> a)
 
   -- | Weaken a 'Write' modality argument to any other modality:
   --
   -- > x:P<args1,W,args2> -o x:P<args1,rw,args2>
-  SImpl_NamedArgWrite :: ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+  SImpl_NamedArgWrite :: ExprVar a -> NamedPermName ns args a ->
+                         PermExprs args -> PermOffset a ->
                          Member args RWModalityType ->
                          PermExpr RWModalityType ->
                          SimplImpl (RNil :> a) (RNil :> a)
@@ -550,7 +527,8 @@ data SimplImpl ps_in ps_out where
   -- | Weaken any modality argument to a 'Read' modality:
   --
   -- > x:P<args1,rw,args2> -o x:P<args1,R,args2>
-  SImpl_NamedArgRead :: ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+  SImpl_NamedArgRead :: ExprVar a -> NamedPermName ns args a ->
+                        PermExprs args -> PermOffset a ->
                         Member args RWModalityType ->
                         SimplImpl (RNil :> a) (RNil :> a)
 
@@ -789,8 +767,8 @@ simplImplIn (SImpl_InvertLLVMOffsetEq x off y) =
 simplImplIn (SImpl_OffsetLLVMWord y e off x) =
   distPerms2 x (ValPerm_Eq $ PExpr_LLVMOffset y off)
   y (ValPerm_Eq (PExpr_LLVMWord e))
-simplImplIn (SImpl_CastLLVMPtr y ps off x) =
-  distPerms2 x (ValPerm_Eq $ PExpr_LLVMOffset y off) y (ValPerm_Conj ps)
+simplImplIn (SImpl_CastLLVMPtr y p off x) =
+  distPerms2 x (ValPerm_Eq $ PExpr_LLVMOffset y off) y p
 simplImplIn (SImpl_CastLLVMFree x e1 e2) =
   distPerms2 x (ValPerm_Conj [Perm_LLVMFree e1])
   x (ValPerm_Conj [Perm_BVProp $ BVProp_Eq e1 e2])
@@ -867,36 +845,32 @@ simplImplIn (SImpl_LCurrentRefl _) = DistPermsNil
 simplImplIn (SImpl_LCurrentTrans l1 l2 l3) =
   distPerms2 l1 (ValPerm_Conj [Perm_LCurrent $ PExpr_Var l2])
   l2 (ValPerm_Conj [Perm_LCurrent l3])
-simplImplIn (SImpl_FoldNamed x np args) =
-  distPerms1 x (unfoldPerm np args)
-simplImplIn (SImpl_UnfoldNamed x np args) =
-  distPerms1 x (ValPerm_Named (namedPermName np) args)
-simplImplIn (SImpl_NamedToConj x np args) =
-  distPerms1 x (ValPerm_Named (namedPermName np) args)
-simplImplIn (SImpl_NamedFromConj x np args) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_NamedConj (namedPermName np) args)
-simplImplIn (SImpl_FoldLLVMNamed x np args off) =
-  distPerms1 x (unfoldLLVMNamedPerm np args off)
-simplImplIn (SImpl_UnfoldLLVMNamed x np args off) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMNamed (namedPermName np) args off)
+simplImplIn (SImpl_FoldNamed x np args off) =
+  distPerms1 x (unfoldPerm np args off)
+simplImplIn (SImpl_UnfoldNamed x np args off) =
+  distPerms1 x (ValPerm_Named (namedPermName np) args off)
+simplImplIn (SImpl_NamedToConj x npn args off) =
+  distPerms1 x (ValPerm_Named npn args off)
+simplImplIn (SImpl_NamedFromConj x npn args off) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_NamedConj npn args off)
 -- simplImplIn (SImpl_Mu x p1 _ _) = distPerms1 x (ValPerm_Mu p1)
-simplImplIn (SImpl_NamedArgAlways x pn args memb _) =
+simplImplIn (SImpl_NamedArgAlways x npn args off memb _) =
   case nthPermExpr args memb of
-    PExpr_Always -> distPerms1 x (ValPerm_Named (namedPermName pn) args)
+    PExpr_Always -> distPerms1 x (ValPerm_Named npn args off)
     _ -> error "simplImplIn: SImplNamedArgAlways: non-always argument!"
-simplImplIn (SImpl_NamedArgCurrent x pn args memb l2) =
+simplImplIn (SImpl_NamedArgCurrent x npn args off memb l2) =
   case nthPermExpr args memb of
     PExpr_Var l1 ->
-      distPerms2 x (ValPerm_Named (namedPermName pn) args)
+      distPerms2 x (ValPerm_Named npn args off)
       l1 (ValPerm_Conj1 $ Perm_LCurrent l2)
     _ -> error "simplImplIn: SImplNamedArgCurrent: non-variable argument!"
-simplImplIn (SImpl_NamedArgWrite x pn args memb _) =
+simplImplIn (SImpl_NamedArgWrite x npn args off memb _) =
   case nthPermExpr args memb of
     PExpr_RWModality Write ->
-      distPerms1 x (ValPerm_Named (namedPermName pn) args)
+      distPerms1 x (ValPerm_Named npn args off)
     _ -> error "simplImplIn: SImplNamedArgWrite: non-Write argument!"
-simplImplIn (SImpl_NamedArgRead x pn args _) =
-  distPerms1 x (ValPerm_Named (namedPermName pn) args)
+simplImplIn (SImpl_NamedArgRead x npn args off _) =
+  distPerms1 x (ValPerm_Named npn args off)
 
 
 -- | Compute the output permissions of a 'SimplImpl' implication
@@ -939,8 +913,8 @@ simplImplOut (SImpl_InvertLLVMOffsetEq x off y) =
   distPerms1 y $ ValPerm_Eq $ PExpr_LLVMOffset x $ bvNegate off
 simplImplOut (SImpl_OffsetLLVMWord _ e off x) =
   distPerms1 x (ValPerm_Eq $ PExpr_LLVMWord $ bvAdd e off)
-simplImplOut (SImpl_CastLLVMPtr _ ps off x) =
-  distPerms1 x (ValPerm_Conj $ mapMaybe (offsetLLVMAtomicPerm $ bvNegate off) ps)
+simplImplOut (SImpl_CastLLVMPtr _ p off x) =
+  distPerms1 x (offsetLLVMPerm (bvNegate off) p)
 simplImplOut (SImpl_CastLLVMFree x _ e2) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMFree e2])
 simplImplOut (SImpl_CastLLVMFieldOffset x fld off') =
@@ -1019,31 +993,25 @@ simplImplOut (SImpl_LCurrentRefl l) =
   distPerms1 l (ValPerm_Conj1 $ Perm_LCurrent $ PExpr_Var l)
 simplImplOut (SImpl_LCurrentTrans l1 _ l3) =
   distPerms1 l1 (ValPerm_Conj [Perm_LCurrent l3])
-simplImplOut (SImpl_FoldNamed x np args) =
-  distPerms1 x (ValPerm_Named (namedPermName np) args)
-simplImplOut (SImpl_UnfoldNamed x np args) =
-  distPerms1 x (unfoldPerm np args)
-simplImplOut (SImpl_NamedToConj x np args) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_NamedConj (namedPermName np) args)
-simplImplOut (SImpl_NamedFromConj x np args) =
-  distPerms1 x (ValPerm_Named (namedPermName np) args)
-simplImplOut (SImpl_FoldLLVMNamed x np args off) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMNamed (namedPermName np) args off)
-simplImplOut (SImpl_UnfoldLLVMNamed x np args off) =
-  distPerms1 x (unfoldLLVMNamedPerm np args off)
+simplImplOut (SImpl_FoldNamed x np args off) =
+  distPerms1 x (ValPerm_Named (namedPermName np) args off)
+simplImplOut (SImpl_UnfoldNamed x np args off) =
+  distPerms1 x (unfoldPerm np args off)
+simplImplOut (SImpl_NamedToConj x npn args off) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_NamedConj npn args off)
+simplImplOut (SImpl_NamedFromConj x npn args off) =
+  distPerms1 x (ValPerm_Named npn args off)
 -- simplImplOut (SImpl_Mu x _ p2 _) = distPerms1 x (ValPerm_Mu p2)
-simplImplOut (SImpl_NamedArgAlways x rp args memb l) =
-  distPerms1 x (ValPerm_Named (namedPermName rp)
-                (setNthPermExpr args memb l))
-simplImplOut (SImpl_NamedArgCurrent x rp args memb l2) =
-  distPerms1 x (ValPerm_Named (namedPermName rp)
-                (setNthPermExpr args memb l2))
-simplImplOut (SImpl_NamedArgWrite x rp args memb rw) =
-  distPerms1 x (ValPerm_Named (namedPermName rp)
-                (setNthPermExpr args memb rw))
-simplImplOut (SImpl_NamedArgRead x rp args memb) =
-  distPerms1 x (ValPerm_Named (namedPermName rp)
-                (setNthPermExpr args memb (PExpr_RWModality Read)))
+simplImplOut (SImpl_NamedArgAlways x npn args off memb l) =
+  distPerms1 x (ValPerm_Named npn (setNthPermExpr args memb l) off)
+simplImplOut (SImpl_NamedArgCurrent x npn args off memb l2) =
+  distPerms1 x (ValPerm_Named npn (setNthPermExpr args memb l2) off)
+simplImplOut (SImpl_NamedArgWrite x npn args off memb rw) =
+  distPerms1 x (ValPerm_Named npn (setNthPermExpr args memb rw) off)
+simplImplOut (SImpl_NamedArgRead x npn args off memb) =
+  distPerms1 x (ValPerm_Named npn
+                (setNthPermExpr args memb (PExpr_RWModality Read))
+                off)
 
 
 -- | Apply a 'SimplImpl' implication to the permissions on the top of a
@@ -1189,8 +1157,8 @@ instance SubstVar PermVarSubst m =>
   genSubst s [nuP| SImpl_OffsetLLVMWord y e off x |] =
     SImpl_OffsetLLVMWord <$> genSubst s y <*> genSubst s e <*>
     genSubst s off <*> genSubst s x
-  genSubst s [nuP| SImpl_CastLLVMPtr y ps off x |] =
-    SImpl_CastLLVMPtr <$> genSubst s y <*> genSubst s ps <*>
+  genSubst s [nuP| SImpl_CastLLVMPtr y p off x |] =
+    SImpl_CastLLVMPtr <$> genSubst s y <*> genSubst s p <*>
     genSubst s off <*> genSubst s x
   genSubst s [nuP| SImpl_CastLLVMFree x e1 e2 |] =
     SImpl_CastLLVMFree <$> genSubst s x <*> genSubst s e1 <*> genSubst s e2
@@ -1236,32 +1204,30 @@ instance SubstVar PermVarSubst m =>
     SImpl_LCurrentRefl <$> genSubst s l
   genSubst s [nuP| SImpl_LCurrentTrans l1 l2 l3 |] =
     SImpl_LCurrentTrans <$> genSubst s l1 <*> genSubst s l2 <*> genSubst s l3
-  genSubst s [nuP| SImpl_FoldNamed x np args |] =
+  genSubst s [nuP| SImpl_FoldNamed x np args off |] =
     SImpl_FoldNamed <$> genSubst s x <*> genSubst s np <*> genSubst s args
-  genSubst s [nuP| SImpl_UnfoldNamed x np args |] =
+     <*> genSubst s off
+  genSubst s [nuP| SImpl_UnfoldNamed x np args off |] =
     SImpl_UnfoldNamed <$> genSubst s x <*> genSubst s np <*> genSubst s args
-  genSubst s [nuP| SImpl_NamedToConj x np args |] =
-    SImpl_NamedToConj <$> genSubst s x <*> genSubst s np <*> genSubst s args
-  genSubst s [nuP| SImpl_NamedFromConj x np args |] =
-    SImpl_NamedFromConj <$> genSubst s x <*> genSubst s np <*> genSubst s args
-  genSubst s [nuP| SImpl_FoldLLVMNamed x np args off |] =
-    SImpl_FoldLLVMNamed <$> genSubst s x <*> genSubst s np
-    <*> genSubst s args <*> genSubst s off
-  genSubst s [nuP| SImpl_UnfoldLLVMNamed x np args off |] =
-    SImpl_UnfoldLLVMNamed <$> genSubst s x <*> genSubst s np
-    <*> genSubst s args <*> genSubst s off
-  genSubst s [nuP| SImpl_NamedArgAlways x rp args memb l |] =
-    SImpl_NamedArgAlways <$> genSubst s x <*> genSubst s rp <*>
-    genSubst s args <*> genSubst s memb <*> genSubst s l
-  genSubst s [nuP| SImpl_NamedArgCurrent x rp args memb l2 |] =
-    SImpl_NamedArgCurrent <$> genSubst s x <*> genSubst s rp <*>
-    genSubst s args <*> genSubst s memb <*> genSubst s l2
-  genSubst s [nuP| SImpl_NamedArgWrite x rp args memb rw |] =
-    SImpl_NamedArgWrite <$> genSubst s x <*> genSubst s rp <*>
-    genSubst s args <*> genSubst s memb <*> genSubst s rw
-  genSubst s [nuP| SImpl_NamedArgRead x rp args memb |] =
-    SImpl_NamedArgRead <$> genSubst s x <*> genSubst s rp <*> genSubst s args <*>
-    genSubst s memb
+     <*> genSubst s off
+  genSubst s [nuP| SImpl_NamedToConj x npn args off |] =
+    SImpl_NamedToConj <$> genSubst s x <*> genSubst s npn <*> genSubst s args
+     <*> genSubst s off
+  genSubst s [nuP| SImpl_NamedFromConj x npn args off |] =
+    SImpl_NamedFromConj <$> genSubst s x <*> genSubst s npn <*> genSubst s args
+     <*> genSubst s off
+  genSubst s [nuP| SImpl_NamedArgAlways x npn args off memb l |] =
+    SImpl_NamedArgAlways <$> genSubst s x <*> genSubst s npn <*>
+    genSubst s args <*> genSubst s off <*> genSubst s memb <*> genSubst s l
+  genSubst s [nuP| SImpl_NamedArgCurrent x npn args off memb l2 |] =
+    SImpl_NamedArgCurrent <$> genSubst s x <*> genSubst s npn <*>
+    genSubst s args <*> genSubst s off <*> genSubst s memb <*> genSubst s l2
+  genSubst s [nuP| SImpl_NamedArgWrite x npn args off memb rw |] =
+    SImpl_NamedArgWrite <$> genSubst s x <*> genSubst s npn <*>
+    genSubst s args <*> genSubst s off <*> genSubst s memb <*> genSubst s rw
+  genSubst s [nuP| SImpl_NamedArgRead x npn args off memb |] =
+    SImpl_NamedArgRead <$> genSubst s x <*> genSubst s npn <*>
+    genSubst s args <*> genSubst s off <*> genSubst s memb
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (PermImpl1 ps_in ps_out) m where
@@ -1707,6 +1673,9 @@ getPPInfo = view implStatePPInfo <$> gget
 
 -- | Apply the current partial substitution to an expression, raising an error
 -- with the given string if the partial substitution is not complete enough
+--
+-- FIXME: this should fail instead of calling 'error', and should also have more
+-- regular and meaningful messages about existential variables being unresolved
 partialSubstForceM :: Substable PartialSubst a Maybe => Mb vars a -> String ->
                       ImplM vars s r ps ps a
 partialSubstForceM mb_e msg =
@@ -1734,6 +1703,22 @@ withExtVarsM m =
   (m >>>= \a ->
     getPSubst >>>= \psubst ->
     greturn (a, psubstLookup psubst Member_Base))
+
+-- | Get the recursive permission recursion flag
+implGetRecRecurseFlag :: ImplM vars s r ps ps (Maybe (Either () ()))
+implGetRecRecurseFlag = view implStateRecRecurseFlag <$> gget
+
+-- | Perform either the first, second, or both computations with an 'implCatchM'
+-- between, depending on the recursion flag
+implRecFlagCaseM :: ImplM vars s r ps_out ps_in a ->
+                    ImplM vars s r ps_out ps_in a ->
+                    ImplM vars s r ps_out ps_in a
+implRecFlagCaseM m1 m2 =
+  implGetRecRecurseFlag >>>= \flag ->
+  case flag of
+    Just (Left ()) -> m1
+    Just (Right ()) -> m2
+    Nothing -> implCatchM m1 m2
 
 -- | Set the recursive permission recursion flag to indicate recursion on the
 -- right, or fail if we are already recursing on the left
@@ -1949,13 +1934,27 @@ implFailVarM f x p mb_p =
                     ppImpl i x p mb_p]) >>>=
   implFailM
 
+-- | Compile-time flag for whether to prune failure branches in 'implCatchM'
+pruneFailingBranches :: Bool
+pruneFailingBranches = False
+
 -- | Produce a branching proof tree that performs the first implication and, if
--- that one fails, falls back on the second
+-- that one fails, falls back on the second. If 'pruneFailingBranches' is set,
+-- failing branches are pruned.
 implCatchM :: ImplM vars s r ps1 ps2 a -> ImplM vars s r ps1 ps2 a ->
               ImplM vars s r ps1 ps2 a
-implCatchM m1 m2 =
-  implApplyImpl1 Impl1_Catch
-  (MNil :>: Impl1Cont (const m1) :>: Impl1Cont (const m2))
+implCatchM =
+  gparallel (\m1 m2 -> permImplCatch <$> m1 <*> m2)
+  where
+    permImplCatch :: PermImpl r ps -> PermImpl r ps -> PermImpl r ps
+    permImplCatch (PermImpl_Step (Impl1_Fail _) _) pimpl
+      | pruneFailingBranches = pimpl
+    permImplCatch pimpl (PermImpl_Step (Impl1_Fail _) _)
+      | pruneFailingBranches = pimpl
+    permImplCatch pimpl1 pimpl2 =
+      PermImpl_Step Impl1_Catch $
+      MbPermImpls_Cons (MbPermImpls_Cons MbPermImpls_Nil $ emptyMb pimpl1) $
+      emptyMb pimpl2
 
 -- | "Push" all of the permissions in the permission set for a variable, which
 -- should be equal to the supplied permission, after deleting those permissions
@@ -2093,10 +2092,9 @@ elimOrsExistsNamesM x =
     ValPerm_Or p1 p2 -> implElimOrM x p1 p2 >>> elimOrsExistsM x
     ValPerm_Exists mb_p ->
       implElimExistsM x mb_p >>> elimOrsExistsM x
-    ValPerm_Named npn args ->
-      implLookupNamedPerm npn >>= \np ->
-      case nameCanFoldRepr np of
-        TrueRepr -> implUnfoldNamedM x np args >>> elimOrsExistsNamesM x
+    ValPerm_Named npn args off ->
+      case nameCanFoldRepr npn of
+        TrueRepr -> implUnfoldNamedM x npn args off >>> elimOrsExistsNamesM x
         FalseRepr -> greturn p
     _ -> greturn p
 
@@ -2232,14 +2230,14 @@ castLLVMWordEqM x e1 e2 =
   implTryProveBVProp x (BVProp_Eq e1 e2) >>>
   implSimplM Proxy (SImpl_CastLLVMWord x e1 e2)
 
--- | Cast a @y:ptr(pps)@ on the top of the stack to @x:ptr(pps - off)@ using a
+-- | Cast a @y:p@ on the top of the stack to @x:(p - off)@ using a
 -- proof of @x:eq(y+off)@ just below it on the stack
 castLLVMPtrM :: (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-                [AtomicPerm (LLVMPointerType w)] -> PermExpr (BVType w) ->
+                ValuePerm (LLVMPointerType w) -> PermExpr (BVType w) ->
                 ExprVar (LLVMPointerType w) ->
                 ImplM vars s r (ps :> LLVMPointerType w)
                 (ps :> LLVMPointerType w :> LLVMPointerType w) ()
-castLLVMPtrM y ps off x = implSimplM Proxy (SImpl_CastLLVMPtr y ps off x)
+castLLVMPtrM y p off x = implSimplM Proxy (SImpl_CastLLVMPtr y p off x)
 
 -- | Cast a @y:eq(word(e))@ on the top of the stack to @x:eq(word(e+off))@ using
 -- a proof of @x:eq(y+off)@ just below it on the stack
@@ -2261,62 +2259,36 @@ castLLVMFreeM x e1 e2 =
   implSimplM Proxy (SImpl_CastLLVMFree x e1 e2)
 
 -- | Fold a named permission (other than an opaque permission)
-implFoldNamedM :: NameSortCanFold ns ~ 'True =>
-                  ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+implFoldNamedM :: NameSortCanFold ns ~ 'True => ExprVar a ->
+                  NamedPermName ns args a -> PermExprs args -> PermOffset a ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
-implFoldNamedM x np args =
+implFoldNamedM x npn args off =
   implLookupNamedPerm npn >>>= \np ->
-  implSimplM Proxy (SImpl_FoldNamed x rp args)
+  implSimplM Proxy (SImpl_FoldNamed x np args off)
 
 -- | Unfold a named permission (other than an opaque permission), returning the
 -- unfolding
-implUnfoldNamedM :: NameSortCanFold ns ~ 'True =>
-                    ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+implUnfoldNamedM :: NameSortCanFold ns ~ 'True => ExprVar a ->
+                    NamedPermName ns args a -> PermExprs args -> PermOffset a ->
                     ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
-implUnfoldNamedM x npn args =
+implUnfoldNamedM x npn args off =
   implLookupNamedPerm npn >>>= \np ->
-  implSimplM Proxy (SImpl_UnfoldNamed x np args) >>>
-  greturn (unfoldPerm np args)
+  implSimplM Proxy (SImpl_UnfoldNamed x np args off) >>>
+  greturn (unfoldPerm np args off)
 
 -- | Map a named permission that is conjoinable to a conjunction
-implNamedToConjM :: NameSortIsConj ns ~ 'True =>
-                    ExprVar a -> NamedPerm ns args a -> PermExprs args ->
+implNamedToConjM :: NameSortIsConj ns ~ 'True => ExprVar a ->
+                    NamedPermName ns args a -> PermExprs args -> PermOffset a ->
                     ImplM vars s r (ps :> a) (ps :> a) ()
-implNamedToConjM x npn args =
-  implLookupNamedPerm npn >>>= \np ->
-  implSimplM Proxy (SImpl_NamedToConj x dp args)
+implNamedToConjM x npn args off =
+  implSimplM Proxy (SImpl_NamedToConj x npn args off)
 
 -- | Map a conjuctive named permission to a named permission
-implNamedFromConjM :: NameSortIsConj ns ~ 'True =>
-                      ExprVar a -> NamedPerm ns args a -> PermExprs args ->
-                      ImplM vars s r (ps :> a) (ps :> a) ()
-implNamedFromConjM x npn args =
-  implLookupNamedPerm npn >>>= \np ->
-  implSimplM Proxy (SImpl_NamedFromConj x dp args)
-
--- | Fold an LLVM named permission
-implFoldLLVMNamedM :: (1 <= w, KnownNat w, NameSortCanFold ns ~ 'True) =>
-                      ExprVar (LLVMPointerType w) ->
-                      NamedPermName ns args (LLVMPointerType w) ->
-                      PermExprs args -> PermExpr (BVType w) ->
-                      ImplM vars s r (ps :> LLVMPointerType w)
-                      (ps :> LLVMPointerType w) ()
-implFoldLLVMNamedM x n args off =
-  implLookupNamedPerm n >>>= \np ->
-  implSimplM Proxy (SImpl_FoldLLVMNamed x np args off)
-
--- | Unfold an LLVM named permission
-implUnfoldLLVMNamedM :: (1 <= w, KnownNat w, NameSortCanFold ns ~ 'True) =>
-                        ExprVar (LLVMPointerType w) ->
-                        NamedPermName ns args (LLVMPointerType w) ->
-                        PermExprs args -> PermExpr (BVType w) ->
-                        ImplM vars s r (ps :> LLVMPointerType w)
-                        (ps :> LLVMPointerType w)
-                        (ValuePerm (LLVMPointerType w))
-implUnfoldLLVMNamedM x n args off =
-  implLookupNamedPerm n >>>= \np ->
-  implSimplM Proxy (SImpl_UnfoldLLVMNamed x np args off) >>>
-  greturn (unfoldLLVMNamedPerm np args off)
+implNamedFromConjM :: NameSortIsConj ns ~ 'True => ExprVar a ->
+                      NamedPermName ns args a -> PermExprs args ->
+                      PermOffset a -> ImplM vars s r (ps :> a) (ps :> a) ()
+implNamedFromConjM x npn args off =
+  implSimplM Proxy (SImpl_NamedFromConj x npn args off)
 
 -- | FIXME: document this!
 implSplitLifetimeM :: KnownRepr TypeRepr a => ExprVar a -> ValuePerm a ->
@@ -2479,14 +2451,14 @@ implPushLifetimeEndPerms (ps :>: LifetimeEndConj x x_ps i) =
 
 -- | Recombine the permission @x:p@ on top of the stack back into the existing
 -- permission for @x@
-recombinePerm :: ExprVar a -> ValuePerm a -> ImplM RNil s r as (as :> a) ()
+recombinePerm :: ExprVar a -> ValuePerm a -> ImplM vars s r as (as :> a) ()
 recombinePerm x p = getPerm x >>>= \x_p -> recombinePermExpl x x_p p
 
 -- | Recombine the permission @x:p@ on top of the stack back into the existing
 -- permission @x_p@ for @x@, where @x_p@ is given explicitly as the first
 -- permission argument and @p@ is the second
 recombinePermExpl :: ExprVar a -> ValuePerm a -> ValuePerm a ->
-                     ImplM RNil s r as (as :> a) ()
+                     ImplM vars s r as (as :> a) ()
 recombinePermExpl x x_p p =
   {-
   getPPInfo >>>= \info ->
@@ -2496,7 +2468,7 @@ recombinePermExpl x x_p p =
   recombinePerm' x x_p p
 
 recombinePerm' :: ExprVar a -> ValuePerm a -> ValuePerm a ->
-                  ImplM RNil s r as (as :> a) ()
+                  ImplM vars s r as (as :> a) ()
 recombinePerm' x _ p@ValPerm_True = implDropM x p
 recombinePerm' x ValPerm_True p = implPopM x p
 recombinePerm' x (ValPerm_Eq (PExpr_Var y)) _
@@ -2512,7 +2484,7 @@ recombinePerm' x x_p@(ValPerm_Eq (PExpr_LLVMOffset y off)) (ValPerm_Conj ps) =
   implPopM x x_p >>> implSimplM Proxy (SImpl_InvertLLVMOffsetEq x off y) >>>
   implSwapM x (ValPerm_Conj ps) y (ValPerm_Eq
                                    (PExpr_LLVMOffset x (bvNegate off))) >>>
-  castLLVMPtrM x ps (bvNegate off) y >>>
+  castLLVMPtrM x (ValPerm_Conj ps) (bvNegate off) y >>>
   getPerm y >>>= \y_p ->
   recombinePermExpl y y_p (ValPerm_Conj $ mapMaybe (offsetLLVMAtomicPerm off) ps)
 recombinePerm' x p p'@(ValPerm_Eq _) =
@@ -2547,7 +2519,7 @@ recombinePerm' x _ p = implDropM x p
 -- conjuctive permission @x_p1 * ... * x_pn@ for @x@, returning the resulting
 -- permission conjucts for @x@
 recombinePermConj :: ExprVar a -> [AtomicPerm a] -> AtomicPerm a ->
-                     ImplM RNil s r as (as :> a) [AtomicPerm a]
+                     ImplM vars s r as (as :> a) [AtomicPerm a]
 
 -- If p is a field read permission that is already in x_ps, drop it
 recombinePermConj x x_ps p@(Perm_LLVMField fp)
@@ -2612,14 +2584,14 @@ recombinePermConj x x_ps p =
 
 
 -- | Recombine the permissions on the stack back into the permission set
-recombinePerms :: DistPerms ps -> ImplM RNil s r RNil ps ()
+recombinePerms :: DistPerms ps -> ImplM vars s r RNil ps ()
 recombinePerms DistPermsNil = greturn ()
 recombinePerms (DistPermsCons ps' x p) =
   recombinePerm x p >>> recombinePerms ps'
 
 -- | Recombine the permissions for a 'LifetimeCurrentPerms' list
 recombineLifetimeCurrentPerms :: LifetimeCurrentPerms ps_l ->
-                                 ImplM RNil s r ps (ps :++: ps_l) ()
+                                 ImplM vars s r ps (ps :++: ps_l) ()
 recombineLifetimeCurrentPerms AlwaysCurrentPerms = greturn ()
 recombineLifetimeCurrentPerms (LOwnedCurrentPerms l ps) =
   recombinePermExpl l ValPerm_True (ValPerm_Conj1 $ Perm_LOwned ps)
@@ -2819,6 +2791,7 @@ proveVarLLVMFieldH x fp off' mb_fp =
 -- a single atomic permission or @true@. The field permission and remaining
 -- atomic permission (if any) are the return values of this function.
 extractNeededLLVMFieldPerm ::
+  (1 <= w, KnownNat w) =>
   ExprVar (LLVMPointerType w) ->
   AtomicPerm (LLVMPointerType w) ->
   PermExpr (BVType w) -> PartialSubst vars -> Mb vars (LLVMFieldPerm w) ->
@@ -2926,7 +2899,7 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' psubst mb_fp
              Just (Perm_LLVMArray $ llvmArrayAddBorrow (FieldBorrow ix) ap))
 
 -- All other cases fail
-extractNeededLLVMFieldPerm x ap@(Perm_LLVMFree _) _ _ mb_fp =
+extractNeededLLVMFieldPerm x ap _ _ mb_fp =
   implFailVarM "extractNeededLLVMFieldPerm" x (ValPerm_Conj1 $ ap)
   (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)
 
@@ -3036,7 +3009,7 @@ proveVarLLVMArray x ps i _ _ mb_ap =
 
 
 ----------------------------------------------------------------------
--- * Proving Named Permissions
+-- * Proving Named Permission Arguments
 ----------------------------------------------------------------------
 
 -- | Prove @P<args1> |- P<args2>@ by weakening the arguments in @args1@ and
@@ -3053,13 +3026,12 @@ proveVarLLVMArray x ps i _ _ mb_ap =
 --
 -- FIXME: currently this does not do the lifetime splitting step
 proveNamedArgs :: ExprVar a -> NamedPermName ns args a -> PermExprs args ->
-                  Mb vars (PermExprs args) ->
+                  PermOffset a -> Mb vars (PermExprs args) ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
-proveNamedArgs x npn args mb_args =
-  implLookupNamedPerm npn >>>= \np ->
+proveNamedArgs x npn args off mb_args =
   getPSubst >>>= \psubst ->
   mapM_ (\case Some memb ->
-                 proveNamedArg x np args memb psubst $
+                 proveNamedArg x npn args off memb psubst $
                  fmap (`nthPermExpr` memb) mb_args) $
   getPermExprsMembers args
 
@@ -3068,71 +3040,147 @@ proveNamedArgs x npn args mb_args =
 -- by a 'Member' proof in the input @args@ and @arg'@ potentially has
 -- existential variables. Assume the LHS is on the top of the stack and leave
 -- the RHS, if proved, on the top of the stack.
-proveNamedArg :: ExprVar a -> NamedPerm ns args a -> PermExprs args ->
-                 Member args b -> PartialSubst vars ->
+proveNamedArg :: ExprVar a -> NamedPermName ns args a -> PermExprs args ->
+                 PermOffset a -> Member args b -> PartialSubst vars ->
                  Mb vars (PermExpr b) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
 
 -- If the current and required args are equal, do nothing and return
-proveNamedArg x rp args memb _ mb_arg
+proveNamedArg x _ args _ memb _ mb_arg
   | mbLift (fmap (== nthPermExpr args memb) mb_arg) =
     greturn ()
 
 -- If the RHS is an unassigned existential variable then set it and return
 --
 -- FIXME: eventually we might want to generate some sort of constraints...?
-proveNamedArg x rp args memb psubst [nuP| PExpr_Var z |]
+proveNamedArg x _ args _ memb psubst [nuP| PExpr_Var z |]
   | Left memb_z <- mbNameBoundP z
   , Nothing <- psubstLookup psubst memb_z =
     setVarM memb_z (nthPermExpr args memb)
 
 -- If the RHS is an already-assigned existential variable, subst and recurse
-proveNamedArg x rp args memb psubst arg@[nuP| PExpr_Var z |]
+proveNamedArg x npn args off memb psubst arg@[nuP| PExpr_Var z |]
   | Left memb_z <- mbNameBoundP z
   , Just e <- psubstLookup psubst memb_z =
-    proveNamedArg x rp args memb psubst $ fmap (const e) arg
+    proveNamedArg x npn args off memb psubst $ fmap (const e) arg
 
 -- Prove P<args1,always,args2> -o P<args1,l,args2>
-proveNamedArg x rp args memb _ arg@[nuP| PExpr_Var z |]
+proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
   | Right l <- mbNameBoundP z
   , PExpr_Always <- nthPermExpr args memb =
-    implSimplM Proxy (SImpl_NamedArgAlways x rp args memb (PExpr_Var l))
+    implSimplM Proxy (SImpl_NamedArgAlways x npn args off memb (PExpr_Var l))
 
 -- Prove P<args1,l1,args2> -o P<args1,l2,args2> using l1:[l2]lcurrent
-proveNamedArg x rp args memb _ arg@[nuP| PExpr_Var z |]
+proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
   | Right l1 <- mbNameBoundP z
-  , LifetimeRepr <- cruCtxLookup (namedPermArgs rp) memb
+  , LifetimeRepr <- cruCtxLookup (namedPermNameArgs npn) memb
   , PExpr_Var l2 <- nthPermExpr args memb =
     proveVarImpl l1 (fmap (const $ ValPerm_Conj1 $
                            Perm_LCurrent $ PExpr_Var l2) arg) >>>
-    implSimplM Proxy (SImpl_NamedArgCurrent x rp args memb (PExpr_Var l2))
+    implSimplM Proxy (SImpl_NamedArgCurrent x npn args off memb (PExpr_Var l2))
 
 -- Prove P<args1,W,args2> -o P<args1,rw,args2> for any variable rw
-proveNamedArg x rp args memb _ arg@[nuP| PExpr_Var z |]
+proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
   | Right rw <- mbNameBoundP z
   , PExpr_RWModality Write <- nthPermExpr args memb =
-    implSimplM Proxy (SImpl_NamedArgWrite x rp args memb (PExpr_Var rw))
+    implSimplM Proxy (SImpl_NamedArgWrite x npn args off memb (PExpr_Var rw))
 
 -- Prove P<args1,rw,args2> -o P<args1,R,args2> for any rw
-proveNamedArg x rp args memb _ arg@[nuP| PExpr_RWModality Read |] =
-  implSimplM Proxy (SImpl_NamedArgRead x rp args memb)
+proveNamedArg x npn args off memb _ arg@[nuP| PExpr_RWModality Read |] =
+  implSimplM Proxy (SImpl_NamedArgRead x npn args off memb)
 
 -- Fail in any other case
-proveNamedArg x rp args memb _ mb_arg =
-  implFailVarM "proveNamedArg" x (ValPerm_Named (namedPermName rp) args)
-  (fmap (ValPerm_Named (namedPermName rp) . setNthPermExpr args memb) mb_arg)
+proveNamedArg x npn args off memb _ mb_arg =
+  implFailVarM "proveNamedArg" x
+  (ValPerm_Named npn args off)
+  (fmap (\args' ->
+          ValPerm_Named npn (setNthPermExpr args memb args') off) mb_arg)
+
+
+----------------------------------------------------------------------
+-- * Proving and Eliminating Recursive Permissions
+----------------------------------------------------------------------
+
+-- | Prove @x:p1 |- x:p2@ by unfolding a foldable named permission in @p1@ and
+-- then recursively proving @x:p2@ from the resulting permissions. If an 'Int'
+-- @i@ is supplied, then @p1@ is a conjunctive permission whose @i@th conjunct
+-- is the named permisison to be unfolded; otherwise @p1@ itself is the named
+-- permission to be unfolded. Assume that @x:p1@ is on top of the stack.
+proveVarImplUnfoldLeft :: ExprVar a -> ValuePerm a -> Mb vars (ValuePerm a) ->
+                          Maybe Int -> ImplM vars s r (ps :> a) (ps :> a) ()
+
+proveVarImplUnfoldLeft x (ValPerm_Named npn args off) mb_p Nothing
+  | TrueRepr <- nameCanFoldRepr npn =
+    (case namedPermNameSort npn of
+        RecursiveSortRepr _ -> implSetRecRecurseLeftM
+        _ -> greturn ()) >>>
+    implUnfoldNamedM x npn args off >>>= \p' ->
+    implPopM x p' >>>
+    proveVarImpl x mb_p
+
+proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
+  | p_i@(Perm_NamedConj npn args off) <- ps!!i
+  , TrueRepr <- nameCanFoldRepr npn =
+    (case namedPermNameSort npn of
+        RecursiveSortRepr _ -> implSetRecRecurseLeftM
+        _ -> greturn ()) >>>
+    implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
+    implNamedFromConjM x npn args off >>>
+    implUnfoldNamedM x npn args off >>>= \p' ->
+    recombinePerm x p' >>>
+    proveVarImpl x mb_p
+
+proveVarImplUnfoldLeft _ _ _ _ =
+  error ("proveVarImplUnfoldLeft: malformed inputs")
+
+
+-- | Prove @x:p1 |- x:P<args>\@off@ where @P@ is foldable by first proving the
+-- unfolding of @P@ folding it. Assume that @x:p1@ is on top of the stack.
+proveVarImplFoldRight :: ExprVar a -> ValuePerm a -> Mb vars (ValuePerm a) ->
+                         ImplM vars s r (ps :> a) (ps :> a) ()
+proveVarImplFoldRight x p [nuP| ValPerm_Named mb_npn mb_args mb_off |]
+  | npn <- mbLift mb_npn
+  , TrueRepr <- nameCanFoldRepr npn =
+    (case namedPermNameSort npn of
+        RecursiveSortRepr _ -> implSetRecRecurseRightM
+        _ -> greturn ()) >>>
+    implLookupNamedPerm npn >>>= \np ->
+    implPopM x p >>>
+    proveVarImpl x (mbMap2 (unfoldPerm np) mb_args mb_off) >>>
+    partialSubstForceM (mbMap2 (,) mb_args mb_off)
+    "proveVarImplFoldRight: incomplete psubst: implFold" >>>= \(args,off) ->
+    implFoldNamedM x npn args off
+
+proveVarImplFoldRight _ _ _ =
+  error ("proveVarImplFoldRight: malformed inputs")
 
 
 ----------------------------------------------------------------------
 -- * Proving Atomic Permissions
 ----------------------------------------------------------------------
 
-proveVarAtomicImplFail :: ExprVar a -> [AtomicPerm a] ->
-                          Mb vars (AtomicPerm a) ->
-                          ImplM vars s r (ps :> a) (ps :> a) ()
-proveVarAtomicImplFail x aps mb_ap =
-  implFailVarM "proveVarAtomicImpl" x (ValPerm_Conj aps)
-  (fmap ValPerm_Conj1 mb_ap)
+-- | We were not able to prove @x:(p1 * ... * pn) |- x:p@ as is, so try
+-- unfolding named permissions in the @pi@s as a last resort. If there are none,
+-- or our recursion flag does not allow it, then fail.
+proveVarAtomicImplUnfoldOrFail :: ExprVar a -> [AtomicPerm a] ->
+                                  Mb vars (AtomicPerm a) ->
+                                  ImplM vars s r (ps :> a) (ps :> a) ()
+proveVarAtomicImplUnfoldOrFail x ps mb_ap =
+  let p_l = ValPerm_Conj ps
+      mb_p_r = fmap ValPerm_Conj1 mb_ap in
+  implGetRecRecurseFlag >>>= \flag ->
+  case () of
+    -- We can always unfold a defined name on the left
+    _ | Just i <- findIndex isDefinedConjPerm ps ->
+        proveVarImplUnfoldLeft x p_l mb_p_r (Just i)
+
+    -- If flag allows it, we can unfold a recursive name on the left
+    _ | Just i <- findIndex isRecursiveConjPerm ps
+      , flag /= Just (Right ()) ->
+        proveVarImplUnfoldLeft x p_l mb_p_r (Just i)
+
+    -- Otherwise, we fail
+    _ -> implFailVarM "proveVarAtomicImpl" x p_l mb_p_r
 
 proveVarAtomicImpl :: ExprVar a -> [AtomicPerm a] ->
                       Mb vars (AtomicPerm a) ->
@@ -3165,14 +3213,14 @@ proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFree mb_e |] =
     Just (i, e') ->
       implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps) >>>
       castLLVMFreeM x e' e
-    _ -> proveVarAtomicImplFail x ps ap
+    _ -> proveVarAtomicImplUnfoldOrFail x ps ap
 
 proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFunPtr mb_fperm |] =
   partialSubstForceM mb_fperm
   "proveVarAtomicImpl: incomplete psubst: LLVM function pointer" >>>= \fperm ->
   case elemIndex (Perm_LLVMFunPtr fperm) ps of
     Just i -> implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps)
-    _ -> proveVarAtomicImplFail x ps ap
+    _ -> proveVarAtomicImplUnfoldOrFail x ps ap
 
 proveVarAtomicImpl x ps [nuP| Perm_IsLLVMPtr |]
   | Just i <- elemIndex Perm_IsLLVMPtr ps =
@@ -3197,28 +3245,36 @@ proveVarAtomicImpl x ps [nuP| Perm_IsLLVMPtr |]
     implPopM x (ValPerm_Conj ps)
 
 proveVarAtomicImpl x ps mb_p@[nuP| Perm_IsLLVMPtr |] =
-  proveVarAtomicImplFail x ps mb_p
+  proveVarAtomicImplUnfoldOrFail x ps mb_p
+
+proveVarAtomicImpl x ps [nuP| Perm_NamedConj mb_n mb_args mb_off |] =
+  let n = mbLift mb_n in
+  proveVarImplH x (ValPerm_Conj ps) (mbMap2 (ValPerm_Named n)
+                                     mb_args mb_off) >>>
+  partialSubstForceM (mbMap2 (,) mb_args mb_off)
+  "proveVarAtomicImpl: incomplete named permission" >>>= \(args,off) ->
+  implNamedToConjM x n args off
 
 proveVarAtomicImpl x aps@[Perm_LLVMFrame
                           fperms] mb_ap@[nuP| Perm_LLVMFrame mb_fperms |] =
   getPSubst >>>= \psubst ->
   case matchFramePerms psubst fperms mb_fperms of
     Just psubst' -> modifyPSubst (const psubst') >>> greturn ()
-    Nothing -> proveVarAtomicImplFail x aps mb_ap
+    Nothing -> proveVarAtomicImplUnfoldOrFail x aps mb_ap
 
 proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned (PExpr_Var z) |]
   | Left memb <- mbNameBoundP z
   = getPSubst >>>= \psubst ->
     case psubstLookup psubst memb of
       Just ps' ->
-        if ps == ps' then greturn () else proveVarAtomicImplFail x aps mb_ap
+        if ps == ps' then greturn () else proveVarAtomicImplUnfoldOrFail x aps mb_ap
       Nothing ->
         setVarM memb ps
 
 proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned mb_ps |] =
   partialSubstForceM mb_ps
   "proveVarAtomicImpl: incomplete lowned perms" >>>= \ps' ->
-  if ps == ps' then greturn () else proveVarAtomicImplFail x aps mb_ap
+  if ps == ps' then greturn () else proveVarAtomicImplUnfoldOrFail x aps mb_ap
 
 proveVarAtomicImpl x ps p@[nuP| Perm_LCurrent mb_l' |] =
   partialSubstForceM mb_l'
@@ -3250,7 +3306,7 @@ proveVarAtomicImpl x aps@[Perm_Fun fun_perm] mb_ap@[nuP| Perm_Fun mb_fun_perm |]
   "proveVarAtomicImpl: incomplete function perm" >>>= \fun_perm' ->
   case funPermEq fun_perm fun_perm' of
     Just Refl -> greturn ()
-    Nothing -> proveVarAtomicImplFail x aps mb_ap
+    Nothing -> proveVarAtomicImplUnfoldOrFail x aps mb_ap
 
 proveVarAtomicImpl x ps [nuP| Perm_BVProp mb_prop |] =
   implPopM x (ValPerm_Conj ps) >>>
@@ -3258,131 +3314,53 @@ proveVarAtomicImpl x ps [nuP| Perm_BVProp mb_prop |] =
   "proveVarAtomicImpl: incomplete bitvector proposition" >>>= \prop ->
   implTryProveBVProp x prop
 
-proveVarAtomicImpl x aps mb_ap = proveVarAtomicImplFail x aps mb_ap
+proveVarAtomicImpl x aps mb_ap = proveVarAtomicImplUnfoldOrFail x aps mb_ap
 
 
 -- | Prove @x:(p1 * ... * pn) |- x:(p1' * ... * pm')@ assuming that the LHS
 -- conjunction is on the top of the stack, and push any leftover permissions for
--- @x@ back to the primary permissions for @x@
+-- @x@ back to the primary permissions for @x@.
+--
+-- The main complexity here is in dealing with the fact that both the left- and
+-- right-hand sides could contain recursive permissions. We can't unfold
+-- recursive permissions on both sides, because this could lead to an infinite
+-- loop, where proving the unfolded implication depends on proving another copy
+-- of the same implication. Instead, when we get to such a case, we have to pick
+-- one side or the other to unfold, and then disallow unfolding the other side.
+-- The exception is when we have an instance of the same recursive name on each
+-- side, in which case we can prove the right-hand one from the left-hand one
+-- and not unfold either side.
+--
+-- Additionally, the existence of recursive names on either side could be masked
+-- by the existence of defined names that unfold to recursive names, so we have
+-- to resolve all the defined names first.
+--
+-- Most of this machinery is actually handled by the 'proveVarImplH' cases for
+-- recursive and defined names. Here, we just have to make sure to prove defined
+-- names first, followed by recursive names and then other permissions.
 proveVarConjImpl :: ExprVar a -> [AtomicPerm a] ->
                     Mb vars [AtomicPerm a] ->
                     ImplM vars s r (ps :> a) (ps :> a) ()
+
+-- If we are done, we are done
 proveVarConjImpl x ps [nuP| [] |] =
   implPopM x (ValPerm_Conj ps) >>> introConjM x
-proveVarConjImpl x ps [nuP| mb_p : mb_ps |] =
+
+-- If there is a defined or recursive name on the right, prove it first,
+-- ensuring that we only choose recursive names if there are no defined ones;
+-- otherwise just choose the head of the list, i.e., i = 0
+proveVarConjImpl x ps mb_ps =
+  let maybe_i = mbLift $ fmap (\ps_r ->
+                                findIndex isDefinedConjPerm ps_r <|>
+                                findIndex isRecursiveConjPerm ps_r) mb_ps
+      i = maybe 0 id maybe_i
+      mb_p = fmap (!!i) mb_ps in
   proveVarAtomicImpl x ps mb_p >>>
-  proveVarImpl x (fmap ValPerm_Conj mb_ps) >>>
-  partialSubstForceM mb_p
-  "Incomplete psubst: mb_p in proveVarConjImpl" >>>= \p ->
-  partialSubstForceM mb_ps
-  "Incomplete psubst: mb_ps in proveVarConjImpl" >>>= \ps ->
-  implInsertConjM x p ps 0
-
-
-----------------------------------------------------------------------
--- * Proving and Eliminating Recursive Permissions
-----------------------------------------------------------------------
-
-FIXME HERE NOWNOW:
-- put proveVarImplRecLeft in the proveVarAtomicImpl cases above
-- change proveVarConjImpl to first unfold defined permissions and then
-  prove all recursive perms on the right first
-- probably want to move the below helper functions above to the proving named
-  permissions section
-
--- | Prove @x:p1 |- x:p2@ by unfolding a recursive permission in @p1@ and then
--- recursively proving @x:p2@ from the resulting permissions. If an 'Int' @i@ is
--- supplied, then @p1@ is a conjunctive permission whose @i@th conjunct is the
--- recursive permisison to be unfolded; otherwise @p1@ itself is the recursive
--- permission to be unfolded. Assume that @x:p1@ is on top of the stack.
-proveVarImplUnfoldLeft :: ExprVar a -> ValuePerm a -> Mb vars (ValuePerm a) ->
-                          Maybe Int -> ImplM vars s r (ps :> a) (ps :> a) ()
-
-proveVarImplUnfoldLeft x (ValPerm_Named npn args) mb_p Nothing
-  | RecursiveSort _ <- namedPermNameSort npn =
-    implSetRecRecurseLeftM >>>
-    implLookupNamedPerm npn >>>= \np ->
-    implUnfoldNamedM x np args >>>= \p' ->
-    implPopM x p' >>>
-    proveVarImpl x mb_p
-
-proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
-  | p_i@(Perm_NamedConj npn args) <- ps!!i
-  , RecursiveSort _ <- namedPermNameSort npn =
-    implSetRecRecurseLeftM >>>
-    implLookupNamedPerm npn >>>= \np ->
-    implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
-    implNamedToConj x np args >>> implUnfoldNamedM x np args >>>= \p' ->
-    recombinePerm x p' >>>
-    proveVarImpl x mb_p
-
-proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
-  | p_i@(Perm_LLVMNamed npn args off) <- ps!!i
-  , RecursiveSort _ <- namedPermNameSort npn =
-    implSetRecRecurseLeftM >>>
-    implLookupNamedPerm npn >>>= \np ->
-    implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
-    implUnfoldLLVMNamedM x np args off >>>= \p' ->
-    recombinePerm x p' >>>
-    proveVarImpl x mb_p
-
-proveVarImplUnfoldLeft _ _ _ _ =
-  error ("proveVarImplUnfoldLeft: malformed inputs")
-
-
--- | Prove @x:p1 |- x:p2@ for @p2@ that contains a recursive permission by first
--- proving @x:p1 |- x:p2'@ where @p2'@ is the result of unfolding that recursive
--- permission and then folding it to get @x:p2@. If an 'Int' @i@ is supplied
--- then @p2@ is a conjunctive permission whose @i@th conjunct is the recursive
--- permisison to be unfolded; otherwise @p2@ itself is the recursive permission
--- to be unfolded. Assume that @x:p1@ is on top of the stack.
-proveVarImplFoldRight :: ExprVar a -> ValuePerm a -> Mb vars (ValuePerm a) ->
-                         Maybe Int -> ImplM vars s r (ps :> a) (ps :> a) ()
-proveVarImplFoldRight x p [nuP| ValPerm_Named mb_npn mb_args |] Nothing
-  | npn <- mbLift mb_npn
-  , RecursiveSort _ <- namedPermNameSort npn =
-    implSetRecRecurseRightM >>>
-    implLookupNamedPerm npn >>>= \np ->
-    implPopM x p >>>
-    proveVarImpl x (fmap (unfoldPerm np) mb_args) >>>
-    partialSubstForceM mb_args
-    "proveVarImplFoldRight: incomplete psubst: implFold" >>>= \args ->
-    implFoldNamedM x np args
-
-proveVarImplFoldRight x p [nuP| ValPerm_Conj mb_ps |] (Just i)
-  | [nuP| Perm_NamedConj mb_npn mb_args |] <- fmap (!!i) mb_ps
-  | npn <- mbLift mb_npn
-  , RecursiveSort _ <- namedPermNameSort npn =
-    implSetRecRecurseRightM >>>
-    implLookupNamedPerm npn >>>= \np ->
-    implPopM x p >>>
-    proveVarImpl x (fmap (unfoldPerm np) mb_args) >>>
-    (partialSubstForceM mb_args
-     "proveVarImplFoldRight: incomplete psubst: implFold") >>>= \args ->
-    implFoldNamedM x np args >>> implNamedToConj x np args >>>
-    proveVarImpl x (fmap (ValPerm_Conj . deleteNth i) mb_ps) >>>
-    (partialSubstForceM mb_ps
-     "proveVarImplFoldRight: incomplete psubst: implFold") >>>= \ps ->
-    implInsertConjM x (Perm_NamedConj npn args) (deleteNth i ps)
-
-proveVarImplFoldRight x p [nuP| ValPerm_Conj mb_ps |] (Just i)
-  | [nuP| Perm_LLVMNamed mb_npn mb_args mb_off |] <- fmap (!!i) mb_ps
-  | npn <- mbLift mb_npn
-  , RecursiveSort _ <- namedPermNameSort npn =
-    implSetRecRecurseRightM >>>
-    implLookupNamedPerm npn >>>= \np ->
-    implPopM x p >>>
-    proveVarImpl x (mbMap2 (unfoldLLVMNamedPerm np) mb_args mb_off) >>>
-    (partialSubstForceM (mbMap2 (,) mb_args mb_off)
-     "proveVarImplFoldRight: incomplete psubst: implFold") >>>= \(args,off) ->
-    implFoldLLVMNamedM x np args off >>>
-    proveVarImpl x (fmap (ValPerm_Conj . deleteNth i) mb_ps) >>>
-    (partialSubstForceM mb_ps
-     "proveVarImplFoldRight: incomplete psubst: implFold") >>>= \ps ->
-    implInsertConjM x (Perm_LLVMNAmed npn args off) (deleteNth i ps)
-
-proveVarImplFoldRight _ _ _ _ =
-  error ("proveVarImplFoldRight: malformed inputs")
+  let mb_ps' = fmap (deleteNth i) mb_ps in
+  proveVarImpl x (fmap ValPerm_Conj mb_ps') >>>
+  (partialSubstForceM (mbMap2 (,) mb_ps' mb_p)
+   "Incomplete psubst in proveVarConjImpl") >>>= \(ps',p) ->
+  implInsertConjM x p ps' i
 
 
 ----------------------------------------------------------------------
@@ -3422,7 +3400,7 @@ proveVarImplH x (ValPerm_Or _ _) mb_p =
 proveVarImplH x (ValPerm_Exists _) mb_p =
   elimOrsExistsM x >>>= \p -> proveVarImplH x p mb_p
 
--- Eliminate an equality permissions for a variable on the left, i.e., prove x:p
+-- Eliminate an equality permission for a variable on the left, i.e., prove x:p
 -- from x:eq(y) by first proving y:p and then casting
 proveVarImplH x p@(ValPerm_Eq (PExpr_Var y)) mb_p =
   introEqCopyM x (PExpr_Var y) >>>
@@ -3432,76 +3410,13 @@ proveVarImplH x p@(ValPerm_Eq (PExpr_Var y)) mb_p =
   "proveVarImpl: incomplete psubst: introCast" >>>= \p' ->
   introCastM x y p'
 
--- If proving P<args1> |- P<args2> for the same named permission, we just need
--- to equalize the arguments
-proveVarImplH x p@(ValPerm_Named npn args)
-                   mb_p@[nuP| ValPerm_Named mb_npn mb_args |]
-  | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn) =
-    (if permIsCopyable p then implCopyM x p >>> implPopM x p
-     else greturn ()) >>>
-    proveNamedArgs x npn args mb_args
-
--- Otherwise, if proving P1<args1> |- P2<args2>, we need to unfold any defined
--- and/or recursive permissions and see if we can make it work
-proveVarImplH x p@(ValPerm_Named npn args)
-                   mb_p@[nuP| ValPerm_Named mb_npn mb_args |] =
-  implLookupNamedPerm npn >>= \np_lhs ->
-  implLookupNamedPerm (mbLift mb_npn) >>= \np_rhs ->
-  case (np_lhs, np_rhs) of
-    (NamedPerm_Defined dp, _) ->
-      -- If the LHS is a defined permission, unfold it
-      implUnfoldDefinedM x npn args >>>= \p' ->
-      proveVarImplH x p' mb_p
-    (_, NamedPerm_Defined dp) ->
-      -- If the RHS is a defined permission, unfold it
-      proveVarImplH x p (fmap (unfoldDefinedPerm dp) mb_args) >>>
-      partialSubstForceM mb_args
-      "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
-      implFoldDefinedM x (mbLift mb_npn) args
-    (NamedPerm_Rec _, NamedPerm_Rec rp_rhs) ->
-      implCatchM
-      (proveVarImplRecLeft x npn args mb_p)
-      (proveVarImplRecRight x p rp_rhs mb_args)
-    (NamedPerm_Rec _, _) -> proveVarImplRecLeft x npn args mb_p
-    (_, NamedPerm_Rec rp) -> proveVarImplRecRight x p rp mb_args
-    _ -> implFailVarM "proveVarImplH" x p mb_p
-
--- If the LHS is recursive but the RHS is not, unfold the left and recurse,
--- or if the LHS is a defined permission, unfold it
-proveVarImplH x p@(ValPerm_Named npn args) mb_p =
-  implLookupNamedPerm npn >>= \case
-    NamedPerm_Rec _ ->
-      proveVarImplRecLeft x npn args mb_p
-    NamedPerm_Defined dp ->
-      implUnfoldDefinedM x npn args >>>= \p' ->
-        proveVarImplH x p' mb_p
-    _ -> implFailVarM "proveVarImplH" x p mb_p
-
-{- FIXME: This is an example of how we used embedMbImplM to prove the body
-   of one mu from another; remove it when we have used it for arrays
-proveVarImplH x (ValPerm_Mu p_body) [nuP| ValPerm_Mu mb_p'_body |] =
-  partialSubstForceM mb_p'_body
-  "proveVarImpl: incomplete psubst: implMu" >>>= \p'_body ->
-  embedMbImplM (fmap (\p -> distPermSet $ distPerms1 x p) p_body)
-  (mbMap2 (\p p' -> proveVarImplH x p (emptyMb p') >>> greturn Refl)
-   p_body p'_body) >>>= \mb_impl ->
-  implSimplM Proxy (SImpl_Mu x p_body p'_body mb_impl)
--}
-
--- If the RHS is recursive but the LHS is not, unfold the right and recurse,
--- or if the RHS is a defined permission, unfold it
-proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn mb_args |] =
-  implLookupNamedPerm (mbLift mb_npn) >>>= \np ->
-  case np of
-    NamedPerm_Rec rp ->
-      proveVarImplRecRight x p rp mb_args
-    NamedPerm_Defined dp ->
-      proveVarImplH x p (fmap (unfoldDefinedPerm dp) mb_args) >>>
-      partialSubstForceM mb_args
-      "proveVarImpl: incomplete psubst: implFold" >>>= \args ->
-      implFoldDefinedM x (mbLift mb_npn) args
-    _ ->
-      implFailVarM "proveVarImplH" x p mb_p
+-- Prove x:eq(y &+ off) |- x:p by proving y:p@off and then casting
+proveVarImplH x p@(ValPerm_Eq e@(PExpr_LLVMOffset y off)) mb_p =
+    introEqCopyM x e >>> implPopM x p >>>
+    proveVarImpl y (fmap (offsetLLVMPerm off) mb_p) >>>
+    partialSubstForceM mb_p
+    "proveVarImpl: incomplete psubst: castLLVMPtr" >>>= \p_r ->
+    castLLVMPtrM y p_r off x
 
 -- Prove x:(p1 \/ p2) by trying to prove x:p1 and x:p2 in two branches
 proveVarImplH x p [nuP| ValPerm_Or mb_p1 mb_p2 |] =
@@ -3526,66 +3441,101 @@ proveVarImplH x p [nuP| ValPerm_Exists mb_p |] =
   partialSubstForceM mb_p "proveVarImpl: incomplete psubst: introExists" >>>=
   introExistsM x e
 
--- If there is an LLVM shape perm on the LHS, unfold it
+-- If proving P<args1> |- P<args2> for the same named permission, we just need
+-- to equalize the arguments and the offsets using proveNamedArgs. Note that we
+-- currently are *not* solving for offsets on the right, meaning that
+-- proveVarImpl will fail for offsets with existential variables in them.
+proveVarImplH x p@(ValPerm_Named npn args off) [nuP| ValPerm_Named
+                                                   mb_npn mb_args mb_off |]
+  | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn)
+  , mbLift (fmap (offsetsEq off) mb_off) =
+    (if permIsCopyable p then implCopyM x p >>> implPopM x p
+     else greturn ()) >>>
+    proveNamedArgs x npn args off mb_args
+
+-- If proving x:p1 * ... * pn |- P<args>@off where P<args'>@off for some args'
+-- occurs as one of the pi, then reduce to the above case
+--
+-- FIXME: if P is a defined permission, then it is possible that we can't prove
+-- P<args'> |- P<args> but could still prove x:p1 * ... |- P<args> by unfolding
+-- P, so we should also check that args' is compatible in some way with args
+proveVarImplH x (ValPerm_Conj ps) mb_p@[nuP| ValPerm_Named
+                                           mb_npn mb_args mb_off |]
+  | npn <- mbLift mb_npn
+  , TrueRepr <- nameIsConjRepr npn
+  , (i, (args, off)):_ <-
+      findMaybeIndices (\case
+                           Perm_NamedConj npn' args off
+                             | Just (Refl, Refl, Refl) <-
+                                 testNamedPermNameEq npn npn'
+                             , mbLift (fmap (offsetsEq off) mb_off) ->
+                               Just (args, off)
+                           _ -> Nothing) ps =
+    (if atomicPermIsCopyable (Perm_NamedConj npn args off) then
+       implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps)
+     else
+       implExtractConjM x ps i >>>
+       implPopM x (ValPerm_Conj $ deleteNth i ps)) >>>
+    implNamedFromConjM x npn args off >>>
+    proveNamedArgs x npn args off mb_args
+
+-- If proving P<args> where P is defined, unfold P
+proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
+  | DefinedSortRepr _ <- namedPermNameSort $ mbLift mb_npn =
+    proveVarImplFoldRight x p mb_p
+
+-- If proving P<args1> |- p where P is defined, unfold P
+proveVarImplH x p@(ValPerm_Named npn args off) mb_p
+  | DefinedSortRepr _ <- namedPermNameSort npn =
+    proveVarImplUnfoldLeft x p mb_p Nothing
+
+-- If proving x:p1 * ... * P<args1> * ... |- p where P is defined, unfold P
 proveVarImplH x p@(ValPerm_Conj ps) mb_p
-  | Just i <- findIndex isLLVMShapePerm ps
-  , shape_p@(Perm_LLVMShape shape args off) <- ps!!i =
-    implExtractConjM x ps i >>>
-    implSwapM x (ValPerm_Conj1 shape_p) x (ValPerm_Conj $ deleteNth i ps) >>>
-    implUnfoldLLVMShapeM x shape args off >>>
-    implAppendConjsM x (deleteNth i ps) (unfoldLLVMShape shape args off) >>>
-    implPopM x (ValPerm_Conj
-                (deleteNth i ps ++ unfoldLLVMShape shape args off)) >>>
-    proveVarImpl x mb_p
+  | Just i <- findIndex isDefinedConjPerm ps =
+    proveVarImplUnfoldLeft x p mb_p (Just i)
 
--- If there is an LLVM shape perm on the RHS, prove the unfolded version and
--- then fold it
-proveVarImplH x p [nuP| ValPerm_Conj mb_ps |]
-  | Just i <- findIndex (mbLift . fmap isLLVMShapePerm) (mbList mb_ps)
-  , [nuP| Perm_LLVMShape mb_shape mb_args mb_off |] <- fmap (!!i) mb_ps =
+-- If proving P1<args1> |- P2<args2> where both P1 and P2 are recursive, try
+-- unfolding P1 or P2, depending on the recursion flags
+proveVarImplH x p@(ValPerm_Named
+                   npn1 _ _) mb_p@[nuP| ValPerm_Named mb_npn2 _ _ |]
+  | RecursiveSortRepr _ <- namedPermNameSort npn1
+  , RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn2 =
+    implRecFlagCaseM
+    (proveVarImplFoldRight x p mb_p)
+    (proveVarImplUnfoldLeft x p mb_p Nothing)
 
-    -- Remove the LLVM shape perm from the RHS perms and add the N permissions
-    -- in its unfolding to the end of the list, then prove that new perms list
-    let mb_ps_unfolded =
-          fmap unfoldLLVMShape mb_shape `mbApply` mb_args `mbApply` mb_off
-        mb_ps' =
-          fmap (\ps -> (deleteNth i ps ++)) mb_ps `mbApply` mb_ps_unfolded in
-    implPopM x p >>>
-    proveVarImpl x (fmap ValPerm_Conj mb_ps') >>>
+-- If proving x:p1 * ... |- P<args> where both P and at least one of the pi are
+-- recursive, try unfolding P or the LHS, depending on the recursion flags
+proveVarImplH x p@(ValPerm_Conj ps) mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
+  | Just i <- findIndex isRecursiveConjPerm ps
+  , RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn =
+    implRecFlagCaseM
+    (proveVarImplUnfoldLeft x p mb_p (Just i))
+    (proveVarImplFoldRight x p mb_p)
 
-    -- Get the resulting permissions, extract out the last N permissions, and
-    -- fold those last N permissions into the named LLVM shape
-    (partialSubstForceM
-     (fmap (,,,) mb_shape `mbApply` mb_args `mbApply` mb_off `mbApply` mb_ps)
-     "proveVarImpl: incomplete psubst: fold LLVM shape") >>>= \(shape, args,
-                                                                off, ps') ->
-    let num_orig_ps = length (mbList mb_ps) - 1
-        orig_ps = take num_orig_ps ps'
-        unfolded_ps = drop num_orig_ps ps' in
-    implSplitConjsM x ps' num_orig_ps >>>
-    implFoldLLVMShapeM x shape args off >>>
-    implSwapM x (ValPerm_Conj orig_ps) x (ValPerm_Conj1 $
-                                          Perm_LLVMShape shape args off) >>>
-    implInsertConjM x (Perm_LLVMShape shape args off) orig_ps i
+-- If proving P<args> where P is recursive and we have gotten to this case, we
+-- know there are no recursive perms on the left, so unfold P
+proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
+  | RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn =
+    proveVarImplFoldRight x p mb_p
 
--- Prove x:(p1 * .. * pn) from x:eq(y+off) by proving y:(p1 + off * ...) and
--- then casting the result
-proveVarImplH x p@(ValPerm_Eq
-                   e@(PExpr_LLVMOffset y off)) mb_p@[nuP| ValPerm_Conj mb_ps |]
-  | mbLift (fmap (all (canOffsetLLVMAtomicPerm off)) mb_ps) =
-    let mb_ps_y = fmap (map (fromJust . offsetLLVMAtomicPerm off)) mb_ps in
-    introEqCopyM x e >>>
-    implPopM x p >>>
-    proveVarImpl y (fmap ValPerm_Conj mb_ps_y) >>>
-    mapM (flip partialSubstForceM
-          "proveVarImpl: incomplete psubst: castLLVMPtr") (mbList
-                                                           mb_ps_y) >>>= \ps_y ->
-    castLLVMPtrM y ps_y off x
+{- FIXME: This is an example of how we used embedMbImplM to prove the body
+   of one mu from another; remove it when we have used it for arrays
+proveVarImplH x (ValPerm_Mu p_body) [nuP| ValPerm_Mu mb_p'_body |] =
+  partialSubstForceM mb_p'_body
+  "proveVarImpl: incomplete psubst: implMu" >>>= \p'_body ->
+  embedMbImplM (fmap (\p -> distPermSet $ distPerms1 x p) p_body)
+  (mbMap2 (\p p' -> proveVarImplH x p (emptyMb p') >>> greturn Refl)
+   p_body p'_body) >>>= \mb_impl ->
+  implSimplM Proxy (SImpl_Mu x p_body p'_body mb_impl)
+-}
 
 -- If x:eq(LLVMword(e)) then we cannot prove any pointer permissions for it
 proveVarImplH x p@(ValPerm_Eq (PExpr_LLVMWord _)) mb_p@[nuP| ValPerm_Conj _ |] =
   implFailVarM "proveVarImplH" x p mb_p
 
+-- If proving a function permission for an x we know equals a constant function
+-- handle f, look up the function permission for f
 proveVarImplH x p@(ValPerm_Eq (PExpr_Fun f)) mb_p@[nuP| ValPerm_Conj
                                                       [Perm_Fun mb_fun_perm] |] =
   (view implStatePermEnv <$> gget) >>>= \env ->
@@ -3601,33 +3551,37 @@ proveVarImplH x p@(ValPerm_Eq _) mb_p@[nuP| ValPerm_Conj _ |] =
   implFailVarM "proveVarImplH" x p mb_p
   -- FIXME HERE: are there other x:eq(e) |- x:pps cases?
 
+-- For conjunction |- conjunction, call proveVarConjImpl
 proveVarImplH x (ValPerm_Conj ps) [nuP| ValPerm_Conj mb_ps |] =
   proveVarConjImpl x ps mb_ps
 
--- Prove x:p |- x:z for existential variable z by setting z = p
-proveVarImplH x p [nuP| ValPerm_Var z |]
+-- Prove x:p |- x:z@off for existential variable z by setting z = p
+proveVarImplH x p mb_p@[nuP| ValPerm_Var z mb_off |]
   | Left memb <- mbNameBoundP z =
     getPSubst >>>= \psubst ->
-    case psubstLookup psubst memb of
-      Just (PExpr_ValPerm p') ->
-        let mb_p' = fmap (const p') z in
+    case (partialSubst psubst mb_off, psubstLookup psubst memb) of
+      (Just off, Just (PExpr_ValPerm p')) ->
+        let mb_p' = fmap (const $ offsetPerm off p') z in
         implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
         proveVarImplH x p mb_p'
-      Just (PExpr_Var z') ->
-        let mb_p' = fmap (const $ ValPerm_Var z') z in
+      (Just off, Just (PExpr_Var z')) ->
+        let mb_p' = fmap (const $ ValPerm_Var z' off) z in
         implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
         proveVarImplH x p mb_p'
-      Nothing ->
-        setVarM memb (PExpr_ValPerm p) >>>
+      (Just off, Nothing) ->
+        setVarM memb (PExpr_ValPerm $ offsetPerm (negatePermOffset off) p) >>>
         if permIsCopyable p then
           implCopyM x p >>> implPopM x p
         else
           greturn ()
+      (Nothing, _) ->
+        implFailVarM "proveVarImplH" x p mb_p
 
--- Prove x:z |- x:z for variable z by reflexivity
-proveVarImplH x (ValPerm_Var z) [nuP| ValPerm_Var mb_z' |]
+-- Prove x:z@off |- x:z@off for variable z by reflexivity
+proveVarImplH x (ValPerm_Var z off) [nuP| ValPerm_Var mb_z' mb_off |]
   | Right z' <- mbNameBoundP mb_z'
-  , z' == z = greturn ()
+  , z' == z
+  , mbLift (fmap (offsetsEq off) mb_off) = greturn ()
 
 -- Fail if nothing else matched
 proveVarImplH x p mb_p = implFailVarM "proveVarImplH" x p mb_p

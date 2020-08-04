@@ -1423,7 +1423,7 @@ getPushSimpleRegPerm r =
   getRegPerm r >>>= \p_init ->
   embedImplM TypedImplStmt emptyCruCtx
   (implPushM (typedRegVar r) p_init >>>
-   elimOrsExistsRecsM (typedRegVar r)) >>>= \(_, p_ret) ->
+   elimOrsExistsNamesM (typedRegVar r)) >>>= \(_, p_ret) ->
   greturn p_ret
 
 -- | Eliminate any disjunctions, existentials, or recursive permissions for a
@@ -1482,7 +1482,7 @@ getAtomicOrWordLLVMPerms r =
           embedImplM TypedImplStmt emptyCruCtx (offsetLLVMWordM y e off x) >>>
           greturn (Left $ bvAdd e off)
         Right ps ->
-          embedImplM TypedImplStmt emptyCruCtx (castLLVMPtrM y ps off x) >>>
+          embedImplM TypedImplStmt emptyCruCtx (castLLVMPtrM y (ValPerm_Conj ps) off x) >>>
           greturn (Right $ mapMaybe (offsetLLVMAtomicPerm $ bvNegate off) ps)
     ValPerm_Eq e@(PExpr_LLVMWord e_word) ->
       embedImplM TypedImplStmt emptyCruCtx (introEqCopyM x e >>>

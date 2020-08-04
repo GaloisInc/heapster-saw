@@ -343,9 +343,9 @@ data PermExprs (as :: RList CrucibleType) where
   PExprs_Nil :: PermExprs RNil
   PExprs_Cons :: PermExprs as -> PermExpr a -> PermExprs (as :> a)
 
-pExprVars :: MapRList Name as -> PermExprs as
-pExprVars MNil = PExprs_Nil
-pExprVars (ns :>: n) = PExprs_Cons (pExprVars ns) (PExpr_Var n)
+namesToExprs :: MapRList Name as -> PermExprs as
+namesToExprs MNil = PExprs_Nil
+namesToExprs (ns :>: n) = PExprs_Cons (namesToExprs ns) (PExpr_Var n)
 
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where
@@ -826,15 +826,7 @@ data AtomicPerm (a :: CrucibleType) where
   -- | A named conjunctive permission
   Perm_NamedConj :: NameSortIsConj ns ~ 'True =>
                     NamedPermName ns args a -> PermExprs args ->
-                    AtomicPerm a
-
-  -- | An named LLVM permission is a named conjunctive permission with arguments
-  -- plus an offset stating where that named conjunctive permission is in memory
-  -- relative to the pointer value that has the permission
-  Perm_LLVMNamed :: (1 <= w, KnownNat w, NameSortIsConj ns ~ 'True) =>
-                    NamedPermName ns args (LLVMPointerType w) ->
-                    PermExprs args -> PermExpr (BVType w) ->
-                    AtomicPerm (LLVMPointerType w)
+                    PermOffset a -> AtomicPerm a
 
   -- | Permission to allocate (via @alloca@) on an LLVM stack frame, and
   -- permission to delete that stack frame if we have exclusive permissions to
@@ -879,10 +871,11 @@ data ValuePerm (a :: CrucibleType) where
                     ValuePerm b
 
   -- | A named permission
-  ValPerm_Named :: NamedPermName ns args a -> PermExprs args -> ValuePerm a
+  ValPerm_Named :: NamedPermName ns args a -> PermExprs args ->
+                   PermOffset a -> ValuePerm a
 
-  -- | A permission variable
-  ValPerm_Var :: PermVar a -> ValuePerm a
+  -- | A permission variable plus an offset
+  ValPerm_Var :: PermVar a -> PermOffset a -> ValuePerm a
 
   -- | A separating conjuction of 0 or more atomic permissions, where 0
   -- permissions is the trivially true permission
@@ -1063,6 +1056,10 @@ boolVal FalseRepr = False
 nameSortIsConj :: NameSortRepr ns -> Bool
 nameSortIsConj = boolVal . nameSortIsConjRepr
 
+-- | Get a 'Bool' for whether a 'NamedPermName' allows folds / unfolds
+nameCanFold :: NamedPermName ns args a -> Bool
+nameCanFold = boolVal . nameCanFoldRepr
+
 instance TestEquality NameSortRepr where
   testEquality (DefinedSortRepr b1) (DefinedSortRepr b2)
     | Just Refl <- testEquality b1 b2 = Just Refl
@@ -1117,6 +1114,37 @@ data SomeNamedConjPermName where
   SomeNamedConjPermName ::
     NameSortIsConj ns ~ 'True => NamedPermName ns args a ->
     SomeNamedConjPermName
+
+-- | An offset that is added to a permission. Only makes sense for llvm
+-- permissions (at least for now...?)
+data PermOffset a where
+  NoPermOffset :: PermOffset a
+  LLVMPermOffset :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
+                    PermOffset (LLVMPointerType w)
+
+instance Eq (PermOffset a) where
+  NoPermOffset == NoPermOffset = True
+  (LLVMPermOffset e1) == (LLVMPermOffset e2) = e1 == e2
+  _ == _ = False
+
+-- | Test two 'PermOffset's for semantic, not just syntactic, equality
+offsetsEq :: PermOffset a -> PermOffset a -> Bool
+offsetsEq NoPermOffset NoPermOffset = True
+offsetsEq (LLVMPermOffset off) NoPermOffset = bvIsZero off
+offsetsEq NoPermOffset (LLVMPermOffset off) = bvIsZero off
+offsetsEq (LLVMPermOffset off1) (LLVMPermOffset off2) = bvEq off1 off2
+
+-- | Negate a 'PermOffset'
+negatePermOffset :: PermOffset a -> PermOffset a
+negatePermOffset NoPermOffset = NoPermOffset
+negatePermOffset (LLVMPermOffset off) = LLVMPermOffset $ bvNegate off
+
+-- | Add two 'PermOffset's
+addPermOffsets :: PermOffset a -> PermOffset a -> PermOffset a
+addPermOffsets NoPermOffset off = off
+addPermOffsets off NoPermOffset = off
+addPermOffsets (LLVMPermOffset off1) (LLVMPermOffset off2) =
+  LLVMPermOffset $ bvAdd off1 off2
 
 -- | Get the @n@th expression in a 'PermExprs' list
 nthPermExpr :: PermExprs args -> Member args a -> PermExpr a
@@ -1286,11 +1314,12 @@ instance Eq (ValuePerm a) where
         testEquality (knownRepr :: TypeRepr a1) (knownRepr :: TypeRepr a2)
     = p1 == p2
   (ValPerm_Exists _) == _ = False
-  (ValPerm_Named n1 args1) == (ValPerm_Named n2 args2)
-    | Just (Refl, Refl, Refl) <- testNamedPermNameEq n1 n2 = args1 == args2
-  (ValPerm_Named _ _) == _ = False
-  (ValPerm_Var x1) == (ValPerm_Var x2) = x1 == x2
-  (ValPerm_Var _) == _ = False
+  (ValPerm_Named n1 args1 off1) == (ValPerm_Named n2 args2 off2)
+    | Just (Refl, Refl, Refl) <- testNamedPermNameEq n1 n2 =
+        args1 == args2 && off1 == off2
+  (ValPerm_Named _ _ _) == _ = False
+  (ValPerm_Var x1 off1) == (ValPerm_Var x2 off2) = x1 == x2 && off1 == off2
+  (ValPerm_Var _ _) == _ = False
   (ValPerm_Conj aps1) == (ValPerm_Conj aps2) = aps1 == aps2
   (ValPerm_Conj _) == _ = False
 
@@ -1317,13 +1346,10 @@ instance Eq (AtomicPerm a) where
   (Perm_Fun fperm1) == (Perm_Fun fperm2)
     | Just Refl <- funPermEq fperm1 fperm2 = True
   (Perm_Fun _) == _ = False
-  (Perm_NamedConj n1 args1) == (Perm_NamedConj n2 args2)
-    | Just (Refl, Refl, Refl) <- testNamedPermNameEq n1 n2 = args1 == args2
-  (Perm_NamedConj _ _) == _ = False
-  (Perm_LLVMNamed n1 args1 off1) == (Perm_LLVMNamed n2 args2 off2)
+  (Perm_NamedConj n1 args1 off1) == (Perm_NamedConj n2 args2 off2)
     | Just (Refl, Refl, Refl) <- testNamedPermNameEq n1 n2 =
       args1 == args2 && off1 == off2
-  (Perm_LLVMNamed _ _ _) == _ = False
+  (Perm_NamedConj _ _ _) == _ = False
   (Perm_BVProp p1) == (Perm_BVProp p2) = p1 == p2
   (Perm_BVProp _) == _ = False
 
@@ -1375,11 +1401,15 @@ instance PermPretty (ValuePerm a) where
   permPrettyM (ValPerm_Exists mb_p) =
     flip permPrettyExprMb mb_p $ \(_ :>: Constant pp_n) ppm ->
     (\pp -> hang 2 (string "exists" <+> pp_n <> dot <+> pp)) <$> ppm
-  permPrettyM (ValPerm_Named n args) =
+  permPrettyM (ValPerm_Named n args off) =
     do n_pp <- permPrettyM n
        args_pp <- permPrettyM args
-       return (n_pp <> char '<' <> args_pp <> char '>')
-  permPrettyM (ValPerm_Var n) = permPrettyM n
+       off_pp <- permPrettyM off
+       return (n_pp <> char '<' <> args_pp <> char '>' <> off_pp)
+  permPrettyM (ValPerm_Var n off) =
+    do n_pp <- permPrettyM n
+       off_pp <- permPrettyM off
+       return (n_pp <> off_pp)
   permPrettyM ValPerm_True = return $ string "true"
   permPrettyM (ValPerm_Conj ps) =
     (hang 2 . encloseSep PP.empty PP.empty (string "*")) <$> mapM permPrettyM ps
@@ -1424,16 +1454,17 @@ instance PermPretty (AtomicPerm a) where
   permPrettyM (Perm_LCurrent l) = (string "lcurrent" <+>) <$> permPrettyM l
   permPrettyM (Perm_Fun fun_perm) = permPrettyM fun_perm
   permPrettyM (Perm_BVProp prop) = permPrettyM prop
-  permPrettyM (Perm_LLVMNamed n args (bvMatchConst -> Just 0)) =
-    do n_pp <- permPrettyM n
-       args_pp <- permPrettyM args
-       return (n_pp <> char '<' <> args_pp <> char '>')
-  permPrettyM (Perm_LLVMNamed n args off) =
+  permPrettyM (Perm_NamedConj n args off) =
     do n_pp <- permPrettyM n
        args_pp <- permPrettyM args
        off_pp <- permPrettyM off
-       return (n_pp <> char '<' <> args_pp <> char '>' <> char '@' <>
-               parens off_pp)
+       return (n_pp <> char '<' <> args_pp <> char '>' <> off_pp)
+
+instance PermPretty (PermOffset a) where
+  permPrettyM NoPermOffset = return PP.empty
+  permPrettyM (LLVMPermOffset e) =
+    do e_pp <- permPrettyM e
+       return (char '@' <> parens e_pp)
 
 instance PermPretty (FunPerm ghosts args ret) where
   permPrettyM (FunPerm _ _ _ mb_ps_in mb_ps_out) =
@@ -1512,6 +1543,7 @@ $(mkNuMatching [t| forall ghosts args ret. FunPerm ghosts args ret |])
 $(mkNuMatching [t| forall ns. NameSortRepr ns |])
 $(mkNuMatching [t| forall ns args a. NamedPermName ns args a |])
 $(mkNuMatching [t| SomeNamedPermName |])
+$(mkNuMatching [t| forall a. PermOffset a |])
 $(mkNuMatching [t| forall ns args a. NamedPerm ns args a |])
 $(mkNuMatching [t| forall b args a. OpaquePerm b args a |])
 $(mkNuMatching [t| forall b args a. RecPerm b args a |])
@@ -1576,9 +1608,25 @@ isLLVMArrayPerm _ = False
 
 -- | Test if an 'AtomicPerm' is a named conjunctive permission
 isNamedConjPerm :: AtomicPerm a -> Bool
-isNamedConjPerm (Perm_NamedConj _ _) = True
-isNamedConjPerm (Perm_LLVMNamed _ _ _) = True
+isNamedConjPerm (Perm_NamedConj _ _ _) = True
 isNamedConjPerm _ = False
+
+-- | Test if an 'AtomicPerm' is a foldable named conjunctive permission
+isFoldableConjPerm :: AtomicPerm a -> Bool
+isFoldableConjPerm (Perm_NamedConj npn _ _) = nameCanFold npn
+isFoldableConjPerm _ = False
+
+-- | Test if an 'AtomicPerm' is a defined conjunctive permission
+isDefinedConjPerm :: AtomicPerm a -> Bool
+isDefinedConjPerm (Perm_NamedConj
+                   (namedPermNameSort -> DefinedSortRepr _) _ _) = True
+isDefinedConjPerm _ = False
+
+-- | Test if an 'AtomicPerm' is a recursive conjunctive permission
+isRecursiveConjPerm :: AtomicPerm a -> Bool
+isRecursiveConjPerm (Perm_NamedConj
+                     (namedPermNameSort -> RecursiveSortRepr _) _ _) = True
+isRecursiveConjPerm _ = False
 
 -- | Test that a permission is a conjunctive permission, meaning that it is
 -- built inductively using only existentials, disjunctions, conjunctive named
@@ -1589,8 +1637,8 @@ isConjPerm :: ValuePerm a -> Bool
 isConjPerm (ValPerm_Eq _) = False
 isConjPerm (ValPerm_Or p1 p2) = isConjPerm p1 && isConjPerm p2
 isConjPerm (ValPerm_Exists mb_p) = mbLift $ fmap isConjPerm mb_p
-isConjPerm (ValPerm_Named n _) = nameSortIsConj (namedPermNameSort n)
-isConjPerm (ValPerm_Var _) = False
+isConjPerm (ValPerm_Named n _ _) = nameSortIsConj (namedPermNameSort n)
+isConjPerm (ValPerm_Var _ _) = False
 isConjPerm (ValPerm_Conj _) = True
 
 -- | Existential permission @x:eq(word(e))@ for some @e@
@@ -1953,25 +2001,22 @@ llvmArrayPermOfSize :: (1 <= w, KnownNat w) => Integer ->
                        ValuePerm (LLVMPointerType w)
 llvmArrayPermOfSize sz = ValPerm_Conj [llvmArrayPtrPermOfSize sz]
 
--- | Add an offset to an LLVM permission, assuming that it is a conjunctive
--- permission, meaning that it is built inductively using only existentials,
--- disjunctions, conjunctive named permissions, and conjunctions of atomic
--- permissions (though these atomic permissions can contain equality permissions
--- in, e.g., LLVM field permissions)
+-- | Add an offset @off@ to an LLVM permission @p@, meaning change @p@ so that
+-- it indicates that @x+off@ has permission @p@.
+--
+-- FIXME: this should be the general-purpose function 'offsetPerm' that recurses
+-- through permissions; that would allow other sorts of offsets at other types
 offsetLLVMPerm :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
-                  ValuePerm (LLVMPointerType w) ->
-                  ValuePerm (LLVMPointerType w)
-offsetLLVMPerm _ (ValPerm_Eq _) = error "offsetLLVMPerm: equality permission"
+                  ValuePerm (LLVMPointerType w) -> ValuePerm (LLVMPointerType w)
+offsetLLVMPerm off (ValPerm_Eq e) = ValPerm_Eq $ addLLVMOffset e (bvNegate off)
 offsetLLVMPerm off (ValPerm_Or p1 p2) =
   ValPerm_Or (offsetLLVMPerm off p1) (offsetLLVMPerm off p2)
 offsetLLVMPerm off (ValPerm_Exists mb_p) =
-  ValPerm_Exists mb_p $ fmap (offsetLLVMPerm off) mb_p
-offsetLLVMPerm off (ValPerm_Named n args)
-  | TrueRepr <- nameIsConjRepr n =
-    ValPerm_Conj1 $ Perm_LLVMNamed n args off
-offsetLLVMPerm _ (ValPerm_Named _ _) =
-  error "offsetLLVMPerm: non-conjunctive permission name"
-offsetLLVMPerm _ (ValPerm_Var _) = error "offsetLLVMPerm: permission variable"
+  ValPerm_Exists $ fmap (offsetLLVMPerm off) mb_p
+offsetLLVMPerm off (ValPerm_Named n args off') =
+  ValPerm_Named n args (addPermOffsets off' (LLVMPermOffset off))
+offsetLLVMPerm off (ValPerm_Var x off') =
+  ValPerm_Var x $ addPermOffsets off' (LLVMPermOffset off)
 offsetLLVMPerm off (ValPerm_Conj ps) =
   ValPerm_Conj $ mapMaybe (offsetLLVMAtomicPerm off) ps
 
@@ -1993,22 +2038,29 @@ offsetLLVMAtomicPerm off (Perm_LLVMArray ap) =
 offsetLLVMAtomicPerm _ (Perm_LLVMFree _) = Nothing
 offsetLLVMAtomicPerm _ (Perm_LLVMFunPtr _) = Nothing
 offsetLLVMAtomicPerm _ p@Perm_IsLLVMPtr = Just p
-offsetLLVMAtomicPerm off (Perm_NamedConj shape args) =
-  Just $ Perm_NamedConj shape args
-offsetLLVMAtomicPerm off (Perm_LLVMNamed shape args off') =
-  Just $ Perm_LLVMNamed shape args $ bvAdd off' off
+offsetLLVMAtomicPerm off (Perm_NamedConj n args off') =
+  Just $ Perm_NamedConj n args $ addPermOffsets off' (LLVMPermOffset off)
 
 -- | Add an offset to a field permission
-offsetLLVMFieldPerm :: (1 <= w, KnownNat w) =>
-                       PermExpr (BVType w) -> LLVMFieldPerm w -> LLVMFieldPerm w
+offsetLLVMFieldPerm :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
+                       LLVMFieldPerm w -> LLVMFieldPerm w
 offsetLLVMFieldPerm off (LLVMFieldPerm {..}) =
   LLVMFieldPerm { llvmFieldOffset = bvAdd llvmFieldOffset off, ..}
 
 -- | Add an offset to an array permission
-offsetLLVMArrayPerm :: (1 <= w, KnownNat w) =>
-                       PermExpr (BVType w) -> LLVMArrayPerm w -> LLVMArrayPerm w
+offsetLLVMArrayPerm :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
+                       LLVMArrayPerm w -> LLVMArrayPerm w
 offsetLLVMArrayPerm off (LLVMArrayPerm {..}) =
   LLVMArrayPerm { llvmArrayOffset = bvAdd llvmArrayOffset off, ..}
+
+-- | Add a 'PermOffset' to a permission, assuming that it is a conjunctive
+-- permission, meaning that it is built inductively using only existentials,
+-- disjunctions, conjunctive named permissions, and conjunctions of atomic
+-- permissions (though these atomic permissions can contain equality permissions
+-- in, e.g., LLVM field permissions)
+offsetPerm :: PermOffset a -> ValuePerm a -> ValuePerm a
+offsetPerm (LLVMPermOffset off) p = offsetLLVMPerm off p
+offsetPerm NoPermOffset p = p
 
 -- | Lens for the atomic permissions in a 'ValPerm_Conj'; it is an error to use
 -- this lens with a value permission not of this form
@@ -2251,9 +2303,9 @@ permIsCopyable :: ValuePerm a -> Bool
 permIsCopyable (ValPerm_Eq _) = True
 permIsCopyable (ValPerm_Or p1 p2) = permIsCopyable p1 && permIsCopyable p2
 permIsCopyable (ValPerm_Exists mb_p) = mbLift $ fmap permIsCopyable mb_p
-permIsCopyable (ValPerm_Named npn args) =
+permIsCopyable (ValPerm_Named npn args _) =
   namedPermArgsAreCopyable (namedPermNameArgs npn) args
-permIsCopyable (ValPerm_Var _) = False
+permIsCopyable (ValPerm_Var _ _) = False
 permIsCopyable (ValPerm_Conj ps) = all atomicPermIsCopyable ps
 
 -- | The same as 'permIsCopyable' except for atomic permissions
@@ -2274,9 +2326,7 @@ atomicPermIsCopyable (Perm_LOwned _) = False
 atomicPermIsCopyable (Perm_LCurrent _) = True
 atomicPermIsCopyable (Perm_Fun _) = True
 atomicPermIsCopyable (Perm_BVProp _) = True
-atomicPermIsCopyable (Perm_LLVMNamed n args _) =
-  namedPermArgsAreCopyable (namedPermNameArgs n) args
-atomicPermIsCopyable (Perm_NamedConj n args) =
+atomicPermIsCopyable (Perm_NamedConj n args _) =
   namedPermArgsAreCopyable (namedPermNameArgs n) args
 
 -- | 'permIsCopyable' for the arguments of a named permission
@@ -2310,28 +2360,23 @@ funPermDistOuts fun_perm args ghosts =
   subst (substOfExprs ghosts) $ funPermOuts fun_perm
 
 -- | Unfold a recursive permission given a 'RecPerm' for it
-unfoldRecPerm :: RecPerm b args a -> PermExprs args -> ValuePerm a
-unfoldRecPerm rp args =
-  foldr1 ValPerm_Or $ map (subst (substOfExprs args)) $ recPermCases rp
+unfoldRecPerm :: RecPerm b args a -> PermExprs args -> PermOffset a ->
+                 ValuePerm a
+unfoldRecPerm rp args off =
+  offsetPerm off $ foldr1 ValPerm_Or $ map (subst (substOfExprs args)) $
+  recPermCases rp
 
 -- | Unfold a defined permission given arguments
-unfoldDefinedPerm :: DefinedPerm b args a -> PermExprs args -> ValuePerm a
-unfoldDefinedPerm dp args =
-  subst (substOfExprs args) (definedPermDef dp)
+unfoldDefinedPerm :: DefinedPerm b args a -> PermExprs args ->
+                     PermOffset a -> ValuePerm a
+unfoldDefinedPerm dp args off =
+  offsetPerm off $ subst (substOfExprs args) (definedPermDef dp)
 
 -- | Unfold a named permission as long as it is unfoldable
 unfoldPerm :: NameSortCanFold ns ~ 'True => NamedPerm ns args a ->
-              PermExprs args -> ValuePerm a
+              PermExprs args -> PermOffset a -> ValuePerm a
 unfoldPerm (NamedPerm_Defined dp) = unfoldDefinedPerm dp
 unfoldPerm (NamedPerm_Rec rp) = unfoldRecPerm rp
-
--- | Unfold an LLVM named permission
-unfoldLLVMNamedPerm :: (1 <= w, KnownNat w, NameSortCanFold ns ~ 'True) =>
-                       NamedPerm ns args (LLVMPointerType w) ->
-                       PermExprs args -> PermExpr (BVType w) ->
-                       ValuePerm (LLVMPointerType w)
-unfoldLLVMNamedPerm np args off =
-  offsetLLVMPerm
 
 -- | Generic function to get free variables
 class FreeVars a where
@@ -2396,8 +2441,7 @@ instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LCurrent l) = freeVars l
   freeVars (Perm_Fun fun_perm) = freeVars fun_perm
   freeVars (Perm_BVProp prop) = freeVars prop
-  freeVars (Perm_NamedConj _ args) = freeVars args
-  freeVars (Perm_LLVMNamed _ args off) =
+  freeVars (Perm_NamedConj _ args off) =
     NameSet.union (freeVars args) (freeVars off)
 
 instance FreeVars (ValuePerm tp) where
@@ -2405,8 +2449,9 @@ instance FreeVars (ValuePerm tp) where
   freeVars (ValPerm_Or p1 p2) = NameSet.union (freeVars p1) (freeVars p2)
   freeVars (ValPerm_Exists mb_p) =
     NameSet.liftNameSet $ fmap freeVars mb_p
-  freeVars (ValPerm_Named _ args) = freeVars args
-  freeVars (ValPerm_Var x) = NameSet.singleton x
+  freeVars (ValPerm_Named _ args off) =
+    NameSet.union (freeVars args) (freeVars off)
+  freeVars (ValPerm_Var x off) = NameSet.insert x $ freeVars off
   freeVars (ValPerm_Conj ps) = freeVars ps
 
 instance FreeVars (ValuePerms tps) where
@@ -2431,6 +2476,10 @@ instance FreeVars (LLVMArrayIndex w) where
 instance FreeVars (LLVMArrayBorrow w) where
   freeVars (FieldBorrow ix) = freeVars ix
   freeVars (RangeBorrow rng) = freeVars rng
+
+instance FreeVars (PermOffset tp) where
+  freeVars NoPermOffset = NameSet.empty
+  freeVars (LLVMPermOffset e) = freeVars e
 
 instance FreeVars (FunPerm ghosts args ret) where
   freeVars (FunPerm _ _ _ perms_in perms_out) =
@@ -2457,9 +2506,9 @@ instance ContainsLifetime (ValuePerm a) where
     containsLifetime l p1 || containsLifetime l p2
   containsLifetime l (ValPerm_Exists mb_p) =
     mbLift $ fmap (containsLifetime l) mb_p
-  containsLifetime l (ValPerm_Named _ args) =
-    containsLifetime l args
-  containsLifetime l (ValPerm_Var _) = False
+  containsLifetime l (ValPerm_Named _ args off) =
+    containsLifetime l args || containsLifetime l off
+  containsLifetime l (ValPerm_Var _ _) = False
   containsLifetime l (ValPerm_Conj ps) = any (containsLifetime l) ps
 
 instance ContainsLifetime (AtomicPerm a) where
@@ -2479,9 +2528,7 @@ instance ContainsLifetime (AtomicPerm a) where
   containsLifetime l (Perm_LCurrent l') = l == l'
   containsLifetime _ (Perm_Fun _) = False
   containsLifetime _ (Perm_BVProp _) = False
-  containsLifetime l (Perm_NamedConj _ args) =
-    containsLifetime l args
-  containsLifetime l (Perm_LLVMNamed _ args off) =
+  containsLifetime l (Perm_NamedConj _ args off) =
     containsLifetime l args || containsLifetime l off
 
 instance ContainsLifetime (LLVMFieldPerm w) where
@@ -2490,6 +2537,10 @@ instance ContainsLifetime (LLVMFieldPerm w) where
 
 instance ContainsLifetime (LLVMArrayPerm w) where
   containsLifetime l ap = any (containsLifetime l) (llvmArrayFields ap)
+
+instance ContainsLifetime (PermOffset a) where
+  containsLifetime _ NoPermOffset = False
+  containsLifetime l (LLVMPermOffset e) = containsLifetime l e
 
 instance ContainsLifetime (PermExprs args) where
   containsLifetime _ PExprs_Nil = False
@@ -2517,9 +2568,9 @@ instance InLifetime (ValuePerm a) where
     ValPerm_Or (inLifetime l p1) (inLifetime l p2)
   inLifetime l (ValPerm_Exists mb_p) =
     ValPerm_Exists $ fmap (inLifetime l) mb_p
-  inLifetime l (ValPerm_Named npn args) =
-    ValPerm_Named npn $ inLifetimeArgs l (namedPermNameArgs npn) args
-  inLifetime _ p@(ValPerm_Var _) = p
+  inLifetime l (ValPerm_Named npn args off) =
+    ValPerm_Named npn (inLifetimeArgs l (namedPermNameArgs npn) args) off
+  inLifetime _ p@(ValPerm_Var _ _) = p
   inLifetime l (ValPerm_Conj ps) =
     ValPerm_Conj $ map (inLifetime l) ps
 
@@ -2536,10 +2587,8 @@ instance InLifetime (AtomicPerm a) where
   inLifetime _ p@(Perm_LCurrent _) = p
   inLifetime _ p@(Perm_Fun _) = p
   inLifetime _ p@(Perm_BVProp _) = p
-  inLifetime l (Perm_NamedConj n args) =
-    Perm_NamedConj n (inLifetimeArgs l (namedPermNameArgs n) args)
-  inLifetime l (Perm_LLVMNamed n args off) =
-    Perm_LLVMNamed n (inLifetimeArgs l (namedPermNameArgs n) args) off
+  inLifetime l (Perm_NamedConj n args off) =
+    Perm_NamedConj n (inLifetimeArgs l (namedPermNameArgs n) args) off
 
 instance InLifetime (LLVMFieldPerm w) where
   inLifetime l fp = fp { llvmFieldLifetime = l }
@@ -2578,9 +2627,9 @@ instance MinLtEndPerms (ValuePerm a) where
     ValPerm_Or (minLtEndPerms l p1) (minLtEndPerms l p2)
   minLtEndPerms l (ValPerm_Exists mb_p) =
     ValPerm_Exists $ fmap (minLtEndPerms l) mb_p
-  minLtEndPerms l (ValPerm_Named npn args) =
-    ValPerm_Named npn $ minLtEndPermsArgs l (namedPermNameArgs npn) args
-  minLtEndPerms _ p@(ValPerm_Var _) = p
+  minLtEndPerms l (ValPerm_Named npn args off) =
+    ValPerm_Named npn (minLtEndPermsArgs l (namedPermNameArgs npn) args) off
+  minLtEndPerms _ p@(ValPerm_Var _ _) = p
   minLtEndPerms l (ValPerm_Conj ps) =
     ValPerm_Conj $ map (minLtEndPerms l) ps
 
@@ -2597,10 +2646,8 @@ instance MinLtEndPerms (AtomicPerm a) where
   minLtEndPerms _ p@(Perm_LCurrent _) = p
   minLtEndPerms _ p@(Perm_Fun _) = p
   minLtEndPerms _ p@(Perm_BVProp _) = p
-  minLtEndPerms l (Perm_NamedConj n args) =
-    Perm_NamedConj n (minLtEndPermsArgs l (namedPermNameArgs n) args)
-  minLtEndPerms l (Perm_LLVMNamed n args off) =
-    Perm_LLVMNamed n (minLtEndPermsArgs l (namedPermNameArgs n) args) off
+  minLtEndPerms l (Perm_NamedConj n args off) =
+    Perm_NamedConj n (minLtEndPermsArgs l (namedPermNameArgs n) args) off
 
 instance MinLtEndPerms (LLVMFieldPerm w) where
   minLtEndPerms l fp = fp { llvmFieldRW = PExpr_Read, llvmFieldLifetime = l }
@@ -2884,7 +2931,7 @@ substPermVar :: SubstVar s m => s ctx -> Mb ctx (PermVar a) -> m (ValuePerm a)
 substPermVar s mb_x =
   substExprVar s mb_x >>= \e ->
   case e of
-    PExpr_Var x -> return $ ValPerm_Var x
+    PExpr_Var x -> return $ ValPerm_Var x NoPermOffset
     PExpr_ValPerm p -> return p
 
 -- | Generalized notion of substitution, which says that substitution type @s@
@@ -3009,39 +3056,32 @@ instance SubstVar s m => Substable s (AtomicPerm a) m where
     Perm_Fun <$> genSubst s fperm
   genSubst s [nuP| Perm_BVProp prop |] =
     Perm_BVProp <$> genSubst s prop
-  genSubst s [nuP| Perm_NamedConj n args |] =
-    Perm_NamedConj (mbLift n) <$> genSubst s args
-  genSubst s [nuP| Perm_LLVMNamed n args off |] =
-    Perm_LLVMNamed (mbLift n) <$> genSubst s args <*> genSubst s off
+  genSubst s [nuP| Perm_NamedConj n args off |] =
+    Perm_NamedConj (mbLift n) <$> genSubst s args <*> genSubst s off
 
 instance SubstVar s m => Substable s (NamedPermName ns args a) m where
   genSubst _ mb_rpn = return $ mbLift mb_rpn
 
-{- FIXME HERE NOWNOW: remove these instances
-instance SubstVar s m => Substable s (NamedPerm args a) m where
+instance SubstVar s m => Substable s (PermOffset a) m where
+  genSubst _ [nuP| NoPermOffset |] = return NoPermOffset
+  genSubst s [nuP| LLVMPermOffset e |] = LLVMPermOffset <$> genSubst s e
+
+instance SubstVar s m => Substable s (NamedPerm ns args a) m where
   genSubst s [nuP| NamedPerm_Opaque p |] = NamedPerm_Opaque <$> genSubst s p
   genSubst s [nuP| NamedPerm_Rec p |] = NamedPerm_Rec <$> genSubst s p
   genSubst s [nuP| NamedPerm_Defined p |] = NamedPerm_Defined <$> genSubst s p
-  genSubst s [nuP| NamedPerm_LLVMShape shape |] =
-    NamedPerm_LLVMShape <$> genSubst s shape
 
-instance SubstVar s m => Substable s (OpaquePerm args a) m where
+instance SubstVar s m => Substable s (OpaquePerm ns args a) m where
   genSubst _ [nuP| OpaquePerm n i |] = return $ OpaquePerm (mbLift n) (mbLift i)
 
-instance SubstVar s m => Substable s (RecPerm args a) m where
+instance SubstVar s m => Substable s (RecPerm ns args a) m where
   genSubst s [nuP| RecPerm rpn dt_i f_i u_i cases |] =
     RecPerm (mbLift rpn) (mbLift dt_i) (mbLift f_i) (mbLift u_i) <$>
-    mapM (\[nuP| mb_p |] -> genSubst s mb_p >>= \p -> return p)
-    (mbList cases)
+    mapM (genSubst s) (mbList cases)
 
-instance SubstVar s m => Substable s (DefinedPerm args a) m where
+instance SubstVar s m => Substable s (DefinedPerm ns args a) m where
   genSubst s [nuP| DefinedPerm n p |] =
     DefinedPerm (mbLift n) <$> genSubst s p
-
-instance SubstVar s m => Substable s (LLVMShape shape a) m where
-  genSubst s [nuP| LLVMShape n perms |] =
-    LLVMShape (mbLift n) <$> genSubst s perms
--}
 
 instance SubstVar s m => Substable s (ValuePerm a) m where
   genSubst s [nuP| ValPerm_Eq e |] = ValPerm_Eq <$> genSubst s e
@@ -3052,9 +3092,10 @@ instance SubstVar s m => Substable s (ValuePerm a) m where
     -- Substable instance for Mb ctx a from above
     ValPerm_Exists <$> genSubst s p
     -- nuM (\x -> genSubst (extSubst s x) $ mbCombine p)
-  genSubst s [nuP| ValPerm_Named n args |] =
-    ValPerm_Named (mbLift n) <$> genSubst s args
-  genSubst s [nuP| ValPerm_Var mb_x |] = substPermVar s mb_x
+  genSubst s [nuP| ValPerm_Named n args off |] =
+    ValPerm_Named (mbLift n) <$> genSubst s args <*> genSubst s off
+  genSubst s [nuP| ValPerm_Var mb_x mb_off |] =
+    offsetPerm <$> genSubst s mb_off <*> substPermVar s mb_x
   genSubst s [nuP| ValPerm_Conj aps |] =
     ValPerm_Conj <$> mapM (genSubst s) (mbList aps)
 
@@ -3647,12 +3688,8 @@ instance AbstractVars (AtomicPerm a) where
   abstractPEVars ns1 ns2 (Perm_BVProp prop) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_BVProp |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 prop
-  abstractPEVars ns1 ns2 (Perm_NamedConj n args) =
+  abstractPEVars ns1 ns2 (Perm_NamedConj n args off) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_NamedConj |])
-    `clMbMbApplyM` abstractPEVars ns1 ns2 n
-    `clMbMbApplyM` abstractPEVars ns1 ns2 args
-  abstractPEVars ns1 ns2 (Perm_LLVMNamed n args off) =
-    absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMNamed |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 n
     `clMbMbApplyM` abstractPEVars ns1 ns2 args
     `clMbMbApplyM` abstractPEVars ns1 ns2 off
@@ -3668,10 +3705,11 @@ instance AbstractVars (ValuePerm a) where
   abstractPEVars ns1 ns2 (ValPerm_Exists p) =
     absVarsReturnH ns1 ns2 $(mkClosed [| ValPerm_Exists |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 p
-  abstractPEVars ns1 ns2 (ValPerm_Named n args) =
+  abstractPEVars ns1 ns2 (ValPerm_Named n args off) =
     absVarsReturnH ns1 ns2 $(mkClosed [| ValPerm_Named |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 n
     `clMbMbApplyM` abstractPEVars ns1 ns2 args
+    `clMbMbApplyM` abstractPEVars ns1 ns2 off
   abstractPEVars ns1 ns2 (ValPerm_Conj ps) =
     absVarsReturnH ns1 ns2 $(mkClosed [| ValPerm_Conj |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 ps
@@ -3714,6 +3752,13 @@ instance AbstractVars (LLVMArrayIndex w) where
                                LLVMArrayIndex ix' $ fromInteger fld_num' |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 ix
     `clMbMbApplyM` abstractPEVars ns1 ns2 (toInteger fld_num)
+
+instance AbstractVars (PermOffset a) where
+  abstractPEVars ns1 ns2 NoPermOffset =
+    absVarsReturnH ns1 ns2 $(mkClosed [| NoPermOffset |])
+  abstractPEVars ns1 ns2 (LLVMPermOffset off) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| LLVMPermOffset |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 off
 
 instance AbstractVars (LLVMArrayBorrow w) where
   abstractPEVars ns1 ns2 (FieldBorrow ix) =
@@ -3808,24 +3853,62 @@ $(mkNuMatching [t| forall blocks init ret args.
 $(mkNuMatching [t| Hint |])
 $(mkNuMatching [t| PermEnv |])
 
+-- | Add a 'NamedPerm' to a permission environment
+permEnvAddNamedPerm :: PermEnv -> NamedPerm ns args a -> PermEnv
+permEnvAddNamedPerm env np =
+  env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
+
 -- | Add an opaque named permission to a 'PermEnv'
 permEnvAddOpaquePerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
                         Ident -> PermEnv
 permEnvAddOpaquePerm env str args tp i =
-  let n = NamedPermName str tp args (OpaqueSortRepr TrueRepr)
-      np = NamedPerm_Opaque (OpaquePerm n i) in
-  env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
+  let n = NamedPermName str tp args (OpaqueSortRepr TrueRepr) in
+  permEnvAddNamedPerm env $ NamedPerm_Opaque $ OpaquePerm n i
 
--- | Add a recursive named permission to a 'PermEnv'
-permEnvAddRecPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
-                     [Mb args (ValuePerm a)] -> 
-                     Ident -> Ident -> Ident -> PermEnv
-permEnvAddRecPerm env str args tp cases i f g =
-  case someBool $ all (mbLift . fmap isConjPerm) cases of
-    Some b ->
-      let n = NamedPermName str tp args (RecursiveSortRepr b)
-          np = NamedPerm_Rec (RecPerm n i f g cases) in
-      env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
+-- | Add a recursive named permission to a 'PermEnv', assuming that the
+-- 'recPermCases' and the fold and unfold functions depend recursively on the
+-- recursive named permission being defined. This is handled by adding a
+-- "temporary" version of the named permission to the environment to be used to
+-- compute the 'recPermCases' and the fold and unfold functions and then passing
+-- the expanded environment with this temporary named permission to the supplied
+-- functions for computing these values. This temporary named permission has its
+-- 'recPermCases' and its fold and unfold functions undefined, so the supplied
+-- functions cannot depend on these values being defined, which makes sense
+-- because they are defining them! Note that the function for computing the
+-- 'recPermCases' can be called multiple times, so should not perform any
+-- non-idempotent mutation in the monad @m@.
+permEnvAddRecPermM :: Monad m => PermEnv -> String -> CruCtx args ->
+                      TypeRepr a -> Ident ->
+                      (forall b. NamedPermName (RecursiveSort b) args a ->
+                       PermEnv -> m [Mb args (ValuePerm a)]) ->
+                      (forall b. NamedPermName (RecursiveSort b) args a ->
+                       [Mb args (ValuePerm a)] -> PermEnv -> m (Ident, Ident)) ->
+                      m PermEnv
+permEnvAddRecPermM env nm args tp trans_ident casesF foldIdentsF =
+  -- NOTE: we start by assuming nm is conjoinable, and then, if it's not, we
+  -- call casesF again, and thereby compute a fixed-point
+  do let mkTmpEnv :: NamedPermName (RecursiveSort b) args a -> PermEnv
+         mkTmpEnv npn =
+           permEnvAddNamedPerm env $ NamedPerm_Rec $
+           RecPerm npn trans_ident
+           (error "Analyzing recursive perm cases before it is defined!")
+           (error "Folding recursive perm before it is defined!")
+           (error "Unfolding recursive perm before it is defined!")
+         mkRealEnv :: Monad m => NamedPermName (RecursiveSort b) args a ->
+                      [Mb args (ValuePerm a)] ->
+                      (PermEnv -> m (Ident, Ident)) -> m PermEnv
+         mkRealEnv npn cases identsF =
+           do (fold_ident, unfold_ident) <- identsF (mkTmpEnv npn)
+              return $ permEnvAddNamedPerm env $ NamedPerm_Rec $
+                RecPerm npn trans_ident fold_ident unfold_ident cases
+     let npn1 = NamedPermName nm tp args (RecursiveSortRepr TrueRepr)
+     cases1 <- casesF npn1 (mkTmpEnv npn1)
+     case someBool $ all (mbLift . fmap isConjPerm) cases1 of
+       Some TrueRepr -> mkRealEnv npn1 cases1 (foldIdentsF npn1 cases1)
+       Some FalseRepr ->
+         do let npn2 = NamedPermName nm tp args (RecursiveSortRepr FalseRepr)
+            cases2 <- casesF npn2 (mkTmpEnv npn2)
+            mkRealEnv npn2 cases2 (foldIdentsF npn2 cases2)
 
 -- | Add a defined named permission to a 'PermEnv'
 permEnvAddDefinedPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
