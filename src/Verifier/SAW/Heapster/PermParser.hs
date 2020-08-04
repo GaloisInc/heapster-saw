@@ -96,13 +96,12 @@ type SomeName = Some (Typed Name)
 -- | A parsing environment, which includes variables and function names
 data ParserEnv = ParserEnv {
   parserEnvExprVars :: [(String, SomeName)],
-  parserEnvPermVars :: [(String, SomeNamedPermName)],
   parserEnvPermEnv :: PermEnv
 }
 
 -- | Make a 'ParserEnv' with empty contexts and a given list of function names
 mkParserEnv :: PermEnv -> ParserEnv
-mkParserEnv env = ParserEnv [] [] env
+mkParserEnv env = ParserEnv [] env
 
 $(mkNuMatching [t| forall f a. NuMatching (f a) => Typed f a |])
 $(mkNuMatching [t| ParserEnv |])
@@ -113,16 +112,6 @@ instance NuMatchingAny1 f => NuMatchingAny1 (Typed f) where
 -- | Look up an expression variable by name in a 'ParserEnv'
 lookupExprVar :: String -> ParserEnv -> Maybe SomeName
 lookupExprVar str = lookup str . parserEnvExprVars
-
--- | Look up a 'NamedPermName' by name in a 'ParserEnv', considering both
--- its permission variables and the 'NamedPerm's in its 'PermEnv'.
-lookupNamedPermNameOrVar :: String -> ParserEnv -> Maybe SomeNamedPermName
-lookupNamedPermNameOrVar str env =
-  case ( lookup str (parserEnvPermVars env)
-       , lookupNamedPermName (parserEnvPermEnv env) str ) of
-    (Just srpn, _) -> Just srpn -- FIXME: Is shadowing here what we want?
-    (_, Just srpn) -> Just srpn
-    (Nothing, Nothing) -> Nothing
 
 {-
 instance BindState String where
@@ -174,7 +163,7 @@ instance (BindState s, BindState u) => BindState (State s u) where
 -- | Lift a 'ParserEnv' out of a binding except for its 'PermEnv', which should
 -- be unchanged from the input
 liftParserEnv :: PermEnv -> Mb ctx ParserEnv -> ParserEnv
-liftParserEnv env [nuP| ParserEnv evars pvars _ |] =
+liftParserEnv env [nuP| ParserEnv evars _ |] =
   ParserEnv
   (mapMaybe (\env_elem -> case env_elem of
                 [nuP| (str, Some (Typed tp mb_n)) |]
@@ -182,7 +171,6 @@ liftParserEnv env [nuP| ParserEnv evars pvars _ |] =
                     Just (mbLift str, Some (Typed (mbLift tp) n))
                 _ -> Nothing)
    (mbList evars))
-  (fmap mbLift (mbList pvars))
   env
 
 -- | Lift a Parsec 'State' out of a binding except for its 'PermEnv', which
@@ -532,8 +520,8 @@ parseValPerm tp =
                withExprVar var (unKnownReprObj ktp') z $
                parseValPerm tp) <|>
        (do n <- try (parseIdent >>= \n -> spaces >> char '<' >> return n)
-           env <- getState
-           case lookupNamedPermNameOrVar n env of
+           env <- parserEnvPermEnv <$> getState
+           case lookupNamedPermName env n of
              Just (SomeNamedPermName rpn)
                | Just Refl <- testEquality (namedPermNameType rpn) tp ->
                  do args <- parseExprs (namedPermNameArgs rpn)
@@ -918,10 +906,9 @@ parseFunPermM args ret =
 -- | Parse the sort of object named by the supplied 'String', calling 'fail' if
 -- there is a parsing error
 runPermParseM :: (Stream s Identity t, MonadFail m) =>
-                 String -> PermEnv -> [(String, SomeNamedPermName)] ->
-                 PermParseM s a -> s -> m a
-runPermParseM obj env pvars m str =
-  case runParser m (ParserEnv [] pvars env) "" str of
+                 String -> PermEnv -> PermParseM s a -> s -> m a
+runPermParseM obj env m str =
+  case runParser m (ParserEnv [] env) "" str of
     Left err -> Fail.fail ("Error parsing " ++ obj ++ ": " ++ show err)
     Right a -> return a
 
@@ -930,36 +917,34 @@ runPermParseM obj env pvars m str =
 parsePermsString :: MonadFail m => String -> PermEnv -> ParsedCtx ctx ->
                     String -> m (MbValuePerms ctx)
 parsePermsString nm env ctx =
-  runPermParseM nm env [] (parseSortedMbValuePerms ctx)
+  runPermParseM nm env (parseSortedMbValuePerms ctx)
 
 -- | Parse a permission of the given type within the given context and with
 -- the given named permission variables in scope
-parsePermInCtxString :: MonadFail m => String -> PermEnv -> 
-                        [(String, SomeNamedPermName)] -> ParsedCtx ctx ->
+parsePermInCtxString :: MonadFail m => String -> PermEnv -> ParsedCtx ctx ->
                         TypeRepr a -> String -> m (Mb ctx (ValuePerm a))
-parsePermInCtxString nm env pvars ctx tp =
-  runPermParseM nm env pvars (parseValPermInCtx ctx tp)
+parsePermInCtxString nm env ctx tp =
+  runPermParseM nm env (parseValPermInCtx ctx tp)
 
 -- | Parse a sequence of atomic permissions within the given context and with
 -- the given named permission variables in scope
-parseAtomicPermsInCtxString :: MonadFail m => String -> PermEnv ->
-                               [(String, SomeNamedPermName)] -> ParsedCtx ctx ->
+parseAtomicPermsInCtxString :: MonadFail m => String -> PermEnv -> ParsedCtx ctx ->
                                TypeRepr a -> String -> m (Mb ctx [AtomicPerm a])
-parseAtomicPermsInCtxString nm env pvars ctx tp =
-  runPermParseM nm env pvars (inParsedCtxM ctx $ const $ parseAtomicPerms tp)
+parseAtomicPermsInCtxString nm env ctx tp =
+  runPermParseM nm env (inParsedCtxM ctx $ const $ parseAtomicPerms tp)
 
 -- | Parse a 'FunPerm' named by the first 'String' from the second 'String'
 parseFunPermString :: MonadFail m => String -> PermEnv -> CruCtx args ->
                       TypeRepr ret -> String -> m (SomeFunPerm args ret)
 parseFunPermString nm env args ret str =
-  runPermParseM nm env [] (parseFunPermM args ret) str
+  runPermParseM nm env (parseFunPermM args ret) str
 
 -- | Parse a type context @x1:tp1, x2:tp2, ...@ named by the first 'String' from
 -- the second 'String' and return a 'ParsedCtx', which contains both the
 -- variable names @xi@ and their types @tpi@
 parseParsedCtxString :: MonadFail m => String -> PermEnv -> String ->
                         m (Some ParsedCtx)
-parseParsedCtxString nm env str = runPermParseM nm env [] parseCtx str
+parseParsedCtxString nm env str = runPermParseM nm env parseCtx str
 
 -- | Parse a type context named by the first 'String' from the second 'String'
 parseCtxString :: MonadFail m => String -> PermEnv -> String -> m (Some CruCtx)
@@ -969,4 +954,4 @@ parseCtxString nm env str =
 -- | Parse a type named by the first 'String' from the second 'String'
 parseTypeString :: MonadFail m => String -> PermEnv -> String ->
                    m (Some TypeRepr)
-parseTypeString nm env str = runPermParseM nm env [] parseType str
+parseTypeString nm env str = runPermParseM nm env parseType str
