@@ -3416,7 +3416,7 @@ proveVarImplH x p@(ValPerm_Eq e@(PExpr_LLVMOffset y off)) mb_p =
     proveVarImpl y (fmap (offsetLLVMPerm off) mb_p) >>>
     partialSubstForceM mb_p
     "proveVarImpl: incomplete psubst: castLLVMPtr" >>>= \p_r ->
-    castLLVMPtrM y p_r off x
+    castLLVMPtrM y (offsetLLVMPerm off p_r) off x
 
 -- Prove x:(p1 \/ p2) by trying to prove x:p1 and x:p2 in two branches
 proveVarImplH x p [nuP| ValPerm_Or mb_p1 mb_p2 |] =
