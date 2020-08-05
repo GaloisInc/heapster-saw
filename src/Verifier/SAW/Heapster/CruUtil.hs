@@ -319,103 +319,6 @@ mkKnownReprObj _ = KnownReprObj
 unKnownReprObj :: KnownReprObj f a -> f a
 unKnownReprObj (KnownReprObj :: KnownReprObj f a) = knownRepr :: f a
 
-{-
--- | Representation types that support the 'withKnownRepr' operation
-class WithKnownRepr f where
-  withKnownRepr :: f a -> (KnownRepr f a => r) -> r
-
-instance WithKnownRepr NatRepr where
-  withKnownRepr = withKnownNat
-
-instance WithKnownRepr NatRepr where
-  withKnownRepr = withKnownNat
-
-{-
-instance WithKnownRepr BaseTypeRepr where
-  withKnownRepr = error "FIXME HERE NOW: write withKnownBaseType!"
--}
-
-instance WithKnownRepr TypeRepr where
-  withKnownRepr AnyRepr f = f
-  withKnownRepr UnitRepr f = f
-  withKnownRepr BoolRepr f = f
-  withKnownRepr NatRepr f = f
-  withKnownRepr IntegerRepr f = f
-  withKnownRepr RealValRepr f = f
-  withKnownRepr ComplexRealRepr f = f
-  withKnownRepr (BVRepr n) f = withKnownNat n $ f
-  withKnownRepr (IntrinsicRepr sym args) f =
-    withKnownRepr sym $ withKnownRepr args f
-  withKnownRepr (RecursiveRepr sym args) f =
-    withKnownRepr sym $ withKnownRepr args f
-  withKnownRepr (FloatRepr _) _ = error "FIXME: withKnownRepr: FloatRepr case"
-  withKnownRepr (IEEEFloatRepr _) _ =
-    error "FIXME: withKnownRepr: IEEEFloatRepr case"
-  withKnownRepr CharRepr f = f
-  withKnownRepr StringRepr f = f
-  withKnownRepr (FunctionHandleRepr args ret) f =
-    withKnownRepr args $ withKnownRepr ret f
-  withKnownRepr (MaybeRepr tp) f = withKnownRepr tp f
-  withKnownRepr (VectorRepr tp) f = withKnownRepr tp f
-  withKnownRepr (StructRepr args) f = withKnownRepr args f
-  withKnownRepr (VariantRepr ctx) f = withKnownRepr ctx f
-  withKnownRepr (ReferenceRepr tp) f = withKnownRepr tp f
-  withKnownRepr (WordMapRepr _ _) _ =
-    error "FIXME: withKnownRepr: WordMapRepr case"
-  withKnownRepr (StringMapRepr _) _ =
-    error "FIXME: withKnownRepr: StringMapRepr case"
-  withKnownRepr (SymbolicArrayRepr _ _) _ =
-    error "FIXME: withKnownRepr: SymbolicArrayRepr case"
-  withKnownRepr (SymbolicStructRepr _) _ =
-    error "FIXME: withKnownRepr: SymbolicStructRepr case"
-
-
-instance WithKnownRepr CtxRepr where
-  withKnownRepr (viewAssign -> AssignEmpty) f = f
-  withKnownRepr (viewAssign -> AssignExtend ctx tp) f =
-    withKnownRepr ctx $ withKnownRepr tp f
-
-{-
-instance WithKnownRepr (Index ctx) where
-  withKnownRepr = error "FIXME HERE NOW: write withKnownIndex!"
--}
-
-
-{-
--- | An object containing a 'KnownRepr' instance; used to build 'NuMatching'
--- instances for the various @Repr@ types
-data KnownReprObj f a = KnownRepr f a => KnownReprObj
-
-$(mkNuMatching [t| forall f a. KnownReprObj f a |])
-
-mkKnownReprObj :: WithKnownRepr f => f a -> KnownReprObj f a
-mkKnownReprObj repr = withKnownRepr repr KnownReprObj
-
-getKnownReprObj :: KnownReprObj f a -> f a
-getKnownReprObj KnownReprObj = knownRepr
--}
-
--- | A 'TypeRepr' that has been promoted to a constraint; this is necessary in
--- order to make a 'NuMatching' instance for it, as part of the representation
--- of 'TypeRepr' is hidden (and also this way is faster)
-data CruType a where
-  CruType :: KnownRepr TypeRepr a => CruType a
-
--- | Extract the 'TypeRepr' from a 'CruType'
-unCruType :: CruType a -> TypeRepr a
-unCruType CruType = knownRepr
-
-instance TestEquality CruType where
-  testEquality (CruType :: CruType a1) (CruType :: CruType a2) =
-    testEquality (knownRepr :: TypeRepr a1) (knownRepr :: TypeRepr a2)
-
-instance Liftable (CruType a) where
-  mbLift [nuP| CruType |] = CruType
-
-instance Closable (CruType a) where
-  toClosed CruType = $(mkClosed [| CruType |])
--}
-
 
 -- | A context of Crucible types. NOTE: we do not use 'MapRList' here, because
 -- we do not yet have a nice way to define the 'NuMatching' instance we want...
@@ -449,29 +352,12 @@ instance Pretty (CruCtx ctx) where
     helper CruCtxNil = []
     helper (CruCtxCons ctx tp) = helper ctx ++ [pretty tp]
 
-{-
-instance KnownRepr TypeRepr tp => KnownRepr CruType tp where
-  knownRepr = CruType
--}
-
 instance KnownRepr CruCtx RNil where
   knownRepr = CruCtxNil
-
-{-
-instance (KnownRepr CruCtx tps, KnownRepr CruType tp) =>
-         KnownRepr CruCtx (tps :> tp) where
-  knownRepr = CruCtxCons knownRepr knownRepr
--}
 
 instance (KnownRepr CruCtx tps, KnownRepr TypeRepr tp) =>
          KnownRepr CruCtx (tps :> tp) where
   knownRepr = CruCtxCons knownRepr knownRepr
-
-{-
--- | Build a 'CruType' from a 'TypeRepr'
-mkCruType :: TypeRepr a -> CruType a
-mkCruType tp = withKnownRepr tp CruType
--}
 
 -- | Build a 'CruCtx' from a 'CtxRepr'
 mkCruCtx :: CtxRepr ctx -> CruCtx (CtxToRList ctx)
