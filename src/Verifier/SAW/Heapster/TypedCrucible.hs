@@ -2942,7 +2942,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      -- FIXME: why does GHC need this type to be given?
      block_entry_hints :: [Some (BlockEntryHint _ inits ret)] <-
        fmap catMaybes $
-       forM (lookupBlockEntryHints env cfg) $ \hint -> case hint of
+       forM (lookupBlockEntryHints env cfg) $ \some_hint -> case some_hint of
        Some (BlockEntryHint
              _ _ h_blkID h_topargs h_ghosts h_perms_in)
          | Just Refl <- testEquality h_topargs (appendCruCtx ghosts inits) ->
@@ -2953,9 +2953,11 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
               let h_allargs = appendCruCtx h_ghosts h_args
               modifyBlockInfo (addBlockEntry h_memb $
                                BlockEntryInfo h_entryID tops h_args h_perms_in)
-              return (Just hint)
-       _ ->
-         -- FIXME HERE NOW: warn the user that the hint did not match
+              return (Just some_hint)
+       Some hint ->
+         trace ("Block entry hint for block "
+                ++ show (blockEntryHintBlockID hint)
+                ++ " did not match arguments, skipping") $
          return Nothing
 
      -- Visit all the blocks in a weak topological order, meaning that we visit
