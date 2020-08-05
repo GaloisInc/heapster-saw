@@ -485,7 +485,7 @@ data SimplImpl ps_in ps_out where
                          PermOffset a -> SimplImpl (RNil :> a) (RNil :> a)
 
 
-{- FIXME HERE NOW: Write the rule for proving one recursive perm implies another
+{- FIXME HERE: Write the rule for proving one recursive perm implies another
 
   -- | Apply an implication to the body of a least fixed-point permission:
   --
