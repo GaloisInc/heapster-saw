@@ -687,19 +687,13 @@ parseBVProp =
     (do try (spaces >> string "/=")
         e2 <- parseBVExpr
         return $ BVProp_Neq e1 e2) <|>
-    (do try (spaces >> string "in" >> spaces)
-        rng <- parseBVRange
-        return $ BVProp_InRange e1 rng) <|>
-    (do try (spaces >> string "not" >> spaces1 >> string "in")
-        rng <- parseBVRange
-        return $ BVProp_NotInRange e1 rng)) <|>
-  do rng1 <- parseBVRange
-     spaces
-     mk_prop <-
-       try (string "subset" >> return BVProp_RangeSubset) <|>
-       (string "disjoint" >> return BVProp_RangesDisjoint)
-     rng2 <- parseBVRange
-     return $ mk_prop rng1 rng2
+    (do try (spaces >> string "<u" >> spaces)
+        e2 <- parseBVExpr
+        return $ BVProp_ULt e1 e2) <|>
+    (do try (spaces >> string "<=u" >> spaces)
+        e2 <- parseBVExpr
+        return $ BVProp_ULeq e1 e2)) <?>
+  "bitvector proposition"
 
 -- | Parse a 'BVRange' written as @{ off, len }@
 parseBVRange :: (Stream s Identity Char, Liftable s, KnownNat w, 1 <= w) =>

@@ -659,26 +659,84 @@ bvCouldBeSLt _ _ = True
 bvCouldBeInRange :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> BVRange w -> Bool
 bvCouldBeInRange e (BVRange off len) = bvCouldBeLt (bvSub e off) len
 
+-- | Test whether a 'BVProp' holds for all substitutions of the free
+-- variables. This is an underapproximation, meaning that some propositions are
+-- marked as not holding when they actually do.
+bvPropHolds :: (1 <= w, KnownNat w) => BVProp w -> Bool
+bvPropHolds (BVProp_Eq e1 e2) = bvEq e1 e2
+bvPropHolds (BVProp_Neq e1 e2) = not (bvCouldEqual e1 e2)
+bvPropHolds (BVProp_ULt e1 e2) = bvLt e1 e2
+bvPropHolds (BVProp_ULeq e1 e2) = not (bvCouldBeLt e2 e1)
+
 -- | Test whether a 'BVProp' "could" hold for all substitutions of the free
 -- variables. This is an overapproximation, meaning that some propositions are
 -- marked as "could" hold when they actually cannot.
 bvPropCouldHold :: (1 <= w, KnownNat w) => BVProp w -> Bool
 bvPropCouldHold (BVProp_Eq e1 e2) = bvCouldEqual e1 e2
 bvPropCouldHold (BVProp_Neq e1 e2) = not (bvEq e1 e2)
-bvPropCouldHold (BVProp_InRange e rng) = bvCouldBeInRange e rng
-bvPropCouldHold (BVProp_NotInRange e rng) = not (bvInRange e rng)
-bvPropCouldHold (BVProp_RangeSubset rng1 rng2) =
-  bvCouldBeInRange (bvRangeOffset rng1) rng2 &&
-  bvCouldBeInRange (bvSub
-                    (bvAdd (bvRangeOffset rng1) (bvRangeLength rng1))
-                    (bvInt 1)) rng2
-bvPropCouldHold (BVProp_RangesDisjoint rng1 rng2) =
-  -- NOTE: if two ranges are not disjoint then either one fully contains the
-  -- other or they overlap. In either case, one range will contain the first
-  -- value of the other.
-  not (bvInRange (bvRangeOffset rng1) rng2) &&
-  not (bvInRange (bvRangeOffset rng2) rng1)
+bvPropCouldHold (BVProp_ULt e1 e2) = bvCouldBeLt e1 e2
+bvPropCouldHold (BVProp_ULeq e1 e2) = not (bvLt e2 e1)
 
+-- | Negate a 'BVProp'
+bvPropNegate :: BVProp w -> BVProp w
+bvPropNegate (BVProp_Eq e1 e2) = BVProp_Neq e1 e2
+bvPropNegate (BVProp_Neq e1 e2) = BVProp_Eq e1 e2
+bvPropNegate (BVProp_ULt e1 e2) = BVProp_ULeq e2 e1
+bvPropNegate (BVProp_ULeq e1 e2) = BVProp_ULt e2 e1
+
+-- | Build the proposition that @x@ is in the range @[off,off+len)@ as the
+-- proposition
+--
+-- > x-off <u len
+bvPropInRange :: (1 <= w, KnownNat w) =>
+                 PermExpr (BVType w) -> BVRange w -> BVProp w
+bvPropInRange e (BVRange off len) = BVProp_ULt (bvSub e off) len
+
+-- | Build the proposition that @x@ is /not/ in the range @[off,off+len)@ as the
+-- negation of 'bvPropInRange'
+bvPropNotInRange :: (1 <= w, KnownNat w) =>
+                    PermExpr (BVType w) -> BVRange w -> BVProp w
+bvPropNotInRange e rng = bvPropNegate $ bvPropInRange e rng
+
+-- | Build the proposition that @[off1,off1+len1)@ is a subset of
+-- @[off2,off2+len2)@ as the following pair of propositions:
+--
+-- > off1 - off2 <=u len2
+-- > len1 <=u len2 - (off1 - off2)
+--
+-- The first one states that the first @off1 - off2@ elements of the range
+-- @[off2,off2+len2)@ can be removed to get the range
+-- @[off1,off1+(len2-(off1-off2)))@. This also ensures that @len2-(off1- off2)@
+-- does not underflow. The second then ensures that removing @off1-off2@
+-- elements from the front of the second interval still yields a length that is
+-- at least as long as @len1@.
+--
+-- NOTE: this is technically not complete, because the subset relation should
+-- always hold when @len1=0@ while the first proposition above does not always
+-- hold in this case, but we are ok with this. Equivalently, this approach views
+-- @[off1,off1+len1)@ as always containing @off1@ even when @len1=0@.
+bvPropRangeSubset :: (1 <= w, KnownNat w) =>
+                     BVRange w -> BVRange w -> [BVProp w]
+bvPropRangeSubset (BVRange off1 len1) (BVRange off2 len2) =
+  [BVProp_ULeq (bvSub off1 off2) len2,
+   BVProp_ULeq len1 (bvSub len2 (bvSub off1 off2))]
+
+-- | Build the proposition that @[off1,off1+len1)@ and @[off2,off2+len2)@ are
+-- disjoint as following pair of propositions:
+--
+-- > len2 <=u off1 - off2
+-- > len1 <=u off2 - off1
+--
+-- These say that each @off@ is not in the other range.
+bvPropRangesDisjoint :: (1 <= w, KnownNat w) =>
+                        BVRange w -> BVRange w -> [BVProp w]
+bvPropRangesDisjoint (BVRange off1 len1) (BVRange off2 len2) =
+  [BVProp_ULeq len2 (bvSub off1 off2), BVProp_ULeq len1 (bvSub off2 off1)]
+
+-- | Subtract a bitvector word from the offset of a 'BVRange'
+bvRangeSub :: (1 <= w, KnownNat w) => BVRange w -> PermExpr (BVType w) ->
+              BVRange w
+bvRangeSub (BVRange off len) x = BVRange (bvSub off x) len
 
 -- | Build a bitvector expression from an integer
 bvInt :: (1 <= w, KnownNat w) => Integer -> PermExpr (BVType w)
@@ -769,7 +827,10 @@ bvRangeOfIndex e = BVRange e (bvInt 1)
 -- over 'ValuePerm's
 type PermVar (a :: CrucibleType) = Name (ValuePermType a)
 
--- | Ranges of bitvector values
+-- | Ranges @[off,off+len)@ of bitvector values @x@ equal to @off+y@ for some
+-- unsigned @y < len@. Note that ranges are allowed to wrap around 0, meaning
+-- @off+y@ can overflow when testing whether @x@ is in the range. Thus, @x@ is
+-- in range @[off,off+len)@ iff @x-off@ is unsigned less than @len@.
 data BVRange w = BVRange { bvRangeOffset :: PermExpr (BVType w),
                            bvRangeLength :: PermExpr (BVType w) }
                deriving Eq
@@ -780,19 +841,10 @@ data BVProp w
   = BVProp_Eq (PermExpr (BVType w)) (PermExpr (BVType w))
     -- | True iff the two expressions are not equal
   | BVProp_Neq (PermExpr (BVType w)) (PermExpr (BVType w))
-    -- | True iff the first expression is greater than or equal to the second
-    -- and less than the third, i.e., in the half-closed interval @[e2,e3)@
-  | BVProp_InRange (PermExpr (BVType w)) (BVRange w)
-    -- | True iff the first expression is *not* in the given range
-  | BVProp_NotInRange (PermExpr (BVType w)) (BVRange w)
-    -- | True iff the first and second expressions form an interval that is
-    -- contained in that formed by the third and fourth, i.e., iff @[e1,e2)@ is
-    -- a subset of @[e3,e4)@
-  | BVProp_RangeSubset (BVRange w) (BVRange w)
-    -- | True iff the first and second expressions form an interval that is
-    -- disjoint from that formed by the third and fourth, i.e., iff @[e1,e2)@
-    -- and @[e3,e4)@ do not overlap
-  | BVProp_RangesDisjoint (BVRange w) (BVRange w)
+    -- | True iff the first expression is unsigned less-than the second
+  | BVProp_ULt (PermExpr (BVType w)) (PermExpr (BVType w))
+    -- | True iff the first expression is unsigned @<=@ the second
+  | BVProp_ULeq (PermExpr (BVType w)) (PermExpr (BVType w))
   deriving Eq
 
 -- | An atomic permission is a value permission that is not one of the compound
@@ -1499,15 +1551,10 @@ instance PermPretty (BVProp w) where
     (\pp1 pp2 -> pp1 <+> equals <+> pp2) <$> permPrettyM e1 <*> permPrettyM e2
   permPrettyM (BVProp_Neq e1 e2) =
     (\pp1 pp2 -> pp1 <+> string "/=" <+> pp2) <$> permPrettyM e1 <*> permPrettyM e2
-  permPrettyM (BVProp_InRange e rng) =
-    (\pp1 pp2 -> pp1 <+> string "in" <+> pp2)
-    <$> permPrettyM e <*> permPrettyM rng
-  permPrettyM (BVProp_RangeSubset rng1 rng2) =
-    (\pp1 pp2 -> pp1 <+> string "subset" <+> pp2)
-    <$> permPrettyM rng1 <*> permPrettyM rng2
-  permPrettyM (BVProp_RangesDisjoint rng1 rng2) =
-    (\pp1 pp2 -> pp1 <+> string "disjoint" <+> pp2)
-    <$> permPrettyM rng1 <*> permPrettyM rng2
+  permPrettyM (BVProp_ULt e1 e2) =
+    (\pp1 pp2 -> pp1 <+> string "<u" <+> pp2) <$> permPrettyM e1 <*> permPrettyM e2
+  permPrettyM (BVProp_ULeq e1 e2) =
+    (\pp1 pp2 -> pp1 <+> string "<=u" <+> pp2) <$> permPrettyM e1 <*> permPrettyM e2
 
 instance PermPretty (LLVMArrayBorrow w) where
   permPrettyM (FieldBorrow (LLVMArrayIndex ix fld_num)) =
@@ -1813,37 +1860,37 @@ matchLLVMArrayField ap o
     bvMatchFactorPlusConst (llvmArrayStride ap) (bvDiv rel_off w)
 matchLLVMArrayField _ _ = Nothing
 
--- | Return a 'BVProp' stating that the field(s) represented by an array borrow
--- are in the "base" set of fields in an array, before the borrows are
+-- | Return a list 'BVProp' stating that the field(s) represented by an array
+-- borrow are in the "base" set of fields in an array, before the borrows are
 -- considered. We assume that the borrow is statically well-formed for that
 -- array, meaning that the static field number of a 'FieldBorrow' refers to a
 -- valid field in the array perm.
 llvmArrayBorrowInArrayBase :: (1 <= w, KnownNat w) =>
                               LLVMArrayPerm w -> LLVMArrayBorrow w ->
-                              BVProp w
+                              [BVProp w]
 llvmArrayBorrowInArrayBase ap (FieldBorrow ix)
   | llvmArrayIndexFieldNum ix >= length (llvmArrayFields ap) =
     error "llvmArrayBorrowInArrayBase: invalid index"
 llvmArrayBorrowInArrayBase ap (FieldBorrow ix) =
-  BVProp_InRange (llvmArrayIndexCell ix) (llvmArrayIndexRange ap)
+  [bvPropInRange (llvmArrayIndexCell ix) (llvmArrayIndexRange ap)]
 llvmArrayBorrowInArrayBase ap (RangeBorrow rng) =
-  BVProp_RangeSubset rng (llvmArrayIndexRange ap)
+  bvPropRangeSubset rng (llvmArrayIndexRange ap)
 
--- | Return a 'BVProp' stating that two array borrows are disjoint, or 'Nothing'
--- if they are trivially disjoint because they refer to statically distinct
--- field numbers
-llvmArrayBorrowsDisjoint :: LLVMArrayBorrow w -> LLVMArrayBorrow w ->
-                            Maybe (BVProp w)
+-- | Return a list of 'BVProp's stating that two array borrows are disjoint. The
+-- empty list is returned if they are trivially disjoint because they refer to
+-- statically distinct field numbers.
+llvmArrayBorrowsDisjoint :: (1 <= w, KnownNat w) =>
+                            LLVMArrayBorrow w -> LLVMArrayBorrow w -> [BVProp w]
 llvmArrayBorrowsDisjoint (FieldBorrow ix1) (FieldBorrow ix2)
   | llvmArrayIndexFieldNum ix1 == llvmArrayIndexFieldNum ix2
-  = Just (BVProp_Neq (llvmArrayIndexCell ix1) (llvmArrayIndexCell ix2))
-llvmArrayBorrowsDisjoint (FieldBorrow _) (FieldBorrow _) = Nothing
+  = [BVProp_Neq (llvmArrayIndexCell ix1) (llvmArrayIndexCell ix2)]
+llvmArrayBorrowsDisjoint (FieldBorrow _) (FieldBorrow _) = []
 llvmArrayBorrowsDisjoint (FieldBorrow ix) (RangeBorrow rng) =
-  Just $ BVProp_NotInRange (llvmArrayIndexCell ix) rng
+  [bvPropNotInRange (llvmArrayIndexCell ix) rng]
 llvmArrayBorrowsDisjoint (RangeBorrow rng) (FieldBorrow ix) =
-  Just $ BVProp_NotInRange (llvmArrayIndexCell ix) rng
+  [bvPropNotInRange (llvmArrayIndexCell ix) rng]
 llvmArrayBorrowsDisjoint (RangeBorrow rng1) (RangeBorrow rng2) =
-  Just $ BVProp_RangesDisjoint rng1 rng2
+  bvPropRangesDisjoint rng1 rng2
 
 -- | Return a list of propositions stating that the field(s) represented by an
 -- array borrow are in the set of fields of an array permission. This takes into
@@ -1852,8 +1899,8 @@ llvmArrayBorrowsDisjoint (RangeBorrow rng1) (RangeBorrow rng2) =
 llvmArrayBorrowInArray :: (1 <= w, KnownNat w) =>
                           LLVMArrayPerm w -> LLVMArrayBorrow w -> [BVProp w]
 llvmArrayBorrowInArray ap b =
-  llvmArrayBorrowInArrayBase ap b :
-  mapMaybe (llvmArrayBorrowsDisjoint b) (llvmArrayBorrows ap)
+  llvmArrayBorrowInArrayBase ap b ++
+  concatMap (llvmArrayBorrowsDisjoint b) (llvmArrayBorrows ap)
 
 -- | Shorthand for 'llvmArrayBorrowInArray' with a single index
 llvmArrayIndexInArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
@@ -2422,13 +2469,8 @@ instance FreeVars (BVRange w) where
 instance FreeVars (BVProp w) where
   freeVars (BVProp_Eq e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
   freeVars (BVProp_Neq e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
-  freeVars (BVProp_InRange e rng) = NameSet.union (freeVars e) (freeVars rng)
-  freeVars (BVProp_NotInRange e rng) =
-    NameSet.union (freeVars e) (freeVars rng)
-  freeVars (BVProp_RangeSubset rng1 rng2) =
-    NameSet.union (freeVars rng1) (freeVars rng2)
-  freeVars (BVProp_RangesDisjoint rng1 rng2) =
-    NameSet.union (freeVars rng1) (freeVars rng2)
+  freeVars (BVProp_ULt e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
+  freeVars (BVProp_ULeq e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
 
 instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMField fp) = freeVars fp
@@ -3031,14 +3073,10 @@ instance SubstVar s m => Substable s (BVProp w) m where
     BVProp_Eq <$> genSubst s e1 <*> genSubst s e2
   genSubst s [nuP| BVProp_Neq e1 e2 |] =
     BVProp_Neq <$> genSubst s e1 <*> genSubst s e2
-  genSubst s [nuP| BVProp_InRange e r |] =
-    BVProp_InRange <$> genSubst s e <*> genSubst s r
-  genSubst s [nuP| BVProp_NotInRange e r |] =
-    BVProp_NotInRange <$> genSubst s e <*> genSubst s r
-  genSubst s [nuP| BVProp_RangeSubset r1 r2 |] =
-    BVProp_RangeSubset <$> genSubst s r1 <*> genSubst s r2
-  genSubst s [nuP| BVProp_RangesDisjoint r1 r2 |] =
-    BVProp_RangesDisjoint <$> genSubst s r1 <*> genSubst s r2
+  genSubst s [nuP| BVProp_ULt e1 e2 |] =
+    BVProp_ULt <$> genSubst s e1 <*> genSubst s e2
+  genSubst s [nuP| BVProp_ULeq e1 e2 |] =
+    BVProp_ULeq <$> genSubst s e1 <*> genSubst s e2
 
 instance SubstVar s m => Substable s (AtomicPerm a) m where
   genSubst s [nuP| Perm_LLVMField fp |] = Perm_LLVMField <$> genSubst s fp
@@ -3641,22 +3679,14 @@ instance AbstractVars (BVProp w) where
     absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_Neq |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 e1
     `clMbMbApplyM` abstractPEVars ns1 ns2 e2
-  abstractPEVars ns1 ns2 (BVProp_InRange e r) =
-    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_InRange |])
-    `clMbMbApplyM` abstractPEVars ns1 ns2 e
-    `clMbMbApplyM` abstractPEVars ns1 ns2 r
-  abstractPEVars ns1 ns2 (BVProp_NotInRange e r) =
-    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_NotInRange |])
-    `clMbMbApplyM` abstractPEVars ns1 ns2 e
-    `clMbMbApplyM` abstractPEVars ns1 ns2 r
-  abstractPEVars ns1 ns2 (BVProp_RangeSubset r1 r2) =
-    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_RangeSubset |])
-    `clMbMbApplyM` abstractPEVars ns1 ns2 r1
-    `clMbMbApplyM` abstractPEVars ns1 ns2 r2
-  abstractPEVars ns1 ns2 (BVProp_RangesDisjoint r1 r2) =
-    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_RangesDisjoint |])
-    `clMbMbApplyM` abstractPEVars ns1 ns2 r1
-    `clMbMbApplyM` abstractPEVars ns1 ns2 r2
+  abstractPEVars ns1 ns2 (BVProp_ULt e1 e2) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_ULt |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e1
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e2
+  abstractPEVars ns1 ns2 (BVProp_ULeq e1 e2) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_ULeq |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e1
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e2
 
 instance AbstractVars (AtomicPerm a) where
   abstractPEVars ns1 ns2 (Perm_LLVMField fp) =

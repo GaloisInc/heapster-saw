@@ -821,6 +821,11 @@ bvPropPerm :: (1 <= w, KnownNat w) => BVPropTrans ctx w ->
               PermTrans ctx (LLVMPointerType w)
 bvPropPerm prop = PTrans_Conj [APTrans_BVProp prop]
 
+-- | The translation of a 'BVRange' is the translation of its two elements
+data BVRangeTrans ctx w =
+  BVRangeTrans (Mb ctx (BVRange w))
+  (ExprTrans (BVType w)) (ExprTrans (BVType w))
+
 
 -- | The translation of an LLVM array permission is a SAW term of @BVVec@ type,
 -- along with a type translation for its fields and proof terms stating that all
@@ -844,7 +849,7 @@ data LLVMArrayIndexTrans ctx w =
 data LLVMArrayBorrowTrans ctx w =
   LLVMArrayBorrowTrans
   { llvmArrayBorrowTransBorrow :: Mb ctx (LLVMArrayBorrow w),
-    llvmArrayBorrowTransProp :: (BVPropTrans ctx w) }
+    llvmArrayBorrowTransProps :: [BVPropTrans ctx w] }
 
 -- | The translation of the vacuously true permission
 pattern PTrans_True :: PermTrans ctx a
@@ -936,12 +941,16 @@ instance IsTermTrans (AtomicPermTrans ctx a) where
 instance IsTermTrans (BVPropTrans ctx w) where
   transTerms (BVPropTrans _ t) = [t]
 
+instance IsTermTrans (BVRangeTrans ctx w) where
+  transTerms (BVRangeTrans _ trans1 trans2) =
+    transTerms trans1 ++ transTerms trans2
+
 instance IsTermTrans (LLVMArrayPermTrans ctx a) where
   transTerms arr_trans =
     llvmArrayTransTerm arr_trans : transTerms (llvmArrayTransBorrows arr_trans)
 
 instance IsTermTrans (LLVMArrayBorrowTrans ctx w) where
-  transTerms (LLVMArrayBorrowTrans _ prop_trans) = transTerms prop_trans
+  transTerms (LLVMArrayBorrowTrans _ prop_transs) = transTerms prop_transs
 
 -- | Map a context of perm translations to a list of 'OpenTerm's, dropping the
 -- "invisible" ones whose permissions are translated to 'Nothing'
@@ -1019,11 +1028,14 @@ instance ExtPermTrans LLVMArrayPermTrans where
     (map extPermTrans bs) t
 
 instance ExtPermTrans LLVMArrayBorrowTrans where
-  extPermTrans (LLVMArrayBorrowTrans mb_b prop_trans) =
-    LLVMArrayBorrowTrans (extMb mb_b) (extPermTrans prop_trans)
+  extPermTrans (LLVMArrayBorrowTrans mb_b prop_transs) =
+    LLVMArrayBorrowTrans (extMb mb_b) (map extPermTrans prop_transs)
 
 instance ExtPermTrans BVPropTrans where
   extPermTrans (BVPropTrans prop t) = BVPropTrans (extMb prop) t
+
+instance ExtPermTrans BVRangeTrans where
+  extPermTrans (BVRangeTrans rng t1 t2) = BVRangeTrans (extMb rng) t1 t2
 
 -- | Extend the context of a permission translation context
 extPermTransCtx :: PermTransCtx ctx ps -> PermTransCtx (ctx :> tp) ps
@@ -1114,10 +1126,10 @@ llvmArrayTransRemBorrow b_trans arr_trans =
 -- permission at a given index, given proofs of the propositions that the index
 -- is in the array
 getLLVMArrayTransCell :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
-                         LLVMArrayIndexTrans ctx w -> BVPropTrans ctx w ->
+                         LLVMArrayIndexTrans ctx w -> [BVPropTrans ctx w] ->
                          [AtomicPermTrans ctx (LLVMPointerType w)]
 getLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
-  (BVPropTrans _ in_rng_term) =
+  (BVPropTrans _ in_rng_term:_) =
   let w = natVal arr_trans in
   mapMaybe (offsetLLVMAtomicPermTrans $
             fmap llvmArrayOffset $ llvmArrayTransPerm arr_trans) $
@@ -1131,11 +1143,11 @@ getLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
 -- permission at a given index, given proofs of the propositions that the index
 -- is in the array
 setLLVMArrayTransCell :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
-                         LLVMArrayIndexTrans ctx w -> BVPropTrans ctx w ->
+                         LLVMArrayIndexTrans ctx w -> [BVPropTrans ctx w] ->
                          [AtomicPermTrans ctx (LLVMPointerType w)] ->
                          LLVMArrayPermTrans ctx w
 setLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
-  (BVPropTrans _ in_rng_term) cell =
+  (BVPropTrans _ in_rng_term:_) cell =
   let w = natVal arr_trans in
   arr_trans {
     llvmArrayTransTerm =
@@ -1145,27 +1157,73 @@ setLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
          i_trans, in_rng_term, transTupleTerm cell] }
 
 -- | Read a field (= element of a cell) of the translation of an LLVM array
--- permission at a given index, given proopfs of the propositions that the index
+-- permission at a given index, given proofs of the propositions that the index
 -- is in the array
 getLLVMArrayTransField :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
-                          LLVMArrayIndexTrans ctx w -> BVPropTrans ctx w ->
+                          LLVMArrayIndexTrans ctx w -> [BVPropTrans ctx w] ->
                           AtomicPermTrans ctx (LLVMPointerType w)
 getLLVMArrayTransField arr_trans ix_trans@(LLVMArrayIndexTrans
-                                           _ _ j) prop_trans =
-  getLLVMArrayTransCell arr_trans ix_trans prop_trans !! j
+                                           _ _ j) prop_transs =
+  getLLVMArrayTransCell arr_trans ix_trans prop_transs !! j
 
 -- | Write a field (= element of a cell) of the translation of an LLVM array
--- permission at a given index, given a proof of the proposition that the index
+-- permission at a given index, given proofs of the propositions that the index
 -- is in the array
 setLLVMArrayTransField :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
-                          LLVMArrayIndexTrans ctx w -> BVPropTrans ctx w ->
+                          LLVMArrayIndexTrans ctx w -> [BVPropTrans ctx w] ->
                           AtomicPermTrans ctx (LLVMPointerType w) ->
                           LLVMArrayPermTrans ctx w
 setLLVMArrayTransField arr_trans ix_trans@(LLVMArrayIndexTrans
-                                           _ _ j) prop_trans fld' =
-  let flds = getLLVMArrayTransCell arr_trans ix_trans prop_trans in
-  setLLVMArrayTransCell arr_trans ix_trans prop_trans
+                                           _ _ j) prop_transs fld' =
+  let flds = getLLVMArrayTransCell arr_trans ix_trans prop_transs in
+  setLLVMArrayTransCell arr_trans ix_trans prop_transs
   (replaceNth j fld' flds)
+
+-- | Read a slice (= a sub-array) of the translation of an LLVM array permission
+-- for the supplied 'BVRange', given proofs of the propositions that the
+-- 'BVRange' is in the array. Note that the 'BVRange' gives an offset relative
+-- to the beginning of the array permission, not an absolute offset.
+getLLVMArrayTransSlice :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
+                          BVRangeTrans ctx w -> [BVPropTrans ctx w] ->
+                          AtomicPermTrans ctx (LLVMPointerType w)
+getLLVMArrayTransSlice arr_trans rng_trans@(BVRangeTrans mb_rng
+                                            off_trans len'_trans) prop_transs =
+  let w = natVal2 mb_rng
+      mb_ap = llvmArrayTransPerm arr_trans
+      elem_tp = llvmArrayTransCellType arr_trans
+      len_tm = llvmArrayTransLen arr_trans
+      v_tm = llvmArrayTransTerm arr_trans
+      off_tm = transTerm1 off_trans
+      len'_tm = transTerm1 len'_trans
+      p1_trans:p2_trans:_ = prop_transs
+      BVPropTrans _ p1_tm = p1_trans
+      BVPropTrans _ p2_tm = p2_trans in
+  APTrans_LLVMArray $ LLVMArrayPermTrans
+  { llvmArrayTransPerm =
+      mbMap2 (\ap rng ->
+               ap { llvmArrayOffset =
+                      bvAdd (llvmArrayOffset ap) (bvRangeOffset rng),
+                    llvmArrayLen = bvRangeLength rng,
+                    llvmArrayBorrows = [] }) mb_ap mb_rng
+  , llvmArrayTransLen = len'_tm
+  , llvmArrayTransFields = llvmArrayTransFields arr_trans
+  , llvmArrayTransBorrows = []
+  , llvmArrayTransTerm =
+      applyOpenTermMulti
+      (globalOpenTerm "Prelude.sliceBVVec")
+      [natOpenTerm w, len_tm, elem_tp, off_tm, len'_tm, p1_tm, p2_tm, v_tm]}
+
+-- | Write a slice (= a sub-array) of the translation of an LLVM array permission
+-- for the supplied 'BVRange', given proofs of the propositions that the
+-- 'BVRange' is in the array. Note that the 'BVRange' gives an offset relative
+-- to the beginning of the array permission, not an absolute offset.
+setLLVMArrayTransSlice :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
+                          BVRangeTrans ctx w -> [BVPropTrans ctx w] -> OpenTerm ->
+                          LLVMArrayPermTrans ctx w
+setLLVMArrayTransSlice arr_trans rng_trans@(BVRangeTrans mb_rng
+                                            off_trans len'_trans) prop_transs trm =
+  -- FIXME HERE NOW: do the actual updating!
+  arr_trans
 
 
 -- | Put a 'PermTrans' into a lifetime. This is the same as applying
@@ -1266,38 +1324,34 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
     -- be represented as something, so we use the unit type
     return $ mkTypeTrans1 unitTypeOpenTerm (BVPropTrans prop)
 
-  -- The proposition e in [off,off+len) becomes (e-off) < len, which in SAW is
-  -- represented as bvslt (e-off) len = True
-  translate prop@[nuP| BVProp_InRange e (BVRange off len) |] =
-    do let w = natVal4 e
-       t_sub <- translate1 (mbMap2 bvSub e off)
-       t_len <- translate1 len
+  translate prop@[nuP| BVProp_ULt e1 e2 |] =
+    do let w = natVal4 e1
+       t1 <- translate1 e1
+       t2 <- translate1 e2
        return $ flip mkTypeTrans1 (BVPropTrans prop)
          (dataTypeOpenTerm "Prelude.EqP"
           [globalOpenTerm "Prelude.Bool",
            applyOpenTermMulti (globalOpenTerm "Prelude.bvult")
-           [natOpenTerm w, t_sub, t_len],
+           [natOpenTerm w, t1, t2],
            trueOpenTerm])
 
-  translate prop@[nuP| BVProp_NotInRange _ _ |] =
-    -- NOTE: we don't need a proof object for not in range proofs, because we
-    -- don't actually use them for anything, but it is easier to just have all
-    -- BVProps be represented as something, so we use the unit type
-    return $ mkTypeTrans1 unitTypeOpenTerm (BVPropTrans prop)
+  translate prop@[nuP| BVProp_ULeq e1 e2 |] =
+    do let w = natVal4 e1
+       t1 <- translate1 e1
+       t2 <- translate1 e2
+       return $ flip mkTypeTrans1 (BVPropTrans prop)
+         (dataTypeOpenTerm "Prelude.EqP"
+          [globalOpenTerm "Prelude.Bool",
+           applyOpenTermMulti (globalOpenTerm "Prelude.bvule")
+           [natOpenTerm w, t1, t2],
+           trueOpenTerm])
 
-  -- The proposition [off1,off1+len1) subset [off2,off2+len2) becomes the
-  -- proposition...?
-  -- FIXME: must imply (bvToNat (off1 - off2) + bvToNat len1) <= bvToNat len2
-  translate prop@[nuP| BVProp_RangeSubset (BVRange off1 len1)
-                     (BVRange off2 len2) |] =
-    error "FIXME HERE NOW: translate BVProp_RangeSubset"
-
-  translate prop@[nuP| BVProp_RangesDisjoint _ _ |] =
-    -- NOTE: we don't need a proof object for negative proofs, because we don't
-    -- actually use them for anything, but it is easier to just have all BVProps
-    -- be represented as something, so we use the unit type
-    return $ mkTypeTrans1 unitTypeOpenTerm (BVPropTrans prop)
-
+instance (1 <= w, KnownNat w, TransInfo info) =>
+         Translate info ctx (BVRange w) (BVRangeTrans ctx w) where
+  translate rng@[nuP| BVRange off len |] =
+    do off_tm <- translate off
+       len_tm <- translate len
+       return $ BVRangeTrans rng off_tm len_tm
 
 instance (1 <= w, KnownNat w, TransInfo info) =>
          Translate info ctx (LLVMArrayIndex w) (LLVMArrayIndexTrans ctx w) where
@@ -1399,9 +1453,9 @@ translateLLVMArrayBorrow :: (1 <= w, KnownNat w, TransInfo info) =>
                             TransM info ctx (TypeTrans
                                              (LLVMArrayBorrowTrans ctx w))
 translateLLVMArrayBorrow mb_ap mb_b =
-  do let mb_prop = mbMap2 llvmArrayBorrowInArrayBase mb_ap mb_b
-     prop_trans <- translate mb_prop
-     return (LLVMArrayBorrowTrans mb_b <$> prop_trans)
+  do let mb_props = mbMap2 llvmArrayBorrowInArrayBase mb_ap mb_b
+     prop_trans <- mapM translate $ mbList mb_props
+     return (LLVMArrayBorrowTrans mb_b <$> listTypeTrans prop_trans)
 
 instance TransInfo info =>
          Translate info ctx (ValuePerms ps) (TypeTrans
@@ -1872,42 +1926,66 @@ translateSimplImpl _ [nuP| SImpl_DemoteLLVMFieldWrite _ _ |] m =
 
 
 translateSimplImpl _ [nuP| SImpl_LLVMArrayCopy _ mb_ap mb_rng |] m =
-  error "FIXME HERE: translateSimplImpl: SImpl_LLVMArrayCopy not yet implemented!"
-  -- NOTE: needs a special version of slice, to avoid casts
-  --
-  -- IDEA: the translation of a BVProp should be a proof of that BVProp, so we
-  -- can use it in casting things! Or our special version of slice could take
-  -- one of these proofs as input
-  {-
-  do elem_tp <- tpTransM (translateLLVMArrayElemType mb_ap)
+  do let w = natVal2 mb_rng
+     rng_trans <-
+       translate $ mbMap2 bvRangeSub mb_rng $ fmap llvmArrayOffset mb_ap
      withPermStackM id
-       (\(pctx :>: ptrans :>: _) ->
-         let (mb_ap, trm) =
+       (\(pctx :>: ptrans_array :>: ptrans_props) ->
+         let array_trans =
                unPTransLLVMArray
-               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans in
-         pctx :>: PTrans_Conj [APTrans_LLVMArray ap t] :>:
-         PTrans_Conj [APTrans_LLVMArray
-                      (mbMap2 $ \ap rng ->
-                        ap { llvmArrayOffset = bvRangeOffset rng,
-                             llvmArrayLen = bvRangeLength rng })
-                      (applyOpenTermMulti
-                       (globalOpenTerm "Prelude.slice")
-                       [elem_tp, ]
-                      )
-                     ])
-       m -}
+               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_array
+             prop_transs =
+               unPTransBVProps
+               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_props in
+         pctx :>:
+         PTrans_Conj [getLLVMArrayTransSlice array_trans rng_trans prop_transs]
+         :>: ptrans_array)
+       m
 
-translateSimplImpl _ [nuP| SImpl_LLVMArrayBorrow _ _ _ |] m =
-  error
-  "FIXME HERE: translateSimplImpl: SImpl_LLVMArrayBorrow not yet implemented!"
-  -- NOTE: same issue as for SImpl_LLVMArrayCopy
+translateSimplImpl _ [nuP| SImpl_LLVMArrayBorrow _ mb_ap mb_rng |] m =
+  do let w = natVal2 mb_rng
+     rng_trans <-
+       translate $ mbMap2 bvRangeSub mb_rng $ fmap llvmArrayOffset mb_ap
+     withPermStackM id
+       (\(pctx :>: ptrans_array :>: ptrans_props) ->
+         let array_trans =
+               unPTransLLVMArray
+               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_array
+             prop_transs =
+               unPTransBVProps
+               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_props
+             borrow_trans =
+               LLVMArrayBorrowTrans (fmap RangeBorrow mb_rng) prop_transs in
+         pctx :>:
+         PTrans_Conj [getLLVMArrayTransSlice array_trans rng_trans prop_transs]
+         :>: PTrans_Conj [APTrans_LLVMArray $
+                          llvmArrayTransAddBorrow borrow_trans array_trans])
+       m
 
-translateSimplImpl _ [nuP| SImpl_LLVMArrayReturn _ _ _ |] m =
-  error
-  "FIXME HERE: translateSimplImpl: SImpl_LLVMArrayReturn not yet implemented!"
-  -- NOTE: needs a function to replace a sub-range of a Vec with another one
-  -- IDEA: the borrows could translate to proofs of the relevant BVProps, which
-  -- could be used when returning
+translateSimplImpl _ [nuP| SImpl_LLVMArrayReturn _ mb_ap mb_rng |] m =
+  do let w = natVal2 mb_rng
+     rng_trans <-
+       translate $ mbMap2 bvRangeSub mb_rng $ fmap llvmArrayOffset mb_ap
+     withPermStackM mapRListTail
+       (\(pctx :>: ptrans_sub_array :>: ptrans_array) ->
+         let array_trans =
+               unPTransLLVMArray
+               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_array
+             sub_array_trans =
+               unPTransLLVMArray
+               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_sub_array
+             borrow_i =
+               mbLift $ mbMap2 llvmArrayFindBorrow (fmap
+                                                    RangeBorrow mb_rng) mb_ap
+             borrow_trans = llvmArrayTransBorrows array_trans !! borrow_i
+             array_trans' =
+               setLLVMArrayTransSlice array_trans rng_trans
+               (llvmArrayBorrowTransProps borrow_trans)
+               (llvmArrayTransTerm sub_array_trans) in
+         pctx :>:
+         PTrans_Conj [APTrans_LLVMArray $
+                      llvmArrayTransRemBorrow borrow_trans array_trans'])
+       m
 
 translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexCopy _ _ ix |] m =
   do let w = natVal2 ix
@@ -1915,11 +1993,11 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexCopy _ _ ix |] m =
      let arr_trans =
            unPTransLLVMArray
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_array
-     let prop_trans =
-           head $ unPTransBVProps
+     let prop_transs =
+           unPTransBVProps
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_props
      ix_trans <- translate ix
-     let fld_ptrans = getLLVMArrayTransField arr_trans ix_trans prop_trans
+     let fld_ptrans = getLLVMArrayTransField arr_trans ix_trans prop_transs
      withPermStackM id
        (\(pctx :>: _ :>: _) ->
          pctx :>: PTrans_Conj [fld_ptrans] :>: ptrans_array)
@@ -1931,12 +2009,12 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexBorrow x _ ix |] m =
      let arr_trans =
            unPTransLLVMArray
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_array
-     let prop_trans =
-           head $ unPTransBVProps
+     let prop_transs =
+           unPTransBVProps
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_props
      ix_trans <- translate ix
-     let fld_ptrans = getLLVMArrayTransField arr_trans ix_trans prop_trans
-     let b = LLVMArrayBorrowTrans (fmap FieldBorrow ix) prop_trans
+     let fld_ptrans = getLLVMArrayTransField arr_trans ix_trans prop_transs
+     let b = LLVMArrayBorrowTrans (fmap FieldBorrow ix) prop_transs
      withPermStackM id
        (\(pctx :>: _ :>: _) ->
          pctx :>: PTrans_Conj [fld_ptrans] :>:
@@ -1957,7 +2035,7 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexReturn x _ ix |] m =
      ix_trans <- translate ix
      let arr_trans' =
            setLLVMArrayTransField arr_trans ix_trans
-           (llvmArrayBorrowTransProp b_trans) aptrans_fld
+           (llvmArrayBorrowTransProps b_trans) aptrans_fld
      withPermStackM mapRListTail
        (\(pctx :>: _ :>: _) ->
          pctx :>:
@@ -2214,10 +2292,9 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) prop_str
     (translate $ mbCombine mb_impl)]
 
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                        prop@(BVProp_InRange e (BVRange off len)) _ |]
+translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULt e1 e2) _ |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
-  | mbLift (mbMap2 bvLt (mbMap2 bvSub e off) len) =
+  | mbLift (fmap bvPropHolds prop) =
     withPermStackM (:>: translateVar x)
     (:>: bvPropPerm (BVPropTrans prop
                      (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
@@ -2225,41 +2302,43 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
     (translate $ mbCombine mb_impl)
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                        prop@(BVProp_InRange e (BVRange off len)) prop_str |]
+                       prop@(BVProp_ULt e1 e2) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   do prop_tp_trans <- translate prop
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
        , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
-       , lambdaTransM "inrange_pf" prop_tp_trans
+       , lambdaTransM "ult_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans)
            (translate $ mbCombine mb_impl))
        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvultWithProof")
-         [ return (natOpenTerm $ natVal2 prop)
-         , translate1 (mbMap2 bvSub e off), translate1 len]
+         [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
        ]
 
+translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULeq e1 e2) _ |]
+  [nuP| MbPermImpls_Cons _ mb_impl |]
+  | mbLift (fmap bvPropHolds prop) =
+    withPermStackM (:>: translateVar x)
+    (:>: bvPropPerm (BVPropTrans prop
+                     (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
+                                                    globalOpenTerm "Prelude.True"])))
+    (translate $ mbCombine mb_impl)
+
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                        prop@(BVProp_NotInRange e (BVRange off len)) prop_str |]
+                       prop@(BVProp_ULeq e1 e2) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
-  let w = natVal2 prop in
-  applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
-  [ compReturnTypeM
-  , applyMultiTransM (return $ globalOpenTerm "Prelude.bvult")
-    [ return (natOpenTerm w), translate1 (mbMap2 bvSub e off), translate1 len ]
-  , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
-  , withPermStackM (:>: translateVar x)
-    (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)])
-    (translate $ mbCombine mb_impl)]
-
-translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_RangeSubset _ _) _ |]
-  [nuP| MbPermImpls_Cons _ _ |] =
-  error "FIXME HERE NOW: translate Impl1_TryProveBVProp (BVProp_RangeSubset)"
-
-translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_RangesDisjoint _ _) _ |]
-  [nuP| MbPermImpls_Cons _ _ |] =
-  error "FIXME HERE NOW: translate Impl1_TryProveBVProp (BVProp_RangesDisjoint)"
+  do prop_tp_trans <- translate prop
+     applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
+       [ return (typeTransType1 prop_tp_trans), compReturnTypeM
+       , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
+       , lambdaTransM "ule_pf" prop_tp_trans
+         (\prop_trans ->
+           withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans)
+           (translate $ mbCombine mb_impl))
+       , applyMultiTransM (return $ globalOpenTerm "Prelude.bvuleWithProof")
+         [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
+       ]
 
 
 instance ImplTranslateF r ext blocks tops ret =>
