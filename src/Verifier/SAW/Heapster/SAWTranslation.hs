@@ -2120,6 +2120,16 @@ translateSimplImpl _ [nuP| SImpl_Mu _ _ _ _ |] m =
   error "FIXME HERE: SImpl_Mu: translation not yet implemented"
 -}
 
+translateSimplImpl _ [nuP| SImpl_NamedToConj x npn args off |] m =
+  withPermStackM id
+  (\(pctx :>: PTrans_Term _ t) ->
+    pctx :>: PTrans_Conj [APTrans_NamedConj (mbLift npn) args off t]) m
+
+translateSimplImpl _ [nuP| SImpl_NamedFromConj x npn args off |] m =
+  withPermStackM id
+  (\(pctx :>: PTrans_Conj [APTrans_NamedConj _ _ _ t]) ->
+    pctx :>: PTrans_Term (mbMap2 (ValPerm_Named $ mbLift npn) args off) t) m
+
 translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedArgAlways _ _ _ _ _ _ |] m =
   withPermStackM id
   (\(pctx :>: PTrans_Term _ t) ->
