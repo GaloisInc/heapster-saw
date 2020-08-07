@@ -3190,8 +3190,7 @@ proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMField mb_fp |] =
   partialSubstForceM (fmap llvmFieldOffset mb_fp)
   "proveVarPtrPerms: incomplete psubst: LLVM field offset" >>>= \off ->
   foldMapWithDefault implCatchM
-  (implFailVarM "proveVarAtomicImpl" x (ValPerm_Conj ps) (fmap
-                                                          ValPerm_Conj1 mb_p))
+  (proveVarAtomicImplUnfoldOrFail x ps mb_p)
   (\(i,_) -> proveVarLLVMField x ps i off mb_fp)
   (findMaybeIndices (llvmPermContainsOffset off) ps)
 
@@ -3201,8 +3200,7 @@ proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMArray mb_ap |] =
   partialSubstForceM (fmap llvmArrayLen mb_ap)
   "proveVarPtrPerms: incomplete psubst: LLVM array length" >>>= \len ->
   foldMapWithDefault implCatchM
-  (implFailVarM "proveVarAtomicImpl" x (ValPerm_Conj ps) (fmap
-                                                          ValPerm_Conj1 mb_p))
+  (proveVarAtomicImplUnfoldOrFail x ps mb_p)
   (\(i,_) -> proveVarLLVMArray x ps i off len mb_ap)
   (findMaybeIndices (llvmPermContainsOffset off) ps)
 
@@ -3266,10 +3264,9 @@ proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned (PExpr_Var z) 
   | Left memb <- mbNameBoundP z
   = getPSubst >>>= \psubst ->
     case psubstLookup psubst memb of
-      Just ps' ->
-        if ps == ps' then greturn () else proveVarAtomicImplUnfoldOrFail x aps mb_ap
-      Nothing ->
-        setVarM memb ps
+      Just ps' | ps == ps' -> greturn ()
+      Just _ -> proveVarAtomicImplUnfoldOrFail x aps mb_ap
+      Nothing -> setVarM memb ps
 
 proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned mb_ps |] =
   partialSubstForceM mb_ps
@@ -3505,7 +3502,9 @@ proveVarImplH x p@(ValPerm_Named
     (proveVarImplUnfoldLeft x p mb_p Nothing)
 
 -- If proving x:p1 * ... |- P<args> where both P and at least one of the pi are
--- recursive, try unfolding P or the LHS, depending on the recursion flags
+-- recursive, try unfolding P or the LHS, depending on the recursion flags. Note
+-- that there are no defined perms on the LHS at this point because that would
+-- have been caught by one of the above cases.
 proveVarImplH x p@(ValPerm_Conj ps) mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
   | Just i <- findIndex isRecursiveConjPerm ps
   , RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn =
@@ -3518,6 +3517,20 @@ proveVarImplH x p@(ValPerm_Conj ps) mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
 proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
   | RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn =
     proveVarImplFoldRight x p mb_p
+
+-- If proving P<args> |- p1 * ... * pn for a conjoinable P, then change the LHS
+-- to a conjunction and recurse
+proveVarImplH x (ValPerm_Named npn args off) mb_p
+  | TrueRepr <- nameIsConjRepr npn =
+    implNamedToConjM x npn args off >>>
+    proveVarImplH x (ValPerm_Conj1 $ Perm_NamedConj npn args off) mb_p
+
+-- If proving P<args> |- p1 * ... * pn for a non-conjoinable recursive P, then
+-- we unfold P because we will have to at some point to prove a conjunction
+proveVarImplH x p@(ValPerm_Named npn _ _) mb_p
+  | TrueRepr <- nameIsConjRepr npn =
+    proveVarImplUnfoldLeft x p mb_p Nothing
+
 
 {- FIXME: This is an example of how we used embedMbImplM to prove the body
    of one mu from another; remove it when we have used it for arrays
