@@ -1196,7 +1196,8 @@ addPermOffsets :: PermOffset a -> PermOffset a -> PermOffset a
 addPermOffsets NoPermOffset off = off
 addPermOffsets off NoPermOffset = off
 addPermOffsets (LLVMPermOffset off1) (LLVMPermOffset off2) =
-  LLVMPermOffset $ bvAdd off1 off2
+  if bvIsZero (bvAdd off1 off2) then NoPermOffset else
+    LLVMPermOffset (bvAdd off1 off2)
 
 -- | Get the @n@th expression in a 'PermExprs' list
 nthPermExpr :: PermExprs args -> Member args a -> PermExpr a
