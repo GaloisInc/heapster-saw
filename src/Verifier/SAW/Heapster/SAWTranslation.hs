@@ -782,7 +782,8 @@ data AtomicPermTrans ctx a where
   -- | LLVM function pointer permissions have the same computational content as
   -- a function permission
   APTrans_LLVMFunPtr :: (1 <= w, KnownNat w) =>
-                        Mb ctx (FunPerm ghosts args ret) -> OpenTerm ->
+                        TypeRepr (FunctionHandleType cargs ret) ->
+                        PermTrans ctx (FunctionHandleType cargs ret) ->
                         AtomicPermTrans ctx (LLVMPointerType w)
 
   -- | IsLLVMPtr permissions have no computational content
@@ -930,7 +931,7 @@ instance IsTermTrans (AtomicPermTrans ctx a) where
   transTerms (APTrans_LLVMField _ ptrans) = transTerms ptrans
   transTerms (APTrans_LLVMArray arr_trans) = transTerms arr_trans
   transTerms (APTrans_LLVMFree _) = []
-  transTerms (APTrans_LLVMFunPtr _ t) = [t]
+  transTerms (APTrans_LLVMFunPtr _ trans) = transTerms trans
   transTerms APTrans_IsLLVMPtr = []
   transTerms (APTrans_NamedConj _ _ _ t) = [t]
   transTerms (APTrans_LLVMFrame _) = []
@@ -973,8 +974,8 @@ atomicPermTransPerm prxs (APTrans_LLVMField fld _) = fmap Perm_LLVMField fld
 atomicPermTransPerm prxs (APTrans_LLVMArray arr_trans) =
   fmap Perm_LLVMArray $ llvmArrayTransPerm arr_trans
 atomicPermTransPerm prxs (APTrans_LLVMFree e) = fmap Perm_LLVMFree e
-atomicPermTransPerm prxs (APTrans_LLVMFunPtr fperm _) =
-  fmap Perm_LLVMFunPtr fperm
+atomicPermTransPerm prxs (APTrans_LLVMFunPtr tp ptrans) =
+  fmap (Perm_LLVMFunPtr tp) (permTransPerm prxs ptrans)
 atomicPermTransPerm prxs APTrans_IsLLVMPtr = nuMulti prxs $ const Perm_IsLLVMPtr
 atomicPermTransPerm prxs (APTrans_NamedConj npn args off _) =
   mbMap2 (Perm_NamedConj npn) args off
@@ -1012,7 +1013,8 @@ instance ExtPermTrans AtomicPermTrans where
   extPermTrans (APTrans_LLVMArray arr_trans) =
     APTrans_LLVMArray $ extPermTrans arr_trans
   extPermTrans (APTrans_LLVMFree e) = APTrans_LLVMFree $ extMb e
-  extPermTrans (APTrans_LLVMFunPtr fperm t) = APTrans_LLVMFunPtr (extMb fperm) t
+  extPermTrans (APTrans_LLVMFunPtr tp ptrans) =
+    APTrans_LLVMFunPtr tp (extPermTrans ptrans)
   extPermTrans APTrans_IsLLVMPtr = APTrans_IsLLVMPtr
   extPermTrans (APTrans_NamedConj npn args off t) =
     APTrans_NamedConj npn (extMb args) (extMb off) t
@@ -1251,7 +1253,8 @@ atomicPermTransInLifetime l (APTrans_LLVMArray
   bs
   t
 atomicPermTransInLifetime _ p@(APTrans_LLVMFree _) = p
-atomicPermTransInLifetime _ p@(APTrans_LLVMFunPtr _ _) = p
+atomicPermTransInLifetime l (APTrans_LLVMFunPtr tp p) =
+  APTrans_LLVMFunPtr tp $ permTransInLifetime l p
 atomicPermTransInLifetime _ p@APTrans_IsLLVMPtr = p
 atomicPermTransInLifetime _ p@(APTrans_LLVMFrame _) = p
 atomicPermTransInLifetime l (APTrans_LifetimePerm p) =
@@ -1289,7 +1292,9 @@ atomicPermTransEndLifetime (APTrans_LLVMArray
           (mbList $ fmap (map Perm_LLVMField . llvmArrayFields) ap)) flds)
   bs t
 atomicPermTransEndLifetime p@(APTrans_LLVMFree _) _ = p
-atomicPermTransEndLifetime p@(APTrans_LLVMFunPtr _ _) _ = p
+atomicPermTransEndLifetime p@(APTrans_LLVMFunPtr _ _) _ =
+  -- FIXME: is this correct?
+  p
 atomicPermTransEndLifetime p@APTrans_IsLLVMPtr _ = p
 atomicPermTransEndLifetime p@(APTrans_LLVMFrame _) _ = p
 atomicPermTransEndLifetime p@(APTrans_LifetimePerm _) _ = p
@@ -1403,9 +1408,9 @@ instance TransInfo info =>
 
   translate [nuP| Perm_LLVMFree e |] =
     return $ mkTypeTrans0 $ APTrans_LLVMFree e
-  translate [nuP| Perm_LLVMFunPtr fun_perm |] =
-    translate fun_perm >>= \tp_term ->
-    return $ mkTypeTrans1 tp_term (APTrans_LLVMFunPtr fun_perm)
+  translate [nuP| Perm_LLVMFunPtr tp p |] =
+    translate p >>= \tp_ptrans ->
+    return $ fmap (APTrans_LLVMFunPtr $ mbLift tp) tp_ptrans
   translate [nuP| Perm_IsLLVMPtr |] =
     return $ mkTypeTrans0 APTrans_IsLLVMPtr
   translate p@[nuP| Perm_NamedConj npn args off |] =
@@ -2888,13 +2893,12 @@ translateLLVMStmt [nuP| TypedLLVMDeleteFrame _ _ _ |] m =
   inExtTransM ETrans_Unit $
   withPermStackM (const MNil) (const MNil) m
 
-translateLLVMStmt [nuP| TypedLLVMLoadHandle _ mb_fun_perm |] m =
+translateLLVMStmt [nuP| TypedLLVMLoadHandle _ tp mb_p |] m =
   inExtTransM ETrans_Fun $
   withPermStackM ((:>: Member_Base) . mapRListTail)
-  (\(pctx :>: PTrans_Conj [APTrans_LLVMFunPtr mb_fun_perm' t]) ->
-    case mbMap2 funPermEq3 (extMb mb_fun_perm) mb_fun_perm' of
-      [nuP| Just (Refl, Refl, Refl) |] ->
-        pctx :>: PTrans_Conj [APTrans_Fun (extMb mb_fun_perm) t]
+  (\(pctx :>: PTrans_Conj [APTrans_LLVMFunPtr tp' ptrans]) ->
+    case testEquality (mbLift tp) tp' of
+      Just Refl -> pctx :>: ptrans
       _ -> error ("translateLLVMStmt: TypedLLVMLoadHandle: "
                   ++ "unexpected function permission type"))
   m
@@ -3167,7 +3171,7 @@ someCFGAndPermPtrPerm :: (1 <= ArchWidth arch, KnownNat (ArchWidth arch),
                          NatRepr w -> SomeCFGAndPerm (LLVM arch) ->
                          ValuePerm (LLVMPointerType w)
 someCFGAndPermPtrPerm w (SomeCFGAndPerm _ _ _ fun_perm) =
-  withKnownNat w $ ValPerm_Conj1 $ Perm_LLVMFunPtr fun_perm
+  withKnownNat w $ ValPerm_Conj1 $ mkPermLLVMFunPtr w fun_perm
 
 
 -- | Type-check a set of 'CFG's against their function permissions and translate

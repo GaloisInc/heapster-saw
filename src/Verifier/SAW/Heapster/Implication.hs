@@ -3213,10 +3213,10 @@ proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFree mb_e |] =
       castLLVMFreeM x e' e
     _ -> proveVarAtomicImplUnfoldOrFail x ps ap
 
-proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFunPtr mb_fperm |] =
-  partialSubstForceM mb_fperm
-  "proveVarAtomicImpl: incomplete psubst: LLVM function pointer" >>>= \fperm ->
-  case elemIndex (Perm_LLVMFunPtr fperm) ps of
+proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFunPtr tp mb_p |] =
+  partialSubstForceM mb_p
+  "proveVarAtomicImpl: incomplete psubst: LLVM function pointer" >>>= \p ->
+  case elemIndex (Perm_LLVMFunPtr (mbLift tp) p) ps of
     Just i -> implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps)
     _ -> proveVarAtomicImplUnfoldOrFail x ps ap
 
@@ -3298,12 +3298,17 @@ proveVarAtomicImpl x [Perm_Fun fun_perm] [nuP| Perm_Fun (PExpr_Var z) |]
       Nothing -> setVarM memb fun_perm
 -}
 
-proveVarAtomicImpl x aps@[Perm_Fun fun_perm] mb_ap@[nuP| Perm_Fun mb_fun_perm |] =
+proveVarAtomicImpl x ps mb_p@[nuP| Perm_Fun mb_fun_perm |] =
   partialSubstForceM mb_fun_perm
   "proveVarAtomicImpl: incomplete function perm" >>>= \fun_perm' ->
-  case funPermEq fun_perm fun_perm' of
-    Just Refl -> greturn ()
-    Nothing -> proveVarAtomicImplUnfoldOrFail x aps mb_ap
+  foldr (\(i::Int,p) rest ->
+          case p of
+            Perm_Fun fun_perm
+              | Just Refl <- funPermEq fun_perm fun_perm' ->
+                implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps)
+            _ -> rest)
+  (proveVarAtomicImplUnfoldOrFail x ps mb_p)
+  (zip [0..] ps)
 
 proveVarAtomicImpl x ps [nuP| Perm_BVProp mb_prop |] =
   implPopM x (ValPerm_Conj ps) >>>

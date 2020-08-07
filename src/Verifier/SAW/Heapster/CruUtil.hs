@@ -370,6 +370,14 @@ cruCtxToRepr :: CruCtx ctx -> CtxRepr (RListToCtx ctx)
 cruCtxToRepr CruCtxNil = Ctx.empty
 cruCtxToRepr (CruCtxCons ctx tp) = Ctx.extend (cruCtxToRepr ctx) tp
 
+-- | Build a proof that calling 'cruCtxToRepr' followed by 'mkCruCtx' yields
+-- equal types
+cruCtxToReprEq :: CruCtx ctx -> CtxToRList (RListToCtx ctx) :~: ctx
+cruCtxToReprEq CruCtxNil = Refl
+cruCtxToReprEq (CruCtxCons ctx tp) =
+  case cruCtxToReprEq ctx of
+    Refl -> Refl
+
 instance Show (CruCtx ctx) where
   show = show . cruCtxToRepr
 

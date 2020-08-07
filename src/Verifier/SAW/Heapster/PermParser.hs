@@ -570,12 +570,12 @@ parseAtomicPerm tp@(LLVMPointerRepr w)
      (do try (string "llvmfunptr" >> spaces >> char '{')
          Some (Pair args_no _) <- parseNatRepr
          spaces >> char ',' >> spaces
-         Some (Pair w LeqProof)  <- parseNatRepr
+         Some (Pair w' LeqProof)  <- parseNatRepr
          spaces >> char '}' >> spaces >> char '('
-         Some args <- return $ cruCtxReplicate args_no (LLVMPointerRepr w)
-         SomeFunPerm fun_perm <- parseFunPermM args (LLVMPointerRepr w) 
+         Some args <- return $ cruCtxReplicate args_no (LLVMPointerRepr w')
+         SomeFunPerm fun_perm <- parseFunPermM args (LLVMPointerRepr w')
          spaces >> char ')'
-         return $ Perm_LLVMFunPtr fun_perm) <|>     
+         return $ mkPermLLVMFunPtr w fun_perm) <|>     
      (Perm_BVProp <$> parseBVProp) <|>
      parseAtomicNamedPerm tp <?>
      ("atomic permission of type " ++ show tp))
