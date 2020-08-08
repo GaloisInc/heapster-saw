@@ -3972,6 +3972,16 @@ permEnvAddGlobalSymFun env sym (w :: f w) fun_perm t =
   env { permEnvGlobalSyms =
           PermEnvGlobalEntry sym p [t] : permEnvGlobalSyms env }
 
+-- | Add a global symbol with 0 or more function permissions to a 'PermEnv'
+permEnvAddGlobalSymFunMulti :: (1 <= w, KnownNat w) => PermEnv ->
+                               GlobalSymbol -> f w ->
+                               [(SomeFunPerm args ret, OpenTerm)] -> PermEnv
+permEnvAddGlobalSymFunMulti env sym (w :: f w) ps_ts =
+  let p = ValPerm_Conj $ map (\(SomeFunPerm fp,_) ->
+                               mkPermLLVMFunPtr w fp) ps_ts in
+  env { permEnvGlobalSyms =
+          PermEnvGlobalEntry sym p (map snd ps_ts) : permEnvGlobalSyms env }
+
 -- | Add some 'PermEnvGlobalEntry's to a 'PermEnv'
 permEnvAddGlobalSyms :: PermEnv -> [PermEnvGlobalEntry] -> PermEnv
 permEnvAddGlobalSyms env entries = env { permEnvGlobalSyms =
