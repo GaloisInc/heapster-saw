@@ -2809,6 +2809,15 @@ extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' psubst mb_fp
     extractNeededLLVMFieldPerm x p off' psubst
     (fmap (\fp' -> fp' { llvmFieldRW = llvmFieldRW fp }) mb_fp)
 
+-- If proving x:ptr((rw,off) |-> p) |- x:ptr((z,off') |-> p') where z is
+-- defined, substitute for z and recurse
+extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' psubst mb_fp
+  | [nuP| PExpr_Var z |] <- fmap llvmFieldRW mb_fp
+  , Left memb <- mbNameBoundP z
+  , Just rw <- psubstLookup psubst memb =
+    extractNeededLLVMFieldPerm x p off' psubst
+    (fmap (\fp' -> fp' { llvmFieldRW = rw }) mb_fp)
+
 -- If proving x:ptr((R,off) |-> p) |- x:ptr((R,off') |-> p'), just copy the read
 -- permission
 extractNeededLLVMFieldPerm x (Perm_LLVMField fp) off' _ mb_fp
