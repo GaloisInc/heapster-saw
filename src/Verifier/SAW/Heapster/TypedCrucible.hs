@@ -1549,6 +1549,8 @@ ppRelevantPerms r =
       ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
     ValPerm_Eq (PExpr_LLVMOffset x _) ->
       ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
+    ValPerm_Eq (PExpr_LLVMWord (PExpr_Var x)) ->
+      ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
     _ -> greturn pp_r
 
 -- | Pretty-print a Crucible 'Reg' and what 'TypedReg' it is equal to, along
@@ -2085,8 +2087,7 @@ tcEmitStmt ctx loc stmt =
   stmtTraceM (const (string "Type-checking statement:" <+>
                      ppStmt (size ctx) stmt)) >>>
   permGetPPInfo >>>= \ppInfo ->
-  mapM (\(Some r) -> ppCruRegAndPerms ctx r)
-  (stmtInputRegs stmt) >>>= \pps ->
+  mapM (\(Some r) -> ppCruRegAndPerms ctx r) (stmtInputRegs stmt) >>>= \pps ->
   stmtTraceM (const (string "Input perms:" </> ppCommaSep pps)) >>>
   tcEmitStmt' ctx loc stmt >>>= \ctx' ->
   mapM (\(Some r) -> ppCruRegAndPerms ctx' r) (stmtOutputRegs
