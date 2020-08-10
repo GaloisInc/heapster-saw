@@ -1700,6 +1700,19 @@ mkPermLLVMFunPtr (w :: f w) fun_perm =
                        (funPermRet fun_perm))
       (ValPerm_Conj1 $ Perm_Fun fun_perm)
 
+-- | Helper function to build a 'Perm_LLVMFunPtr' from a list of 'FunPerm's. The
+-- list must be non-empty.
+mkPermLLVMFunPtrs :: (1 <= w, KnownNat w) => f w -> [SomeFunPerm args ret] ->
+                     AtomicPerm (LLVMPointerType w)
+mkPermLLVMFunPtrs (w :: f w) [] = error "mkPermLLVMFunPtrs: empty list"
+mkPermLLVMFunPtrs (w :: f w) fun_perms@(SomeFunPerm fun_perm:_) =
+  case cruCtxToReprEq (funPermArgs fun_perm) of
+    Refl ->
+      Perm_LLVMFunPtr (FunctionHandleRepr
+                       (cruCtxToRepr $ funPermArgs fun_perm)
+                       (funPermRet fun_perm))
+      (ValPerm_Conj $ map (\(SomeFunPerm fp) -> Perm_Fun fp) fun_perms)
+
 -- | Existential permission @x:eq(word(e))@ for some @e@
 llvmExEqWord :: (1 <= w, KnownNat w) =>
                 Binding (BVType w) (ValuePerm (LLVMPointerType w))
@@ -3977,8 +3990,7 @@ permEnvAddGlobalSymFunMulti :: (1 <= w, KnownNat w) => PermEnv ->
                                GlobalSymbol -> f w ->
                                [(SomeFunPerm args ret, OpenTerm)] -> PermEnv
 permEnvAddGlobalSymFunMulti env sym (w :: f w) ps_ts =
-  let p = ValPerm_Conj $ map (\(SomeFunPerm fp,_) ->
-                               mkPermLLVMFunPtr w fp) ps_ts in
+  let p = ValPerm_Conj1 $ mkPermLLVMFunPtrs w $ map fst ps_ts in
   env { permEnvGlobalSyms =
           PermEnvGlobalEntry sym p (map snd ps_ts) : permEnvGlobalSyms env }
 
