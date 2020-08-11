@@ -2759,6 +2759,14 @@ proveVarLLVMFieldH x fp off' mb_fp =
         | Left memb <- mbNameBoundP z
         , Nothing <- psubstLookup psubst memb ->
           setVarM memb l1
+      (l1, [nuP| PExpr_Var z |])
+        | Left memb <- mbNameBoundP z
+        , Just l2 <- psubstLookup psubst memb
+        , l1 == l2 -> greturn ()
+      (PExpr_Always, [nuP| PExpr_Var z |])
+        | Left memb <- mbNameBoundP z
+        , Just l2 <- psubstLookup psubst memb ->
+          implSimplM Proxy (SImpl_LLVMFieldLifetimeAlways x fp l2)
       (PExpr_Always, [nuP| PExpr_Var z |])
         | Right l2 <- mbNameBoundP z ->
           implSimplM Proxy (SImpl_LLVMFieldLifetimeAlways x fp $ PExpr_Var l2)
