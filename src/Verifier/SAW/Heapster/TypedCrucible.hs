@@ -1523,17 +1523,14 @@ getRegFunPerm freg =
     ValPerm_Eq (PExpr_Fun f)
       | Just (some_fun_perm, _) <- lookupFunPerm env f ->
           greturn some_fun_perm
-    ValPerm_Conj ps ->
-      stmtEmbedImplM $
-      foldr (\(i::Int,p) rest ->
-              case p of
-                Perm_Fun fun_perm ->
-                  implCatchM (greturn (SomeFunPerm fun_perm)) rest
-                _ -> rest)
-      (implTraceM (\i ->
-                    string "No function permission for" <+> permPretty i freg) >>>=
-       implFailM)
-      (zip [0..] ps)
+    ValPerm_Conj ps
+      | any isFunPerm ps ->
+        stmtEmbedImplM $ foldr1 implCatchM $
+        mapMaybe (\p ->
+                   case p of
+                     Perm_Fun fun_perm ->
+                       Just (greturn (SomeFunPerm fun_perm))
+                     _ -> Nothing) ps
     _ -> stmtFailM (\i ->
                      string "No function permission for" <+> permPretty i freg)
 

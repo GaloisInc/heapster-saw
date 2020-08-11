@@ -1661,6 +1661,11 @@ isLLVMArrayPerm :: AtomicPerm (LLVMPointerType w) -> Bool
 isLLVMArrayPerm (Perm_LLVMArray _) = True
 isLLVMArrayPerm _ = False
 
+-- | Test if an 'AtomicPerm' is a function permission
+isFunPerm :: AtomicPerm a -> Bool
+isFunPerm (Perm_Fun _) = True
+isFunPerm _ = False
+
 -- | Test if an 'AtomicPerm' is a named conjunctive permission
 isNamedConjPerm :: AtomicPerm a -> Bool
 isNamedConjPerm (Perm_NamedConj _ _ _) = True
