@@ -295,6 +295,9 @@ data PermExpr (a :: CrucibleType) where
   -- | A literal natural number
   PExpr_Nat :: Integer -> PermExpr NatType
 
+  -- | A literal string
+  PExpr_String :: String -> PermExpr StringType
+
   -- | A bitvector expression is a linear expression in @N@ variables, i.e., sum
   -- of constant times variable factors plus a constant
   --
@@ -373,6 +376,9 @@ instance Eq (PermExpr a) where
   (PExpr_Nat n1) == (PExpr_Nat n2) = n1 == n2
   (PExpr_Nat _) == _ = False
 
+  (PExpr_String str1) == (PExpr_String str2) = str1 == str2
+  (PExpr_String _) == _ = False
+
   (PExpr_Bool b1) == (PExpr_Bool b2) = b1 == b2
   (PExpr_Bool _) == _ = False
 
@@ -431,6 +437,7 @@ instance PermPretty (PermExpr a) where
   permPrettyM (PExpr_Var x) = permPrettyM x
   permPrettyM PExpr_Unit = return $ string "()"
   permPrettyM (PExpr_Nat n) = return $ integer n
+  permPrettyM (PExpr_String str) = return (char '"' <> string str <> char '"')
   permPrettyM (PExpr_Bool b) = return $ bool b
   permPrettyM (PExpr_BV factors const) =
     do pps <- mapM permPrettyM factors
@@ -2468,6 +2475,7 @@ instance FreeVars (PermExpr a) where
   freeVars PExpr_Unit = NameSet.empty
   freeVars (PExpr_Bool _) = NameSet.empty
   freeVars (PExpr_Nat _) = NameSet.empty
+  freeVars (PExpr_String _) = NameSet.empty
   freeVars (PExpr_BV factors _) = freeVars factors
   freeVars (PExpr_Struct elems) = freeVars elems
   freeVars PExpr_Always = NameSet.empty
@@ -3062,6 +3070,7 @@ instance SubstVar s m => Substable s (PermExpr a) m where
   genSubst s [nuP| PExpr_Var x |] = substExprVar s x
   genSubst _ [nuP| PExpr_Unit |] = return $ PExpr_Unit
   genSubst _ [nuP| PExpr_Nat n |] = return $ PExpr_Nat $ mbLift n
+  genSubst _ [nuP| PExpr_String str |] = return $ PExpr_String $ mbLift str
   genSubst _ [nuP| PExpr_Bool b |] = return $ PExpr_Bool $ mbLift b
   genSubst s [nuP| PExpr_BV factors off |] =
     foldr bvAdd (PExpr_BV [] (mbLift off)) <$>
@@ -3644,6 +3653,9 @@ instance AbstractVars (PermExpr a) where
   abstractPEVars ns1 ns2 (PExpr_Nat i) =
     absVarsReturnH ns1 ns2 $(mkClosed [| PExpr_Nat |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 i
+  abstractPEVars ns1 ns2 (PExpr_String str) =
+    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_String |])
+                            `clApply` toClosed str)
   abstractPEVars ns1 ns2 (PExpr_BV factors k) =
     absVarsReturnH ns1 ns2 $(mkClosed [| PExpr_BV |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 factors

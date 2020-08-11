@@ -25,7 +25,7 @@
 module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
--- import Data.Text hiding (length, map, concat, findIndex, foldr, foldl, maximum, take, last)
+import qualified Data.Text as Text
 import Data.List (findIndex, maximumBy, filter)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -606,7 +606,8 @@ data TypedTermStmt blocks tops ret ps_in where
                  TypedTermStmt blocks tops ret ps_in
 
   -- | Block ends with an error
-  TypedErrorStmt :: TypedReg StringType -> TypedTermStmt blocks tops ret ps_in
+  TypedErrorStmt :: Maybe String -> TypedReg StringType ->
+                    TypedTermStmt blocks tops ret ps_in
 
 
 -- | A typed sequence of Crucible statements
@@ -874,7 +875,8 @@ instance SubstVar PermVarSubst m =>
     genSubst s impl_tgt2
   genSubst s [nuP| TypedReturn impl_ret |] =
     TypedReturn <$> genSubst s impl_ret
-  genSubst s [nuP| TypedErrorStmt r |] = TypedErrorStmt <$> genSubst s r
+  genSubst s [nuP| TypedErrorStmt str r |] =
+    TypedErrorStmt (mbLift str) <$> genSubst s r
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
          Substable PermVarSubst (TypedStmtSeq ext blocks tops ret ps_in) m where
@@ -1987,6 +1989,10 @@ tcExpr (BoolXor (RegWithVal _ (PExpr_Bool True))
 
 tcExpr (NatLit i) = greturn $ Just $ PExpr_Nat $ toInteger i
 
+-- String expressions --
+
+tcExpr (TextLit text) = greturn $ Just $ PExpr_String $ Text.unpack text
+
 -- Bitvector expressions --
 
 tcExpr (BVLit w i) = withKnownNat w $ greturn $ Just $ bvInt i
@@ -2801,7 +2807,13 @@ tcTermStmt ctx (Return reg) =
   (const $ TypedRet Refl (stRetType top_st) treg mb_ret_perms)
   (proveVarsImpl $ distPermsToExDistPerms $
    varSubst (singletonVarSubst $ typedRegVar treg) mb_ret_perms)
-tcTermStmt ctx (ErrorStmt reg) = greturn $ TypedErrorStmt $ tcReg ctx reg
+tcTermStmt ctx (ErrorStmt reg) =
+  let treg = tcReg ctx reg in
+  getRegPerm treg >>>= \treg_p ->
+  let maybe_str = case treg_p of
+        ValPerm_Eq (PExpr_String str) -> Just str
+        _ -> Nothing in
+  greturn $ TypedErrorStmt maybe_str treg
 tcTermStmt _ tstmt =
   error ("tcTermStmt: unhandled termination statement: "
          ++ show (pretty tstmt))

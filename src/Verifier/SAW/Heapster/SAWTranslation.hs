@@ -2954,8 +2954,10 @@ instance PermCheckExtC ext =>
     [compReturnTypeM, translate1 reg,
      translate impl_tgt1, translate impl_tgt2]
   translate [nuP| TypedReturn impl_ret |] = translate impl_ret
-  translate [nuP| TypedErrorStmt _ |] =
-    itiCatchHandler <$> ask <*> return "Error statement"
+  translate [nuP| TypedErrorStmt (Just str) _ |] =
+    itiCatchHandler <$> ask <*> return ("Error: " ++ mbLift str)
+  translate [nuP| TypedErrorStmt Nothing _ |] =
+    itiCatchHandler <$> ask <*> return "Error (unknown message)"
 
 
 instance PermCheckExtC ext =>
