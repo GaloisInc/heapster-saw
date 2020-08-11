@@ -3307,9 +3307,9 @@ translateCompleteTypeInCtx sc env args ret =
   runNilTypeTransM (piExprCtx args (typeTransType1 <$> translate ret')) env
   where ret' = mbCombine . emptyMb $ ret
 
--- | Translate a function with arguments and return type given by 'ValuePerm's
--- to the SAW core type it represents. Note that unlike
--- 'translateCompleteFunPerm', this does not wrap the return type with CompM.
+-- | Translate an input list of 'ValuePerms' and an output 'ValuePerm' to a SAW
+-- core function type in a manner similar to 'translateCompleteFunPerm', except
+-- that the returned function type is not in the @CompM@ monad.
 translateCompletePureFun :: SharedContext -> PermEnv
                          -> CruCtx ctx -- ^ Type arguments
                          -> Mb ctx (ValuePerms args) -- ^ Input perms
@@ -3318,6 +3318,6 @@ translateCompletePureFun :: SharedContext -> PermEnv
 translateCompletePureFun sc env ctx args ret =
   completeOpenTerm sc $
   runNilTypeTransM (piExprCtx ctx $ piPermCtx args' $ const $
-                    typeTransType1 <$> translate ret') env
+                    typeTransTupleType <$> translate ret') env
   where args' = mbCombine . emptyMb $ args
         ret'  = mbCombine . emptyMb $ ret
