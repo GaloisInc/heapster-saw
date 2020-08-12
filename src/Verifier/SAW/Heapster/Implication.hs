@@ -669,6 +669,94 @@ $(mkNuMatching [t| forall r bs_pss. NuMatchingAny1 r => MbPermImpls r bs_pss |])
 $(mkNuMatching [t| forall r ps. NuMatchingAny1 r => PermImpl r ps |])
 
 
+-- | Compile-time flag for whether to prune failure branches in 'implCatchM'
+pruneFailingBranches :: Bool
+pruneFailingBranches = False
+
+
+-- | Apply the 'PermImpl_Step' constructor to a 'PermImpl1' rule and its
+-- sub-proofs, performing simplifications to combine failure cases and to turn
+-- unary rules applied to failure cases to just failure cases.
+permImplStep :: PermImpl1 ps_in ps_outs -> MbPermImpls r ps_outs ->
+                PermImpl r ps_in
+
+-- No need to simplify a fail
+permImplStep impl1@(Impl1_Fail msg) mb_impls = PermImpl_Step impl1 mb_impls
+
+-- Catch --> call the permImplCatch function
+permImplStep Impl1_Catch ((MbPermImpls_Cons
+                           (MbPermImpls_Cons _ mb_pimpl1) mb_pimpl2)) =
+  permImplCatch (elimEmptyMb mb_pimpl1) (elimEmptyMb mb_pimpl2)
+
+-- Unary rules applied to failure --> failures
+--
+-- NOTE: we write the cases all out explicitly in case we add a new Impl1 rule
+-- that does not work this way, since not simplifying is better than
+-- oversimplifying
+permImplStep (Impl1_Push _ _) (MbPermImpls_Cons MbPermImpls_Nil
+                               [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
+  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+permImplStep (Impl1_Pop _ _) (MbPermImpls_Cons MbPermImpls_Nil
+                              [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
+  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+permImplStep (Impl1_ElimExists _ _) (MbPermImpls_Cons MbPermImpls_Nil
+                                     [nuP| PermImpl_Step
+                                         (Impl1_Fail msg) _ |]) =
+  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+permImplStep (Impl1_Simpl _ _) (MbPermImpls_Cons MbPermImpls_Nil
+                                [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
+  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+permImplStep (Impl1_LetBind _ _) (MbPermImpls_Cons MbPermImpls_Nil
+                                  [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
+  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+permImplStep (Impl1_ElimLLVMFieldContents
+              _ _) (MbPermImpls_Cons MbPermImpls_Nil
+                    [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
+  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+permImplStep (Impl1_TryProveBVProp _ _ _) (MbPermImpls_Cons MbPermImpls_Nil
+                                           [nuP| PermImpl_Step
+                                               (Impl1_Fail msg) _ |]) =
+  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+
+-- An or elimination fails if both branches fail
+permImplStep (Impl1_ElimOr _ _ _) (MbPermImpls_Cons
+                                   (MbPermImpls_Cons MbPermImpls_Nil
+                                    [nuP| PermImpl_Step
+                                        (Impl1_Fail msg1) _ |])
+                                   [nuP| PermImpl_Step
+                                       (Impl1_Fail msg2) _ |]) =
+  PermImpl_Step (Impl1_Fail
+                 (mbLift msg1 ++ "\n\n--------------------\n\n" ++ mbLift msg2))
+  MbPermImpls_Nil
+
+-- Default case: just apply PermImpl_Step
+permImplStep impl1 mb_impls = PermImpl_Step impl1 mb_impls
+
+
+-- | Produce a branching proof tree that performs the first implication and, if
+-- that one fails, falls back on the second. If 'pruneFailingBranches' is set,
+-- failing branches are pruned.
+permImplCatch :: PermImpl r ps -> PermImpl r ps -> PermImpl r ps
+permImplCatch (PermImpl_Step (Impl1_Fail _) _) pimpl
+  | pruneFailingBranches = pimpl
+permImplCatch pimpl (PermImpl_Step (Impl1_Fail _) _)
+  | pruneFailingBranches = pimpl
+permImplCatch (PermImpl_Step (Impl1_Fail str1) _) (PermImpl_Step
+                                                   (Impl1_Fail str2) mb_impls) =
+  PermImpl_Step (Impl1_Fail (str1 ++ "\n\n--------------------\n\n" ++ str2)) mb_impls
+permImplCatch pimpl1@(PermImpl_Step (Impl1_Fail _) _) pimpl2 =
+  permImplCatch pimpl2 pimpl1
+permImplCatch (PermImpl_Step Impl1_Catch
+               (MbPermImpls_Cons
+                (MbPermImpls_Cons _ mb_pimpl_1a) mb_pimpl_1b)) pimpl2 =
+  permImplCatch (elimEmptyMb mb_pimpl_1a) $
+  permImplCatch (elimEmptyMb mb_pimpl_1b) pimpl2
+permImplCatch pimpl1 pimpl2 =
+  PermImpl_Step Impl1_Catch $
+  MbPermImpls_Cons (MbPermImpls_Cons MbPermImpls_Nil $ emptyMb pimpl1) $
+  emptyMb pimpl2
+
+
 -- | Test if a 'PermImpl' "succeeds", meaning there is at least one non-failing
 -- branch. If it does succeed, return a heuristic number for how "well" it
 -- succeeds; e.g., rate a 'PermImpl' higher if all disjunctive branches succeed,
@@ -1881,7 +1969,7 @@ implApplyImpl1 :: PermImpl1 ps_in ps_outs ->
 implApplyImpl1 impl1 mb_ms =
   getPerms >>>= \perms ->
   (view implStatePPInfo <$> gget) >>>= \pp_info ->
-  gmapRet (PermImpl_Step impl1 <$>) >>>
+  gmapRet (permImplStep impl1 <$>) >>>
   helper (applyImpl1 pp_info impl1 perms) mb_ms
   where
     helper :: MbPermSets ps_outs ->
@@ -1934,37 +2022,14 @@ implFailVarM f x p mb_p =
                     ppImpl i x p mb_p]) >>>=
   implFailM
 
--- | Compile-time flag for whether to prune failure branches in 'implCatchM'
-pruneFailingBranches :: Bool
-pruneFailingBranches = False
-
 -- | Produce a branching proof tree that performs the first implication and, if
 -- that one fails, falls back on the second. If 'pruneFailingBranches' is set,
 -- failing branches are pruned.
 implCatchM :: ImplM vars s r ps1 ps2 a -> ImplM vars s r ps1 ps2 a ->
               ImplM vars s r ps1 ps2 a
-implCatchM =
-  gparallel (\m1 m2 -> permImplCatch <$> m1 <*> m2)
-  where
-    permImplCatch :: PermImpl r ps -> PermImpl r ps -> PermImpl r ps
-    permImplCatch (PermImpl_Step (Impl1_Fail _) _) pimpl
-      | pruneFailingBranches = pimpl
-    permImplCatch pimpl (PermImpl_Step (Impl1_Fail _) _)
-      | pruneFailingBranches = pimpl
-    permImplCatch (PermImpl_Step (Impl1_Fail str1) _) (PermImpl_Step
-                                                       (Impl1_Fail str2) mb_impls) =
-      PermImpl_Step (Impl1_Fail (str1 ++ "\n\n--------------------\n\n" ++ str2)) mb_impls
-    permImplCatch pimpl1@(PermImpl_Step (Impl1_Fail _) _) pimpl2 =
-      permImplCatch pimpl2 pimpl1
-    permImplCatch (PermImpl_Step Impl1_Catch
-                   (MbPermImpls_Cons
-                    (MbPermImpls_Cons _ mb_pimpl_1a) mb_pimpl_1b)) pimpl2 =
-      permImplCatch (elimEmptyMb mb_pimpl_1a) $
-      permImplCatch (elimEmptyMb mb_pimpl_1b) pimpl2
-    permImplCatch pimpl1 pimpl2 =
-      PermImpl_Step Impl1_Catch $
-      MbPermImpls_Cons (MbPermImpls_Cons MbPermImpls_Nil $ emptyMb pimpl1) $
-      emptyMb pimpl2
+implCatchM m1 m2 =
+  implApplyImpl1 Impl1_Catch (MNil :>: Impl1Cont (const m1)
+                              :>: Impl1Cont (const m2))
 
 -- | "Push" all of the permissions in the permission set for a variable, which
 -- should be equal to the supplied permission, after deleting those permissions
