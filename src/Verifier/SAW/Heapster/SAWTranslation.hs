@@ -1570,7 +1570,8 @@ data ImpTransInfo ext blocks tops ret ps ctx =
     itiPermStackVars :: MapRList (Member ctx) ps,
     itiPermEnv :: PermEnv,
     itiBlockMapTrans :: TypedBlockMapTrans ext blocks tops ret,
-    itiCatchHandler :: String -> OpenTerm,
+    itiCatchHandler :: OpenTerm -> OpenTerm,
+    itiPrevErrMessage :: Maybe OpenTerm,
     itiReturnType :: OpenTerm
   }
 
@@ -1588,10 +1589,9 @@ instance TransInfo (ImpTransInfo ext blocks tops ret ps) where
 
 -- | Return the default catch handler of a given return type, which is just a
 -- call to @errorM@ at that type
-defaultCatchHandler :: OpenTerm -> String -> OpenTerm
+defaultCatchHandler :: OpenTerm -> OpenTerm -> OpenTerm
 defaultCatchHandler tp str =
-  applyOpenTermMulti (globalOpenTerm "Prelude.errorM")
-  [tp, flatOpenTerm (StringLit str)]
+  applyOpenTermMulti (globalOpenTerm "Prelude.errorM") [tp, str]
 
 -- | The monad for translating permission implications
 type ImpTransM ext blocks tops ret ps =
@@ -1612,6 +1612,7 @@ impTransM pvars pctx mapTrans retType =
                  itiPermEnv = env,
                  itiBlockMapTrans = mapTrans,
                  itiCatchHandler = defaultCatchHandler retType,
+                 itiPrevErrMessage = Nothing,
                  itiReturnType = retType }
 
 -- | Embed a type translation into an impure translation
@@ -1712,8 +1713,27 @@ compReturnTypeTransM =
 withCatchHandlerM :: OpenTerm -> ImpTransM ext blocks tops ret ps_out ctx a ->
                      ImpTransM ext blocks tops ret ps_out ctx a
 withCatchHandlerM h =
-  local (\info -> info { itiCatchHandler =
-                           applyOpenTerm h . stringLitOpenTerm })
+  local (\info -> info { itiCatchHandler = applyOpenTerm h })
+
+-- | Apply the current catch handler to a string error message, prepending the
+-- previous error message if there is one
+applyCatchHandlerM :: String ->
+                      ImpTransM ext blocks tops ret ps_out ctx OpenTerm
+applyCatchHandlerM msg =
+  do info <- ask
+     let msg_trm = case itiPrevErrMessage info of
+           Just prev_msg ->
+             applyOpenTermMulti (globalOpenTerm "Prelude.appendString")
+             [prev_msg,
+              stringLitOpenTerm ("\n\n--------------------\n\n" ++ msg)]
+           Nothing -> stringLitOpenTerm msg
+     return $ itiCatchHandler info msg_trm
+
+-- | Run a computation with a new error message variable
+withPrevErrMessage :: OpenTerm -> ImpTransM ext blocks tops ret ps_out ctx a ->
+                      ImpTransM ext blocks tops ret ps_out ctx a
+withPrevErrMessage msg =
+  local (\info -> info { itiPrevErrMessage = Just msg })
 
 -- | The typeclass for the implication translation of a functor at any
 -- permission set inside any binding to an 'OpenTerm'
@@ -2169,16 +2189,19 @@ translatePermImpl1 :: ImplTranslateF r ext blocks tops ret =>
 -- A failure translates to a call to the catch handler, which is the most recent
 -- Impl1_Catch, if one exists, or the SAW errorM function otherwise
 translatePermImpl1 [nuP| Impl1_Fail str |] _ =
-  itiCatchHandler <$> ask <*> return (mbLift str)
+  applyCatchHandlerM (mbLift str)
 
 -- A catch runs the first computation using the second as catch handler
+--
+-- NOTE: don't get confused by the fact that the second computation shows up
+-- first in the term; this is because it is on the RHS of the let-binding
 translatePermImpl1 [nuP| Impl1_Catch |]
   [nuP| MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2 |] =
   do compMType <- compReturnTypeM
      letTransM "catchpoint" (arrowOpenTerm "msg" stringTypeOpenTerm compMType)
-       (lambdaOpenTermTransM "msg" stringTypeOpenTerm $
-        const $ translate $ mbCombine mb_impl1)
-       (\handler -> withCatchHandlerM handler $ translate $ mbCombine mb_impl2)
+       (lambdaOpenTermTransM "msg" stringTypeOpenTerm $ \msg ->
+         withPrevErrMessage msg $ translate $ mbCombine mb_impl2)
+       (\handler -> withCatchHandlerM handler $ translate $ mbCombine mb_impl1)
 
 -- A push moves the given permission from x to the top of the perm stack
 translatePermImpl1 [nuP| Impl1_Push x p |] [nuP| MbPermImpls_Cons _ mb_impl |] =
@@ -2279,14 +2302,14 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) _ |]
 translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_Eq e1 e2) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
   | not $ mbLift (mbMap2 bvCouldEqual e1 e2) =
-    itiCatchHandler <$> ask <*> return (mbLift prop_str)
+    applyCatchHandlerM (mbLift prop_str)
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) prop_str |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
   do prop_tp_trans <- translate prop
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-       , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
+       , (applyCatchHandlerM (mbLift prop_str))
        , lambdaTransM "eq_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans)
@@ -2301,7 +2324,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) prop_str
   [ compReturnTypeM
   , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
     [ return (natOpenTerm w), translate1 e1, translate1 e2 ]
-  , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
+  , (applyCatchHandlerM (mbLift prop_str))
   , withPermStackM (:>: translateVar x)
     (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)])
     (translate $ mbCombine mb_impl)]
@@ -2322,7 +2345,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
   do prop_tp_trans <- translate prop
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-       , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
+       , (applyCatchHandlerM (mbLift prop_str))
        , lambdaTransM "ult_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans)
@@ -2346,7 +2369,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
   do prop_tp_trans <- translate prop
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-       , (itiCatchHandler <$> ask <*> return (mbLift prop_str))
+       , (applyCatchHandlerM (mbLift prop_str))
        , lambdaTransM "ule_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans)
@@ -2716,7 +2739,7 @@ translateStmt loc [nuP| TypedSetReg _
         inExtTransM etrans (withPermStackM
                             (:>: Member_Base)
                             (:>: extPermTrans (exprOutPerm top_e)) m),
-        itiCatchHandler <$> ask <*> return ("Failed WithAssertion at " ++ show loc)]
+        applyCatchHandlerM ("Failed WithAssertion at " ++ show loc)]
 
 translateStmt _ [nuP| TypedSetReg _ e |] m =
   do etrans <- tpTransM $ translate e
@@ -2783,7 +2806,7 @@ translateStmt _ stmt@[nuP| EndLifetime _ ps _ end_perms |] m =
 translateStmt loc [nuP| TypedAssert e _ |] m =
   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
   [compReturnTypeM, translate1 e, m,
-   itiCatchHandler <$> ask <*> return ("Failed Assert at " ++ show loc)]
+   applyCatchHandlerM ("Failed Assert at " ++ show loc)]
 
 translateStmt _ [nuP| TypedLLVMStmt stmt |] m = translateLLVMStmt stmt m
 
@@ -2955,9 +2978,9 @@ instance PermCheckExtC ext =>
      translate impl_tgt1, translate impl_tgt2]
   translate [nuP| TypedReturn impl_ret |] = translate impl_ret
   translate [nuP| TypedErrorStmt (Just str) _ |] =
-    itiCatchHandler <$> ask <*> return ("Error: " ++ mbLift str)
+    applyCatchHandlerM ("Error: " ++ mbLift str)
   translate [nuP| TypedErrorStmt Nothing _ |] =
-    itiCatchHandler <$> ask <*> return "Error (unknown message)"
+    applyCatchHandlerM "Error (unknown message)"
 
 
 instance PermCheckExtC ext =>
