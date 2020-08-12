@@ -2177,8 +2177,8 @@ translatePermImpl1 [nuP| Impl1_Catch |]
   do compMType <- compReturnTypeM
      letTransM "catchpoint" (arrowOpenTerm "msg" stringTypeOpenTerm compMType)
        (lambdaOpenTermTransM "msg" stringTypeOpenTerm $
-        const $ translate $ mbCombine mb_impl2)
-       (\handler -> withCatchHandlerM handler $ translate $ mbCombine mb_impl1)
+        const $ translate $ mbCombine mb_impl1)
+       (\handler -> withCatchHandlerM handler $ translate $ mbCombine mb_impl2)
 
 -- A push moves the given permission from x to the top of the perm stack
 translatePermImpl1 [nuP| Impl1_Push x p |] [nuP| MbPermImpls_Cons _ mb_impl |] =
