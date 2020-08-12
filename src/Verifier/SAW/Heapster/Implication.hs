@@ -1951,6 +1951,16 @@ implCatchM =
       | pruneFailingBranches = pimpl
     permImplCatch pimpl (PermImpl_Step (Impl1_Fail _) _)
       | pruneFailingBranches = pimpl
+    permImplCatch (PermImpl_Step (Impl1_Fail str1) _) (PermImpl_Step
+                                                       (Impl1_Fail str2) mb_impls) =
+      PermImpl_Step (Impl1_Fail (str1 ++ "\n\n--------------------\n\n" ++ str2)) mb_impls
+    permImplCatch pimpl1@(PermImpl_Step (Impl1_Fail _) _) pimpl2 =
+      permImplCatch pimpl2 pimpl1
+    permImplCatch (PermImpl_Step Impl1_Catch
+                   (MbPermImpls_Cons
+                    (MbPermImpls_Cons _ mb_pimpl_1a) mb_pimpl_1b)) pimpl2 =
+      permImplCatch (elimEmptyMb mb_pimpl_1a) $
+      permImplCatch (elimEmptyMb mb_pimpl_1b) pimpl2
     permImplCatch pimpl1 pimpl2 =
       PermImpl_Step Impl1_Catch $
       MbPermImpls_Cons (MbPermImpls_Cons MbPermImpls_Nil $ emptyMb pimpl1) $
