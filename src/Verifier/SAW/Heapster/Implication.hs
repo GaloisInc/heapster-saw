@@ -659,7 +659,7 @@ data MbPermImpls r bs_pss where
   MbPermImpls_Cons :: MbPermImpls r bs_pss -> Mb bs (PermImpl r ps) ->
                       MbPermImpls r (bs_pss :> '(bs,ps))
 
--- type IsLLVMPointerTypeList w ps = MapRList ((:~:) (LLVMPointerType w)) ps
+-- type IsLLVMPointerTypeList w ps = RAssign ((:~:) (LLVMPointerType w)) ps
 
 
 
@@ -1442,7 +1442,7 @@ gmapRet f_ret =
 -- | Name-binding in the generalized continuation monad (FIXME: explain)
 gopenBinding :: GenMonadCaptureCC rin rout m p1 p2 =>
                 (Mb ctx rin -> rout) -> Mb ctx a ->
-                m p1 p2 (MapRList Name ctx, a)
+                m p1 p2 (RAssign Name ctx, a)
 gopenBinding f_ret mb_a =
   gcaptureCC $ \k ->
   f_ret $ flip nuMultiWithElim1 mb_a $ \names a ->
@@ -1945,7 +1945,7 @@ implFindVarOfType tp =
 
 -- | Remember the types associated with a list of 'Name's, and also ensure those
 -- names have permissions
-implSetNameTypes :: MapRList Name ctx -> CruCtx ctx -> ImplM vars s r ps ps ()
+implSetNameTypes :: RAssign Name ctx -> CruCtx ctx -> ImplM vars s r ps ps ()
 implSetNameTypes MNil _ = greturn ()
 implSetNameTypes (ns :>: n) (CruCtxCons tps tp) =
   gmodify (over implStateNameTypes $ NameMap.insert n tp) >>
@@ -1959,12 +1959,12 @@ implSetNameTypes (ns :>: n) (CruCtxCons tps tp) =
 
 -- | An 'ImplM' continuation for a permission implication rule
 newtype Impl1Cont vars s r ps_r a bs_ps =
-  Impl1Cont (MapRList Name (Fst bs_ps) -> ImplM vars s r ps_r (Snd bs_ps) a)
+  Impl1Cont (RAssign Name (Fst bs_ps) -> ImplM vars s r ps_r (Snd bs_ps) a)
 
 -- | Apply a permission implication rule, with the given continuations in the
 -- possible disjunctive branches of the result
 implApplyImpl1 :: PermImpl1 ps_in ps_outs ->
-                  MapRList (Impl1Cont vars s r ps_r a) ps_outs ->
+                  RAssign (Impl1Cont vars s r ps_r a) ps_outs ->
                   ImplM vars s r ps_r ps_in a
 implApplyImpl1 impl1 mb_ms =
   getPerms >>>= \perms ->
@@ -1973,7 +1973,7 @@ implApplyImpl1 impl1 mb_ms =
   helper (applyImpl1 pp_info impl1 perms) mb_ms
   where
     helper :: MbPermSets ps_outs ->
-              MapRList (Impl1Cont vars s r ps_r a) ps_outs ->
+              RAssign (Impl1Cont vars s r ps_r a) ps_outs ->
               GenStateContM (ImplState vars ps_r)
               (State (Closed s) (PermImpl r ps_r))
               (ImplState vars ps_in)
@@ -2471,8 +2471,8 @@ data LifetimeEndPerm a
   = LifetimeEndPerm (ExprVar a) (ValuePerm a)
   | LifetimeEndConj (ExprVar a) [AtomicPerm a] Int
 
-type LifetimeEndPerms ps = MapRList LifetimeEndPerm ps
-type SomeLifetimeEndPerms = Some (MapRList LifetimeEndPerm)
+type LifetimeEndPerms ps = RAssign LifetimeEndPerm ps
+type SomeLifetimeEndPerms = Some (RAssign LifetimeEndPerm)
 
 lifetimeEndPermsToDistPerms :: LifetimeEndPerms ps -> DistPerms ps
 lifetimeEndPermsToDistPerms MNil = DistPermsNil
@@ -3714,7 +3714,7 @@ distPermsToExDistPerms (DistPermsCons ps x p) =
 
 -- | Combine a list of names and a sequence of permissions inside a name-binding
 -- to get an 'ExDistPerms'
-mbValuePermsToExDistPerms :: MapRList Name ps -> Mb vars (ValuePerms ps) ->
+mbValuePermsToExDistPerms :: RAssign Name ps -> Mb vars (ValuePerms ps) ->
                              ExDistPerms vars ps
 mbValuePermsToExDistPerms MNil _ = ExDistPermsNil
 mbValuePermsToExDistPerms (ns :>: n) [nuP| ValPerms_Cons ps p |] =
@@ -3722,7 +3722,7 @@ mbValuePermsToExDistPerms (ns :>: n) [nuP| ValPerms_Cons ps p |] =
 
 -- | Substitute arguments into a function permission to get the existentially
 -- quantified input permissions needed on the arguments
-funPermExDistIns :: FunPerm ghosts args ret -> MapRList Name args ->
+funPermExDistIns :: FunPerm ghosts args ret -> RAssign Name args ->
                     ExDistPerms ghosts args
 funPermExDistIns fun_perm args =
   mbValuePermsToExDistPerms args $ fmap (varSubst (permVarSubstOfNames args)) $

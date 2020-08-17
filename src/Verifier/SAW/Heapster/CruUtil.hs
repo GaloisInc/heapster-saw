@@ -297,14 +297,14 @@ type family RListToCtxCtx (ctx :: RList (RList k)) :: Ctx (Ctx k) where
   RListToCtxCtx RNil = EmptyCtx
   RListToCtxCtx (ctx' :> c) = RListToCtxCtx ctx' ::> RListToCtx c
 
--- | Convert a Crucible 'Assignment' to a Hobbits 'MapRList'
-assignToRList :: Assignment f ctx -> MapRList f (CtxToRList ctx)
+-- | Convert a Crucible 'Assignment' to a Hobbits 'RAssign'
+assignToRList :: Assignment f ctx -> RAssign f (CtxToRList ctx)
 assignToRList asgn = case viewAssign asgn of
   AssignEmpty -> MNil
   AssignExtend asgn' f -> assignToRList asgn' :>: f
 
--- | Convert a Hobbits 'MapRList' to a Crucible 'Assignment'
-rlistToAssign :: MapRList f ctx -> Assignment f (RListToCtx ctx)
+-- | Convert a Hobbits 'RAssign' to a Crucible 'Assignment'
+rlistToAssign :: RAssign f ctx -> Assignment f (RListToCtx ctx)
 rlistToAssign MNil = Ctx.empty
 rlistToAssign (rlist :>: f) = extend (rlistToAssign rlist) f
 
@@ -320,7 +320,7 @@ unKnownReprObj :: KnownReprObj f a -> f a
 unKnownReprObj (KnownReprObj :: KnownReprObj f a) = knownRepr :: f a
 
 
--- | A context of Crucible types. NOTE: we do not use 'MapRList' here, because
+-- | A context of Crucible types. NOTE: we do not use 'RAssign' here, because
 -- we do not yet have a nice way to define the 'NuMatching' instance we want...
 data CruCtx ctx where
   CruCtxNil :: CruCtx RNil
@@ -402,8 +402,8 @@ appendCruCtx :: CruCtx ctx1 -> CruCtx ctx2 -> CruCtx (ctx1 :++: ctx2)
 appendCruCtx ctx1 CruCtxNil = ctx1
 appendCruCtx ctx1 (CruCtxCons ctx2 tp) = CruCtxCons (appendCruCtx ctx1 ctx2) tp
 
--- | Build a 'MapRList' phantom argument from a context of Crucible types
-cruCtxProxies :: CruCtx ctx -> MapRList Proxy ctx
+-- | Build a 'RAssign' phantom argument from a context of Crucible types
+cruCtxProxies :: CruCtx ctx -> RAssign Proxy ctx
 cruCtxProxies CruCtxNil = MNil
 cruCtxProxies (CruCtxCons ctx _) = cruCtxProxies ctx :>: Proxy
 

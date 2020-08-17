@@ -26,6 +26,7 @@ import Control.Monad.Fail (MonadFail)
 import qualified Control.Monad.Fail as Fail
 import Control.Monad.Identity
 import Control.Monad.Reader
+import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
 
@@ -208,8 +209,8 @@ withExprVar str tp x m =
 
 -- | Run a parsing computation in a context extended with 0 or more expression
 -- variables
-withExprVars :: MapRList (Constant String) ctx -> CruCtx ctx ->
-                MapRList Name ctx ->
+withExprVars :: RAssign (Constant String) ctx -> CruCtx ctx ->
+                RAssign Name ctx ->
                 PermParseM s a -> PermParseM s a
 withExprVars MNil CruCtxNil MNil m = m
 withExprVars (xs :>: Constant x) (CruCtxCons ctx tp) (ns :>: n) m =
@@ -713,7 +714,7 @@ parseBVRange =
 
 -- | A sequence of variable names and their types
 data ParsedCtx ctx = ParsedCtx {
-  parsedCtxNames :: MapRList (Constant String) ctx,
+  parsedCtxNames :: RAssign (Constant String) ctx,
   parsedCtxCtx :: CruCtx ctx
   }
 
@@ -740,19 +741,19 @@ emptyParsedCtx = ParsedCtx MNil CruCtxNil
 appendParsedCtx :: ParsedCtx ctx1 -> ParsedCtx ctx2 ->
                    ParsedCtx (ctx1 :++: ctx2)
 appendParsedCtx (ParsedCtx ns1 ctx1) (ParsedCtx ns2 ctx2) =
-  ParsedCtx (appendMapRList ns1 ns2) (appendCruCtx ctx1 ctx2)
+  ParsedCtx (RL.append ns1 ns2) (appendCruCtx ctx1 ctx2)
 
 -- | Add a variable name and type to the beginning of an unknown 'ParsedCtx'
 preconsSomeParsedCtx :: String -> Some TypeRepr -> Some ParsedCtx ->
                         Some ParsedCtx
 preconsSomeParsedCtx x (Some (tp :: TypeRepr tp)) (Some (ParsedCtx ns tps)) =
   Some $ ParsedCtx
-  (appendMapRList (MNil :>: (Constant x :: Constant String tp)) ns)
+  (RL.append (MNil :>: (Constant x :: Constant String tp)) ns)
   (appendCruCtx (singletonCruCtx tp) tps)
 
 mkArgsParsedCtx :: CruCtx ctx -> ParsedCtx ctx
 mkArgsParsedCtx ctx = ParsedCtx (helper ctx) ctx where
-  helper :: CruCtx ctx' -> MapRList (Constant String) ctx'
+  helper :: CruCtx ctx' -> RAssign (Constant String) ctx'
   helper CruCtxNil = MNil
   helper (CruCtxCons ctx tp) =
     helper ctx :>: Constant ("arg" ++ show (cruCtxLen ctx))
@@ -795,11 +796,11 @@ parseDistPerms =
 data VarPermSpec a = VarPermSpec (Name a) (Maybe (ValuePerm a))
 
 -- | A sequence of variables @x@ and what pairs @x:p@ have been parsed so far
-type VarPermSpecs = MapRList VarPermSpec
+type VarPermSpecs = RAssign VarPermSpec
 
 -- | Build a 'VarPermSpecs' from a list of names
-mkVarPermSpecs :: MapRList Name ctx -> VarPermSpecs ctx
-mkVarPermSpecs = mapMapRList (\n -> VarPermSpec n Nothing)
+mkVarPermSpecs :: RAssign Name ctx -> VarPermSpecs ctx
+mkVarPermSpecs = RL.map (\n -> VarPermSpec n Nothing)
 
 -- | Find a 'VarPermSpec' for a particular variable
 findVarPermSpec :: Name (a :: CrucibleType) ->
@@ -818,8 +819,8 @@ setVarSpecsPermM :: Stream s Identity Char =>
                     PermParseM s (VarPermSpecs ctx)
 setVarSpecsPermM _ n p var_specs
   | Just memb <- findVarPermSpec n var_specs
-  , VarPermSpec _ Nothing <- mapRListLookup memb var_specs =
-    return $ mapRListModify memb (const $ VarPermSpec n $ Just p) var_specs
+  , VarPermSpec _ Nothing <- RL.get memb var_specs =
+    return $ RL.modify memb (const $ VarPermSpec n $ Just p) var_specs
 setVarSpecsPermM var n _ var_specs
   | Just memb <- findVarPermSpec n var_specs =
     unexpected ("Variable " ++ var ++ " occurs more than once!")
@@ -856,7 +857,7 @@ parseSortedValuePerms var_specs =
 -- | Run a parsing computation inside a name-binding for expressions variables
 -- given by a 'ParsedCtx'. Returning the results inside a name-binding.
 inParsedCtxM :: (Liftable s, NuMatching a) =>
-                ParsedCtx ctx -> (MapRList Name ctx -> PermParseM s a) ->
+                ParsedCtx ctx -> (RAssign Name ctx -> PermParseM s a) ->
                 PermParseM s (Mb ctx a)
 inParsedCtxM (ParsedCtx ids tps) f =
   mbM $ nuMulti (cruCtxProxies tps) $ \ns -> withExprVars ids tps ns (f ns)

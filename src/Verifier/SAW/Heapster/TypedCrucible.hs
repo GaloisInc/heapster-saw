@@ -44,6 +44,7 @@ import Control.Monad.Reader
 
 import Text.PrettyPrint.ANSI.Leijen (pretty)
 
+import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
@@ -87,9 +88,6 @@ internalLoc loc = mkProgramLoc (plFunction loc) InternalPos
 
 
 -- FIXME: move to Hobbits
-extMbMulti :: MapRList f ctx2 -> Mb ctx1 a -> Mb (ctx1 :++: ctx2) a
-extMbMulti ns mb = mbCombine $ fmap (nuMulti ns . const) mb
-
 
 ----------------------------------------------------------------------
 -- * Typed Jump Targets and Function Handles
@@ -107,7 +105,7 @@ data TypedRegs ctx where
   TypedRegsCons :: TypedRegs ctx -> TypedReg a -> TypedRegs (ctx :> a)
 
 -- | Extract out a sequence of variables from a 'TypedRegs'
-typedRegsToVars :: TypedRegs ctx -> MapRList Name ctx
+typedRegsToVars :: TypedRegs ctx -> RAssign Name ctx
 typedRegsToVars TypedRegsNil = MNil
 typedRegsToVars (TypedRegsCons regs (TypedReg x)) = typedRegsToVars regs :>: x
 
@@ -502,7 +500,7 @@ typedLLVMStmtIn (TypedLLVMResolveGlobal _ _) =
   DistPermsNil
 
 -- | Return the output permissions for a 'TypedStmt'
-typedStmtOut :: TypedStmt ext rets ps_in ps_out -> MapRList Name rets ->
+typedStmtOut :: TypedStmt ext rets ps_in ps_out -> RAssign Name rets ->
                 DistPerms ps_out
 typedStmtOut (TypedSetReg _ (TypedExpr _ (Just e))) (_ :>: ret) =
   distPerms1 ret (ValPerm_Eq e)
@@ -566,7 +564,7 @@ typedLLVMStmtOut (TypedLLVMResolveGlobal _ p) ret =
 -- | Check that the permission stack of the given permission set matches the
 -- input permissions of the given statement, and replace them with the output
 -- permissions of the statement
-applyTypedStmt :: TypedStmt ext rets ps_in ps_out -> MapRList Name rets ->
+applyTypedStmt :: TypedStmt ext rets ps_in ps_out -> RAssign Name rets ->
                   PermSet ps_in -> PermSet ps_out
 applyTypedStmt stmt rets =
   modifyDistPerms $ \perms ->
@@ -940,7 +938,7 @@ newtype TypedBlock ext blocks tops ret args
 
 -- | A map assigning a 'TypedBlock' to each 'BlockID'
 type TypedBlockMap ext blocks tops ret =
-  MapRList (TypedBlock ext blocks tops ret) blocks
+  RAssign (TypedBlock ext blocks tops ret) blocks
 
 instance Show (TypedEntry ext blocks tops ret args) where
   show (TypedEntry entryID _ _ _ _ _ _ _) =
@@ -950,8 +948,7 @@ instance Show (TypedBlock ext blocks tops ret args) where
   show (TypedBlock entries) = show entries
 
 instance Show (TypedBlockMap ext blocks tops ret) where
-  show blkMap =
-    show $ mapRListToList $ mapMapRList (Constant . show) blkMap
+  show blkMap = show $ RL.mapToList show blkMap
 
 -- | A typed Crucible CFG
 data TypedCFG
@@ -987,7 +984,7 @@ tpcfgOutputPerms = funPermOuts . tpcfgFunPerm
 type CtxTrans ctx = Assignment TypedReg ctx
 
 -- | Build a Crucible context translation from a set of variables
-mkCtxTrans :: Assignment f ctx -> MapRList Name (CtxToRList ctx) -> CtxTrans ctx
+mkCtxTrans :: Assignment f ctx -> RAssign Name (CtxToRList ctx) -> CtxTrans ctx
 mkCtxTrans (viewAssign -> AssignEmpty) _ = Ctx.empty
 mkCtxTrans (viewAssign -> AssignExtend ctx' _) (ns :>: n) =
   extend (mkCtxTrans ctx' ns) (TypedReg n)
@@ -1030,7 +1027,7 @@ emptyPermCheckExtState ExtRepr_Unit = PermCheckExtState_Unit
 emptyPermCheckExtState ExtRepr_LLVM = PermCheckExtState_LLVM Nothing
 
 -- | Get all the names contained in a 'PermCheckExtState'
-permCheckExtStateNames :: PermCheckExtState ext -> Some (MapRList ExprVar)
+permCheckExtStateNames :: PermCheckExtState ext -> Some (RAssign ExprVar)
 permCheckExtStateNames (PermCheckExtState_LLVM (Just treg)) =
   Some (MNil :>: typedRegVar treg)
 permCheckExtStateNames (PermCheckExtState_LLVM Nothing) = Some MNil
@@ -1043,7 +1040,7 @@ data PermCheckState ext tops ret ps =
   {
     stCurPerms :: PermSet ps,
     stExtState :: PermCheckExtState ext,
-    stTopVars  :: MapRList Name tops,
+    stTopVars  :: RAssign Name tops,
     stVarTypes :: NameMap TypeRepr,
     stPPInfo   :: PPInfo
   }
@@ -1113,25 +1110,24 @@ blockInfoAddEntry tops args ghosts perms_in info =
 -}
 
 type BlockInfoMap ext blocks tops ret =
-  MapRList (BlockInfo ext blocks tops ret) blocks
+  RAssign (BlockInfo ext blocks tops ret) blocks
 
 blockInfoMapIxs :: BlockInfoMap ext blocks tops ret -> [(Int,Int)]
 blockInfoMapIxs =
-  concat . mapRListToList . mapMapRList
-  (Constant . map entryInfoIndices . blockInfoEntries)
+  concat . RL.mapToList (map entryInfoIndices . blockInfoEntries)
 
 
 -- | Build an empty 'BlockInfoMap' from an assignment
 emptyBlockInfoMap :: Assignment f blocks ->
                      BlockInfoMap ext (CtxCtxToRList blocks) tops ret
 emptyBlockInfoMap asgn =
-  mapMapRList (\memb -> BlockInfo memb [] Nothing) (helper asgn)
+  RL.map (\memb -> BlockInfo memb [] Nothing) (helper asgn)
   where
     helper :: Assignment f ctx ->
-              MapRList (Member (CtxCtxToRList ctx)) (CtxCtxToRList ctx)
+              RAssign (Member (CtxCtxToRList ctx)) (CtxCtxToRList ctx)
     helper (viewAssign -> AssignEmpty) = MNil
     helper (viewAssign -> AssignExtend asgn _) =
-      mapMapRList Member_Step (helper asgn) :>: Member_Base
+      RL.map Member_Step (helper asgn) :>: Member_Base
 
 {- FIXME: remove?
 -- | Add a new 'BlockEntryInfo' to a block info map, returning the newly updated
@@ -1157,7 +1153,7 @@ blockInfoMapSetBlock :: Member blocks args ->
                         BlockInfoMap ext blocks tops ret ->
                         BlockInfoMap ext blocks tops ret
 blockInfoMapSetBlock memb blk =
-  mapRListModify memb $ \info ->
+  RL.modify memb $ \info ->
   if blockInfoVisited info then
     error "blockInfoMapSetBlock: block already set"
   else
@@ -1281,7 +1277,7 @@ addBlockEntry :: Member blocks args -> BlockEntryInfo blocks tops ret args ->
                  BlockInfoMap ext blocks tops ret ->
                  BlockInfoMap ext blocks tops ret
 addBlockEntry memb entry =
-  mapRListModify memb $ \info ->
+  RL.modify memb $ \info ->
   info { blockInfoEntries = blockInfoEntries info ++ [entry] }
 
 -- | Apply a 'BlockInfoMapDelta' to a 'BlockInfoMap'
@@ -1330,7 +1326,7 @@ liftPermCheckM :: InnerPermCheckM ext cblocks blocks tops ret a ->
 liftPermCheckM m = gcaptureCC $ \k -> m >>= k
 
 runPermCheckM :: KnownRepr ExtRepr ext =>
-                 MapRList Name tops -> PermSet ps_in ->
+                 RAssign Name tops -> PermSet ps_in ->
                  PermCheckM ext cblocks blocks tops ret () ps_out r ps_in () ->
                  InnerPermCheckM ext cblocks blocks tops ret r
 runPermCheckM topVars perms m =
@@ -1367,7 +1363,7 @@ lookupBlockInfo :: Member blocks args ->
                    (BlockInfo ext blocks tops ret args)
 lookupBlockInfo memb =
   top_get >>>= \top_st ->
-  greturn (mapRListLookup memb $ stBlockInfo top_st)
+  greturn (RL.get memb $ stBlockInfo top_st)
 
 getNextEntryID :: Member blocks args -> CruCtx ghosts ->
                   PermCheckM ext cblocks blocks tops ret r ps r ps
@@ -1377,7 +1373,7 @@ getNextEntryID memb ghosts =
   liftPermCheckM (innerBlockInfo <$> unClosed <$> get) >>>= \deltas ->
   let max_ix1 =
         foldr (max . entryInfoIndex) 0 $
-        blockInfoEntries $ mapRListLookup memb blkMap in
+        blockInfoEntries $ RL.get memb blkMap in
   let max_ix =
         foldr (max . entryInfoIndex) max_ix1 $
         getDeltaEntriesForBlock memb deltas in
@@ -1564,7 +1560,7 @@ ppCruRegAndPerms ctx r =
 
 -- | Find all the variables of LLVM frame pointer type in a sequence
 -- FIXME: move to Permissions.hs
-findLLVMFrameVars :: NatRepr w -> CruCtx as -> MapRList Name as ->
+findLLVMFrameVars :: NatRepr w -> CruCtx as -> RAssign Name as ->
                      [ExprVar (LLVMFrameType w)]
 findLLVMFrameVars _ CruCtxNil _ = []
 findLLVMFrameVars w (CruCtxCons tps (LLVMFrameRepr w')) (ns :>: n) =
@@ -1599,7 +1595,7 @@ getVarType x =
       error "getVarType"
 
 -- | Look up the types of multiple free variables
-getVarTypes :: MapRList Name tps ->
+getVarTypes :: RAssign Name tps ->
                PermCheckM ext cblocks blocks tops ret r ps r ps (CruCtx tps)
 getVarTypes MNil = greturn CruCtxNil
 getVarTypes (xs :>: x) = CruCtxCons <$> getVarTypes xs <*> getVarType x
@@ -1614,7 +1610,7 @@ setVarType x tp =
        stPPInfo = ppInfoAddExprName "x" x (stPPInfo st) }
 
 -- | Remember the types of a sequence of free variables
-setVarTypes :: MapRList Name tps -> CruCtx tps ->
+setVarTypes :: RAssign Name tps -> CruCtx tps ->
                PermCheckM ext cblocks blocks tops ret r ps r ps ()
 setVarTypes _ CruCtxNil = greturn ()
 setVarTypes (xs :>: x) (CruCtxCons tps tp) =
@@ -1820,14 +1816,14 @@ convertRegType _ _ x tp1 tp2 =
 -- function says how that statement modifies the current permissions, given the
 -- freshly-bound names for the return values. Return those freshly-bound names
 -- for the return values.
-emitStmt :: TypeCtx rets => CruCtx rets -> ProgramLoc ->
+emitStmt :: CruCtx rets -> ProgramLoc ->
             TypedStmt ext rets ps_in ps_out ->
             StmtPermCheckM ext cblocks blocks tops ret ps_out ps_in
-            (MapRList Name rets)
+            (RAssign Name rets)
 emitStmt tps loc stmt =
   gopenBinding
   ((TypedConsStmt loc stmt <$>) . strongMbM)
-  (nuMulti typeCtxProxies $ \vars -> ()) >>>= \(ns, ()) ->
+  (nuMulti (cruCtxProxies tps) $ \vars -> ()) >>>= \(ns, ()) ->
   setVarTypes ns tps >>>
   gmodify (modifySTCurPerms $ applyTypedStmt stmt ns) >>>
   greturn ns
@@ -2627,7 +2623,7 @@ tcEmitLLVMStmt _arch _ctx _loc _stmt =
 
 -- FIXME: no longer needed?
 {-
-mkEqVarPerms :: MapRList Name ctx -> MapRList Name ctx -> DistPerms ctx
+mkEqVarPerms :: RAssign Name ctx -> RAssign Name ctx -> DistPerms ctx
 mkEqVarPerms MNil _ = DistPermsNil
 mkEqVarPerms (xs :>: x) (ys :>: y) =
   DistPermsCons (mkEqVarPerms xs ys) x (ValPerm_Eq $ PExpr_Var y)
@@ -2637,7 +2633,7 @@ mkEqVarPerms (xs :>: x) (ys :>: y) =
 -- arguments of a block and add the permissions @arg1:eq(ghost1), ...@ to the
 -- input permissions
 buildInputPermsH :: Mb ghosts (DistPerms ghosts) ->
-                    Mb ghosts (MapRList Name args) ->
+                    Mb ghosts (RAssign Name args) ->
                     MbDistPerms (ghosts :++: args)
 buildInputPermsH mb_perms mb_args =
   mbCombine $ mbMap2 (\perms args ->
@@ -2645,8 +2641,8 @@ buildInputPermsH mb_perms mb_args =
                         appendDistPerms perms (mkEqVarPerms arg_vars args))
   mb_perms mb_args
 
-buildInputPerms :: PPInfo -> MapRList Name (ghosts :: RList CrucibleType) ->
-                   DistPerms ghosts -> MapRList Name args ->
+buildInputPerms :: PPInfo -> RAssign Name (ghosts :: RList CrucibleType) ->
+                   DistPerms ghosts -> RAssign Name args ->
                    Closed (MbDistPerms (ghosts :++: args))
 buildInputPerms ppInfo xs perms_in args_in =
   $(mkClosed [| buildInputPermsH |])
@@ -2658,8 +2654,8 @@ buildInputPerms ppInfo xs perms_in args_in =
                           permPrettyString ppInfo args_in)) id
   (abstractVars xs args_in)
 
-abstractPermsRet :: MapRList Name (ghosts :: RList CrucibleType) ->
-                    MapRList f args ->
+abstractPermsRet :: RAssign Name (ghosts :: RList CrucibleType) ->
+                    RAssign f args ->
                     Binding (ret :: CrucibleType) (DistPerms ret_ps) ->
                     Closed (Mb (ghosts :++: args :> ret) (DistPerms ret_ps))
 abstractPermsRet xs args ret_perms =
@@ -2678,7 +2674,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
   let tops_ns = stTopVars st
       args_t = tcRegs ctx args
       args_ns = typedRegsToVars args_t
-      tops_args_ns = appendMapRList tops_ns args_ns in
+      tops_args_ns = RL.append tops_ns args_ns in
   tcBlockID blkID >>>= \memb ->
   lookupBlockInfo memb >>>= \blkInfo ->
 
@@ -2720,16 +2716,15 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
     -- permissions for the top-level and normal arguments
     (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
     let tops_set =
-          foldrMapRList (\n ->
-                          NameMap.insert n (Constant ()))
+          RL.foldr (\n -> NameMap.insert n (Constant ()))
           NameMap.empty tops_ns
         cur_perms = stCurPerms st in
-    case varPermsNeededVars (appendMapRList tops_args_ns ext_ns) cur_perms of
+    case varPermsNeededVars (RL.append tops_args_ns ext_ns) cur_perms of
       Some ghosts_ns' ->
         -- Step 2: compute the permissions for the three sorts of arguments,
         -- where each normal argument that is also in the top-level arguments
         -- gets eq permissions
-        let ghosts_ns = appendMapRList ext_ns ghosts_ns'
+        let ghosts_ns = RL.append ext_ns ghosts_ns'
             cur_perms = stCurPerms st
             tops_perms = varPermsMulti tops_ns cur_perms
             ghosts_perms = varPermsMulti ghosts_ns cur_perms
@@ -2751,7 +2746,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
         -- for what we want
         let cl_mb_perms_in =
               case abstractVars
-                   (appendMapRList (appendMapRList tops_ns args_ns) ghosts_ns)
+                   (RL.append (RL.append tops_ns args_ns) ghosts_ns)
                    (distPermsToValuePerms perms_in) of
                 Just ps -> ps
                 Nothing ->
@@ -2837,7 +2832,7 @@ tcEmitStmtSeq ctx (TermStmt loc tstmt) =
 llvmReprWidth :: ExtRepr (LLVM arch) -> NatRepr (ArchWidth arch)
 llvmReprWidth ExtRepr_LLVM = knownRepr
 
-setInputExtState :: ExtRepr ext -> CruCtx as -> MapRList Name as ->
+setInputExtState :: ExtRepr ext -> CruCtx as -> RAssign Name as ->
                     PermCheckM ext cblocks blocks tops ret r ps r ps ()
 setInputExtState ExtRepr_Unit _ _ = greturn ()
 setInputExtState repr@ExtRepr_LLVM tps ns
@@ -2865,8 +2860,8 @@ tcBlockEntry is_scc blk (BlockEntryInfo {..}) =
   liftInnerToTopM $ strongMbM $
   flip nuMultiWithElim1 (mbValuePermsToDistPerms
                          entryInfoPermsIn) $ \ns perms ->
-  let (tops_args, ghosts_ns) = splitMapRList Proxy ghosts_prxs ns
-      (tops_ns, args_ns) = splitMapRList Proxy args_prxs tops_args
+  let (tops_args, ghosts_ns) = RL.split Proxy ghosts_prxs ns
+      (tops_ns, args_ns) = RL.split Proxy args_prxs tops_args
       ctx = mkCtxTrans (blockInputs blk) args_ns in
   runPermCheckM tops_ns (distPermSet perms) $
   setVarTypes ns (appendCruCtx
@@ -2892,7 +2887,7 @@ tcBlock :: PermCheckExtC ext => Bool -> Member blocks (CtxToRList args) ->
            TopPermCheckM ext cblocks blocks tops ret
            (TypedBlock ext blocks tops ret (CtxToRList args))
 tcBlock is_scc memb blk =
-  do entries <- blockInfoEntries <$> mapRListLookup memb <$>
+  do entries <- blockInfoEntries <$> RL.get memb <$>
        stBlockInfo <$> get
      TypedBlock <$> mapM (tcBlockEntry is_scc blk) entries
 
@@ -3001,7 +2996,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
        { tpcfgHandle = TypedFnHandle ghosts (cfgHandle cfg)
        , tpcfgFunPerm = fun_perm
        , tpcfgBlockMap =
-           mapMapRList
+           RL.map
            (maybe (error "tcCFG: unvisited block!") id . blockInfoBlock)
            (stBlockInfo final_st)
        , tpcfgEntryBlockID = init_entryID }

@@ -40,6 +40,8 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Lens hiding ((:>), Index, Empty)
 
+import Data.Type.RList hiding (map, foldr, set, toList)
+import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits.Mb (mbMap2)
 import Data.Binding.Hobbits.Closed
 import Data.Binding.Hobbits.Liftable
@@ -97,7 +99,7 @@ ppInfoAddExprName base x info =
            (ppExprNames info),
            ppVarIndex = ppVarIndex info + 1 }
 
-ppInfoAddExprNames :: String -> MapRList Name (tps :: RList CrucibleType) ->
+ppInfoAddExprNames :: String -> RAssign Name (tps :: RList CrucibleType) ->
                       PPInfo -> PPInfo
 ppInfoAddExprNames _ MNil info = info
 ppInfoAddExprNames base (ns :>: n) info =
@@ -111,7 +113,7 @@ ppInfoAddPermName base x info =
            (ppPermNames info),
            ppVarIndex = ppVarIndex info + 1 }
 
-ppInfoAddPermNames :: String -> MapRList Name (tps :: RList Type) ->
+ppInfoAddPermNames :: String -> RAssign Name (tps :: RList Type) ->
                       PPInfo -> PPInfo
 ppInfoAddPermNames _ MNil info = info
 ppInfoAddPermNames base (ns :>: n) info =
@@ -159,7 +161,7 @@ instance PermPretty (Name (a :: Type)) where
          Just (StringF str) -> return $ string str
          Nothing -> return $ string (show x)
 
-instance PermPretty (MapRList Name (ctx :: RList CrucibleType)) where
+instance PermPretty (RAssign Name (ctx :: RList CrucibleType)) where
   permPrettyM MNil = return PP.empty
   permPrettyM (MNil :>: n) = permPrettyM n
   permPrettyM (ns :>: n) =
@@ -168,38 +170,38 @@ instance PermPretty (MapRList Name (ctx :: RList CrucibleType)) where
        return (pp_ns <> comma <+> pp_n)
 
 -- FIXME: this is just TraversableFC without having an orphan instance...
-traverseMapRList :: Applicative m => (forall a. f a -> m (g a)) ->
-                    MapRList f as -> m (MapRList g as)
-traverseMapRList _ MNil = pure MNil
-traverseMapRList f (xs :>: x) = (:>:) <$> traverseMapRList f xs <*> f x
+traverseRAssign :: Applicative m => (forall a. f a -> m (g a)) ->
+                   RAssign f as -> m (RAssign g as)
+traverseRAssign _ MNil = pure MNil
+traverseRAssign f (xs :>: x) = (:>:) <$> traverseRAssign f xs <*> f x
 
 permPrettyExprMb :: PermPretty a =>
-                    (MapRList (Constant Doc) ctx -> PermPPM Doc -> PermPPM Doc) ->
+                    (RAssign (Constant Doc) ctx -> PermPPM Doc -> PermPPM Doc) ->
                     Mb (ctx :: RList CrucibleType) a -> PermPPM Doc
 permPrettyExprMb f mb =
   fmap mbLift $ strongMbM $ flip nuMultiWithElim1 mb $ \ns a ->
   local (ppInfoAddExprNames "z" ns) $
-  do docs <- traverseMapRList (\n -> Constant <$> permPrettyM n) ns
+  do docs <- traverseRAssign (\n -> Constant <$> permPrettyM n) ns
      f docs $ permPrettyM a
 
 permPrettyPermMb :: PermPretty a =>
-                    (MapRList (Constant Doc) ctx -> PermPPM Doc -> PermPPM Doc) ->
+                    (RAssign (Constant Doc) ctx -> PermPPM Doc -> PermPPM Doc) ->
                     Mb (ctx :: RList Type) a -> PermPPM Doc
 permPrettyPermMb f mb =
   fmap mbLift $ strongMbM $ flip nuMultiWithElim1 mb $ \ns a ->
   local (ppInfoAddPermNames "z" ns) $
-  do docs <- traverseMapRList (\n -> Constant <$> permPrettyM n) ns
+  do docs <- traverseRAssign (\n -> Constant <$> permPrettyM n) ns
      f docs $ permPrettyM a
 
 instance PermPretty a => PermPretty (Mb (ctx :: RList CrucibleType) a) where
   permPrettyM =
     permPrettyExprMb $ \docs ppm ->
-    (\pp -> hang 2 (tupled (mapRListToList docs) <> dot </> pp)) <$> ppm
+    (\pp -> hang 2 (tupled (RL.toList docs) <> dot </> pp)) <$> ppm
 
 instance PermPretty a => PermPretty (Mb (ctx :: RList Type) a) where
   permPrettyM =
     permPrettyPermMb $ \docs ppm ->
-    (\pp -> hang 2 (tupled (mapRListToList docs) <> dot </> pp)) <$> ppm
+    (\pp -> hang 2 (tupled (RL.toList docs) <> dot </> pp)) <$> ppm
 
 
 ----------------------------------------------------------------------
@@ -346,7 +348,7 @@ data PermExprs (as :: RList CrucibleType) where
   PExprs_Nil :: PermExprs RNil
   PExprs_Cons :: PermExprs as -> PermExpr a -> PermExprs (as :> a)
 
-namesToExprs :: MapRList Name as -> PermExprs as
+namesToExprs :: RAssign Name as -> PermExprs as
 namesToExprs MNil = PExprs_Nil
 namesToExprs (ns :>: n) = PExprs_Cons (namesToExprs ns) (PExpr_Var n)
 
@@ -1291,7 +1293,7 @@ type MbDistPerms ps = Mb ps (DistPerms ps)
 
 -- | Combine a list of variable names and a list of permissions into a list of
 -- distinguished permissions
-valuePermsToDistPerms :: MapRList Name ps -> ValuePerms ps -> DistPerms ps
+valuePermsToDistPerms :: RAssign Name ps -> ValuePerms ps -> DistPerms ps
 valuePermsToDistPerms MNil _ = DistPermsNil
 valuePermsToDistPerms (ns :>: n) (ValPerms_Cons ps p) =
   DistPermsCons (valuePermsToDistPerms ns ps) n p
@@ -1345,7 +1347,7 @@ lifetimeCurrentPermsPerms (CurrentTransPerms cur_ps l) =
 
 -- | Build a lift of proxies for a 'LifetimeCurrentPerms'
 mbLifetimeCurrentPermsProxies :: Mb ctx (LifetimeCurrentPerms ps_l) ->
-                                 MapRList Proxy ps_l
+                                 RAssign Proxy ps_l
 mbLifetimeCurrentPermsProxies [nuP| AlwaysCurrentPerms |] = MNil
 mbLifetimeCurrentPermsProxies [nuP| LOwnedCurrentPerms _ _ |] = MNil :>: Proxy
 mbLifetimeCurrentPermsProxies [nuP| CurrentTransPerms cur_ps _ |] =
@@ -2282,7 +2284,7 @@ trueValuePerms (CruCtxCons ctx _) =
   ValPerms_Cons (trueValuePerms ctx) ValPerm_True
 
 -- | Create a list of @eq(xi)@ permissions from a list of variables @x1,x2,...@
-eqValuePerms :: MapRList Name ps -> ValuePerms ps
+eqValuePerms :: RAssign Name ps -> ValuePerms ps
 eqValuePerms MNil = ValPerms_Nil
 eqValuePerms (xs :>: x) =
   ValPerms_Cons (eqValuePerms xs) (ValPerm_Eq (PExpr_Var x))
@@ -2302,17 +2304,17 @@ permListToDistPerms (PExpr_PermListCons (PExpr_Var x) p l) =
     Some perms -> Some $ DistPermsCons perms x p
 permListToDistPerms (PExpr_PermListCons _ _ l) = permListToDistPerms l
 
-distPermsToProxies :: DistPerms ps -> MapRList Proxy ps
+distPermsToProxies :: DistPerms ps -> RAssign Proxy ps
 distPermsToProxies (DistPermsNil) = MNil
 distPermsToProxies (DistPermsCons ps _ _) = distPermsToProxies ps :>: Proxy
 
-mbDistPermsToProxies :: Mb ctx (DistPerms ps) -> MapRList Proxy ps
+mbDistPermsToProxies :: Mb ctx (DistPerms ps) -> RAssign Proxy ps
 mbDistPermsToProxies [nuP| DistPermsNil |] = MNil
 mbDistPermsToProxies [nuP| DistPermsCons ps _ _ |] =
   mbDistPermsToProxies ps :>: Proxy
 
 -- | Extract the variables in a 'DistPerms'
-distPermsVars :: DistPerms ps -> MapRList Name ps
+distPermsVars :: DistPerms ps -> RAssign Name ps
 distPermsVars DistPermsNil = MNil
 distPermsVars (DistPermsCons ps x _) = distPermsVars ps :>: x
 
@@ -2332,16 +2334,16 @@ filterDistPerms pred (DistPermsCons ps x p)
 filterDistPerms pred (DistPermsCons ps _ _) = filterDistPerms pred ps
 
 -- | Build a list of distinguished permissions from a list of variables
-buildDistPerms :: (forall a. Name a -> ValuePerm a) -> MapRList Name ps ->
+buildDistPerms :: (forall a. Name a -> ValuePerm a) -> RAssign Name ps ->
                   DistPerms ps
 buildDistPerms _ MNil = DistPermsNil
 buildDistPerms f (ns :>: n) = DistPermsCons (buildDistPerms f ns) n (f n)
 
 -- | Split a list of distinguished permissions into two
-splitDistPerms :: f ps1 -> MapRList g ps2 -> DistPerms (ps1 :++: ps2) ->
+splitDistPerms :: f ps1 -> RAssign g ps2 -> DistPerms (ps1 :++: ps2) ->
                   (DistPerms ps1, DistPerms ps2)
 splitDistPerms _ = helper where
-  helper :: MapRList g ps2 -> DistPerms (ps1 :++: ps2) ->
+  helper :: RAssign g ps2 -> DistPerms (ps1 :++: ps2) ->
             (DistPerms ps1, DistPerms ps2)
   helper MNil perms = (perms, DistPermsNil)
   helper (prxs :>: _) (DistPermsCons ps x p) =
@@ -2349,7 +2351,7 @@ splitDistPerms _ = helper where
     (perms1, DistPermsCons perms2 x p)
 
 -- | Split a list of value permissions in bindings into two
-splitMbValuePerms :: f ps1 -> MapRList g ps2 ->
+splitMbValuePerms :: f ps1 -> RAssign g ps2 ->
                      Mb vars (ValuePerms (ps1 :++: ps2)) ->
                      (Mb vars (ValuePerms ps1), Mb vars (ValuePerms ps2))
 splitMbValuePerms _ MNil mb_perms =
@@ -2429,7 +2431,7 @@ namedPermArgsAreCopyable (CruCtxCons tps tp) (PExprs_Cons args arg) =
 
 -- | Substitute arguments, a lifetime, and ghost values into a function
 -- permission to get the input permissions needed on the arguments
-funPermDistIns :: FunPerm ghosts args ret -> MapRList Name args ->
+funPermDistIns :: FunPerm ghosts args ret -> RAssign Name args ->
                   PermExprs ghosts -> DistPerms args
 funPermDistIns fun_perm args ghosts =
   varSubst (permVarSubstOfNames args) $ mbValuePermsToDistPerms $
@@ -2437,7 +2439,7 @@ funPermDistIns fun_perm args ghosts =
 
 -- | Substitute arguments, a lifetime, and ghost values into a function
 -- permission to get the output permissions returned by the function
-funPermDistOuts :: FunPerm ghosts args ret -> MapRList Name (args :> ret) ->
+funPermDistOuts :: FunPerm ghosts args ret -> RAssign Name (args :> ret) ->
                    PermExprs ghosts -> DistPerms (args :> ret)
 funPermDistOuts fun_perm args ghosts =
   varSubst (permVarSubstOfNames args) $ mbValuePermsToDistPerms $
@@ -3233,7 +3235,7 @@ instance SubstVar PermVarSubst m =>
 -- | A substitution assigns a permission expression to each bound name in a
 -- name-binding context
 newtype PermSubst ctx =
-  PermSubst { unPermSubst :: MapRList PermExpr ctx }
+  PermSubst { unPermSubst :: RAssign PermExpr ctx }
 
 emptySubst :: PermSubst RNil
 emptySubst = PermSubst empty
@@ -3255,7 +3257,7 @@ exprsOfSubst (PermSubst (es :>: e)) =
   PExprs_Cons (exprsOfSubst $ PermSubst es) e
 
 substLookup :: PermSubst ctx -> Member ctx a -> PermExpr a
-substLookup (PermSubst m) memb = mapRListLookup memb m
+substLookup (PermSubst m) memb = RL.get memb m
 
 noPermsInCruCtx :: forall (ctx :: RList CrucibleType) (a :: CrucibleType) b.
                    Member ctx (ValuePerm a) -> b
@@ -3284,7 +3286,7 @@ subst s mb = runIdentity $ genSubst s mb
 ----------------------------------------------------------------------
 
 -- FIXME HERE: PermVarSubst and other types should just be instances of a
--- MapRList, except it is annoying to build NuMatching instances for MapRList
+-- RAssign, except it is annoying to build NuMatching instances for RAssign
 -- because there are different ways one might do it, so we need to use
 -- OVERLAPPING and/or INCOHERENT pragmas for them
 
@@ -3303,7 +3305,7 @@ singletonVarSubst x = PermVarSubst_Cons emptyVarSubst x
 consVarSubst :: PermVarSubst ctx -> ExprVar a -> PermVarSubst (ctx :> a)
 consVarSubst = PermVarSubst_Cons
 
-permVarSubstOfNames :: MapRList Name ctx -> PermVarSubst ctx
+permVarSubstOfNames :: RAssign Name ctx -> PermVarSubst ctx
 permVarSubstOfNames MNil = PermVarSubst_Nil
 permVarSubstOfNames (ns :>: n) = PermVarSubst_Cons (permVarSubstOfNames ns) n
 
@@ -3367,13 +3369,13 @@ newtype PSubstElem a = PSubstElem { unPSubstElem :: Maybe (PermExpr a) }
 -- | Partial substitutions assign expressions to some of the bound names in a
 -- context
 newtype PartialSubst ctx =
-  PartialSubst { unPartialSubst :: MapRList PSubstElem ctx }
+  PartialSubst { unPartialSubst :: RAssign PSubstElem ctx }
 
 -- | Build an empty partial substitution for a given set of variables, i.e., the
 -- partial substitution that assigns no expressions to those variables
 emptyPSubst :: CruCtx ctx -> PartialSubst ctx
 emptyPSubst = PartialSubst . helper where
-  helper :: CruCtx ctx -> MapRList PSubstElem ctx
+  helper :: CruCtx ctx -> RAssign PSubstElem ctx
   helper CruCtxNil = MNil
   helper (CruCtxCons ctx' _) = helper ctx' :>: PSubstElem Nothing
 
@@ -3383,7 +3385,7 @@ psubstSet :: Member ctx a -> PermExpr a -> PartialSubst ctx ->
              PartialSubst ctx
 psubstSet memb e (PartialSubst elems) =
   PartialSubst $
-  mapRListModify memb
+  RL.modify memb
   (\pse -> case pse of
       PSubstElem Nothing -> PSubstElem $ Just e
       PSubstElem (Just _) -> error "psubstSet: value already set for variable")
@@ -3401,7 +3403,7 @@ unextPSubst (PartialSubst (elems :>: _)) = PartialSubst elems
 -- values using 'zeroOfType' if necessary
 completePSubst :: CruCtx vars -> PartialSubst vars -> PermSubst vars
 completePSubst ctx (PartialSubst pselems) = PermSubst $ helper ctx pselems where
-  helper :: CruCtx vars -> MapRList PSubstElem vars -> MapRList PermExpr vars
+  helper :: CruCtx vars -> RAssign PSubstElem vars -> RAssign PermExpr vars
   helper _ MNil = MNil
   helper (CruCtxCons ctx' knownRepr) (pselems' :>: pse) =
     helper ctx' pselems' :>:
@@ -3409,7 +3411,7 @@ completePSubst ctx (PartialSubst pselems) = PermSubst $ helper ctx pselems where
 
 -- | Look up an optional expression in a partial substitution
 psubstLookup :: PartialSubst ctx -> Member ctx a -> Maybe (PermExpr a)
-psubstLookup (PartialSubst m) memb = unPSubstElem $ mapRListLookup memb m
+psubstLookup (PartialSubst m) memb = unPSubstElem $ RL.get memb m
 
 instance SubstVar PartialSubst Maybe where
   {-
@@ -3448,7 +3450,7 @@ data ValPermSubstElem a where
 
 -- | A substitution of value permissions for free 'PermVar's
 newtype ValPermSubst ctx =
-  ValPermSubst { unValPermSubst :: MapRList ValPermSubstElem ctx }
+  ValPermSubst { unValPermSubst :: RAssign ValPermSubstElem ctx }
 
 instance SubstVar ValPermSubst Identity where
   substExprVar s x =
@@ -3458,7 +3460,7 @@ instance SubstVar ValPermSubst Identity where
   substPermVar (ValPermSubst elems) mb_x =
     case mbNameBoundP mb_x of
       Left memb ->
-        case mapRListLookup memb elems of
+        case RL.get memb elems of
           ValPermSubstElem p -> return p
       Right x -> return $ ValPerm_Var x
 
@@ -3473,7 +3475,7 @@ data PValPermSubstElem a where
 
 -- | A partial substitution of value permissions for free 'PermVar's
 newtype PValPermSubst ctx =
-  PValPermSubst { unPValPermSubst :: MapRList PValPermSubstElem ctx }
+  PValPermSubst { unPValPermSubst :: RAssign PValPermSubstElem ctx }
 
 instance SubstVar PValPermSubst Maybe where
   substExprVar s x =
@@ -3483,7 +3485,7 @@ instance SubstVar PValPermSubst Maybe where
   substPermVar (PValPermSubst elems) mb_x =
     case mbNameBoundP mb_x of
       Left memb ->
-        case mapRListLookup memb elems of
+        case RL.get memb elems of
           PValPermSubstElem p -> p
       Right x -> return $ ValPerm_Var x
 
@@ -3511,8 +3513,8 @@ clMbMbApplyM :: Monad m =>
 clMbMbApplyM fm am =
   (\f a -> $(mkClosed [| mbMbApply |]) `clApply` f `clApply` a) <$> fm <*> am
 
-absVarsReturnH :: Monad m => MapRList f1 (ctx1 :: RList k1) ->
-                  MapRList f2 (ctx2 :: RList k2) ->
+absVarsReturnH :: Monad m => RAssign f1 (ctx1 :: RList k1) ->
+                  RAssign f2 (ctx2 :: RList k2) ->
                   Closed a -> m (Closed (Mb ctx1 (Mb ctx2 a)))
 absVarsReturnH fs1 fs2 cl_a =
   return ( $(mkClosed [| \prxs1 prxs2 a ->
@@ -3520,27 +3522,9 @@ absVarsReturnH fs1 fs2 cl_a =
            `clApply` closedProxies fs1 `clApply` closedProxies fs2
            `clApply` cl_a)
 
--- FIXME: Hobbits should have a Closable instance for MapRList that replaces
--- this; that instance should use a Closable1 class for the first type argument
--- of MapRList, which here is Proxy
-closedProxies :: MapRList f args -> Closed (MapRList Proxy args)
-closedProxies MNil = $(mkClosed [| MNil |])
-closedProxies (args :>: _) =
-  $(mkClosed [| (:>:) |]) `clApply` closedProxies args
-  `clApply` $(mkClosed [| Proxy |])
-
--- FIXME: a more general version of this (call it something like findMember?)
--- should go to Hobbits
---
--- NOTE: this finds the left-most occurrence
-nameMember :: forall (ctx :: RList k) (a :: k).
-              MapRList Name ctx -> Name a -> Maybe (Member ctx a)
-nameMember MNil _ = Nothing
-nameMember (ns1 :>: n1) n2 =
-  case nameMember ns1 n2 of
-    Just memb -> Just $ Member_Step memb
-    Nothing | Just Refl <- cmpName n1 n2 -> Just Member_Base
-    Nothing -> Nothing
+-- | Map an 'RAssign' to a 'Closed' 'RAssign' of 'Proxy' objects
+closedProxies :: RAssign f args -> Closed (RAssign Proxy args)
+closedProxies = toClosed . mapRAssign (const Proxy)
 
 -- | Class for types that support abstracting out all permission and expression
 -- variables. If the abstraction succeeds, we get a closed element of the type
@@ -3550,12 +3534,12 @@ nameMember (ns1 :>: n1) n2 =
 -- NOTE: if a variable occurs more than once, we associate it with the left-most
 -- occurrence, i.e., the earliest binding
 class AbstractVars a where
-  abstractPEVars :: MapRList Name (pctx :: RList Type) ->
-                    MapRList Name (ectx :: RList CrucibleType) -> a ->
+  abstractPEVars :: RAssign Name (pctx :: RList Type) ->
+                    RAssign Name (ectx :: RList CrucibleType) -> a ->
                     Maybe (Closed (Mb pctx (Mb ectx a)))
 
 abstractVars :: AbstractVars a =>
-                MapRList Name (ctx :: RList CrucibleType) -> a ->
+                RAssign Name (ctx :: RList CrucibleType) -> a ->
                 Maybe (Closed (Mb ctx a))
 abstractVars ns a =
   fmap (clApply $(mkClosed [| elimEmptyMb |])) $ abstractPEVars MNil ns a
@@ -3567,21 +3551,21 @@ tryClose a =
 
 instance AbstractVars (Name (a :: CrucibleType)) where
   abstractPEVars ns1 ns2 (n :: Name a)
-    | Just memb <- nameMember ns2 n
+    | Just memb <- memberElem n ns2
     = return ( $(mkClosed
                  [| \prxs1 prxs2 memb ->
-                   nuMulti prxs1 (const $ nuMulti prxs2 (mapRListLookup memb)) |])
+                   nuMulti prxs1 (const $ nuMulti prxs2 (RL.get memb)) |])
                `clApply` closedProxies ns1 `clApply` closedProxies ns2
                `clApply` toClosed memb)
   abstractPEVars _ _ _ = Nothing
 
 instance AbstractVars (Name (a :: Type)) where
   abstractPEVars ns1 ns2 (n :: Name a)
-    | Just memb <- nameMember ns1 n
+    | Just memb <- memberElem n ns1
     = return ( $(mkClosed
                  [| \prxs1 prxs2 memb ->
                    nuMulti prxs1 $ \ns ->
-                   nuMulti prxs2 (const $ mapRListLookup memb ns) |])
+                   nuMulti prxs2 (const $ RL.get memb ns) |])
                `clApply` closedProxies ns1 `clApply` closedProxies ns2
                `clApply` toClosed memb)
   abstractPEVars _ _ _ = Nothing
@@ -3593,7 +3577,7 @@ instance AbstractVars a => AbstractVars (Mb (ctx :: RList CrucibleType) a) where
     (\ns a ->
       clApply ( $(mkClosed [| \prxs -> fmap (mbSeparate prxs) |])
                 `clApply` closedProxies ns) <$>
-      abstractPEVars ns1 (appendMapRList ns2 ns) a)
+      abstractPEVars ns1 (append ns2 ns) a)
     mb
 
 instance AbstractVars a => AbstractVars (Mb (ctx :: RList Type) a) where
@@ -3603,10 +3587,10 @@ instance AbstractVars a => AbstractVars (Mb (ctx :: RList Type) a) where
     (\ns a ->
       clApply ( $(mkClosed [| \prxs -> fmap mbSwap . mbSeparate prxs |])
                 `clApply` closedProxies ns) <$>
-      abstractPEVars (appendMapRList ns1 ns) ns2 a)
+      abstractPEVars (append ns1 ns) ns2 a)
     mb
 
-instance AbstractVars (MapRList Name (ctx :: RList CrucibleType)) where
+instance AbstractVars (RAssign Name (ctx :: RList CrucibleType)) where
   abstractPEVars ns1 ns2 MNil = absVarsReturnH ns1 ns2 $(mkClosed [| MNil |])
   abstractPEVars ns1 ns2 (ns :>: n) =
     absVarsReturnH ns1 ns2 $(mkClosed [| (:>:) |])
@@ -4156,7 +4140,7 @@ setVarPerm x p =
     _ -> error "setVarPerm: permission for variable already set!"
 
 -- | Get a permission list for multiple variables
-varPermsMulti :: MapRList Name ns -> PermSet ps -> DistPerms ns
+varPermsMulti :: RAssign Name ns -> PermSet ps -> DistPerms ns
 varPermsMulti MNil _ = DistPermsNil
 varPermsMulti (ns :>: n) ps =
   DistPermsCons (varPermsMulti ns ps) n (ps ^. varPerm n)
@@ -4167,16 +4151,16 @@ varPermsMulti (ns :>: n) ps =
 -- transitively needed by the permissions of those variables. Every variable in
 -- the returned list is guaranteed to be listed /after/ (i.e., to the right of
 -- where) it is used.
-varPermsNeededVars :: MapRList ExprVar ns -> PermSet ps ->
-                      Some (MapRList ExprVar)
+varPermsNeededVars :: RAssign ExprVar ns -> PermSet ps ->
+                      Some (RAssign ExprVar)
 varPermsNeededVars ns =
-  helper NameSet.empty (mapRListToList $ mapMapRList (Constant . SomeName) ns)
+  helper NameSet.empty (mapToList SomeName ns)
   where
-    namesListToNames :: [SomeName CrucibleType] -> Some (MapRList ExprVar)
+    namesListToNames :: [SomeName CrucibleType] -> Some (RAssign ExprVar)
     namesListToNames =
       foldr (\(SomeName n) (Some ns) -> Some (ns :>: n)) (Some MNil) . reverse
     helper :: NameSet CrucibleType -> [SomeName CrucibleType] -> PermSet ps ->
-              Some (MapRList ExprVar)
+              Some (RAssign ExprVar)
     helper seen_vars ns perms =
       let seen_vars' =
             foldr (\(SomeName n) -> NameSet.insert n) seen_vars ns
@@ -4189,7 +4173,7 @@ varPermsNeededVars ns =
         new_ns ->
           case (namesListToNames new_ns, helper seen_vars' new_ns perms) of
             (Some ns', Some rest) ->
-              Some $ appendMapRList ns' rest
+              Some $ append ns' rest
 
 -- | Initialize the primary permission of a variable to @true@ if it is not set
 initVarPerm :: ExprVar a -> PermSet ps -> PermSet ps
@@ -4198,7 +4182,7 @@ initVarPerm x =
   if NameMap.member x nmap then nmap else NameMap.insert x ValPerm_True nmap
 
 -- | Set the primary permissions for a sequence of variables to @true@
-initVarPerms :: MapRList Name (as :: RList CrucibleType) -> PermSet ps ->
+initVarPerms :: RAssign Name (as :: RList CrucibleType) -> PermSet ps ->
                 PermSet ps
 initVarPerms MNil perms = perms
 initVarPerms (ns :>: n) perms = initVarPerms ns $ initVarPerm n perms
