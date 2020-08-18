@@ -425,7 +425,8 @@ parseExpr UnitRepr =
   (PExpr_Var <$> parseExprVarOfType UnitRepr) <?>
   "unit expression"
 parseExpr NatRepr =
-  (PExpr_Nat <$> integer) <|> (PExpr_Var <$> parseExprVarOfType NatRepr) <?>
+  (PExpr_Nat <$> fromInteger <$> integer) <|>
+  (PExpr_Var <$> parseExprVarOfType NatRepr) <?>
   "nat expression"
 parseExpr (BVRepr w) = withKnownNat w parseBVExpr
 parseExpr tp@(StructRepr fld_tps) =

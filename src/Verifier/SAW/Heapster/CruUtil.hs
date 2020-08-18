@@ -19,11 +19,19 @@ import Data.Kind
 import Data.Text hiding (length)
 import Data.Reflection
 import Data.List.NonEmpty (NonEmpty(..))
+import Data.ByteString
+import Numeric.Natural
+import qualified Data.BitVector.Sized as BV
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.NuMatching
 
 import What4.ProgramLoc
+import What4.Partial
+import What4.InterpretedFloatingPoint (X86_80Val(..))
+import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
+import What4.Utils.Word16String (Word16String (..))
+
 import Data.Parameterized.Context hiding ((:>), empty, take, view)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
@@ -34,9 +42,6 @@ import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.LLVM.AST as L
 import Lang.Crucible.Types
 import Lang.Crucible.FunctionHandle
-import What4.Partial
-import What4.Partial.AssertionTree
-import Lang.Crucible.CFG.Extension.Safety
 import Lang.Crucible.CFG.Expr
 import Lang.Crucible.CFG.Core hiding (App)
 import qualified Lang.Crucible.CFG.Core as Core
@@ -77,6 +82,10 @@ instance Closable Ident where
 
 instance Liftable Ident where
   mbLift = unClosed . mbLift . fmap toClosed
+
+-- FIXME: this Natural should go into Hobbits
+instance Closable Natural where
+  toClosed = unsafeClose
 
 instance NuMatching OpenTerm where
   nuMatchingProof = unsafeMbTypeRepr
@@ -158,6 +167,12 @@ instance Closable ProgramLoc where
 instance Liftable ProgramLoc where
   mbLift = unClosed . mbLift . fmap toClosed
 
+instance NuMatching ByteString where
+  nuMatchingProof = unsafeMbTypeRepr
+
+instance NuMatching MemoryLoadError where
+  nuMatchingProof = unsafeMbTypeRepr
+
 instance NuMatching (FnHandle args ret) where
   nuMatchingProof = unsafeMbTypeRepr
 
@@ -208,16 +223,15 @@ instance NuMatchingAny1 f => NuMatchingAny1 (BaseTerm f) where
   nuMatchingAny1Proof = nuMatchingProof
 
 $(mkNuMatching [t| forall a. NuMatching a => NonEmpty a |])
-$(mkNuMatching [t| forall c a.
-                (NuMatching c, NuMatching a) => AssertionTree c a |])
 $(mkNuMatching [t| forall p v. (NuMatching p, NuMatching v) => Partial p v |])
+$(mkNuMatching [t| X86_80Val |])
+-- $(mkNuMatching [t| MemoryLoadError |]) -- NOTE: contains unexported types
+$(mkNuMatching [t| forall w. BV.BV w |])
+$(mkNuMatching [t| Word16String |])
+$(mkNuMatching [t| forall s. StringLiteral s |])
+$(mkNuMatching [t| forall s. StringInfoRepr s |])
 $(mkNuMatching [t| forall ext f tp.
-                (NuMatchingAny1 f, NuMatchingAny1 (ExprExtension ext f),
-                 NuMatching (AssertionClassifierTree ext f)) =>
-                PartialExpr ext f tp |])
-$(mkNuMatching [t| forall ext f tp.
-                (NuMatchingAny1 f, NuMatchingAny1 (ExprExtension ext f),
-                 NuMatching (AssertionClassifier ext f)) =>
+                (NuMatchingAny1 f, NuMatchingAny1 (ExprExtension ext f)) =>
                 App ext f tp |])
 
 
@@ -226,19 +240,48 @@ $(mkNuMatching [t| forall v. NuMatching v => Field v |])
 $(mkNuMatching [t| Alignment |])
 $(mkNuMatching [t| UB.PtrComparisonOperator |])
 $(mkNuMatching [t| forall v. NuMatching v => StorageTypeF v |])
+$(mkNuMatching [t| StorageType |])
 
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => UB.UndefinedBehavior f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => Poison.Poison f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => BadBehavior f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => LLVMSafetyAssertion f |])
+$(mkNuMatching [t| forall f. NuMatchingAny1 f => LLVMSideCondition f |])
 
 $(mkNuMatching [t| forall blocks tp. BlockID blocks tp |])
 
--- FIXME: Hobbits does not yet support mkNuMatching for empty types!
---- $(mkNuMatching [t| forall f. NoAssertionClassifier f |])
+-- FIXME: Hobbits mkNuMatching cannot handle empty types
+-- $(mkNuMatching [t| forall f tp. EmptyExprExtension f tp |])
 
-instance NuMatching (NoAssertionClassifier f) where
+instance NuMatching (EmptyExprExtension f tp) where
   nuMatchingProof = unsafeMbTypeRepr
+
+instance NuMatchingAny1 (EmptyExprExtension f) where
+  nuMatchingAny1Proof = nuMatchingProof
+
+$(mkNuMatching [t| AVXOp1 |])
+$(mkNuMatching [t| forall f tp. NuMatchingAny1 f => ExtX86 f tp |])
+$(mkNuMatching [t| forall arch f tp. NuMatchingAny1 f =>
+                LLVMExtensionExpr arch f tp |])
+
+instance NuMatchingAny1 f => NuMatchingAny1 (LLVMExtensionExpr arch f) where
+  nuMatchingAny1Proof = nuMatchingProof
+
+{-
+$(mkNuMatching [t| forall w f tp. NuMatchingAny1 f => LLVMStmt w f tp |])
+-}
+
+instance Closable (BV.BV w) where
+  toClosed = unsafeClose
+
+instance Liftable (BV.BV w) where
+  mbLift = unClosed . mbLift . fmap toClosed
+
+instance Closable (StringLiteral si) where
+  toClosed = unsafeClose
+
+instance Liftable (StringLiteral si) where
+  mbLift = unClosed . mbLift . fmap toClosed
 
 instance Closable (BadBehavior e) where
   toClosed = unsafeClose

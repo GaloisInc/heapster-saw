@@ -30,12 +30,14 @@ import Numeric (showHex)
 import Data.Char
 import Data.Maybe
 import Data.Either
+import Numeric.Natural
 import Data.List
 import Data.List.NonEmpty (toList)
 import Data.Kind
 import Data.Text (unpack)
 import Data.IORef
 import GHC.TypeLits
+import qualified Data.BitVector.Sized as BV
 import qualified Data.Functor.Constant as Constant
 import Control.Applicative
 import Control.Lens hiding ((:>),Index)
@@ -43,7 +45,9 @@ import Control.Monad.Fail
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Cont
+
 import What4.ProgramLoc
+import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
 
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
@@ -55,7 +59,8 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
-import Data.Parameterized.Context hiding ((:>), empty, take, view, zipWith, zipWithM)
+import Data.Parameterized.Context (Ctx(..), Assignment(..), AssignView(..),
+                                   pattern Empty, viewAssign)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
 
@@ -70,9 +75,7 @@ import Lang.Crucible.CFG.Expr
 import qualified Lang.Crucible.CFG.Expr as Expr
 import Lang.Crucible.CFG.Core
 import Lang.Crucible.CFG.Extension
-import Lang.Crucible.CFG.Extension.Safety
 import Lang.Crucible.Analysis.Fixpoint.Components
-import qualified What4.Partial.AssertionTree as AT
 
 --import Verifier.SAW.TracedOpenTerm
 import Verifier.SAW.OpenTerm
@@ -86,21 +89,6 @@ import Verifier.SAW.Heapster.Implication
 import Verifier.SAW.Heapster.TypedCrucible
 
 import Debug.Trace
-
-
--- FIXME HERE: move these to OpenTerm.hs
-
--- | Build a non-dependent function type
-arrowOpenTerm :: String -> OpenTerm -> OpenTerm -> OpenTerm
-arrowOpenTerm x tp body = piOpenTerm x tp (const body)
-
--- | Return the SAW core type @String@ of strings
-stringTypeOpenTerm :: OpenTerm
-stringTypeOpenTerm = globalOpenTerm "Prelude.String"
-
--- | Build a SAW core string literal
-stringLitOpenTerm :: String -> OpenTerm
-stringLitOpenTerm = flatOpenTerm . StringLit
 
 
 ----------------------------------------------------------------------
@@ -525,7 +513,7 @@ inEmptyCtxTransM =
   withInfoM (\(TypeTransInfo _ env) -> TypeTransInfo MNil env)
 
 instance TransInfo info => Translate info ctx (NatRepr n) OpenTerm where
-  translate mb_n = return $ natOpenTerm $ mbLift $ fmap intValue mb_n
+  translate mb_n = return $ natOpenTerm $ mbLift $ fmap natValue mb_n
 
 -- | Helper for writing the 'Translate' instance for 'TypeRepr'
 returnType1 :: OpenTerm -> TransM info ctx (TypeTrans (ExprTrans a))
@@ -578,7 +566,7 @@ instance TransInfo info =>
     return $ error "translate: IEEEFloatRepr"
   translate [nuP| CharRepr |] =
     return $ error "translate: CharRepr"
-  translate [nuP| StringRepr |] =
+  translate [nuP| StringRepr UnicodeRepr |] =
     returnType1 stringTypeOpenTerm
   translate [nuP| FunctionHandleRepr _ _ |] =
     -- NOTE: function permissions translate to the SAW function, but the
@@ -634,17 +622,17 @@ piExprCtx ctx m =
 trueOpenTerm :: OpenTerm
 trueOpenTerm = globalOpenTerm "Prelude.True"
 
-bvNatOpenTerm :: Integer -> Integer -> OpenTerm
+bvNatOpenTerm :: Natural -> Natural -> OpenTerm
 bvNatOpenTerm w n =
   applyOpenTermMulti (globalOpenTerm "Prelude.bvNat")
   [natOpenTerm w, natOpenTerm (n `mod` 2 ^ w)]
 
-bvAddOpenTerm :: Integer -> OpenTerm -> OpenTerm -> OpenTerm
+bvAddOpenTerm :: Natural -> OpenTerm -> OpenTerm -> OpenTerm
 bvAddOpenTerm n x y =
   applyOpenTermMulti (globalOpenTerm "Prelude.bvAdd")
   [natOpenTerm n, x, y]
 
-bvMulOpenTerm :: Integer -> OpenTerm -> OpenTerm -> OpenTerm
+bvMulOpenTerm :: Natural -> OpenTerm -> OpenTerm -> OpenTerm
 bvMulOpenTerm n x y =
   applyOpenTermMulti (globalOpenTerm "Prelude.bvMul")
   [natOpenTerm n, x, y]
@@ -657,18 +645,18 @@ translateVar _ = error "translateVar: unbound variable!"
 
 -- | A version of 'natVal' that takes a phantom argument with 2 applied type
 -- functors instead of 1
-natVal2 :: KnownNat w => f (g w) -> Integer
-natVal2 (_ :: f (g w)) = natVal (Proxy :: Proxy w)
+natVal2 :: KnownNat w => f (g w) -> Natural
+natVal2 (_ :: f (g w)) = fromInteger $ natVal (Proxy :: Proxy w)
 
 -- | A version of 'natVal' that takes a phantom argument with 3 applied type
 -- functors instead of 1
-natVal3 :: KnownNat w => f (g (h w)) -> Integer
-natVal3 (_ :: f (g (h w))) = natVal (Proxy :: Proxy w)
+natVal3 :: KnownNat w => f (g (h w)) -> Natural
+natVal3 (_ :: f (g (h w))) = fromInteger $ natVal (Proxy :: Proxy w)
 
 -- | A version of 'natVal' that takes a phantom argument with 4 applied type
 -- functors instead of 1
-natVal4 :: KnownNat w => f (g (h (i w))) -> Integer
-natVal4 (_ :: f (g (h (i w)))) = natVal (Proxy :: Proxy w)
+natVal4 :: KnownNat w => f (g (h (i w))) -> Natural
+natVal4 (_ :: f (g (h (i w)))) = fromInteger $ natVal (Proxy :: Proxy w)
 
 -- | Get the 'TypeRepr' of an expression
 mbExprType :: KnownRepr TypeRepr a => Mb ctx (PermExpr a) -> TypeRepr a
@@ -695,7 +683,7 @@ instance TransInfo info =>
     return $ ETrans_Term $ natOpenTerm $ mbLift i
   translate [nuP| PExpr_BV bvfactors@[] off |] =
     let w = natVal3 bvfactors in
-    return $ ETrans_Term $ bvNatOpenTerm w $ mbLift off
+    return $ ETrans_Term $ bvNatOpenTerm w $ fromInteger $ mbLift off
   translate [nuP| PExpr_BV bvfactors 0 |] =
     let w = natVal3 bvfactors in
     ETrans_Term <$> foldr1 (bvAddOpenTerm w) <$>
@@ -704,7 +692,8 @@ instance TransInfo info =>
     do let w = natVal3 bvfactors
        bv_transs <- mapM translate $ mbList bvfactors
        return $ ETrans_Term $
-         foldr (bvAddOpenTerm w) (bvNatOpenTerm w $ mbLift off) bv_transs
+         foldr (bvAddOpenTerm w) (bvNatOpenTerm w $
+                                  fromInteger $ mbLift off) bv_transs
   translate [nuP| PExpr_Struct _args |] =
     error "FIXME HERE: translate struct expressions!"
   translate [nuP| PExpr_Always |] =
@@ -728,7 +717,7 @@ instance TransInfo info => Translate info ctx (BVFactor w) OpenTerm where
   translate [nuP| BVFactor 1 x |] = translate1 (fmap PExpr_Var x)
   translate [nuP| BVFactor i x |] =
     let w = natVal4 x in
-    bvMulOpenTerm w (bvNatOpenTerm w (mbLift i)) <$>
+    bvMulOpenTerm w (bvNatOpenTerm w $ fromInteger (mbLift i)) <$>
     translate1 (fmap PExpr_Var x)
 
 
@@ -1129,7 +1118,7 @@ getLLVMArrayTransCell :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
                          [AtomicPermTrans ctx (LLVMPointerType w)]
 getLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
   (BVPropTrans _ in_rng_term:_) =
-  let w = natVal arr_trans in
+  let w = fromInteger $ natVal arr_trans in
   mapMaybe (offsetLLVMAtomicPermTrans $
             fmap llvmArrayOffset $ llvmArrayTransPerm arr_trans) $
   typeTransF (llvmArrayTransFields arr_trans)
@@ -1147,7 +1136,7 @@ setLLVMArrayTransCell :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
                          LLVMArrayPermTrans ctx w
 setLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
   (BVPropTrans _ in_rng_term:_) cell =
-  let w = natVal arr_trans in
+  let w = fromInteger $ natVal arr_trans in
   arr_trans {
     llvmArrayTransTerm =
         applyOpenTermMulti (globalOpenTerm "Prelude.updBVVec")
@@ -2451,7 +2440,7 @@ instance (PermCheckExtC ext, TransInfo info) =>
 
   -- Natural numbers
   translate [nuP| Expr.NatLit n |] =
-    return $ ETrans_Term $ natOpenTerm $ toInteger $ mbLift n
+    return $ ETrans_Term $ natOpenTerm $ mbLift n
   translate [nuP| NatLt e1 e2 |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.ltNat")
@@ -2483,8 +2472,9 @@ instance (PermCheckExtC ext, TransInfo info) =>
   translate [nuP| HandleLit _ |] = return ETrans_Fun
 
   -- Bitvectors
-  translate [nuP| BVLit w i |] =
-    return $ ETrans_Term $ bvNatOpenTerm (intValue $ mbLift w) (mbLift i)
+  translate [nuP| BVLit w (BV.BV i) |] =
+    return $ ETrans_Term $
+    bvNatOpenTerm (natValue $ mbLift w) (fromInteger $ mbLift i)
   translate [nuP| BVConcat w1 w2 e1 e2 |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.join")
@@ -2492,20 +2482,20 @@ instance (PermCheckExtC ext, TransInfo info) =>
   translate [nuP| BVTrunc w1 w2 e |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvTrunc")
-    [return (natOpenTerm (intValue (mbLift w2) - intValue (mbLift w1))),
+    [return (natOpenTerm (natValue (mbLift w2) - natValue (mbLift w1))),
      translate w1,
      translateRWV e]
   translate [nuP| BVZext w1 w2 e |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvUExt")
-    [return (natOpenTerm (intValue (mbLift w1) - intValue (mbLift w2))),
+    [return (natOpenTerm (natValue (mbLift w1) - natValue (mbLift w2))),
      translate w2, translateRWV e]
   translate [nuP| BVSext w1 w2 e |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvSExt")
-    [return (natOpenTerm (intValue (mbLift w1) - intValue (mbLift w2))),
+    [return (natOpenTerm (natValue (mbLift w1) - natValue (mbLift w2))),
      -- NOTE: bvSExt adds 1 to the 2nd arg
-     return (natOpenTerm (intValue (mbLift w2) - 1)),
+     return (natOpenTerm (natValue (mbLift w2) - 1)),
      translateRWV e]
   translate [nuP| BVNot w e |] =
     ETrans_Term <$>
@@ -2577,7 +2567,7 @@ instance (PermCheckExtC ext, TransInfo info) =>
     [translate w, translateRWV e1, translateRWV e2]
   translate [nuP| BVSCarry w e1 e2 |] =
     -- NOTE: bvSCarry adds 1 to the bitvector length
-    let w_minus_1 = natOpenTerm (intValue (mbLift w) - 1) in
+    let w_minus_1 = natOpenTerm (natValue (mbLift w) - 1) in
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvSCarry")
     [return w_minus_1, translateRWV e1, translateRWV e2]
@@ -2586,18 +2576,18 @@ instance (PermCheckExtC ext, TransInfo info) =>
     applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
     [applyTransM (return $ globalOpenTerm "Prelude.bitvector") (translate w),
      translateRWV e,
-     return (bvNatOpenTerm (intValue $ mbLift w) 1),
-     return (bvNatOpenTerm (intValue $ mbLift w) 0)]
+     return (bvNatOpenTerm (natValue $ mbLift w) 1),
+     return (bvNatOpenTerm (natValue $ mbLift w) 0)]
   translate [nuP| BVNonzero w e |] =
     ETrans_Term <$>
     applyTransM (return $ globalOpenTerm "Prelude.not")
     (applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
      [translate w, translateRWV e,
-      return (bvNatOpenTerm (intValue $ mbLift w) 0)])
+      return (bvNatOpenTerm (natValue $ mbLift w) 0)])
 
   -- Strings
-  translate [nuP| TextLit text |] =
-    return $ ETrans_Term $ flatOpenTerm $ StringLit $
+  translate [nuP| Expr.StringLit (UnicodeLiteral text) |] =
+    return $ ETrans_Term $ stringLitOpenTerm $
     mbLift $ fmap unpack text
 
   -- Everything else is an error
@@ -2618,47 +2608,6 @@ exprOutPerm :: PermCheckExtC ext => Mb ctx (TypedExpr ext tp) ->
                PermTrans ctx tp
 exprOutPerm [nuP| TypedExpr _ (Just e) |] = PTrans_Eq e
 exprOutPerm [nuP| TypedExpr _ Nothing |] = PTrans_True
-
-
-----------------------------------------------------------------------
--- * Translating 'AssertionClassifierTree's
-----------------------------------------------------------------------
-
-instance TransInfo info =>
-         Translate info ctx (NoAssertionClassifier RegWithVal) OpenTerm where
-  translate _ = error "Unreachable!"
-
-instance TransInfo info =>
-         Translate info ctx (LLVMSafetyAssertion RegWithVal) OpenTerm where
-  translate a = translate1 (fmap (^. predicate) a)
-
--- Translate an AssertionClassifierTree to a Boolean expression
-instance (TransInfo info, NuMatching a, Translate info ctx a OpenTerm) =>
-         Translate info ctx (AT.AssertionTree
-                             (RegWithVal BoolType) a) OpenTerm where
-  translate [nuP| AT.Leaf a |] = translate a
-  translate [nuP| AT.And ps |] =
-    foldr (\p m ->
-            applyMultiTransM (return $ globalOpenTerm "Prelude.and")
-            [translate p, m]) (return trueOpenTerm) (mbList $ fmap toList ps)
-  translate [nuP| AT.Or ps |] =
-    foldr (\p m ->
-            applyMultiTransM (return $ globalOpenTerm "Prelude.or")
-            [translate p, m]) (return trueOpenTerm) (mbList $ fmap toList ps)
-  translate [nuP| AT.Ite c p1 p2 |] =
-    applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
-    [return (globalOpenTerm "Prelude.Bool"), translate1 c,
-     translate p1, translate p2]
-
-translateAssertionClassifierTree ::
-  PermCheckExtC ext =>
-  Mb ctx (AssertionClassifierTree ext RegWithVal) ->
-  ImpTransM ext blocks tops ret ps ctx OpenTerm
-translateAssertionClassifierTree t = getExtReprM >>= \r -> helper r t where
-  helper :: ExtRepr ext -> Mb ctx (AssertionClassifierTree ext RegWithVal) ->
-            ImpTransM ext blocks tops ret ps ctx OpenTerm
-  helper ExtRepr_LLVM = translate
-  helper ExtRepr_Unit = translate
 
 
 ----------------------------------------------------------------------
@@ -2723,20 +2672,6 @@ translateStmt :: PermCheckExtC ext =>
                  ProgramLoc -> Mb ctx (TypedStmt ext rets ps_in ps_out) ->
                  ImpTransM ext blocks tops ret ps_out (ctx :++: rets) OpenTerm ->
                  ImpTransM ext blocks tops ret ps_in ctx OpenTerm
-
-translateStmt loc [nuP| TypedSetReg _
-                      top_e@(TypedExpr
-                             (WithAssertion _ (PartialExp pred e)) maybe_e) |] m =
-  do pred_trans <- translateAssertionClassifierTree pred
-     etrans <- tpTransM (case maybe_e of
-                            [nuP| Just e' |] -> translate e'
-                            _ -> translate e)
-     applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
-       [compReturnTypeM, return pred_trans,
-        inExtTransM etrans (withPermStackM
-                            (:>: Member_Base)
-                            (:>: extPermTrans (exprOutPerm top_e)) m),
-        applyCatchHandlerM ("Failed WithAssertion at " ++ show loc)]
 
 translateStmt _ [nuP| TypedSetReg _ e |] m =
   do etrans <- tpTransM $ translate e

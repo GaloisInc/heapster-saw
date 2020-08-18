@@ -32,8 +32,10 @@ import Data.Proxy
 import Data.Functor.Constant
 import Data.Reflection
 import Data.Binding.Hobbits
+import Numeric.Natural
 import GHC.TypeLits
 import Data.Kind
+import qualified Data.Text as T
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity
 import Control.Monad.State
@@ -53,7 +55,8 @@ import qualified Data.Binding.Hobbits.NameSet as NameSet
 import Data.Binding.Hobbits.NuMatching
 import Data.Binding.Hobbits.NuMatchingInstances
 
-import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, last)
+import Data.Parameterized.Context (Ctx(..), Assignment(..), AssignView(..),
+                                   pattern Empty, viewAssign)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.BoolRepr
 import Data.Parameterized.NatRepr
@@ -266,7 +269,7 @@ pattern LLVMFrameRepr w <-
                  Just Refl)
   (viewAssign -> AssignExtend Empty (BVRepr w))
   where
-    LLVMFrameRepr w = IntrinsicRepr knownSymbol (extend Empty (BVRepr w))
+    LLVMFrameRepr w = IntrinsicRepr knownSymbol (Ctx.extend Empty (BVRepr w))
 
 -- | Crucible type for value permissions themselves
 type ValuePermType a = IntrinsicType "Perm" (EmptyCtx ::> a)
@@ -279,7 +282,7 @@ pattern ValuePermRepr a <-
                  Just Refl)
   (viewAssign -> AssignExtend Empty a)
   where
-    ValuePermRepr a = IntrinsicRepr knownSymbol (extend Empty a)
+    ValuePermRepr a = IntrinsicRepr knownSymbol (Ctx.extend Empty a)
 
 
 -- | Expressions that are considered "pure" for use in permissions. Note that
@@ -295,10 +298,10 @@ data PermExpr (a :: CrucibleType) where
   PExpr_Bool :: Bool -> PermExpr BoolType
 
   -- | A literal natural number
-  PExpr_Nat :: Integer -> PermExpr NatType
+  PExpr_Nat :: Natural -> PermExpr NatType
 
   -- | A literal string
-  PExpr_String :: String -> PermExpr StringType
+  PExpr_String :: String -> PermExpr (StringType Unicode)
 
   -- | A bitvector expression is a linear expression in @N@ variables, i.e., sum
   -- of constant times variable factors plus a constant
@@ -438,7 +441,7 @@ instance Eq (BVFactor w) where
 instance PermPretty (PermExpr a) where
   permPrettyM (PExpr_Var x) = permPrettyM x
   permPrettyM PExpr_Unit = return $ string "()"
-  permPrettyM (PExpr_Nat n) = return $ integer n
+  permPrettyM (PExpr_Nat n) = return $ string $ show n
   permPrettyM (PExpr_String str) = return (char '"' <> string str <> char '"')
   permPrettyM (PExpr_Bool b) = return $ bool b
   permPrettyM (PExpr_BV factors const) =
@@ -3599,6 +3602,9 @@ instance AbstractVars (RAssign Name (ctx :: RList CrucibleType)) where
 
 instance AbstractVars Integer where
   abstractPEVars ns1 ns2 i = absVarsReturnH ns1 ns2 (toClosed i)
+
+instance AbstractVars Natural where
+  abstractPEVars ns1 ns2 n = absVarsReturnH ns1 ns2 (toClosed n)
 
 instance AbstractVars Char where
   abstractPEVars ns1 ns2 c = absVarsReturnH ns1 ns2 (toClosed c)

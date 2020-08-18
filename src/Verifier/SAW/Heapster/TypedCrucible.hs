@@ -34,9 +34,12 @@ import Data.Functor.Identity
 import Data.Functor.Compose
 import Data.Functor.Constant
 import Data.Kind
+import qualified Data.BitVector.Sized as BV
 import GHC.TypeLits
+
 import What4.ProgramLoc
 import What4.FunctionName
+import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
 
 import Control.Lens hiding ((:>),Index)
 import Control.Monad.State
@@ -70,9 +73,8 @@ import Lang.Crucible.LLVM.Arch.X86
 import Lang.Crucible.CFG.Expr
 import Lang.Crucible.CFG.Core
 import Lang.Crucible.CFG.Extension
-import Lang.Crucible.CFG.Extension.Safety
 import Lang.Crucible.Analysis.Fixpoint.Components
-import qualified What4.Partial.AssertionTree as AT
+import Lang.Crucible.LLVM.Extension.Safety.UndefinedBehavior as UB
 
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
@@ -207,8 +209,7 @@ instance NuMatchingAny1 RegWithVal where
   nuMatchingAny1Proof = nuMatchingProof
 
 type NuMatchingExtC ext =
-  (NuMatchingAny1 (ExprExtension ext RegWithVal),
-   NuMatching (AssertionClassifier ext RegWithVal)
+  (NuMatchingAny1 (ExprExtension ext RegWithVal)
   -- (NuMatchingAny1 (ExprExtension ext TypedReg)
    -- , NuMatchingAny1 (StmtExtension ext TypedReg))
   )
@@ -220,28 +221,6 @@ $(mkNuMatching [t| forall blocks tops ps_in. TypedJumpTarget blocks tops ps_in |
 
 instance NuMatchingAny1 (TypedJumpTarget blocks tops) where
   nuMatchingAny1Proof = nuMatchingProof
-
--- FIXME: Hobbits mkNuMatching cannot handle empty types
--- $(mkNuMatching [t| forall f tp. EmptyExprExtension f tp |])
-
-instance NuMatching (EmptyExprExtension f tp) where
-  nuMatchingProof = unsafeMbTypeRepr
-
-
-instance NuMatchingAny1 (EmptyExprExtension f) where
-  nuMatchingAny1Proof = nuMatchingProof
-
-$(mkNuMatching [t| AVXOp1 |])
-$(mkNuMatching [t| forall f tp. NuMatchingAny1 f => ExtX86 f tp |])
-$(mkNuMatching [t| forall arch f tp. NuMatchingAny1 f =>
-                LLVMExtensionExpr arch f tp |])
-
-instance NuMatchingAny1 f => NuMatchingAny1 (LLVMExtensionExpr arch f) where
-  nuMatchingAny1Proof = nuMatchingProof
-
-{-
-$(mkNuMatching [t| forall w f tp. NuMatchingAny1 f => LLVMStmt w f tp |])
--}
 
 instance Closable (TypedEntryID blocks args ghosts) where
   toClosed (TypedEntryID entryBlockID entryGhosts entryIndex) =
@@ -297,7 +276,7 @@ data TypedStmt ext (rets :: RList CrucibleType) ps_in ps_out where
                  TypedStmt ext RNil (ps :> LifetimeType :++: ps_l) ps
 
   -- | Assert a boolean condition, printing the given string on failure
-  TypedAssert :: TypedReg BoolType -> TypedReg StringType ->
+  TypedAssert :: TypedReg BoolType -> TypedReg (StringType Unicode) ->
                  TypedStmt ext RNil RNil RNil
 
   -- | LLVM-specific statement
@@ -604,7 +583,7 @@ data TypedTermStmt blocks tops ret ps_in where
                  TypedTermStmt blocks tops ret ps_in
 
   -- | Block ends with an error
-  TypedErrorStmt :: Maybe String -> TypedReg StringType ->
+  TypedErrorStmt :: Maybe String -> TypedReg (StringType Unicode) ->
                     TypedTermStmt blocks tops ret ps_in
 
 
@@ -668,7 +647,6 @@ instance SubstVar PermVarSubst m =>
     TypedRegsCons <$> genSubst s rs <*> genSubst s r
 
 instance (PermCheckExtC ext, NuMatchingAny1 f,
-          NuMatching (AssertionClassifier ext f),
           SubstVar PermVarSubst m, Substable1 PermVarSubst f m,
           Substable PermVarSubst (f BoolType) m) =>
          Substable PermVarSubst (App ext f a) m where
@@ -702,16 +680,6 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     NatMod <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| HandleLit h |] =
     return $ HandleLit $ mbLift h
-  genSubst s mb_e@[nuP| WithAssertion tp (PartialExp p e) |] =
-    let getExtRepr :: PermCheckExtC ext => Mb ctx (App ext f a) -> ExtRepr ext
-        getExtRepr _ = knownRepr in
-    case getExtRepr mb_e of
-      ExtRepr_Unit ->
-        WithAssertion (mbLift tp) <$>
-        (PartialExp <$> genSubst s p <*> genSubst1 s e)
-      ExtRepr_LLVM ->
-        WithAssertion (mbLift tp) <$>
-        (PartialExp <$> genSubst s p <*> genSubst1 s e)
   genSubst s [nuP| BVLit w i |] =
     BVLit <$> genSubst s w <*> return (mbLift i)
   genSubst s [nuP| BVConcat w1 w2 e1 e2 |] =
@@ -763,33 +731,14 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     BoolToBV <$> genSubst s w <*> genSubst1 s e
   genSubst s [nuP| BVNonzero w e |] =
     BVNonzero <$> genSubst s w <*> genSubst1 s e
-  genSubst _ [nuP| TextLit text |] =
-    return $ TextLit $ mbLift text
+  genSubst _ [nuP| StringLit str_lit |] =
+    return $ StringLit $ mbLift str_lit
   genSubst _ mb_expr =
     error ("genSubst: unhandled Crucible expression construct: "
            ++ mbLift (fmap (show . ppApp (const (string "_"))) mb_expr))
 
-instance (NuMatchingAny1 f, SubstVar PermVarSubst m,
-          Substable1 PermVarSubst f m) =>
-         Substable PermVarSubst (LLVMSafetyAssertion f) m where
-  genSubst s [nuP| LLVMSafetyAssertion bbeh p extra |] =
-    LLVMSafetyAssertion (mbLift bbeh) <$> genSubst1 s p <*> return (mbLift extra)
-
-instance SubstVar PermVarSubst m =>
-         Substable PermVarSubst (NoAssertionClassifier f) m where
-  genSubst _ _ = error "Unreachable!"
-
 instance (NuMatching a, Substable s a m) => Substable s (NonEmpty a) m where
   genSubst s [nuP| x :| xs |] = (:|) <$> genSubst s x <*> genSubst s xs
-
-instance (NuMatching a, NuMatching c,
-          SubstVar s m, Substable s c m, Substable s a m) =>
-         Substable s (AT.AssertionTree c a) m where
-  genSubst s [nuP| AT.Leaf a |] = AT.Leaf <$> genSubst s a
-  genSubst s [nuP| AT.And ts |] = AT.And <$> genSubst s ts
-  genSubst s [nuP| AT.Or ts |] = AT.Or <$> genSubst s ts
-  genSubst s [nuP| AT.Ite c t1 t2 |] =
-    AT.Ite <$> genSubst s c <*> genSubst s t1 <*> genSubst s t2
 
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
@@ -1740,7 +1689,7 @@ resolveConstant = helper . PExpr_Var . typedRegVar where
     case p of
       ValPerm_Eq e -> helper e
       _ -> greturn Nothing
-  helper (PExpr_Nat i) = greturn (Just i)
+  helper (PExpr_Nat i) = greturn (Just $ toInteger i)
   helper (PExpr_BV factors off) =
     foldM (\maybe_res (BVFactor i x) ->
             helper (PExpr_Var x) >>= \maybe_x_val ->
@@ -1980,15 +1929,16 @@ tcExpr (BoolXor (RegWithVal _ (PExpr_Bool True))
 
 -- Nat expressions --
 
-tcExpr (NatLit i) = greturn $ Just $ PExpr_Nat $ toInteger i
+tcExpr (NatLit i) = greturn $ Just $ PExpr_Nat i
 
 -- String expressions --
 
-tcExpr (TextLit text) = greturn $ Just $ PExpr_String $ Text.unpack text
+tcExpr (StringLit (UnicodeLiteral text)) =
+  greturn $ Just $ PExpr_String $ Text.unpack text
 
 -- Bitvector expressions --
 
-tcExpr (BVLit w i) = withKnownNat w $ greturn $ Just $ bvInt i
+tcExpr (BVLit w (BV.BV i)) = withKnownNat w $ greturn $ Just $ bvInt i
 
 tcExpr (BVSext w2 _ (RegWithVal _ (bvMatchConst -> Just i))) =
   withKnownNat w2 $ greturn $ Just $ bvInt i
@@ -2031,49 +1981,7 @@ tcExpr (BVNonzero w (RegWithVal _ bv))
 
 -- Misc expressions --
 
-tcExpr (WithAssertion tp (PartialExp _ (regWithValExpr -> e))) =
-  greturn $ Just e
-
 tcExpr _ = greturn Nothing
-
-
--- | Get the Boolean value of an 'AssertionClassifierTree' if it has one
-assertionTreeVal :: ExtRepr ext -> AssertionClassifierTree ext RegWithVal ->
-                    Maybe Bool
-assertionTreeVal ExtRepr_LLVM (AT.Leaf a)
-  | RegWithVal _ (PExpr_Bool b) <- a ^. predicate = Just b
-assertionTreeVal _ _ = Nothing
-
--- | Simplify an 'AssertionTree'
-simplAssertionTree :: ExtRepr ext -> AssertionClassifierTree ext RegWithVal ->
-                      AssertionClassifierTree ext RegWithVal
-simplAssertionTree _ atree@(AT.Leaf _) = atree
-simplAssertionTree ext (AT.And atrees) =
-  let atrees_simp = NonEmpty.map (simplAssertionTree ext) atrees in
-  case foldr (\atree restM -> case assertionTreeVal ext atree of
-                 Just True -> restM
-                 Just False -> Left atree
-                 _ -> (atree :) <$> restM) (return []) atrees_simp of
-    Left a -> a
-    Right (a:as) -> AT.And (a NonEmpty.:| as)
-    Right [] -> NonEmpty.head atrees_simp
-simplAssertionTree ext (AT.Or atrees) =
-  let atrees_simp = NonEmpty.map (simplAssertionTree ext) atrees in
-  case foldr (\atree restM -> case assertionTreeVal ext atree of
-                 Just False -> restM
-                 Just True -> Left atree
-                 _ -> (atree :) <$> restM) (return []) atrees_simp of
-    Left a -> a
-    Right (a:as) -> AT.Or (a NonEmpty.:| as)
-    Right [] -> NonEmpty.head atrees_simp
-simplAssertionTree ext (AT.Ite rwv atree1 _)
-  | PExpr_Bool True <- regWithValExpr rwv =
-    simplAssertionTree ext atree1
-simplAssertionTree ext (AT.Ite rwv _ atree2)
-  | PExpr_Bool False <- regWithValExpr rwv =
-    simplAssertionTree ext atree2
-simplAssertionTree ext (AT.Ite rwv atree1 atree2) =
-  AT.Ite rwv (simplAssertionTree ext atree1) (simplAssertionTree ext atree2)
 
 
 -- | Typecheck a statement and emit it in the current statement sequence,
@@ -2105,29 +2013,6 @@ tcEmitStmt' ctx loc (SetReg tp (App (ExtensionApp e_ext
                                      :: App ext (Reg ctx) tp)))
   | ExtRepr_LLVM <- knownRepr :: ExtRepr ext
   = tcEmitLLVMSetExpr Proxy ctx loc e_ext
-
-tcEmitStmt' ctx loc (SetReg tp (App e@(WithAssertion _ _
-                                       :: App ext (Reg ctx) tp))) =
-  let ext :: ExtRepr ext = knownRepr in
-  traverseFC (tcRegWithVal ctx) e >>>= \e_with_vals ->
-  let (atree, rwv) = case e_with_vals of
-        WithAssertion _ (PartialExp atree rwv) -> (atree, rwv) in
-  let atree_simp = simplAssertionTree ext atree in
-  case assertionTreeVal ext atree_simp of
-    Just True ->
-      emitStmt (singletonCruCtx tp) loc (TypedSetRegPermExpr tp $
-                                         regWithValExpr rwv) >>>= \(_ :>: x) ->
-      stmtRecombinePerms >>>
-      greturn (addCtxName ctx x)
-    Just False ->
-      stmtFailM (\_ -> string "Failed assertion")
-    _ ->
-      let typed_e =
-            TypedExpr (WithAssertion tp (PartialExp atree_simp rwv))
-            (Just (regWithValExpr rwv)) in
-      emitStmt (singletonCruCtx tp) loc (TypedSetReg tp typed_e) >>>= \(_ :>: x) ->
-      stmtRecombinePerms >>>
-      greturn (addCtxName ctx x)
 
 tcEmitStmt' ctx loc (SetReg tp (App e)) =
   traverseFC (tcRegWithVal ctx) e >>>= \e_with_vals ->
@@ -2249,10 +2134,63 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerOffset w ptr_reg) =
       stmtProvePerm tptr_reg (emptyMb $ ValPerm_Conj1 Perm_IsLLVMPtr) >>>
       emitLLVMStmt knownRepr loc (AssertLLVMPtr tptr_reg) >>>
       emitStmt knownRepr loc (TypedSetReg knownRepr $
-                              TypedExpr (BVLit w 0)
+                              TypedExpr (BVLit w $ BV.mkBV w 0)
                               (Just $ bvInt 0)) >>>= \(_ :>: ret) ->
       stmtRecombinePerms >>>
       greturn (addCtxName ctx ret)
+
+-- An if-then-else at pointer type is just preserved, though we propogate
+-- equality information when possible
+tcEmitLLVMSetExpr arch ctx loc e@(LLVM_PointerIte w cond_reg then_reg else_reg) =
+  withKnownNat w $
+  let tcond_reg = tcReg ctx cond_reg
+      tthen_reg = tcReg ctx then_reg
+      telse_reg = tcReg ctx else_reg in
+  getRegEqualsExpr tcond_reg >>>= \tcond_expr ->
+  case tcond_expr of
+    PExpr_Bool True ->
+      emitStmt knownRepr loc (TypedSetRegPermExpr knownRepr $ PExpr_Var $
+                              typedRegVar tthen_reg) >>>= \(_ :>: ret) ->
+      stmtRecombinePerms >>>
+      greturn (addCtxName ctx ret)
+    PExpr_Bool False ->
+      emitStmt knownRepr loc (TypedSetRegPermExpr knownRepr $ PExpr_Var $
+                              typedRegVar telse_reg) >>>= \(_ :>: ret) ->
+      stmtRecombinePerms >>>
+      greturn (addCtxName ctx ret)
+    _ ->
+      traverseFC (tcRegWithVal ctx) e >>>= \e_with_vals ->
+      emitStmt knownRepr loc (TypedSetReg knownRepr $
+                              TypedExpr (ExtensionApp e_with_vals)
+                              Nothing) >>>= \(_ :>: ret) ->
+      stmtRecombinePerms >>>
+      greturn (addCtxName ctx ret)
+
+-- For LLVM side conditions, treat each side condition as an assert
+tcEmitLLVMSetExpr arch ctx loc (LLVM_SideConditions tp conds reg) =
+  let treg = tcReg ctx reg in
+  foldr
+  (\(LLVMSideCondition cond_reg ub) rest_m ->
+    let tcond_reg = tcReg ctx cond_reg
+        err_str = renderDoc (string "Undefined behavior: " </> UB.explain ub) in
+    getRegEqualsExpr tcond_reg >>>= \tcond_expr ->
+    case tcond_expr of
+      PExpr_Bool True ->
+        rest_m
+      PExpr_Bool False -> stmtFailM (\_ -> string err_str)
+      _ ->
+        emitStmt knownRepr loc (TypedSetRegPermExpr knownRepr $
+                                PExpr_String err_str) >>>= \(_ :>: str_var) ->
+        stmtRecombinePerms >>>
+        emitStmt CruCtxNil loc (TypedAssert tcond_reg $
+                                TypedReg str_var) >>>= \_ ->
+        stmtRecombinePerms >>>
+        rest_m)
+  (emitStmt (singletonCruCtx tp) loc (TypedSetRegPermExpr tp $ PExpr_Var $
+                                      typedRegVar treg) >>>= \(_ :>: ret) ->
+    stmtRecombinePerms >>>
+    greturn (addCtxName ctx ret))
+  conds
 
 
 -- FIXME HERE: move withLifetimeCurrentPerms somewhere better...
