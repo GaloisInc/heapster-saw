@@ -29,6 +29,8 @@ library
     ansi-wl-pprint,
     transformers,
     mtl,
+    bv-sized,
+    bytestring,
     hobbits >= 1.3
   hs-source-dirs: src
   exposed-modules:
