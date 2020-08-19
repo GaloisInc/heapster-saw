@@ -2000,7 +2000,7 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayReturn _ mb_ap mb_rng |] m =
 
 translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexCopy _ _ ix |] m =
   do let w = natVal2 ix
-     (_ :>: ptrans_props :>: ptrans_array) <- itiPermStack <$> ask
+     (_ :>: ptrans_array :>: ptrans_props) <- itiPermStack <$> ask
      let arr_trans =
            unPTransLLVMArray
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_array
@@ -2016,13 +2016,13 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexCopy _ _ ix |] m =
 
 translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexBorrow x _ ix |] m =
   do let w = natVal2 ix
-     (_ :>: ptrans_props :>: ptrans_array) <- itiPermStack <$> ask
+     (_ :>: ptrans_array :>: ptrans_props) <- itiPermStack <$> ask
      let arr_trans =
            unPTransLLVMArray
-           "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_array
+           "translateSimplImpl: SImpl_LLVMArrayIndexBorrow" ptrans_array
      let prop_transs =
            unPTransBVProps
-           "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_props
+           "translateSimplImpl: SImpl_LLVMArrayIndexBorrow" ptrans_props
      ix_trans <- translate ix
      let fld_ptrans = getLLVMArrayTransField arr_trans ix_trans prop_transs
      let b = LLVMArrayBorrowTrans (fmap FieldBorrow ix) prop_transs
