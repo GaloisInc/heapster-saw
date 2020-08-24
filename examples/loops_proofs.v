@@ -12,7 +12,7 @@ Import loops.
 
 Import SAWCorePrelude.
 
-Print add_loop__tuple_fun.
+(* Print add_loop__tuple_fun. *)
 
 Lemma no_errors_add_loop : refinesFun add_loop (fun _ _ => noErrorsSpec).
 Proof.
