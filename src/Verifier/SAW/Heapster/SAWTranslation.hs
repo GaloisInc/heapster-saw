@@ -312,6 +312,18 @@ lambdaOpenTermTransM x tp body_f =
 --
 -- over the types in a 'TypeTrans' inside a translation monad, using the
 -- 'String' as a variable name prefix for the @xi@ variables
+lambdaTrans :: String -> TypeTrans tr -> (tr -> OpenTerm) -> OpenTerm
+lambdaTrans x tps body_f =
+  lambdaOpenTermMulti
+  (zipWith (\i tp -> (x ++ show i, tp)) [0..] $ typeTransTypes tps)
+  (body_f . typeTransF tps)
+
+-- | Build a nested lambda-abstraction
+--
+-- > \x1:tp1 -> ... -> \xn:tpn -> body
+--
+-- over the types in a 'TypeTrans' inside a translation monad, using the
+-- 'String' as a variable name prefix for the @xi@ variables
 lambdaTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
                 TransM info ctx OpenTerm
 lambdaTransM x tps body_f =
@@ -815,6 +827,13 @@ data BVRangeTrans ctx w =
   BVRangeTrans (Mb ctx (BVRange w))
   (ExprTrans (BVType w)) (ExprTrans (BVType w))
 
+-- | Extract the translation of the offset from the translation of a 'BVRange'
+bvRangeTransOff :: BVRangeTrans ctx w -> ExprTrans (BVType w)
+bvRangeTransOff (BVRangeTrans _ off _) = off
+
+-- | Extract the translation of the length from the translation of a 'BVRange'
+bvRangeTransLen :: BVRangeTrans ctx w -> ExprTrans (BVType w)
+bvRangeTransLen (BVRangeTrans _ _ len) = len
 
 -- | The translation of an LLVM array permission is a SAW term of @BVVec@ type,
 -- along with a type translation for its fields and proof terms stating that all
@@ -824,7 +843,7 @@ data LLVMArrayPermTrans ctx w = LLVMArrayPermTrans {
   llvmArrayTransPerm :: Mb ctx (LLVMArrayPerm w),
   llvmArrayTransLen :: OpenTerm,
   llvmArrayTransFields :: TypeTrans [AtomicPermTrans ctx (LLVMPointerType w)],
-  llvmArrayTransBorrows :: [LLVMArrayBorrowTrans ctx w],
+  -- llvmArrayTransBorrows :: [LLVMArrayBorrowTrans ctx w],
   llvmArrayTransTerm :: OpenTerm
   }
 
@@ -835,10 +854,12 @@ data LLVMArrayIndexTrans ctx w =
 
 -- | The translation of an 'LLVMArrayBorrow' is an element / proof of the
 -- translation of the the 'BVProp' returned by 'llvmArrayBorrowInArrayBase'
+{-
 data LLVMArrayBorrowTrans ctx w =
   LLVMArrayBorrowTrans
   { llvmArrayBorrowTransBorrow :: Mb ctx (LLVMArrayBorrow w),
     llvmArrayBorrowTransProps :: [BVPropTrans ctx w] }
+-}
 
 -- | The translation of the vacuously true permission
 pattern PTrans_True :: PermTrans ctx a
@@ -935,10 +956,12 @@ instance IsTermTrans (BVRangeTrans ctx w) where
 
 instance IsTermTrans (LLVMArrayPermTrans ctx a) where
   transTerms arr_trans =
-    llvmArrayTransTerm arr_trans : transTerms (llvmArrayTransBorrows arr_trans)
+    [llvmArrayTransTerm arr_trans] -- : transTerms (llvmArrayTransBorrows arr_trans)
 
+{-
 instance IsTermTrans (LLVMArrayBorrowTrans ctx w) where
   transTerms (LLVMArrayBorrowTrans _ prop_transs) = transTerms prop_transs
+-}
 
 -- | Map a context of perm translations to a list of 'OpenTerm's, dropping the
 -- "invisible" ones whose permissions are translated to 'Nothing'
@@ -972,8 +995,10 @@ atomicPermTransPerm prxs (APTrans_BVProp (BVPropTrans prop _)) =
   fmap Perm_BVProp prop
 
 -- | Extract out the LLVM borrow from its translation
+{-
 borrowTransMbBorrow :: LLVMArrayBorrowTrans ctx w -> Mb ctx (LLVMArrayBorrow w)
 borrowTransMbBorrow (LLVMArrayBorrowTrans mb_b _) = mb_b
+-}
 
 -- | Test that a permission equals that of a permission translation
 permTransPermEq :: PermTrans ctx a -> Mb ctx (ValuePerm a) -> Bool
@@ -1011,13 +1036,15 @@ instance ExtPermTrans AtomicPermTrans where
     APTrans_BVProp $ extPermTrans prop_trans
 
 instance ExtPermTrans LLVMArrayPermTrans where
-  extPermTrans (LLVMArrayPermTrans ap len flds bs t) =
+  extPermTrans (LLVMArrayPermTrans ap len flds {- bs -} t) =
     LLVMArrayPermTrans (extMb ap) len (fmap (map extPermTrans) flds)
-    (map extPermTrans bs) t
+    {- (map extPermTrans bs) -} t
 
+{-
 instance ExtPermTrans LLVMArrayBorrowTrans where
   extPermTrans (LLVMArrayBorrowTrans mb_b prop_transs) =
     LLVMArrayBorrowTrans (extMb mb_b) (map extPermTrans prop_transs)
+-}
 
 instance ExtPermTrans BVPropTrans where
   extPermTrans (BVPropTrans prop t) = BVPropTrans (extMb prop) t
@@ -1042,9 +1069,9 @@ offsetLLVMAtomicPermTrans :: (1 <= w, KnownNat w) => Mb ctx (PermExpr (BVType w)
 offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMField fld ptrans) =
   Just $ APTrans_LLVMField (mbMap2 offsetLLVMFieldPerm mb_off fld) ptrans
 offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMArray
-                                  (LLVMArrayPermTrans ap len flds bs t)) =
+                                  (LLVMArrayPermTrans ap len flds {- bs -} t)) =
   Just $ APTrans_LLVMArray $
-  LLVMArrayPermTrans (mbMap2 offsetLLVMArrayPerm mb_off ap) len flds bs t
+  LLVMArrayPermTrans (mbMap2 offsetLLVMArrayPerm mb_off ap) len flds {- bs -} t
 offsetLLVMAtomicPermTrans _ (APTrans_LLVMFree _) = Nothing
 offsetLLVMAtomicPermTrans _ (APTrans_LLVMFunPtr _ _) = Nothing
 offsetLLVMAtomicPermTrans _ p@APTrans_IsLLVMPtr = Just p
@@ -1075,6 +1102,7 @@ offsetPermTrans [nuP| LLVMPermOffset off |] = offsetLLVMPermTrans off
 llvmArrayTransCellType :: LLVMArrayPermTrans ctx w -> OpenTerm
 llvmArrayTransCellType = typeTransType1 . llvmArrayTransFields
 
+{-
 -- | Add a borrow to an LLVM array permission translation
 llvmArrayTransAddBorrow :: LLVMArrayBorrowTrans ctx w ->
                            LLVMArrayPermTrans ctx w ->
@@ -1087,7 +1115,7 @@ llvmArrayTransAddBorrow b arr_trans =
 
 -- | Find the index in the list of borrows of a specific borrow
 llvmArrayTransFindBorrowIx :: Mb ctx (LLVMArrayBorrow w) ->
-                             LLVMArrayPermTrans ctx w -> Int
+                              LLVMArrayPermTrans ctx w -> Int
 llvmArrayTransFindBorrowIx b arr_trans =
   mbLift $ mbMap2 llvmArrayFindBorrow b (llvmArrayTransPerm arr_trans)
 
@@ -1109,10 +1137,12 @@ llvmArrayTransRemBorrow b_trans arr_trans =
             , llvmArrayTransBorrows =
                 deleteNth (llvmArrayTransFindBorrowIx b arr_trans)
                 (llvmArrayTransBorrows arr_trans) }
+-}
 
 -- | Read an array cell (= list of fields) of the translation of an LLVM array
 -- permission at a given index, given proofs of the propositions that the index
--- is in the array
+-- is in the array as returned by 'llvmArrayIndexInArray'. Note that the first
+-- proposition should always be that the cell number is <= the array length.
 getLLVMArrayTransCell :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
                          LLVMArrayIndexTrans ctx w -> [BVPropTrans ctx w] ->
                          [AtomicPermTrans ctx (LLVMPointerType w)]
@@ -1127,6 +1157,7 @@ getLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
     llvmArrayTransCellType arr_trans, llvmArrayTransTerm arr_trans,
     i_trans, in_rng_term]]
 
+{-
 -- | Write an array cell (= list of fields) of the translation of an LLVM array
 -- permission at a given index, given proofs of the propositions that the index
 -- is in the array
@@ -1143,6 +1174,21 @@ setLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
         [natOpenTerm w, llvmArrayTransLen arr_trans,
          llvmArrayTransCellType arr_trans, llvmArrayTransTerm arr_trans,
          i_trans, in_rng_term, transTupleTerm cell] }
+-}
+
+-- | Adjust an array cell (= list of fields) of the translation of an LLVM array
+-- permission at a given index by applying a function to it
+adjustLLVMArrayTransCell :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
+                            OpenTerm ->  LLVMArrayIndexTrans ctx w ->
+                            LLVMArrayPermTrans ctx w
+adjustLLVMArrayTransCell arr_trans f_trm (LLVMArrayIndexTrans _ i_trans _) =
+  let w = fromInteger $ natVal arr_trans in
+  arr_trans {
+    llvmArrayTransTerm =
+        applyOpenTermMulti (globalOpenTerm "Prelude.adjustBVVec")
+        [natOpenTerm w, llvmArrayTransLen arr_trans,
+         llvmArrayTransCellType arr_trans, llvmArrayTransTerm arr_trans,
+         f_trm, i_trans] }
 
 -- | Read a field (= element of a cell) of the translation of an LLVM array
 -- permission at a given index, given proofs of the propositions that the index
@@ -1155,6 +1201,20 @@ getLLVMArrayTransField arr_trans ix_trans@(LLVMArrayIndexTrans
   getLLVMArrayTransCell arr_trans ix_trans prop_transs !! j
 
 -- | Write a field (= element of a cell) of the translation of an LLVM array
+-- permission at a given index
+setLLVMArrayTransField :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
+                          LLVMArrayIndexTrans ctx w ->
+                          AtomicPermTrans ctx (LLVMPointerType w) ->
+                          LLVMArrayPermTrans ctx w
+setLLVMArrayTransField arr_trans ix_trans fld =
+  let LLVMArrayIndexTrans _ _ j = ix_trans in
+  let f_trm =
+        lambdaTrans "fld" (llvmArrayTransFields arr_trans)
+        (transTupleTerm . replaceNth j fld) in
+  adjustLLVMArrayTransCell arr_trans f_trm ix_trans
+
+{-
+-- | Write a field (= element of a cell) of the translation of an LLVM array
 -- permission at a given index, given proofs of the propositions that the index
 -- is in the array
 setLLVMArrayTransField :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
@@ -1166,52 +1226,52 @@ setLLVMArrayTransField arr_trans ix_trans@(LLVMArrayIndexTrans
   let flds = getLLVMArrayTransCell arr_trans ix_trans prop_transs in
   setLLVMArrayTransCell arr_trans ix_trans prop_transs
   (replaceNth j fld' flds)
+-}
 
 -- | Read a slice (= a sub-array) of the translation of an LLVM array permission
--- for the supplied 'BVRange', given proofs of the propositions that the
--- 'BVRange' is in the array. Note that the 'BVRange' gives an offset relative
--- to the beginning of the array permission, not an absolute offset.
+-- for the supplied 'BVRange', given the translation of the sub-array permission
+-- and proofs of the propositions that the 'BVRange' is in the array as returned
+-- by 'llvmArrayCellsInArray'. Note that the first two of these propositions are
+-- those returned by 'bvPropRangeSubset'.
 getLLVMArrayTransSlice :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
+                          TypeTrans (LLVMArrayPermTrans ctx w) ->
                           BVRangeTrans ctx w -> [BVPropTrans ctx w] ->
-                          AtomicPermTrans ctx (LLVMPointerType w)
-getLLVMArrayTransSlice arr_trans rng_trans@(BVRangeTrans mb_rng
-                                            off_trans len'_trans) prop_transs =
-  let w = natVal2 mb_rng
+                          LLVMArrayPermTrans ctx w
+getLLVMArrayTransSlice arr_trans sub_arr_tp rng_trans prop_transs =
+  let w = fromInteger $ natVal arr_trans
       mb_ap = llvmArrayTransPerm arr_trans
       elem_tp = llvmArrayTransCellType arr_trans
       len_tm = llvmArrayTransLen arr_trans
       v_tm = llvmArrayTransTerm arr_trans
-      off_tm = transTerm1 off_trans
-      len'_tm = transTerm1 len'_trans
+      off_tm = transTerm1 $ bvRangeTransOff rng_trans
+      len'_tm = transTerm1 $ bvRangeTransLen rng_trans
       p1_trans:p2_trans:_ = prop_transs
       BVPropTrans _ p1_tm = p1_trans
       BVPropTrans _ p2_tm = p2_trans in
-  APTrans_LLVMArray $ LLVMArrayPermTrans
-  { llvmArrayTransPerm =
-      mbMap2 (\ap rng ->
-               ap { llvmArrayOffset =
-                      bvAdd (llvmArrayOffset ap) (bvRangeOffset rng),
-                    llvmArrayLen = bvRangeLength rng,
-                    llvmArrayBorrows = [] }) mb_ap mb_rng
-  , llvmArrayTransLen = len'_tm
-  , llvmArrayTransFields = llvmArrayTransFields arr_trans
-  , llvmArrayTransBorrows = []
-  , llvmArrayTransTerm =
-      applyOpenTermMulti
-      (globalOpenTerm "Prelude.sliceBVVec")
-      [natOpenTerm w, len_tm, elem_tp, off_tm, len'_tm, p1_tm, p2_tm, v_tm]}
+  typeTransF sub_arr_tp
+  [applyOpenTermMulti
+   (globalOpenTerm "Prelude.sliceBVVec")
+   [natOpenTerm w, len_tm, elem_tp, off_tm, len'_tm, p1_tm, p2_tm, v_tm]]
 
--- | Write a slice (= a sub-array) of the translation of an LLVM array permission
--- for the supplied 'BVRange', given proofs of the propositions that the
--- 'BVRange' is in the array. Note that the 'BVRange' gives an offset relative
--- to the beginning of the array permission, not an absolute offset.
+-- | Write a slice (= a sub-array) of the translation of an LLVM array
+-- permission given the translation of the slice and of the offset of that slice
+-- in the larger array
 setLLVMArrayTransSlice :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
-                          BVRangeTrans ctx w -> [BVPropTrans ctx w] -> OpenTerm ->
+                          LLVMArrayPermTrans ctx w -> OpenTerm ->
                           LLVMArrayPermTrans ctx w
-setLLVMArrayTransSlice arr_trans rng_trans@(BVRangeTrans mb_rng
-                                            off_trans len'_trans) prop_transs trm =
-  -- FIXME HERE NOW: do the actual updating!
-  arr_trans
+setLLVMArrayTransSlice arr_trans sub_arr_trans off_tm =
+  let w = fromInteger $ natVal arr_trans
+      mb_ap = llvmArrayTransPerm arr_trans
+      elem_tp = llvmArrayTransCellType arr_trans
+      len_tm = llvmArrayTransLen arr_trans
+      arr_tm = llvmArrayTransTerm arr_trans
+      len'_tm = llvmArrayTransLen sub_arr_trans
+      sub_arr_tm = llvmArrayTransTerm sub_arr_trans in
+  sub_arr_trans
+  { llvmArrayTransTerm =
+      applyOpenTermMulti
+      (globalOpenTerm "Prelude.updSliceBVVec")
+      [natOpenTerm w, len_tm, elem_tp, arr_tm, off_tm, len'_tm, sub_arr_tm] }
 
 
 -- | Put a 'PermTrans' into a lifetime. This is the same as applying
@@ -1232,11 +1292,11 @@ atomicPermTransInLifetime l (APTrans_LLVMField fld ptrans) =
   APTrans_LLVMField (mbMap2 inLifetime l fld) $
   permTransInLifetime l ptrans
 atomicPermTransInLifetime l (APTrans_LLVMArray
-                             (LLVMArrayPermTrans ap len flds bs t)) =
+                             (LLVMArrayPermTrans ap len flds {- bs -} t)) =
   APTrans_LLVMArray $
   LLVMArrayPermTrans (mbMap2 inLifetime l ap) len
   (fmap (map (atomicPermTransInLifetime l)) flds)
-  bs
+  {- bs -}
   t
 atomicPermTransInLifetime _ p@(APTrans_LLVMFree _) = p
 atomicPermTransInLifetime l (APTrans_LLVMFunPtr tp p) =
@@ -1270,13 +1330,13 @@ atomicPermTransEndLifetime (APTrans_LLVMField
   APTrans_LLVMField fld $
   permTransEndLifetime ptrans (fmap llvmFieldContents fld)
 atomicPermTransEndLifetime (APTrans_LLVMArray
-                            (LLVMArrayPermTrans _ len flds bs t))
+                            (LLVMArrayPermTrans _ len flds {- bs -} t))
   [nuP| Perm_LLVMArray ap |] =
   APTrans_LLVMArray $ LLVMArrayPermTrans ap len
   (fmap (\aps ->
           zipWith atomicPermTransEndLifetime aps
           (mbList $ fmap (map Perm_LLVMField . llvmArrayFields) ap)) flds)
-  bs t
+  {- bs -} t
 atomicPermTransEndLifetime p@(APTrans_LLVMFree _) _ = p
 atomicPermTransEndLifetime p@(APTrans_LLVMFunPtr _ _) _ =
   -- FIXME: is this correct?
@@ -1426,15 +1486,17 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
          mapM (translate . fmap Perm_LLVMField) (mbList flds)
        let elem_tp = typeTransType1 flds_trans
        len_term <- translate1 len
+       {-
        bs_trans <-
-         listTypeTrans <$> mapM (translateLLVMArrayBorrow ap) (mbList bs)
+         listTypeTrans <$> mapM (translateLLVMArrayBorrow ap) (mbList bs) -}
        let arr_tp =
              applyOpenTermMulti (globalOpenTerm "Prelude.BVVec")
              [natOpenTerm w, len_term, elem_tp]
-       return (mkTypeTrans1 arr_tp (flip $
+       return (mkTypeTrans1 arr_tp ({- flip $ -}
                                     LLVMArrayPermTrans ap len_term flds_trans)
-               <*> bs_trans)
+               {- <*> bs_trans -} )
 
+{-
 -- | Translate an 'LLVMArrayBorrow' into an 'LLVMArrayBorrowTrans'. This
 -- requires a special-purpose function, instead of the 'Translate' class,
 -- because it requires the array permission.
@@ -1447,6 +1509,7 @@ translateLLVMArrayBorrow mb_ap mb_b =
   do let mb_props = mbMap2 llvmArrayBorrowInArrayBase mb_ap mb_b
      prop_trans <- mapM translate $ mbList mb_props
      return (LLVMArrayBorrowTrans mb_b <$> listTypeTrans prop_trans)
+-}
 
 instance TransInfo info =>
          Translate info ctx (ValuePerms ps) (TypeTrans
@@ -1935,11 +1998,11 @@ translateSimplImpl _ [nuP| SImpl_DemoteLLVMFieldWrite _ _ |] m =
                           ptrans])
   m
 
-
-translateSimplImpl _ [nuP| SImpl_LLVMArrayCopy _ mb_ap mb_rng |] m =
-  do let w = natVal2 mb_rng
-     rng_trans <-
-       translate $ mbMap2 bvRangeSub mb_rng $ fmap llvmArrayOffset mb_ap
+translateSimplImpl _ [nuP| SImpl_LLVMArrayCopy _ mb_ap mb_sub_ap |] m =
+  do let w = natVal2 mb_ap
+     sub_ap_tp_trans <- translate mb_sub_ap
+     rng_trans <- translate $ mbMap2 llvmSubArrayRange mb_ap mb_sub_ap
+     -- let mb_sub_borrows = fmap llvmArrayBorrows mb_sub_ap
      withPermStackM id
        (\(pctx :>: ptrans_array :>: ptrans_props) ->
          let array_trans =
@@ -1949,14 +2012,17 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayCopy _ mb_ap mb_rng |] m =
                unPTransBVProps
                "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_props in
          pctx :>:
-         PTrans_Conj [getLLVMArrayTransSlice array_trans rng_trans prop_transs]
+         PTrans_Conj [APTrans_LLVMArray $
+                      getLLVMArrayTransSlice array_trans sub_ap_tp_trans
+                      rng_trans {- mb_sub_borrows -} prop_transs]
          :>: ptrans_array)
        m
 
-translateSimplImpl _ [nuP| SImpl_LLVMArrayBorrow _ mb_ap mb_rng |] m =
-  do let w = natVal2 mb_rng
-     rng_trans <-
-       translate $ mbMap2 bvRangeSub mb_rng $ fmap llvmArrayOffset mb_ap
+translateSimplImpl _ [nuP| SImpl_LLVMArrayBorrow _ mb_ap mb_sub_ap |] m =
+  do sub_ap_tp_trans <- translate mb_sub_ap
+     let mb_rng = mbMap2 llvmSubArrayRange mb_ap mb_sub_ap
+     rng_trans <- translate mb_rng
+     -- let mb_sub_borrows = fmap llvmArrayBorrows mb_sub_ap
      withPermStackM id
        (\(pctx :>: ptrans_array :>: ptrans_props) ->
          let array_trans =
@@ -1965,76 +2031,89 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayBorrow _ mb_ap mb_rng |] m =
              prop_transs =
                unPTransBVProps
                "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_props
-             borrow_trans =
-               LLVMArrayBorrowTrans (fmap RangeBorrow mb_rng) prop_transs in
-         pctx :>:
-         PTrans_Conj [getLLVMArrayTransSlice array_trans rng_trans prop_transs]
-         :>: PTrans_Conj [APTrans_LLVMArray $
-                          llvmArrayTransAddBorrow borrow_trans array_trans])
-       m
-
-translateSimplImpl _ [nuP| SImpl_LLVMArrayReturn _ mb_ap mb_rng |] m =
-  do let w = natVal2 mb_rng
-     rng_trans <-
-       translate $ mbMap2 bvRangeSub mb_rng $ fmap llvmArrayOffset mb_ap
-     withPermStackM RL.tail
-       (\(pctx :>: ptrans_sub_array :>: ptrans_array) ->
-         let array_trans =
-               unPTransLLVMArray
-               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_array
+             {- borrow_trans =
+               LLVMArrayBorrowTrans (fmap RangeBorrow mb_rng) prop_transs -}
              sub_array_trans =
-               unPTransLLVMArray
-               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_sub_array
-             borrow_i =
-               mbLift $ mbMap2 llvmArrayFindBorrow (fmap
-                                                    RangeBorrow mb_rng) mb_ap
-             borrow_trans = llvmArrayTransBorrows array_trans !! borrow_i
+               APTrans_LLVMArray $
+               getLLVMArrayTransSlice array_trans sub_ap_tp_trans rng_trans
+               {- mb_sub_borrows -} prop_transs
              array_trans' =
-               setLLVMArrayTransSlice array_trans rng_trans
-               (llvmArrayBorrowTransProps borrow_trans)
-               (llvmArrayTransTerm sub_array_trans) in
+               array_trans {
+               llvmArrayTransPerm =
+                   mbMap2 (\ap sub_ap ->
+                            llvmArrayAddBorrow (llvmSubArrayBorrow ap sub_ap) $
+                            llvmArrayRemArrayBorrows ap sub_ap)
+                   mb_ap mb_sub_ap } in
          pctx :>:
-         PTrans_Conj [APTrans_LLVMArray $
-                      llvmArrayTransRemBorrow borrow_trans array_trans'])
+         PTrans_Conj [sub_array_trans]
+         :>: PTrans_Conj [APTrans_LLVMArray array_trans'])
        m
 
-translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexCopy _ _ ix |] m =
-  do let w = natVal2 ix
-     (_ :>: ptrans_array :>: ptrans_props) <- itiPermStack <$> ask
+translateSimplImpl _ [nuP| SImpl_LLVMArrayReturn _ mb_ap mb_ret_ap |] m =
+  do (_ :>: ptrans_sub_array :>: ptrans_array) <- itiPermStack <$> ask
+     let mb_cell =
+           fmap fromJust $ mbMap2 llvmArrayIsOffsetArray mb_ap mb_ret_ap
+     cell_tm <- translate1 mb_cell
+     let array_trans =
+           unPTransLLVMArray
+           "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_array
+     let sub_array_trans =
+           unPTransLLVMArray
+           "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_sub_array
+         {- borrow_i =
+           mbLift $ mbMap2 llvmArrayFindBorrow (fmap
+                                                RangeBorrow mb_rng) mb_ap
+         borrow_trans = llvmArrayTransBorrows array_trans !! borrow_i -}
+     let array_trans' =
+           (setLLVMArrayTransSlice array_trans sub_array_trans cell_tm)
+           { llvmArrayTransPerm =
+               mbMap2 (\ap ret_ap ->
+                        llvmArrayRemBorrow (llvmSubArrayBorrow ap ret_ap) $
+                        llvmArrayAddArrayBorrows ap ret_ap) mb_ap mb_ret_ap }
+     withPermStackM RL.tail
+       (\(pctx :>: _ :>: _) ->
+         pctx :>: PTrans_Conj [APTrans_LLVMArray array_trans'])
+       m
+
+translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexCopy _ _ mb_ix |] m =
+  do (_ :>: ptrans_array :>: ptrans_props) <- itiPermStack <$> ask
      let arr_trans =
            unPTransLLVMArray
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_array
      let prop_transs =
            unPTransBVProps
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_props
-     ix_trans <- translate ix
+     ix_trans <- translate mb_ix
      let fld_ptrans = getLLVMArrayTransField arr_trans ix_trans prop_transs
      withPermStackM id
        (\(pctx :>: _ :>: _) ->
          pctx :>: PTrans_Conj [fld_ptrans] :>: ptrans_array)
        m
 
-translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexBorrow x _ ix |] m =
-  do let w = natVal2 ix
-     (_ :>: ptrans_array :>: ptrans_props) <- itiPermStack <$> ask
+translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexBorrow x mb_ap mb_ix |] m =
+  do (_ :>: ptrans_array :>: ptrans_props) <- itiPermStack <$> ask
      let arr_trans =
            unPTransLLVMArray
            "translateSimplImpl: SImpl_LLVMArrayIndexBorrow" ptrans_array
      let prop_transs =
            unPTransBVProps
            "translateSimplImpl: SImpl_LLVMArrayIndexBorrow" ptrans_props
-     ix_trans <- translate ix
+     ix_trans <- translate mb_ix
      let fld_ptrans = getLLVMArrayTransField arr_trans ix_trans prop_transs
-     let b = LLVMArrayBorrowTrans (fmap FieldBorrow ix) prop_transs
+     {- let b = LLVMArrayBorrowTrans (fmap FieldBorrow ix) prop_transs -}
+     let arr_trans' =
+           arr_trans { llvmArrayTransPerm =
+                         mbMap2 (\ap ix ->
+                                  llvmArrayAddBorrow (FieldBorrow ix) ap)
+                         mb_ap mb_ix }
      withPermStackM id
        (\(pctx :>: _ :>: _) ->
          pctx :>: PTrans_Conj [fld_ptrans] :>:
-         PTrans_Conj [APTrans_LLVMArray $ llvmArrayTransAddBorrow b arr_trans])
+         PTrans_Conj [APTrans_LLVMArray arr_trans'])
        m
 
-translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexReturn x _ ix |] m =
-  do let w = natVal2 ix
-     (_ :>: ptrans_fld :>: ptrans_array) <- itiPermStack <$> ask
+translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexReturn x mb_ap mb_ix |] m =
+  do (_ :>: ptrans_fld :>: ptrans_array) <- itiPermStack <$> ask
      let aptrans_fld = case ptrans_fld of
            PTrans_Conj [ap] -> ap
            _ -> error ("translateSimplImpl: SImpl_LLVMArrayIndexReturn: "
@@ -2042,16 +2121,17 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexReturn x _ ix |] m =
      let arr_trans =
            unPTransLLVMArray
            "translateSimplImpl: SImpl_LLVMArrayIndexCopy" ptrans_array
-     let b_trans = llvmArrayTransFindBorrow (fmap FieldBorrow ix) arr_trans
-     ix_trans <- translate ix
+     {- let b_trans = llvmArrayTransFindBorrow (fmap FieldBorrow ix) arr_trans -}
+     ix_trans <- translate mb_ix
      let arr_trans' =
-           setLLVMArrayTransField arr_trans ix_trans
-           (llvmArrayBorrowTransProps b_trans) aptrans_fld
+           (setLLVMArrayTransField arr_trans ix_trans
+            {- (llvmArrayBorrowTransProps b_trans) -} aptrans_fld)
+           { llvmArrayTransPerm =
+               mbMap2 (\ap ix ->
+                        llvmArrayRemBorrow (FieldBorrow ix) ap) mb_ap mb_ix }
      withPermStackM RL.tail
        (\(pctx :>: _ :>: _) ->
-         pctx :>:
-         PTrans_Conj [APTrans_LLVMArray $
-                      llvmArrayTransRemBorrow b_trans arr_trans'])
+         pctx :>: PTrans_Conj [APTrans_LLVMArray arr_trans'])
        m
 
 translateSimplImpl _ [nuP| SImpl_LLVMArrayContents _ _ _ _ _ |] m =

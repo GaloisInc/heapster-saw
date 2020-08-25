@@ -745,6 +745,20 @@ bvPropRangesDisjoint :: (1 <= w, KnownNat w) =>
 bvPropRangesDisjoint (BVRange off1 len1) (BVRange off2 len2) =
   [BVProp_ULeq len2 (bvSub off1 off2), BVProp_ULeq len1 (bvSub off2 off1)]
 
+-- | Test if @[off1,off1+len1)@ and @[off2,off2+len2)@ overlap, i.e., share at
+-- least one element, by testing that they could not satisfy (in the sense of
+-- 'bvPropCouldHold') the results of 'bvPropRangesDisjoint'
+bvRangesOverlap :: (1 <= w, KnownNat w) => BVRange w -> BVRange w -> Bool
+bvRangesOverlap rng1 rng2 =
+  not $ all bvPropCouldHold $ bvPropRangesDisjoint rng1 rng2
+
+-- | Test if @[off1,off1+len1)@ and @[off2,off2+len2)@ could overlap, i.e.,
+-- share at least one element, by testing that they do not definitely satisfy
+-- (in the sense of 'bvPropHolds') the results of 'bvPropRangesDisjoint'
+bvRangesCouldOverlap :: (1 <= w, KnownNat w) => BVRange w -> BVRange w -> Bool
+bvRangesCouldOverlap rng1 rng2 =
+  not $ all bvPropHolds $ bvPropRangesDisjoint rng1 rng2
+
 -- | Subtract a bitvector word from the offset of a 'BVRange'
 bvRangeSub :: (1 <= w, KnownNat w) => BVRange w -> PermExpr (BVType w) ->
               BVRange w
@@ -829,6 +843,11 @@ addLLVMOffset (PExpr_LLVMOffset x e) off =
 -- | Build a range that contains exactly one index
 bvRangeOfIndex :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> BVRange w
 bvRangeOfIndex e = BVRange e (bvInt 1)
+
+-- | Add an offset to a 'BVRange'
+offsetBVRange :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> BVRange w ->
+                 BVRange w
+offsetBVRange off (BVRange off' len) = (BVRange (bvAdd off' off) len)
 
 
 ----------------------------------------------------------------------
@@ -1033,7 +1052,8 @@ data LLVMArrayBorrow w
   = FieldBorrow (LLVMArrayIndex w)
     -- ^ Borrow a specific field in a specific cell of an array permission
   | RangeBorrow (BVRange w)
-    -- ^ Borrow a range of array cells
+    -- ^ Borrow a range of array cells, where each cell is 'llvmArrayStride'
+    -- machine words long
   deriving Eq
 
 
@@ -1661,6 +1681,13 @@ isLLVMFieldPerm :: AtomicPerm (LLVMPointerType w) -> Bool
 isLLVMFieldPerm (Perm_LLVMField _) = True
 isLLVMFieldPerm _ = False
 
+-- | Test if an 'AtomicPerm' is a field permission with the given offset
+isLLVMFieldPermWithOffset :: PermExpr (BVType w) ->
+                             AtomicPerm (LLVMPointerType w) -> Bool
+isLLVMFieldPermWithOffset off (Perm_LLVMField fp) =
+  bvEq off (llvmFieldOffset fp)
+isLLVMFieldPermWithOffset _ _ = False
+
 -- | Test if an 'AtomicPerm' is an array permission
 isLLVMArrayPerm :: AtomicPerm (LLVMPointerType w) -> Bool
 isLLVMArrayPerm (Perm_LLVMArray _) = True
@@ -1833,15 +1860,28 @@ llvmReadExRWExLPerm off =
                   llvmFieldOffset = off,
                   llvmFieldContents = ValPerm_True }
 
--- | Return the clopen range @[0,len)@ of the indices of an array permission
-llvmArrayIndexRange :: (1 <= w, KnownNat w) => LLVMArrayPerm w -> BVRange w
-llvmArrayIndexRange ap = BVRange (bvInt 0) (llvmArrayLen ap)
+-- | Convert an array cell number @cell@ to the byte offset @'machineWordBytes'
+-- * (stride * cell + field_num)@
+llvmArrayCellToOffset :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                         PermExpr (BVType w) -> PermExpr (BVType w)
+llvmArrayCellToOffset ap cell =
+  bvMult (machineWordBytes ap * llvmArrayStride ap) cell
 
--- | Return the range of the byte offsets of an array permission
-{-
-llvmArrayRangeBytes :: (1 <= w, KnownNat w) => LLVMArrayPerm w -> BVRange w
-llvmArrayRangeBytes ap = BVRange (llvmArrayOffset ap) (arrayLengthBytes ap)
--}
+-- | Convert a range of cell numbers to a range of byte offsets from the
+-- beginning of the array permission
+llvmArrayCellsToOffsets :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                           BVRange w -> BVRange w
+llvmArrayCellsToOffsets ap (BVRange cell num_cells) =
+  BVRange (llvmArrayCellToOffset ap cell) (llvmArrayCellToOffset ap num_cells)
+
+-- | Return the clopen range @[0,len)@ of the cells of an array permission
+llvmArrayCells :: (1 <= w, KnownNat w) => LLVMArrayPerm w -> BVRange w
+llvmArrayCells ap = BVRange (bvInt 0) (llvmArrayLen ap)
+
+-- | Build the 'BVRange' of "absolute" offsets @[off,off+len_bytes)@
+llvmArrayAbsOffsets :: (1 <= w, KnownNat w) => LLVMArrayPerm w -> BVRange w
+llvmArrayAbsOffsets ap =
+  BVRange (llvmArrayOffset ap) (llvmArrayCellToOffset ap $ llvmArrayLen ap)
 
 -- | Return the number of bytes per machine word; @w@ is the number of bits
 machineWordBytes :: KnownNat w => f w -> Integer
@@ -1855,21 +1895,39 @@ machineWordBytes w = natVal w `div` 8
 bytesToMachineWords :: KnownNat w => f w -> Integer -> Integer
 bytesToMachineWords w n = (n + machineWordBytes w - 1) `div` machineWordBytes w
 
-{-
--- | Return an array stride in bytes, instead of words of size @w@
-arrayStrideBytes :: KnownNat w => LLVMArrayPerm w -> Integer
-arrayStrideBytes ap@(LLVMArrayPerm {..}) =
-  llvmArrayStride * machineWordBytes ap
+-- | Build the permission that corresponds to a borrow from an array, i.e., that
+-- would need to be returned in order to remove this borrow. For 'RangeBorrow's,
+-- that is the sub-array permission with no borrows of its own.
+permForLLVMArrayBorrow :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                          LLVMArrayBorrow w -> ValuePerm (LLVMPointerType w)
+permForLLVMArrayBorrow ap (FieldBorrow ix) =
+  ValPerm_Conj1 $ Perm_LLVMField $ llvmArrayFieldWithOffset ap ix
+permForLLVMArrayBorrow ap (RangeBorrow (BVRange off len)) =
+  ValPerm_Conj1 $ Perm_LLVMArray $
+  ap { llvmArrayOffset = llvmArrayCellToOffset ap off,
+       llvmArrayLen = len,
+       llvmArrayBorrows = [] }
 
--- | Return the length of an array in bytes
-arrayLengthBytes :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
-                    PermExpr (BVType w)
-arrayLengthBytes ap = bvMult (arrayStrideBytes ap) (llvmArrayLen ap)
--}
+-- | Build a sub-array 
 
 -- | Add a borrow to an 'LLVMArrayPerm'
 llvmArrayAddBorrow :: LLVMArrayBorrow w -> LLVMArrayPerm w -> LLVMArrayPerm w
 llvmArrayAddBorrow b ap = ap { llvmArrayBorrows = b : llvmArrayBorrows ap }
+
+-- | Add a list of borrows to an 'LLVMArrayPerm'
+llvmArrayAddBorrows :: [LLVMArrayBorrow w] -> LLVMArrayPerm w -> LLVMArrayPerm w
+llvmArrayAddBorrows bs ap = foldr llvmArrayAddBorrow ap bs
+
+-- | Add all borrows from the second array to the first, assuming the one is an
+-- offset array as in 'llvmArrayIsOffsetArray'
+llvmArrayAddArrayBorrows :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                            LLVMArrayPerm w -> LLVMArrayPerm w
+llvmArrayAddArrayBorrows ap sub_ap
+  | Just cell_num <- llvmArrayIsOffsetArray ap sub_ap =
+    llvmArrayAddBorrows
+    (map (cellOffsetLLVMArrayBorrow cell_num) (llvmArrayBorrows sub_ap))
+    ap
+llvmArrayAddArrayBorrows _ _ = error "llvmArrayAddArrayBorrows"
 
 -- | Find the position in the list of borrows of an 'LLVMArrayPerm' of a
 -- specific borrow
@@ -1884,6 +1942,30 @@ llvmArrayRemBorrow :: LLVMArrayBorrow w -> LLVMArrayPerm w -> LLVMArrayPerm w
 llvmArrayRemBorrow b ap =
   ap { llvmArrayBorrows =
          deleteNth (llvmArrayFindBorrow b ap) (llvmArrayBorrows ap) }
+
+-- | Remove a sequence of borrows from an 'LLVMArrayPerm'
+llvmArrayRemBorrows :: [LLVMArrayBorrow w] -> LLVMArrayPerm w -> LLVMArrayPerm w
+llvmArrayRemBorrows bs ap = foldr llvmArrayRemBorrow ap bs
+
+-- | Remove all borrows from the second array to the first, assuming the one is
+-- an offset array as in 'llvmArrayIsOffsetArray'
+llvmArrayRemArrayBorrows :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                               LLVMArrayPerm w -> LLVMArrayPerm w
+llvmArrayRemArrayBorrows ap sub_ap
+  | Just cell_num <- llvmArrayIsOffsetArray ap sub_ap =
+    llvmArrayRemBorrows
+    (map (cellOffsetLLVMArrayBorrow cell_num) (llvmArrayBorrows sub_ap))
+    ap
+llvmArrayRemArrayBorrows _ _ = error "llvmArrayRemArrayBorrows"
+
+-- | Add a cell offset to an 'LLVMArrayBorrow', meaning we change the borrow to
+-- be relative to an array with that many more cells added to the front
+cellOffsetLLVMArrayBorrow :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
+                              LLVMArrayBorrow w -> LLVMArrayBorrow w
+cellOffsetLLVMArrayBorrow off (FieldBorrow (LLVMArrayIndex ix fld_num)) =
+  FieldBorrow (LLVMArrayIndex (bvAdd ix off) fld_num)
+cellOffsetLLVMArrayBorrow off (RangeBorrow rng) =
+  RangeBorrow $ offsetBVRange off rng
 
 -- | Test if a byte offset @o@ statically aligns with a field in an array, i.e.,
 -- whether
@@ -1914,9 +1996,9 @@ llvmArrayBorrowInArrayBase ap (FieldBorrow ix)
   | llvmArrayIndexFieldNum ix >= length (llvmArrayFields ap) =
     error "llvmArrayBorrowInArrayBase: invalid index"
 llvmArrayBorrowInArrayBase ap (FieldBorrow ix) =
-  [bvPropInRange (llvmArrayIndexCell ix) (llvmArrayIndexRange ap)]
+  [bvPropInRange (llvmArrayIndexCell ix) (llvmArrayCells ap)]
 llvmArrayBorrowInArrayBase ap (RangeBorrow rng) =
-  bvPropRangeSubset rng (llvmArrayIndexRange ap)
+  bvPropRangeSubset rng (llvmArrayCells ap)
 
 -- | Return a list of 'BVProp's stating that two array borrows are disjoint. The
 -- empty list is returned if they are trivially disjoint because they refer to
@@ -1949,10 +2031,53 @@ llvmArrayIndexInArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
                          LLVMArrayIndex w -> [BVProp w]
 llvmArrayIndexInArray ap ix = llvmArrayBorrowInArray ap (FieldBorrow ix)
 
--- | Shorthand for 'llvmArrayBorrowInArray' with a range
-llvmArrayRangeInArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+-- | Test if all cell numbers in a 'BVRange' are in an array permission and are
+-- not currently being borrowed
+llvmArrayCellsInArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
                          BVRange w -> [BVProp w]
-llvmArrayRangeInArray ap rng = llvmArrayBorrowInArray ap (RangeBorrow rng)
+llvmArrayCellsInArray ap rng = llvmArrayBorrowInArray ap (RangeBorrow rng)
+
+-- | Test if an array permission @ap2@ is offset by an even multiple of cell
+-- sizes from the start of @ap1@, and return that number of cells if so. Note
+-- that 'llvmArrayIsOffsetArray' @ap1@ @ap2@ returns the negative of
+-- 'llvmArrayIsOffsetArray' @ap2@ @ap1@ whenever either returns a value.
+llvmArrayIsOffsetArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                          LLVMArrayPerm w -> Maybe (PermExpr (BVType w))
+llvmArrayIsOffsetArray ap1 ap2
+  | llvmArrayStride ap1 == llvmArrayStride ap2
+  , Just (LLVMArrayIndex cell_num 0) <-
+      matchLLVMArrayField ap1 (llvmArrayOffset ap2) = Just cell_num
+llvmArrayIsOffsetArray _ _ = Nothing
+
+-- | Build a 'BVRange' for the cells of a sub-array @ap2@ in @ap1@
+llvmSubArrayRange :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                     LLVMArrayPerm w -> BVRange w
+llvmSubArrayRange ap1 ap2
+  | Just cell_num <- llvmArrayIsOffsetArray ap1 ap2 =
+    BVRange cell_num (llvmArrayLen ap2)
+llvmSubArrayRange _ _ = error "llvmSubArrayRange"
+
+-- | Build a 'RangeBorrow' for the cells of a sub-array @ap2@ of @ap1@
+llvmSubArrayBorrow :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                      LLVMArrayPerm w -> LLVMArrayBorrow w
+llvmSubArrayBorrow ap1 ap2 = RangeBorrow $ llvmSubArrayRange ap1 ap2
+
+-- | Return the propositions stating that the first array permission @ap@
+-- contains the second @sub_ap@, meaning that array indices that are in @sub_ap@
+-- (in the sense of 'llvmArrayIndexInArray') are in @ap@. This requires that the
+-- range of @sub_ap@ be a subset of that of @ap@ and that it be disjoint from
+-- all borrows in @ap@ that aren't also in @sub_ap@, i.e., that after removing
+-- all borrows in @sub_ap@ from @ap@ we have that the 'llvmArrayCellsInArray'
+-- propositions hold for the range of @sub_ap@.
+--
+-- NOTE: @sub_ap@ must satisfy 'llvmArrayIsOffsetArray', i.e., have the same
+-- stride as @ap@ and be at a cell boundary in @ap@, or it is an error
+llvmArrayContainsArray :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                          LLVMArrayPerm w -> [BVProp w]
+llvmArrayContainsArray ap sub_ap =
+  llvmArrayCellsInArray
+  (llvmArrayRemArrayBorrows ap sub_ap)
+  (llvmSubArrayRange ap sub_ap)
 
 -- | Test if an atomic LLVM permission potentially allows a read or write of a
 -- given offset. If so, return a list of the propositions required for the read
@@ -1972,13 +2097,18 @@ llvmPermContainsOffset off (Perm_LLVMArray ap)
     Just props
 llvmPermContainsOffset _ _ = Nothing
 
+-- | Return the total length of an LLVM array permission in bytes
+llvmArrayLengthBytes :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                        PermExpr (BVType w)
+llvmArrayLengthBytes ap =
+  llvmArrayIndexByteOffset ap (LLVMArrayIndex (llvmArrayLen ap) 0)
+
 -- | Return the byte offset @'machineWordBytes' * (stride * cell + field_num)@
 -- of an array index from the beginning of the array
 llvmArrayIndexByteOffset :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
                             LLVMArrayIndex w -> PermExpr (BVType w)
 llvmArrayIndexByteOffset ap ix =
-  bvMult (machineWordBytes ap) $
-  bvAdd (bvMult (llvmArrayStride ap) (llvmArrayIndexCell ix))
+  bvAdd (llvmArrayCellToOffset ap $ llvmArrayIndexCell ix)
   (bvInt (toInteger $ llvmArrayIndexFieldNum ix))
 
 -- | Return the field permission corresponding to the given index an array
@@ -1990,35 +2120,60 @@ llvmArrayFieldWithOffset ap ix =
   (bvAdd (llvmArrayOffset ap) (llvmArrayIndexByteOffset ap ix))
   (llvmArrayFields ap !! llvmArrayIndexFieldNum ix)
 
+-- | Get a list of pairs of all the fields in cell 0 and their field numbers
+llvmArrayHeadFields :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                       [(LLVMFieldPerm w, Int)]
+llvmArrayHeadFields ap =
+  map (\i -> (llvmArrayFieldWithOffset ap (LLVMArrayIndex (bvInt 0) i), i)) $
+  [0 .. fromInteger (llvmArrayStride ap) - 1]
+
+-- | Get the range of byte offsets represented by an array borrow relative to
+-- the beginning of the array permission
+llvmArrayBorrowOffsets :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                          LLVMArrayBorrow w -> BVRange w
+llvmArrayBorrowOffsets ap (FieldBorrow ix) =
+  bvRangeOfIndex $ llvmArrayIndexByteOffset ap ix
+llvmArrayBorrowOffsets ap (RangeBorrow r) = llvmArrayCellsToOffsets ap r
+
+-- | Get the range of byte offsets represented by an array borrow relative to
+-- the variable @x@ that has the supplied array permission. This is equivalent
+-- to the addition of 'llvmArrayOffset' to the range of relative offsets
+-- returned by 'llvmArrayBorrowOffsets'.
+llvmArrayBorrowAbsOffsets :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                             LLVMArrayBorrow w -> BVRange w
+llvmArrayBorrowAbsOffsets ap b =
+  offsetBVRange (llvmArrayOffset ap) (llvmArrayBorrowOffsets ap b)
+
+-- | Divide an array permission @x:array(off,<len,*1,flds,bs)@ into two arrays,
+-- one of length @len'@ starting at @off@ and one of length @len-len'@ starting
+-- at offset @off+len'*stride@. All borrows that are definitely (in the sense of
+-- 'bvPropHolds') in the first portion of the array are moved to that first
+-- portion, and otherwise they are left in the second.
+llvmArrayPermDivide :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                       PermExpr (BVType w) -> (LLVMArrayPerm w, LLVMArrayPerm w)
+llvmArrayPermDivide ap len =
+  let len_bytes = llvmArrayCellToOffset ap len
+      borrow_in_first b =
+        all bvPropHolds (bvPropRangeSubset
+                         (llvmArrayBorrowOffsets ap b)
+                         (BVRange (bvInt 0) len_bytes)) in
+  (ap { llvmArrayLen = len,
+        llvmArrayBorrows = filter borrow_in_first (llvmArrayBorrows ap) }
+  ,
+   ap { llvmArrayOffset = bvAdd (llvmArrayOffset ap) len_bytes
+      , llvmArrayLen = bvSub (llvmArrayLen ap) len
+      , llvmArrayBorrows =
+          filter (not . borrow_in_first) (llvmArrayBorrows ap) })
+
 
 {- FIXME HERE: remove these...?
-
--- | Compute the byte index @wordSize*(i*stride + j)@ of the @j@th field in the
--- @i@th array element from the beginning of an array
-llvmArrayIndex :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
-                  LLVMArrayIndex w -> Int -> PermExpr (BVType w)
-llvmArrayIndex ap (LLVMArrayIndex i) j =
-  bvAdd (bvMult (llvmArrayStride ap) i) (bvInt $ toInteger j)
-
--- | Convert the output of 'llvmArrayIndex' to a single-element 'BVRange'
-llvmArrayIndexToRange :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
-                         PermExpr (BVType w) -> Int -> BVRange w
-llvmArrayIndexToRange ap ix fld_num =
-  bvRangeOfIndex $ llvmArrayIndex ap ix fld_num
-
--- | Get the range of byte offsets represented by an array borrow
-llvmArrayBorrowRange :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
-                        LLVMArrayBorrow w -> BVRange w
-llvmArrayBorrowRange ap (FieldBorrow ix fld_num) =
-  llvmArrayIndexToRange ap ix fld_num
-llvmArrayBorrowRange _ (RangeBorrow r) = r
 
 -- | Test if a specific range of byte offsets from the beginning of an array
 -- corresponds to a borrow already on an array
 llvmArrayRangeIsBorrowed :: (1 <= w, KnownNat w) =>
                             LLVMArrayPerm w -> BVRange w -> Bool
 llvmArrayRangeIsBorrowed ap rng =
-  elem rng (map (llvmArrayBorrowRange ap) $ llvmArrayBorrows ap)
+  elem rng (map (llvmArrayBorrowOffsets ap) $ llvmArrayBorrows ap)
 
 -- | Test if a specific array index and field number correspond to a borrow
 -- already on an array
@@ -2032,7 +2187,7 @@ llvmArrayIndexIsBorrowed ap ix fld_num =
 llvmArrayBorrowsDisjoint :: (1 <= w, KnownNat w) =>
                             LLVMArrayPerm w -> BVRange w -> [BVProp w]
 llvmArrayBorrowsDisjoint ap range =
-  map (BVProp_RangesDisjoint range . llvmArrayBorrowRange ap) $
+  map (BVProp_RangesDisjoint range . llvmArrayBorrowOffsets ap) $
   llvmArrayBorrows ap
 
 -- | Search through a list of atomic permissions to see if one of them is an
@@ -2793,6 +2948,10 @@ deleteNth i xs = take i xs ++ drop (i+1) xs
 replaceNth :: Int -> a -> [a] -> [a]
 replaceNth i _ xs | i >= length xs = error "replaceNth"
 replaceNth i x xs = take i xs ++ x : drop (i+1) xs
+
+-- | Insert an element at the nth location in a list
+insertNth :: Int -> a -> [a] -> [a]
+insertNth i x xs = take i xs ++ x : drop i xs
 
 -- | Find all indices in a list for which the supplied
 -- function @f@ returns @'Just' b@ for some @b@, also returning the @b@s
@@ -4440,28 +4599,6 @@ elimLLVMFieldContents x i perms =
       perms
     _ -> error "elimLLVMFieldContents"
 
--- | Divide an array permission @x:ptr((rw,off,*stride,<len) |-> p)@ into two
--- arrays, one of length @e@ starting at @off@ and one of length @len-e@
--- starting at offset @off+e*stride@. The latter permission (at offset
--- @off+e*stride@) stays at the same index, while the former (at the original
--- offset) is moved to the end of the field permissions for @x@.
-{-
-divideLLVMArray :: ExprVar (LLVMPointerType w) -> Int -> PermExpr (BVType w) ->
-                   PermSet ps -> PermSet ps
-divideLLVMArray x i e perms =
-  case perms ^. (varPerm x . llvmPtrPerm i) of
-    Perm_LLVMArray ap ->
-      set (varPerm x . llvmPtrPerm i)
-      (Perm_LLVMArray $
-       ap { llvmArrayLen = bvSub (llvmArrayLen ap) e,
-            llvmArrayOffset =
-              bvAdd (llvmArrayOffset ap) (bvMult (arrayStrideBytes ap) e) }) $
-      over (varPerm x) (addLLVMPtrPerm $
-                        Perm_LLVMArray $ ap { llvmArrayLen = e }) $
-      perms
-    _ -> error "divideLLVMArray"
--}
-
 -- | Perform an array indexing of the first cell of an array, by separating an
 -- array permission @x:ptr((off,*stride,<len,S) |-> pps)@ into one array cell,
 -- containing a copy of the pointer permissions @pps@ starting at offset @off@,
@@ -4477,7 +4614,7 @@ indexLLVMArray x i perms =
             map (offsetLLVMFieldPerm (llvmArrayOffset ap)) (llvmArrayFields ap) in
       (set (varPerm x . llvmPtrPerm i)
        (Perm_LLVMArray $ ap { llvmArrayOffset =
-                            bvAdd (llvmArrayOffset ap) (bvInt 1)}) $
+                                bvAdd (llvmArrayOffset ap) (bvInt 1)}) $
        over (varPerm x . llvmPtrPerms) (++ map Perm_LLVMField new_fps) $
        perms
       ,
