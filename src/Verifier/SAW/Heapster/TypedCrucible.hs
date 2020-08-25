@@ -724,9 +724,11 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
   genSubst s [nuP| BVSlt w e1 e2 |] =
     BVSlt <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| BVCarry w e1 e2 |] =
-    BVSlt <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    BVCarry <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| BVSCarry w e1 e2 |] =
-    BVSlt <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    BVSCarry <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+  genSubst s [nuP| BVShl w e1 e2 |] =
+    BVShl <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| BoolToBV w e |] =
     BoolToBV <$> genSubst s w <*> genSubst1 s e
   genSubst s [nuP| BVNonzero w e |] =
