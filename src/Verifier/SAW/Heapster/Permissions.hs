@@ -2132,6 +2132,50 @@ llvmArrayHeadFields ap =
   map (\i -> llvmArrayFieldWithOffset ap (LLVMArrayIndex (bvInt 0) i)) $
   [0 .. fromInteger (llvmArrayStride ap) - 1]
 
+-- | Test if an array permission @ap@ is equivalent to a finite,
+-- statically-known list of field permissions. This is the case iff the array
+-- permission has a static constant length, in which case its field permissions
+-- are all of the permissions returned by 'llvmArrayFieldWithOffset' for array
+-- indices that are not borrowed in @ap@.
+--
+-- In order to make the translation work, we also need there to be at least one
+-- complete array cell that is not borrowed.
+--
+-- If all this is satisfied by @ap@, return the field permissions it is equal
+-- to, where those that comprise the un-borrowed cell are returned as the first
+-- element of the returned pair and the rest are the second.
+llvmArrayAsFields :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                     Maybe ([LLVMFieldPerm w], [LLVMFieldPerm w])
+-- FIXME: this code is terrible! Simplify it!
+llvmArrayAsFields ap
+  | Just len <- bvMatchConst (llvmArrayLen ap)
+  , Just cell <-
+      find (\i ->
+             not $ any (bvRangesCouldOverlap
+                        (llvmArrayBorrowOffsets ap $
+                         RangeBorrow $ BVRange (bvInt i) $ bvInt 1)
+                        . llvmArrayBorrowOffsets ap) $ llvmArrayBorrows ap)
+      [0 .. len-1]
+  , fld_nums <- [0 .. length (llvmArrayFields ap) - 1]
+  , all_ixs <-
+      concatMap (\cell' ->
+                  map (LLVMArrayIndex $ bvInt cell') fld_nums) [0 .. len - 1]
+  = Just ( map (llvmArrayFieldWithOffset ap) $
+           filter (bvEq (bvInt cell) . llvmArrayIndexCell) all_ixs
+         , map (llvmArrayFieldWithOffset ap) $
+           filter (\ix ->
+                    not (bvEq (bvInt cell) (llvmArrayIndexCell ix)) &&
+                    not (any (bvRangesCouldOverlap
+                              (llvmArrayBorrowOffsets ap $ FieldBorrow ix)
+                              . llvmArrayBorrowOffsets ap) $ llvmArrayBorrows ap))
+           all_ixs)
+llvmArrayAsFields _ = Nothing
+
+-- | Map an offset to a borrow from an array, if possible
+offsetToLLVMArrayBorrow :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
+                           PermExpr (BVType w) -> Maybe (LLVMArrayBorrow w)
+offsetToLLVMArrayBorrow ap off = FieldBorrow <$> matchLLVMArrayField ap off
+
 -- | Get the range of byte offsets represented by an array borrow relative to
 -- the beginning of the array permission
 llvmArrayBorrowOffsets :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->

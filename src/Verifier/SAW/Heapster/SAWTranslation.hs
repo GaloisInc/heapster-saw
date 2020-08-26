@@ -2141,14 +2141,14 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayEmpty x mb_ap |] m =
          PTrans_Conj [APTrans_LLVMArray $ typeTransF ap_tp_trans [arr_term]])
        m
 
-translateSimplImpl _ [nuP| SImpl_LLVMArrayCell x mb_ap |] m =
-  do (w_term, _, elem_tp, ap_tp_trans) <- translateLLVMArrayPerm mb_ap
+translateSimplImpl _ [nuP| SImpl_LLVMArrayOneCell x mb_ap |] m =
+  do (w_term, len_term, elem_tp, ap_tp_trans) <- translateLLVMArrayPerm mb_ap
      ap_tp_trans <- translate mb_ap
      withPermStackM id
        (\(pctx :>: ptrans_flds) ->
          let arr_term =
-               applyOpenTermMulti (globalOpenTerm "Prelude.singletonBVVec")
-               [w_term, elem_tp, transTupleTerm ptrans_flds] in
+               applyOpenTermMulti (globalOpenTerm "Prelude.repeatBVVec")
+               [w_term, len_term, elem_tp, transTupleTerm ptrans_flds] in
          pctx :>:
          PTrans_Conj [APTrans_LLVMArray $ typeTransF ap_tp_trans [arr_term]])
        m
