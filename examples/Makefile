@@ -25,3 +25,6 @@ string_set.v: string_set.bc string_set.saw string_set.sawcore
 
 loops.v: loops.bc loops.saw loops.sawcore
 	stack exec saw loops.saw
+
+arrays.v: arrays.bc arrays.saw arrays.sawcore
+	stack exec saw arrays.saw

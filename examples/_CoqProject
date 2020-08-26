@@ -12,3 +12,5 @@ string_set.v
 string_set_proofs.v
 loops.v
 loops_proofs.v
+arrays.v
+arrays_proofs.v
