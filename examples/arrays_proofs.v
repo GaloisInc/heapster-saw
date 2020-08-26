@@ -13,4 +13,5 @@ Require Import Examples.arrays.
 Import arrays.
 
 Require Import Coq.Init.Decimal.
+Print contains0__tuple_fun.
 Print contains0_rec___tuple_fun.
