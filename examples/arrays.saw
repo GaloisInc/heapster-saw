@@ -3,6 +3,6 @@ env <- heapster_init_env_from_file "arrays.sawcore" "arrays.bc";
 
 heapster_typecheck_fun env "contains0_rec_" "(len:bv 64).arg0:eq(llvmword(len)), arg1:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg2:(exists z:bv 64.eq(llvmword(z))) -o arg0:true, arg1:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg2:true, ret:exists z:(bv 64).eq(llvmword(z))";
 
-heapster_typecheck_fun env "contains0" "(len:bv 64).arg0:eq(llvmword(len)), arg1:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]) -o arg0:true, arg1:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), ret:exists z:(bv 64).eq(llvmword(z))";
+heapster_typecheck_fun env "contains0" "(len:bv 64).arg0:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg1:eq(llvmword(len)) -o arg0:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg1:true, ret:exists z:(bv 64).eq(llvmword(z))";
 
 heapster_export_coq env "arrays.v";
