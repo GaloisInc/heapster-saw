@@ -3246,8 +3246,23 @@ proveVarLLVMArray ::
   Bool -> [AtomicPerm (LLVMPointerType w)] -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
+proveVarLLVMArray x first_p ps ap =
+  implTraceM (\i -> string "proveVarLLVMArray:" <+>
+                    permPretty i x <> colon <>
+                    permPretty i (ValPerm_Conj ps) <+> string "-o" <+>
+                    permPretty i (ValPerm_Conj1 $ Perm_LLVMArray ap)) >>>
+  proveVarLLVMArrayH x first_p ps ap
+
+
+-- | FIXME HERE NOW: document, especially the bool flag = first iteration and
+-- that the bools with each perm are whether they can be used
+proveVarLLVMArrayH ::
+  (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+  Bool -> [AtomicPerm (LLVMPointerType w)] -> LLVMArrayPerm w ->
+  ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
+
 -- When len = 0, we are done
-proveVarLLVMArray x _ ps ap
+proveVarLLVMArrayH x _ ps ap
   | bvEq (llvmArrayLen ap) (bvInt 0) =
     implPopM x (ValPerm_Conj ps) >>> implLLVMArrayEmpty x ap
 
@@ -3256,7 +3271,7 @@ proveVarLLVMArray x _ ps ap
 --
 -- FIXME: this is not complete for the case where there is a borrow on the RHS
 -- that could be unified with the beginning of the array
-proveVarLLVMArray x _ ps ap
+proveVarLLVMArrayH x _ ps ap
   | fps <- llvmArrayHeadFields ap
   , all (\fp -> any (isLLVMFieldPermWithOffset
                      (llvmFieldOffset fp)) ps) fps =
@@ -3265,7 +3280,7 @@ proveVarLLVMArray x _ ps ap
 
 -- Otherwise, choose the best-matching array permission and borrow, copy, or use
 -- it directly
-proveVarLLVMArray x first_p ps ap =
+proveVarLLVMArrayH x first_p ps ap =
   let best_elems :: [(Bool, a)] -> [a]
       best_elems xs | Just i <- findIndex fst xs = [snd $ xs !! i]
       best_elems xs = map snd xs in
@@ -3285,8 +3300,9 @@ proveVarLLVMArray x first_p ps ap =
                  , props <- bvPropRangeSubset ap_rng (llvmArrayCells ap_lhs)
                  , tracePretty (string "Array props: "
                                 <+> list (map (permPretty pp_info) props)) True
-                 , all bvPropHolds (bvPropRangeSubset
-                                    ap_rng (llvmArrayCells ap_lhs))
+                 , props_hold <- all bvPropHolds (bvPropRangeSubset
+                                                  ap_rng (llvmArrayCells ap_lhs))
+                 , trace ("Whether they hold: " ++ show props_hold) props_hold
                  , llvmArrayFields ap_lhs == llvmArrayFields ap ->
                    Just (precise, proveVarLLVMArray_ArrayStep x ps ap i ap_lhs)
                _ -> Nothing)
@@ -3302,20 +3318,19 @@ proveVarLLVMArray_HeadStep ::
 -- If we have no more borrows to add to the head cell of ap, then prove the rest
 -- of ap, prove the head cell, and append them
 proveVarLLVMArray_HeadStep x ps ap [] =
-  -- Divide ap into head and tail and prove the tail
+  -- Divide ap into head and tail
   let (ap_head, ap_tail) = llvmArrayPermDivide ap (bvInt 1) in
-  proveVarLLVMArray x False ps ap_tail >>>
 
-  -- Prove the fields in the head
+  -- Pop ps, prove the head fields, and turn them into an array of length 1
+  implPopM x (ValPerm_Conj ps) >>>
   mbVarsM (ValPerm_Conj $ map Perm_LLVMField $
-           llvmArrayHeadFields ap) >>>= \mb_p ->
-  proveVarImpl x mb_p >>>
-
-  -- Prove the head cell and prepend it to the tail
+           llvmArrayHeadFields ap) >>>= \mb_p_head ->
+  proveVarImpl x mb_p_head >>>
   implLLVMArrayCell x ap_head >>>
-  implSwapM x (ValPerm_Conj1 $
-               Perm_LLVMArray ap_tail) x (ValPerm_Conj1 $
-                                          Perm_LLVMArray ap_head) >>>
+
+  -- Now prove the tail of ap and append it to the head
+  mbVarsM (ValPerm_Conj1 $ Perm_LLVMArray ap_tail) >>>= \mb_p_tail ->
+  proveVarImpl x mb_p_tail >>>
   implLLVMArrayAppend x ap_head ap_tail
 
 -- Otherwise, we have a borrow in the head of ap, so we first prove ap without
