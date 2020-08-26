@@ -383,14 +383,13 @@ data SimplImpl ps_in ps_out where
     ExprVar (LLVMPointerType w) -> LLVMArrayPerm w ->
     SimplImpl RNil (RNil :> LLVMPointerType w)
 
-  -- | Prove a single cell of an array, meaning the length is 1, where all
-  -- fields have been borrowed:
+  -- | Prove an array of length 1 from its fields:
   --
-  -- > -o x:array(off,<1,*stride,fps, [0.0, 0.1, ...])
-  SImpl_LLVMArrayEmptyCell ::
+  -- > x:fps -o x:array(off,<1,*stride,fps,[])
+  SImpl_LLVMArrayCell ::
     (1 <= w, KnownNat w) =>
     ExprVar (LLVMPointerType w) -> LLVMArrayPerm w ->
-    SimplImpl RNil (RNil :> LLVMPointerType w)
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Copy out the @j@th field permission of the @i@th element of an array
   -- permission, assuming that the @j@th field permission is copyable, where @j@
@@ -959,19 +958,13 @@ simplImplIn (SImpl_LLVMArrayEmpty x ap) =
   if bvEq (llvmArrayLen ap) (bvInt 0) && llvmArrayBorrows ap == [] then
     DistPermsNil
   else
-    error "simplImplIn: SImpl_LLVMArrayEmptyCell: malformed empty array permission"
+    error "simplImplIn: SImpl_LLVMArrayEmpty: malformed empty array permission"
 
-simplImplIn (SImpl_LLVMArrayEmptyCell x ap) =
-  if bvEq (llvmArrayLen ap) (bvInt 1) &&
-     all (\i -> elem (FieldBorrow (LLVMArrayIndex (bvInt 0) i))
-                (llvmArrayBorrows ap)) [0 .. fromInteger (llvmArrayStride ap) - 1] &&
-     all (\b -> case b of
-             FieldBorrow (LLVMArrayIndex cell fld) ->
-               bvEq cell (bvInt 0) && 0 <= fld &&
-               fld < fromInteger (llvmArrayStride ap)) (llvmArrayBorrows ap) then
-    DistPermsNil
+simplImplIn (SImpl_LLVMArrayCell x ap) =
+  if bvEq (llvmArrayLen ap) (bvInt 1) && null (llvmArrayBorrows ap) then
+    distPerms1 x (ValPerm_Conj $ map Perm_LLVMField $ llvmArrayHeadFields ap)
   else
-    error "simplImplIn: SImpl_LLVMArrayEmptyCell: malformed empty array cell permission"
+    error "simplImplIn: SImpl_LLVMArrayCell: malformed array cell permission"
 
 simplImplIn (SImpl_LLVMArrayIndexCopy x ap ix) =
   if atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
@@ -1143,19 +1136,13 @@ simplImplOut (SImpl_LLVMArrayEmpty x ap) =
   if bvEq (llvmArrayLen ap) (bvInt 0) && llvmArrayBorrows ap == [] then
     distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap)
   else
-    error "simplImplOut: SImpl_LLVMArrayEmptyCell: malformed empty array permission"
+    error "simplImplOut: SImpl_LLVMArrayEmpty: malformed empty array permission"
 
-simplImplOut (SImpl_LLVMArrayEmptyCell x ap) =
-  if bvEq (llvmArrayLen ap) (bvInt 1) &&
-     all (\i -> elem (FieldBorrow (LLVMArrayIndex (bvInt 0) i))
-                (llvmArrayBorrows ap)) [0 .. fromInteger (llvmArrayStride ap) - 1] &&
-     all (\b -> case b of
-             FieldBorrow (LLVMArrayIndex cell fld) ->
-               bvEq cell (bvInt 0) && 0 <= fld &&
-               fld < fromInteger (llvmArrayStride ap)) (llvmArrayBorrows ap) then
+simplImplOut (SImpl_LLVMArrayCell x ap) =
+  if bvEq (llvmArrayLen ap) (bvInt 1) && null (llvmArrayBorrows ap) then
     distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap)
   else
-    error "simplImplOut: SImpl_LLVMArrayEmptyCell: malformed empty array cell permission"
+    error "simplImplOut: SImpl_LLVMArrayCell: malformed array cell permission"
 
 simplImplOut (SImpl_LLVMArrayIndexCopy x ap ix) =
   if atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
@@ -1387,6 +1374,14 @@ instance SubstVar PermVarSubst m =>
     SImpl_LLVMArrayBorrow <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
   genSubst s [nuP| SImpl_LLVMArrayReturn x ap rng |] =
     SImpl_LLVMArrayReturn <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
+  genSubst s [nuP| SImpl_LLVMArrayAppend x ap1 ap2 |] =
+    SImpl_LLVMArrayAppend <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
+  genSubst s [nuP| SImpl_LLVMArrayRearrange x ap1 ap2 |] =
+    SImpl_LLVMArrayRearrange <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
+  genSubst s [nuP| SImpl_LLVMArrayEmpty x ap |] =
+    SImpl_LLVMArrayEmpty <$> genSubst s x <*> genSubst s ap
+  genSubst s [nuP| SImpl_LLVMArrayCell x ap |] =
+    SImpl_LLVMArrayCell <$> genSubst s x <*> genSubst s ap
   genSubst s [nuP| SImpl_LLVMArrayIndexCopy x ap ix |] =
     SImpl_LLVMArrayIndexCopy <$> genSubst s x <*> genSubst s ap <*> genSubst s ix
   genSubst s [nuP| SImpl_LLVMArrayIndexBorrow x ap ix |] =
@@ -2648,14 +2643,12 @@ implLLVMArrayRearrange ::
 implLLVMArrayRearrange x ap_in ap_out =
   implSimplM Proxy (SImpl_LLVMArrayRearrange x ap_in ap_out)
 
--- | Prove a single cell of an array, meaning the length is 1, where all fields
--- have been borrowed
-implLLVMArrayEmptyCell ::
+-- | Prove an array of length 1 from its fields
+implLLVMArrayCell ::
   (1 <= w, KnownNat w) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w ->
-  ImplM vars s r (ps :> LLVMPointerType w) ps ()
-implLLVMArrayEmptyCell x ap =
-  implSimplM Proxy (SImpl_LLVMArrayEmptyCell x ap)
+  ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
+implLLVMArrayCell x ap = implSimplM Proxy (SImpl_LLVMArrayCell x ap)
 
 -- | Prove an empty array with length 0
 implLLVMArrayEmpty ::
@@ -3264,10 +3257,11 @@ proveVarLLVMArray x _ ps ap
 -- FIXME: this is not complete for the case where there is a borrow on the RHS
 -- that could be unified with the beginning of the array
 proveVarLLVMArray x _ ps ap
-  | fps_flds <- llvmArrayHeadFields ap
-  , all (\(fp,_) -> any (isLLVMFieldPermWithOffset
-                         (llvmFieldOffset fp)) ps) fps_flds =
-    proveVarLLVMArray_HeadStep x ps ap fps_flds
+  | fps <- llvmArrayHeadFields ap
+  , all (\fp -> any (isLLVMFieldPermWithOffset
+                     (llvmFieldOffset fp)) ps) fps =
+    let (ap_head, _) = llvmArrayPermDivide ap (bvInt 1) in
+    proveVarLLVMArray_HeadStep x ps ap (llvmArrayBorrows ap_head)
 
 -- Otherwise, choose the best-matching array permission and borrow, copy, or use
 -- it directly
@@ -3276,20 +3270,25 @@ proveVarLLVMArray x first_p ps ap =
       best_elems xs | Just i <- findIndex fst xs = [snd $ xs !! i]
       best_elems xs = map snd xs in
 
+  getPPInfo >>>= \pp_info ->
   mbVarsM (Perm_LLVMArray ap) >>>= \mb_p ->
   foldr1WithDefault implCatchM (proveVarAtomicImplUnfoldOrFail x ps mb_p) $
   best_elems $
   (let off = llvmArrayOffset ap in
    catMaybes $
    zipWith (\p i -> case p of
-               Perm_LLVMArray ap'
-                 | precise <- bvEq off (llvmArrayOffset ap')
-                 , Just contains_prop <- llvmPermContainsOffset off p
-                 , all bvPropHolds contains_prop
+               Perm_LLVMArray ap_lhs
+                 | precise <- bvEq off (llvmArrayOffset ap_lhs)
                  , (first_p || precise)
-                 , llvmArrayFields ap' == llvmArrayFields ap
-                 , isJust (llvmArrayIsOffsetArray ap ap') ->
-                   Just (precise, proveVarLLVMArray_ArrayStep x ps ap i ap')
+                 , isJust (llvmArrayIsOffsetArray ap_lhs ap)
+                 , ap_rng <- llvmSubArrayRange ap_lhs ap
+                 , props <- bvPropRangeSubset ap_rng (llvmArrayCells ap_lhs)
+                 , tracePretty (string "Array props: "
+                                <+> list (map (permPretty pp_info) props)) True
+                 , all bvPropHolds (bvPropRangeSubset
+                                    ap_rng (llvmArrayCells ap_lhs))
+                 , llvmArrayFields ap_lhs == llvmArrayFields ap ->
+                   Just (precise, proveVarLLVMArray_ArrayStep x ps ap i ap_lhs)
                _ -> Nothing)
    ps [0..])
 
@@ -3297,35 +3296,35 @@ proveVarLLVMArray x first_p ps ap =
 -- | FIXME HERE NOW: document this
 proveVarLLVMArray_HeadStep ::
   (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-  [AtomicPerm (LLVMPointerType w)] -> LLVMArrayPerm w ->
-  [(LLVMFieldPerm w, Int)] ->
+  [AtomicPerm (LLVMPointerType w)] -> LLVMArrayPerm w -> [LLVMArrayBorrow w] ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
--- If we have no more fields to add to the head of ap, then just prove an empty
--- head, which is a single array cell with all fields borrowed
+-- If we have no more borrows to add to the head cell of ap, then prove the rest
+-- of ap, prove the head cell, and append them
 proveVarLLVMArray_HeadStep x ps ap [] =
+  -- Divide ap into head and tail and prove the tail
   let (ap_head, ap_tail) = llvmArrayPermDivide ap (bvInt 1) in
   proveVarLLVMArray x False ps ap_tail >>>
-  implLLVMArrayEmptyCell x ap_head >>>
+
+  -- Prove the fields in the head
+  mbVarsM (ValPerm_Conj $ map Perm_LLVMField $
+           llvmArrayHeadFields ap) >>>= \mb_p ->
+  proveVarImpl x mb_p >>>
+
+  -- Prove the head cell and prepend it to the tail
+  implLLVMArrayCell x ap_head >>>
   implSwapM x (ValPerm_Conj1 $
                Perm_LLVMArray ap_tail) x (ValPerm_Conj1 $
                                           Perm_LLVMArray ap_head) >>>
   implLLVMArrayAppend x ap_head ap_tail
 
--- If we do have a field in the head of ap that we want to prove, first prove ap
--- without that field and then prove the field and add it to ap
-proveVarLLVMArray_HeadStep x ps ap ((fp, fld_num) : fps) =
-  -- Prove the rest of ap with fld_num borrowed
-  let fld_ix = LLVMArrayIndex (bvInt 0) fld_num in
-  let ap' = llvmArrayAddBorrow (FieldBorrow fld_ix) ap in
-  proveVarLLVMArray x False ps ap' >>>
-
-  -- Prove fp
-  mbVarsM (ValPerm_Conj1 $ Perm_LLVMField fp) >>>= \mb_fp ->
-  proveVarImpl x mb_fp >>>
-
-  -- Return fp to ap' to get ap
-  implLLVMArrayIndexReturn x ap' fld_ix
+-- Otherwise, we have a borrow in the head of ap, so we first prove ap without
+-- that borrow and then borrow the field
+proveVarLLVMArray_HeadStep x ps ap (b : bs) =
+  -- Prove the rest of ap without b borrowed
+  proveVarLLVMArray_HeadStep x ps (llvmArrayRemBorrow b ap) bs >>>
+  implLLVMArrayBorrowBorrow x ap b >>>= \p ->
+  recombinePerm x p
 
 
 -- | FIXME HERE NOW: document this

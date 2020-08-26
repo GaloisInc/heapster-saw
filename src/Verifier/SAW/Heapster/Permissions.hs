@@ -588,9 +588,11 @@ bvEq e1 e2 = normalizeBVExpr e1 == normalizeBVExpr e2
 -- | Test whether a bitvector expression is less than another for all
 -- substitutions to the free variables. The comparison is unsigned. This is an
 -- underapproximation, meaning that it could return 'False' in cases where it is
--- actually 'True'. The current algorithm only returns 'True' for constant
--- expressions @k1 < k2@.
+-- actually 'True'. The current algorithm returns 'False' when the right-hand
+-- side is 0, 'True' for constant expressions @k1 < k2@, and 'False' otherwise.
 bvLt :: PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
+bvLt _ (PExpr_BV [] 0) = False
+bvLt e1 e2 | bvEq e1 e2 = False
 bvLt (PExpr_BV [] k1) (PExpr_BV [] k2) = k1 < k2
 bvLt _ _ = False
 
@@ -646,9 +648,12 @@ bvCouldEqual _ _ = True
 -- | Test whether a bitvector expression could potentially be less than another,
 -- for some substitution to the free variables. The comparison is unsigned. This
 -- is an overapproximation, meaning that some expressions are marked as "could"
--- be less than when they actually cannot. The current algorithm returns 'True'
--- in all cases except constant expressions @k1 >= k2@.
+-- be less than when they actually cannot. The current algorithm returns 'False'
+-- when the right-hand side is 0 and 'True' in all other cases except constant
+-- expressions @k1 >= k2@.
 bvCouldBeLt :: PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
+bvCouldBeLt _ (PExpr_BV [] 0) = False
+bvCouldBeLt e1 e2 | bvEq e1 e2 = False
 bvCouldBeLt (PExpr_BV [] k1) (PExpr_BV [] k2) = k1 < k2
 bvCouldBeLt _ _ = True
 
@@ -2120,11 +2125,11 @@ llvmArrayFieldWithOffset ap ix =
   (bvAdd (llvmArrayOffset ap) (llvmArrayIndexByteOffset ap ix))
   (llvmArrayFields ap !! llvmArrayIndexFieldNum ix)
 
--- | Get a list of pairs of all the fields in cell 0 and their field numbers
+-- | Get a list of all the fields in cell 0 of an array permission
 llvmArrayHeadFields :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
-                       [(LLVMFieldPerm w, Int)]
+                       [LLVMFieldPerm w]
 llvmArrayHeadFields ap =
-  map (\i -> (llvmArrayFieldWithOffset ap (LLVMArrayIndex (bvInt 0) i), i)) $
+  map (\i -> llvmArrayFieldWithOffset ap (LLVMArrayIndex (bvInt 0) i)) $
   [0 .. fromInteger (llvmArrayStride ap) - 1]
 
 -- | Get the range of byte offsets represented by an array borrow relative to

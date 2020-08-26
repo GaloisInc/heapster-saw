@@ -1476,25 +1476,40 @@ instance TransInfo info =>
     return $ mkTypeTrans1 tp_term (APTrans_Fun fun_perm)
 
 
+-- | Translate an array permission to a 'TypeTrans' for an array permission
+-- translation, also returning the translations of the bitvector width as a
+-- natural, the length of the array as a bitvector, and the type of the elements
+-- of the translation of the array
+translateLLVMArrayPerm :: (1 <= w, KnownNat w, TransInfo info) =>
+                          Mb ctx (LLVMArrayPerm w) ->
+                          TransM info ctx (OpenTerm,OpenTerm,OpenTerm,
+                                           TypeTrans (LLVMArrayPermTrans ctx w))
+translateLLVMArrayPerm mb_ap =
+  do let w = natVal2 mb_ap
+     let w_term = natOpenTerm w
+     let mb_len = fmap llvmArrayLen mb_ap
+     let mb_flds = fmap llvmArrayFields mb_ap
+     flds_trans <-
+       tupleTypeTrans <$> listTypeTrans <$>
+       mapM (translate . fmap Perm_LLVMField) (mbList mb_flds)
+     len_term <- translate1 mb_len
+     let elem_tp = typeTransType1 flds_trans
+     {-
+     bs_trans <-
+       listTypeTrans <$> mapM (translateLLVMArrayBorrow ap) (mbList bs) -}
+     let arr_tp =
+           applyOpenTermMulti (globalOpenTerm "Prelude.BVVec")
+           [w_term, len_term, elem_tp]
+     return (w_term, len_term, elem_tp,
+             mkTypeTrans1 arr_tp ({- flip $ -}
+                                  LLVMArrayPermTrans mb_ap len_term flds_trans)
+             {- <*> bs_trans -} )
+
 instance (1 <= w, KnownNat w, TransInfo info) =>
          Translate info ctx (LLVMArrayPerm w) (TypeTrans
                                                (LLVMArrayPermTrans ctx w)) where
-  translate ap@[nuP| LLVMArrayPerm _ len _ flds bs |] =
-    do let w = natVal4 len
-       flds_trans <-
-         tupleTypeTrans <$> listTypeTrans <$>
-         mapM (translate . fmap Perm_LLVMField) (mbList flds)
-       let elem_tp = typeTransType1 flds_trans
-       len_term <- translate1 len
-       {-
-       bs_trans <-
-         listTypeTrans <$> mapM (translateLLVMArrayBorrow ap) (mbList bs) -}
-       let arr_tp =
-             applyOpenTermMulti (globalOpenTerm "Prelude.BVVec")
-             [natOpenTerm w, len_term, elem_tp]
-       return (mkTypeTrans1 arr_tp ({- flip $ -}
-                                    LLVMArrayPermTrans ap len_term flds_trans)
-               {- <*> bs_trans -} )
+  translate mb_ap =
+    (\(_,_,_,tp_trans) -> tp_trans) <$> translateLLVMArrayPerm mb_ap
 
 {-
 -- | Translate an 'LLVMArrayBorrow' into an 'LLVMArrayBorrowTrans'. This
@@ -2056,10 +2071,10 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayReturn _ mb_ap mb_ret_ap |] m =
      cell_tm <- translate1 mb_cell
      let array_trans =
            unPTransLLVMArray
-           "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_array
+           "translateSimplImpl: SImpl_LLVMArrayReturn" ptrans_array
      let sub_array_trans =
            unPTransLLVMArray
-           "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_sub_array
+           "translateSimplImpl: SImpl_LLVMArrayReturn" ptrans_sub_array
          {- borrow_i =
            mbLift $ mbMap2 llvmArrayFindBorrow (fmap
                                                 RangeBorrow mb_rng) mb_ap
@@ -2074,6 +2089,70 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayReturn _ mb_ap mb_ret_ap |] m =
        (\(pctx :>: _ :>: _) ->
          pctx :>: PTrans_Conj [APTrans_LLVMArray array_trans'])
        m
+
+translateSimplImpl _ [nuP| SImpl_LLVMArrayAppend _ mb_ap1 mb_ap2 |] m =
+  withPermStackM RL.tail
+  (\(pctx :>: ptrans_array1 :>: ptrans_array2) ->
+     let w = natVal2 mb_ap1
+         array_trans1 =
+           unPTransLLVMArray
+           "translateSimplImpl: SImpl_LLVMArrayAppend" ptrans_array1
+         array_trans2 =
+           unPTransLLVMArray
+           "translateSimplImpl: SImpl_LLVMArrayAppend" ptrans_array2
+         len1 = llvmArrayTransLen array_trans1
+         len2 = llvmArrayTransLen array_trans2
+         mb_ap_out =
+           mbMap2 (\ap1 ap2 ->
+                    llvmArrayAddArrayBorrows
+                    (ap1 { llvmArrayLen =
+                           bvAdd (llvmArrayLen ap1) (llvmArrayLen ap2) })
+                    ap2) mb_ap1 mb_ap2
+         array_trans_out =
+           LLVMArrayPermTrans
+           { llvmArrayTransPerm = mb_ap_out
+           , llvmArrayTransLen = bvAddOpenTerm w len1 len2
+           , llvmArrayTransFields = llvmArrayTransFields array_trans1
+           , llvmArrayTransTerm =
+             applyOpenTermMulti (globalOpenTerm "Prelude.appendBVVec")
+             [natOpenTerm w, len1, len2, llvmArrayTransTerm array_trans1,
+              llvmArrayTransTerm array_trans2] } in
+     pctx :>: PTrans_Conj [APTrans_LLVMArray array_trans_out])
+  m
+
+
+translateSimplImpl _ [nuP| SImpl_LLVMArrayRearrange _ _ mb_ap2 |] m =
+  do ap2_tp_trans <- translate mb_ap2
+     withPermStackM id
+       (\(pctx :>: ptrans_array) ->
+         pctx :>:
+         PTrans_Conj [APTrans_LLVMArray $
+                      typeTransF ap2_tp_trans [transTerm1 ptrans_array]])
+       m
+
+translateSimplImpl _ [nuP| SImpl_LLVMArrayEmpty x mb_ap |] m =
+  do (w_term, _, elem_tp, ap_tp_trans) <- translateLLVMArrayPerm mb_ap
+     let arr_term =
+           applyOpenTermMulti (globalOpenTerm "Prelude.emptyBVVec")
+           [w_term, elem_tp]
+     withPermStackM (:>: translateVar x)
+       (\pctx ->
+         pctx :>:
+         PTrans_Conj [APTrans_LLVMArray $ typeTransF ap_tp_trans [arr_term]])
+       m
+
+translateSimplImpl _ [nuP| SImpl_LLVMArrayCell x mb_ap |] m =
+  do (w_term, _, elem_tp, ap_tp_trans) <- translateLLVMArrayPerm mb_ap
+     ap_tp_trans <- translate mb_ap
+     withPermStackM id
+       (\(pctx :>: ptrans_flds) ->
+         let arr_term =
+               applyOpenTermMulti (globalOpenTerm "Prelude.singletonBVVec")
+               [w_term, elem_tp, transTupleTerm ptrans_flds] in
+         pctx :>:
+         PTrans_Conj [APTrans_LLVMArray $ typeTransF ap_tp_trans [arr_term]])
+       m
+
 
 translateSimplImpl _ [nuP| SImpl_LLVMArrayIndexCopy _ _ mb_ix |] m =
   do (_ :>: ptrans_array :>: ptrans_props) <- itiPermStack <$> ask
