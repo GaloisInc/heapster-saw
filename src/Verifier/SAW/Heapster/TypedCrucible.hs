@@ -1458,29 +1458,6 @@ getAtomicLLVMPerms r =
                        permPretty i (ValPerm_Eq $ PExpr_LLVMWord e)])
 
 
--- | Look up the function permission associated with a typed register
-getRegFunPerm :: TypedReg (FunctionHandleType cargs fret) ->
-                 StmtPermCheckM ext cblocks blocks tops ret ps ps
-                 (SomeFunPerm (CtxToRList cargs) fret)
-getRegFunPerm freg =
-  let x = typedRegVar freg in
-  (stPermEnv <$> top_get) >>>= \env ->
-  getSimpleRegPerm freg >>>= \p_freg ->
-  case p_freg of
-    ValPerm_Eq (PExpr_Fun f)
-      | Just (some_fun_perm, _) <- lookupFunPerm env f ->
-          greturn some_fun_perm
-    ValPerm_Conj ps
-      | any isFunPerm ps ->
-        stmtEmbedImplM $ foldr1 implCatchM $
-        mapMaybe (\p ->
-                   case p of
-                     Perm_Fun fun_perm ->
-                       Just (greturn (SomeFunPerm fun_perm))
-                     _ -> Nothing) ps
-    _ -> stmtFailM (\i ->
-                     string "No function permission for" <+> permPretty i freg)
-
 -- | Pretty-print the permissions that are "relevant" to a register, which
 -- includes its permissions and all those relevant to any register it is equal
 -- to, possibly plus some offset
@@ -1986,6 +1963,36 @@ tcExpr (BVNonzero w (RegWithVal _ bv))
 tcExpr _ = greturn Nothing
 
 
+-- | Test if a sequence of arguments could potentially satisfy some function
+-- input permissions. This is an overapproximation, meaning that we might return
+-- 'True' even if the arguments do not satisfy the permissions.
+couldSatisfyPermsM :: CruCtx args -> TypedRegs args ->
+                      Mb ghosts (ValuePerms args) ->
+                      StmtPermCheckM ext cblocks blocks tops ret ps ps Bool
+couldSatisfyPermsM CruCtxNil _ _ = greturn True
+couldSatisfyPermsM (CruCtxCons
+                    tps (BVRepr _)) (TypedRegsCons
+                                     args arg) [nuP| ValPerms_Cons ps
+                                                   (ValPerm_Eq mb_e) |] =
+  couldSatisfyPermsM tps args ps >>>= \b ->
+  getRegEqualsExpr arg >>>= \arg_val ->
+  greturn (b && mbLift (fmap (bvCouldEqual arg_val) mb_e))
+couldSatisfyPermsM (CruCtxCons
+                    tps _) (TypedRegsCons
+                            args arg) [nuP| ValPerms_Cons ps
+                                          (ValPerm_Eq
+                                          (PExpr_LLVMWord mb_e)) |] =
+  couldSatisfyPermsM tps args ps >>>= \b ->
+  getRegEqualsExpr arg >>>= \arg_val ->
+  case arg_val of
+    PExpr_LLVMWord e ->
+      greturn (b && mbLift (fmap (bvCouldEqual e) mb_e))
+    _ -> greturn False
+couldSatisfyPermsM (CruCtxCons
+                    tps _) (TypedRegsCons args _) [nuP| ValPerms_Cons ps _ |] =
+  couldSatisfyPermsM tps args ps
+
+
 -- | Typecheck a statement and emit it in the current statement sequence,
 -- starting and ending with an empty stack of distinguished permissions
 tcEmitStmt :: PermCheckExtC ext => CtxTrans ctx -> ProgramLoc ->
@@ -2030,8 +2037,22 @@ tcEmitStmt' ctx loc (ExtendAssign stmt_ext :: Stmt ext ctx ctx')
 
 tcEmitStmt' ctx loc (CallHandle ret freg_untyped args_ctx args_untyped) =
   let freg = tcReg ctx freg_untyped
-      args = tcRegs ctx args_untyped in
-  getRegFunPerm freg >>>= \some_fun_perm ->
+      args = tcRegs ctx args_untyped
+      args_subst = typedRegsToVarSubst args in
+  getVarTypes (typedRegsToVars args) >>>= \argTypes ->
+  getSimpleRegPerm freg >>>= \p_freg ->
+  (case p_freg of
+      ValPerm_Conj ps ->
+        forM ps $ \p -> case p of
+        Perm_Fun fun_perm ->
+          couldSatisfyPermsM argTypes args (fmap (varSubst args_subst) $
+                                            funPermIns fun_perm) >>>= \could ->
+          greturn (if could then Just (SomeFunPerm fun_perm) else Nothing)
+        _ -> greturn Nothing
+      _ -> greturn []) >>>= \maybe_fun_perms ->
+  (stmtEmbedImplM $ foldr1WithDefault implCatchM
+   (implFailMsgM "Could not find function permission")
+   (mapMaybe (fmap greturn) maybe_fun_perms)) >>>= \some_fun_perm ->
   case some_fun_perm of
     SomeFunPerm fun_perm ->
       (stmtProvePerms' (funPermGhosts fun_perm)
