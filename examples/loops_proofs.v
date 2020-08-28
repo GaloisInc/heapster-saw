@@ -14,6 +14,7 @@ Import SAWCorePrelude.
 
 (* Print add_loop__tuple_fun. *)
 
+Require Import Coq.Init.Decimal.
 Lemma no_errors_add_loop : refinesFun add_loop (fun _ _ => noErrorsSpec).
 Proof.
   unfold add_loop, add_loop__tuple_fun, noErrorsSpec.
