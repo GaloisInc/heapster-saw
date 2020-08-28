@@ -31,6 +31,14 @@ int64_t contains0 (int64_t *arr, uint64_t len) {
   return 0;
 }
 
+/* Test if an array contains 0 */
+int64_t contains0_after (int64_t *arr, uint64_t len, uint64_t i) {
+  for (; i < len; ++i) {
+    if (arr[i] == 0) { return 1; }
+  }
+  return 0;
+}
+
 /* Test if a sorted array contains 0 by divide-and-conquer */
 int64_t contains0_sorted_rec (int64_t *arr, uint64_t len) {
   if (len == 0) {
