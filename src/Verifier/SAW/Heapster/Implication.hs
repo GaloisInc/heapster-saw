@@ -2316,6 +2316,8 @@ getEqualsExpr e@(PExpr_Var x) =
 getEqualsExpr (PExpr_BV factors off) =
   foldr bvAdd (PExpr_BV [] off) <$>
   mapM (\(BVFactor i x) -> bvMult i <$> getEqualsExpr (PExpr_Var x)) factors
+getEqualsExpr (PExpr_LLVMWord e) =
+  PExpr_LLVMWord <$> getEqualsExpr e
 getEqualsExpr (PExpr_LLVMOffset x off) =
   getEqualsExpr (PExpr_Var x) >>>= \e ->
   getEqualsExpr off >>>= \off' ->
