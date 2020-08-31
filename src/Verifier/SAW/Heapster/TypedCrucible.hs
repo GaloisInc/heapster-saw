@@ -1576,17 +1576,17 @@ data WithImplState vars a ps ps' =
 
 -- | Call 'runImplM' in the 'PermCheckM' monad
 pcmRunImplM ::
-  CruCtx vars -> (a -> r ps_out) ->
+  Bool -> CruCtx vars -> (a -> r ps_out) ->
   ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in a ->
   PermCheckM ext cblocks blocks tops ret r' ps_in r' ps_in
   (PermImpl r ps_in)
-pcmRunImplM vars retF impl_m =
+pcmRunImplM do_trace vars retF impl_m =
   (stCurPerms <$> gget) >>>= \perms_in ->
   (stPermEnv <$> top_get) >>>= \env ->
   (stPPInfo <$> gget) >>>= \ppInfo ->
   (stVarTypes <$> gget) >>>= \varTypes ->
   liftPermCheckM $ lift $
-  runImplM vars perms_in env ppInfo varTypes (return . retF . fst) impl_m
+  runImplM vars perms_in env ppInfo do_trace varTypes (return . retF . fst) impl_m
 
 -- | Embed an implication computation inside a permission-checking computation
 embedImplM ::
@@ -1603,7 +1603,7 @@ embedImplM f_impl vars m =
   (gcaptureCC $ \k ->
     ask >>= \r ->
     lift $
-    runImplM vars perms_in env ppInfo varTypes (flip runReaderT r
+    runImplM vars perms_in env ppInfo True varTypes (flip runReaderT r
                                                 . k) m) >>>= \(a, implSt) ->
   gmodify ((\st -> st { stPPInfo = implSt ^. implStatePPInfo,
                         stVarTypes = implSt ^. implStateNameTypes })
@@ -2625,6 +2625,37 @@ abstractPermsRet xs args ret_perms =
   `clApply` maybe (error "abstractPermsRet") id (abstractVars xs ret_perms)
 -}
 
+-- Recursively replace all instances of eq permissions on boolean or bitvector
+-- constants with `exists x. eq(x)` in a set of distinguished permissions.
+generalizeEntryPerms :: DistPerms ps -> DistPerms ps
+generalizeEntryPerms DistPermsNil = DistPermsNil
+generalizeEntryPerms (DistPermsCons ps x p) =
+  DistPermsCons (generalizeEntryPerms ps) x (generalizeEntryValPerm p)
+
+-- Recursively replace all instances of eq permissions on boolean or bitvector
+-- constants with `exists x. eq(x)`.
+generalizeEntryValPerm :: ValuePerm p -> ValuePerm p
+-- abstract away equality permissions on boolean and bitvector constants
+generalizeEntryValPerm (ValPerm_Eq (PExpr_BV _ _)) =
+  ValPerm_Exists (nu $ ValPerm_Eq . PExpr_Var)
+generalizeEntryValPerm (ValPerm_Eq (PExpr_Bool _)) =
+  ValPerm_Exists (nu $ ValPerm_Eq . PExpr_Var)
+generalizeEntryValPerm (ValPerm_Eq (PExpr_LLVMWord (PExpr_BV _ _))) =
+  ValPerm_Exists (nu $ ValPerm_Eq . PExpr_LLVMWord . PExpr_Var)
+-- recurse into any LLVM field permissions in a conjunct
+generalizeEntryValPerm (ValPerm_Conj aps) =
+  ValPerm_Conj (generalizeEntryAtomicPerm <$> aps)
+  where  generalizeEntryAtomicPerm :: AtomicPerm p -> AtomicPerm p
+         generalizeEntryAtomicPerm (Perm_LLVMField (LLVMFieldPerm rw l o p)) =
+           Perm_LLVMField (LLVMFieldPerm rw l o (generalizeEntryValPerm p))
+         generalizeEntryAtomicPerm p = p
+-- recurse into disjunctive and existential permissions
+generalizeEntryValPerm (ValPerm_Or p1 p2) =
+  ValPerm_Or (generalizeEntryValPerm p1) (generalizeEntryValPerm p2)
+generalizeEntryValPerm (ValPerm_Exists mbp) =
+  ValPerm_Exists (generalizeEntryValPerm <$> mbp)
+generalizeEntryValPerm p = p
+
 -- | Type-check a Crucible jump target
 tcJumpTarget :: CtxTrans ctx -> JumpTarget cblocks ctx ->
                 StmtPermCheckM ext cblocks blocks tops ret RNil RNil
@@ -2661,7 +2692,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
 
         -- Prove the required input perms for this entrypoint and return the
         -- jump target inside an implication
-        pcmRunImplM ghosts
+        pcmRunImplM True ghosts
         (\ghosts_subst ->
           TypedJumpTarget entryID Proxy (mkCruCtx args_tps) $
           varSubst ghosts_subst ex_perms)
@@ -2693,7 +2724,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
               buildDistPerms (\n -> if NameMap.member n tops_set then
                                       ValPerm_Eq (PExpr_Var n)
                                     else cur_perms ^. varPerm n) args_ns
-            perms_in = appendDistPerms (appendDistPerms
+            perms_in = generalizeEntryPerms $
+                       appendDistPerms (appendDistPerms
                                         tops_perms args_perms) ghosts_perms in
         stmtTraceM (\i ->
                      string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
@@ -2726,7 +2758,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
         -- arguments, which are proved by reflexivity.
         let target_t =
               TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms_in in
-        pcmRunImplM CruCtxNil (const target_t) (implPushOrReflMultiM perms_in)
+        pcmRunImplM False CruCtxNil (const target_t) $
+          proveVarsImpl (distPermsToExDistPerms perms_in)
 
 
 -- | Type-check a termination statement
@@ -2756,7 +2789,7 @@ tcTermStmt ctx (Return reg) =
         mbSeparate (MNil :>: Proxy) $
         mbValuePermsToDistPerms (stRetPerms top_st) in
   TypedReturn <$>
-  pcmRunImplM CruCtxNil
+  pcmRunImplM True CruCtxNil
   (const $ TypedRet Refl (stRetType top_st) treg mb_ret_perms)
   (proveVarsImpl $ distPermsToExDistPerms $
    varSubst (singletonVarSubst $ typedRegVar treg) mb_ret_perms)
@@ -2969,7 +3002,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
     visit cfg _ (Vertex Nothing) = return ()
     visit cfg scc_blocks (Vertex (Just (Some blkID))) =
       do blkIx <- memberLength <$> stLookupBlockID blkID <$> get
-         () <- trace ("Visiting block: " ++ show blkIx) $ return ()
+         () <- trace ("Visiting block: " ++ show blkIx ++ " (" ++ show blkID ++ ")") $ return ()
          let is_scc = elem (Some blkID) scc_blocks
          !ret <- tcEmitBlock is_scc (getBlock blkID (cfgBlockMap cfg))
          !s <- get

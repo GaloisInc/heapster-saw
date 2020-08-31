@@ -1799,13 +1799,14 @@ data ImplState vars ps =
               _implStatePermEnv :: PermEnv,
               -- ^ The current permission environment
               _implStatePPInfo :: PPInfo,
-              _implStateNameTypes :: NameMap TypeRepr
+              _implStateNameTypes :: NameMap TypeRepr,
+              _implStateDoTrace :: Bool
             }
 makeLenses ''ImplState
 
 mkImplState :: CruCtx vars -> PermSet ps -> PermEnv ->
-               PPInfo -> NameMap TypeRepr -> ImplState vars ps
-mkImplState vars perms env info nameTypes =
+               PPInfo -> Bool -> NameMap TypeRepr -> ImplState vars ps
+mkImplState vars perms env info do_trace nameTypes =
   ImplState { _implStateVars = vars,
               _implStatePerms = perms,
               _implStatePSubst = emptyPSubst vars,
@@ -1813,7 +1814,8 @@ mkImplState vars perms env info nameTypes =
               _implStateRecRecurseFlag = Nothing,
               _implStatePermEnv = env,
               _implStatePPInfo = info,
-              _implStateNameTypes = nameTypes
+              _implStateNameTypes = nameTypes,
+              _implStateDoTrace = do_trace
             }
 
 extImplState :: KnownRepr TypeRepr tp => ImplState vars ps ->
@@ -1835,12 +1837,12 @@ type ImplM vars s r ps_out ps_in =
 
 -- | Run an 'ImplM' computation by passing it a @vars@ context, a starting
 -- permission set, top-level state, and a continuation to consume the output
-runImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
+runImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo -> Bool ->
             NameMap TypeRepr ->
             ((a, ImplState vars ps_out) -> State (Closed s) (r ps_out)) ->
             ImplM vars s r ps_out ps_in a -> State (Closed s) (PermImpl r ps_in)
-runImplM vars perms env ppInfo nameTypes k m =
-  runGenContM (runGenStateT m (mkImplState vars perms env ppInfo nameTypes))
+runImplM vars perms env ppInfo do_trace nameTypes k m =
+  runGenContM (runGenStateT m (mkImplState vars perms env ppInfo do_trace nameTypes))
   (\as -> PermImpl_Done <$> k as)
 
 -- | Embed a sub-computation in a name-binding inside another 'ImplM'
@@ -1856,6 +1858,7 @@ embedMbImplM mb_ps_in mb_m =
        (\ps_in m ->
          runImplM CruCtxNil ps_in
          (view implStatePermEnv s) (view implStatePPInfo s)
+         (view implStateDoTrace s)
          (view implStateNameTypes s) (return . fst) m)
       mb_ps_in mb_m)
 
@@ -2112,8 +2115,11 @@ implApplyImpl1 impl1 mb_ms =
 -- | Emit debugging output using the current 'PPInfo'
 implTraceM :: (PPInfo -> Doc) -> ImplM vars s r ps ps String
 implTraceM f =
+  (view implStateDoTrace <$> gget) >>>= \do_trace ->
   (f <$> view implStatePPInfo <$> gget) >>>= \doc ->
-  let str = renderDoc doc in trace str (greturn str)
+  let str = renderDoc doc in fn do_trace str (greturn str)
+  where fn True  = trace
+        fn False = const id
 
 -- | Terminate the current proof branch with a failure
 implFailM :: String -> ImplM vars s r ps_any ps a
