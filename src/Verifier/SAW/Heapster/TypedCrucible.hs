@@ -2636,11 +2636,11 @@ generalizeEntryPerms (DistPermsCons ps x p) =
 -- constants with `exists x. eq(x)`.
 generalizeEntryValPerm :: ValuePerm p -> ValuePerm p
 -- abstract away equality permissions on boolean and bitvector constants
-generalizeEntryValPerm (ValPerm_Eq (PExpr_BV _ _)) =
+generalizeEntryValPerm (ValPerm_Eq (PExpr_BV [] _)) =
   ValPerm_Exists (nu $ ValPerm_Eq . PExpr_Var)
 generalizeEntryValPerm (ValPerm_Eq (PExpr_Bool _)) =
   ValPerm_Exists (nu $ ValPerm_Eq . PExpr_Var)
-generalizeEntryValPerm (ValPerm_Eq (PExpr_LLVMWord (PExpr_BV _ _))) =
+generalizeEntryValPerm (ValPerm_Eq (PExpr_LLVMWord (PExpr_BV [] _))) =
   ValPerm_Exists (nu $ ValPerm_Eq . PExpr_LLVMWord . PExpr_Var)
 -- recurse into any LLVM field permissions in a conjunct
 generalizeEntryValPerm (ValPerm_Conj aps) =
@@ -2776,9 +2776,12 @@ tcTermStmt ctx (Br reg tgt1 tgt2) =
   let treg = tcReg ctx reg in
   getRegEqualsExpr treg >>>= \treg_expr ->
   case treg_expr of
-    PExpr_Bool True -> TypedJump <$> tcJumpTarget ctx tgt1
-    PExpr_Bool False -> TypedJump <$> tcJumpTarget ctx tgt2
-    _ -> TypedBr treg <$> tcJumpTarget ctx tgt1 <*> tcJumpTarget ctx tgt2
+    PExpr_Bool True -> trace "tcTermStmt: br reg known to be true!" $
+                       TypedJump <$> tcJumpTarget ctx tgt1
+    PExpr_Bool False -> trace "tcTermStmt: br reg known to be false!" $
+                        TypedJump <$> tcJumpTarget ctx tgt2
+    _ -> trace "tcTermStmt: br reg unknown, checking both branches..." $
+         TypedBr treg <$> tcJumpTarget ctx tgt1 <*> tcJumpTarget ctx tgt2
 tcTermStmt ctx (Return reg) =
   let treg = tcReg ctx reg in
   gget >>>= \st ->
