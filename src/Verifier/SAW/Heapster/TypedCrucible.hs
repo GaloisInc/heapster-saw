@@ -1136,6 +1136,7 @@ data TopPermCheckState ext cblocks blocks tops ret =
     stRetPerms :: MbValuePerms (tops :> ret),
     stBlockTrans :: Assignment (BlockIDTrans blocks) cblocks,
     stBlockInfo :: BlockInfoMap ext blocks tops ret,
+    stGenPermsBlocks :: [Some (BlockID cblocks)],
     stPermEnv :: PermEnv
   }
 
@@ -1159,14 +1160,15 @@ instance BindState (TopPermCheckState ext cblocks blocks ret) where
 -- | Build an empty 'TopPermCheckState' from a Crucible 'BlockMap'
 emptyTopPermCheckState ::
   CruCtx tops -> TypeRepr ret -> MbValuePerms (tops :> ret) ->
-  BlockMap ext cblocks ret -> PermEnv ->
+  BlockMap ext cblocks ret -> [Some (BlockID cblocks)] -> PermEnv ->
   TopPermCheckState ext cblocks (CtxCtxToRList cblocks) tops ret
-emptyTopPermCheckState tops ret retPerms blkMap env =
+emptyTopPermCheckState tops ret retPerms blkMap genPermsBlocks env =
   TopPermCheckState { stTopCtx = tops
                     , stRetType = ret
                     , stRetPerms = retPerms
                     , stBlockTrans = buildBlockIDMap blkMap
                     , stBlockInfo = emptyBlockInfoMap blkMap
+                    , stGenPermsBlocks = genPermsBlocks
                     , stPermEnv = env }
 
 
@@ -2715,7 +2717,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       Some ghosts_ns' ->
         -- Step 2: compute the permissions for the three sorts of arguments,
         -- where each normal argument that is also in the top-level arguments
-        -- gets eq permissions
+        -- gets eq permissions. Additionally, if this block has a 'GenPermsHint',
+        -- apply 'generalizeEntryPerms' to all the resulting permissions.
         let ghosts_ns = RL.append ext_ns ghosts_ns'
             cur_perms = stCurPerms st
             tops_perms = varPermsMulti tops_ns cur_perms
@@ -2724,9 +2727,11 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
               buildDistPerms (\n -> if NameMap.member n tops_set then
                                       ValPerm_Eq (PExpr_Var n)
                                     else cur_perms ^. varPerm n) args_ns
-            perms_in = generalizeEntryPerms $
-                       appendDistPerms (appendDistPerms
-                                        tops_perms args_perms) ghosts_perms in
+            all_perms = appendDistPerms (appendDistPerms
+                                         tops_perms args_perms) ghosts_perms
+            doGenPerms = Some blkID `elem` stGenPermsBlocks top_st
+            perms_in = if doGenPerms then generalizeEntryPerms all_perms 
+                                     else all_perms in
         stmtTraceM (\i ->
                      string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
                      string "Input perms: " <+>
@@ -2752,14 +2757,16 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
          memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
 
         -- Step 5: return a TypedJumpTarget inside a PermImpl that proves all
-        -- the required input permissions from the current permission set. This
-        -- proof just copies the existing permissions into the current
-        -- distinguished perms, except for the eq permissions for real
-        -- arguments, which are proved by reflexivity.
+        -- the required input permissions from the current permission set. If
+        -- this block doesn't have a 'GenPermsHint', this proof just copies
+        -- the existing permissions into the current distinguished perms,
+        -- except for the eq permissions for real arguments, which are proved
+        -- by reflexivity.
         let target_t =
               TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms_in in
         pcmRunImplM False CruCtxNil (const target_t) $
-          proveVarsImpl (distPermsToExDistPerms perms_in)
+          if doGenPerms then implPushOrReflMultiM perms_in
+                        else proveVarsImpl (distPermsToExDistPerms perms_in)
 
 
 -- | Type-check a termination statement
@@ -2937,7 +2944,9 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
                   tops
                   (handleReturnType $ cfgHandle cfg)
                   perms_out
-                  (cfgBlockMap cfg) env) $
+                  (cfgBlockMap cfg)
+                  (lookupGenPermsHints env cfg)
+                  env) $
   do
      -- First, add a block entrypoint for the initial block of the function
      init_memb <- stLookupBlockID (cfgEntryBlockID cfg) <$> get

@@ -4101,10 +4101,16 @@ data BlockEntryHint blocks init ret args where
 blockEntryHintBlockID :: BlockEntryHint blocks init ret args -> BlockID blocks args
 blockEntryHintBlockID (BlockEntryHint _ _ blkID _ _ _) = blkID
 
+-- | A "hint" from the user about when to generalize
+-- (see 'generalizeEntryPerms') the inputs to a block
+data GenPermsHint blocks init ret args where
+  GenPermsHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
+                  BlockID blocks args -> GenPermsHint blocks init ret args
 
 -- | A "hint" from the user for type-checking
 data Hint where
   Hint_BlockEntry :: BlockEntryHint blocks init ret args -> Hint
+  Hint_GenPerms   :: GenPermsHint blocks init ret args   -> Hint
 
 -- | A permission environment that maps function names, permission names, and
 -- 'GlobalSymbols' to their respective permission structures
@@ -4122,6 +4128,8 @@ $(mkNuMatching [t| SomeNamedPerm |])
 $(mkNuMatching [t| PermEnvGlobalEntry |])
 $(mkNuMatching [t| forall blocks init ret args.
                 BlockEntryHint blocks init ret args |])
+$(mkNuMatching [t| forall blocks init ret args.
+                GenPermsHint blocks init ret args |])
 $(mkNuMatching [t| Hint |])
 $(mkNuMatching [t| PermEnv |])
 
@@ -4312,6 +4320,18 @@ lookupBlockEntryHints env cfg =
                _ -> Nothing) $
   permEnvHints env
 
+-- | Look up all 'BlockID's in a 'CFG' which have 'GenPermsHint's
+lookupGenPermsHints :: PermEnv -> CFG ext blocks init ret ->
+                       [Some (BlockID blocks)]
+lookupGenPermsHints env cfg =
+  mapMaybe (\hint -> case hint of
+               Hint_GenPerms (GenPermsHint h blocks blkID)
+                 | Just Refl <- testEquality (handleID h) (handleID $ cfgHandle cfg)
+                 , Just Refl <- testEquality blocks (fmapFC blockInputs
+                                                     (cfgBlockMap cfg)) ->
+                   return $ Some blkID
+               _ -> Nothing) $
+  permEnvHints env
 
 ----------------------------------------------------------------------
 -- * Permission Sets
