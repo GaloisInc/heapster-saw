@@ -2734,6 +2734,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
                                      else all_perms in
         stmtTraceM (\i ->
                      string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
+                     (if doGenPerms then string "(gen) " else string "") <>
                      string "Input perms: " <+>
                      hang 2 (permPretty i perms_in)) >>>
 
@@ -2765,8 +2766,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
         let target_t =
               TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms_in in
         pcmRunImplM False CruCtxNil (const target_t) $
-          if doGenPerms then implPushOrReflMultiM perms_in
-                        else proveVarsImpl (distPermsToExDistPerms perms_in)
+          if doGenPerms then proveVarsImpl (distPermsToExDistPerms perms_in)
+                        else implPushOrReflMultiM perms_in
 
 
 -- | Type-check a termination statement
