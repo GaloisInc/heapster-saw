@@ -31,6 +31,7 @@ import Data.Char
 import Data.Maybe
 import Data.Either
 import Numeric.Natural
+import Data.Bits
 import Data.List
 import Data.List.NonEmpty (toList)
 import Data.Kind
@@ -45,6 +46,8 @@ import Control.Monad.Fail
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Cont
+import Data.Vector (Vector)
+import qualified Data.Vector as V
 
 import What4.ProgramLoc
 import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
@@ -634,6 +637,15 @@ piExprCtx ctx m =
 trueOpenTerm :: OpenTerm
 trueOpenTerm = globalOpenTerm "Prelude.True"
 
+boolOpenTerm :: Bool -> OpenTerm
+boolOpenTerm True = globalOpenTerm "Prelude.True"
+boolOpenTerm False = globalOpenTerm "Prelude.False"
+
+bvLitOpenTerm :: NatRepr w -> Integer -> OpenTerm
+bvLitOpenTerm w n =
+  flatOpenTerm $ ArrayValue (globalOpenTerm "Prelude.Bool") $
+  V.fromList (map boolOpenTerm $ BV.asBitsBE w $ BV.mkBV w n)
+
 bvNatOpenTerm :: Natural -> Natural -> OpenTerm
 bvNatOpenTerm w n =
   applyOpenTermMulti (globalOpenTerm "Prelude.bvNat")
@@ -670,6 +682,25 @@ natVal3 (_ :: f (g (h w))) = fromInteger $ natVal (Proxy :: Proxy w)
 natVal4 :: KnownNat w => f (g (h (i w))) -> Natural
 natVal4 (_ :: f (g (h (i w)))) = fromInteger $ natVal (Proxy :: Proxy w)
 
+-- | A version of 'knownNat' that take a phantom argument
+natRepr :: KnownNat w => f w -> NatRepr w
+natRepr _ = knownNat
+
+-- | A version of 'natRepr' that take a phantom argument with 2 applied type
+-- functors instead of 1
+natRepr2 :: KnownNat w => f (g w) -> NatRepr w
+natRepr2 _ = knownNat
+
+-- | A version of 'natRepr' that take a phantom argument with 3 applied type
+-- functors instead of 1
+natRepr3 :: KnownNat w => f (g (h w)) -> NatRepr w
+natRepr3 _ = knownNat
+
+-- | A version of 'natRepr' that take a phantom argument with 4 applied type
+-- functors instead of 1
+natRepr4 :: KnownNat w => f (g (h (i w))) -> NatRepr w
+natRepr4 _ = knownNat
+
 -- | Get the 'TypeRepr' of an expression
 mbExprType :: KnownRepr TypeRepr a => Mb ctx (PermExpr a) -> TypeRepr a
 mbExprType _ = knownRepr
@@ -694,18 +725,17 @@ instance TransInfo info =>
   translate [nuP| PExpr_Nat i |] =
     return $ ETrans_Term $ natOpenTerm $ mbLift i
   translate [nuP| PExpr_BV bvfactors@[] off |] =
-    let w = natVal3 bvfactors in
-    return $ ETrans_Term $ bvNatOpenTerm w $ fromInteger $ mbLift off
+    let w = natRepr3 bvfactors in
+    return $ ETrans_Term $ bvLitOpenTerm w $ mbLift off
   translate [nuP| PExpr_BV bvfactors 0 |] =
     let w = natVal3 bvfactors in
     ETrans_Term <$> foldr1 (bvAddOpenTerm w) <$>
     mapM translate (mbList bvfactors)
   translate [nuP| PExpr_BV bvfactors off |] =
-    do let w = natVal3 bvfactors
+    do let w = natRepr3 bvfactors
        bv_transs <- mapM translate $ mbList bvfactors
        return $ ETrans_Term $
-         foldr (bvAddOpenTerm w) (bvNatOpenTerm w $
-                                  fromInteger $ mbLift off) bv_transs
+         foldr (bvAddOpenTerm $ natValue w) (bvLitOpenTerm w $ mbLift off) bv_transs
   translate [nuP| PExpr_Struct _args |] =
     error "FIXME HERE: translate struct expressions!"
   translate [nuP| PExpr_Always |] =
@@ -728,8 +758,8 @@ instance TransInfo info =>
 instance TransInfo info => Translate info ctx (BVFactor w) OpenTerm where
   translate [nuP| BVFactor 1 x |] = translate1 (fmap PExpr_Var x)
   translate [nuP| BVFactor i x |] =
-    let w = natVal4 x in
-    bvMulOpenTerm w (bvNatOpenTerm w $ fromInteger (mbLift i)) <$>
+    let w = natRepr4 x in
+    bvMulOpenTerm (natValue w) (bvLitOpenTerm w $ mbLift i) <$>
     translate1 (fmap PExpr_Var x)
 
 
@@ -2631,9 +2661,11 @@ instance (PermCheckExtC ext, TransInfo info) =>
   translate [nuP| HandleLit _ |] = return ETrans_Fun
 
   -- Bitvectors
-  translate [nuP| BVLit w (BV.BV i) |] =
-    return $ ETrans_Term $
-    bvNatOpenTerm (natValue $ mbLift w) (fromInteger $ mbLift i)
+  translate [nuP| BVLit w mb_bv |] =
+    return $ ETrans_Term $ bvLitOpenTerm (mbLift w) $
+    -- FIXME: It is weird that we translate to Integer here and then back to
+    -- BV.BV in bvLitOpenTerm...
+    BV.asUnsigned $ mbLift mb_bv
   translate [nuP| BVConcat w1 w2 e1 e2 |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.join")
@@ -2740,14 +2772,14 @@ instance (PermCheckExtC ext, TransInfo info) =>
     applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
     [applyTransM (return $ globalOpenTerm "Prelude.bitvector") (translate w),
      translateRWV e,
-     return (bvNatOpenTerm (natValue $ mbLift w) 1),
-     return (bvNatOpenTerm (natValue $ mbLift w) 0)]
+     return (bvLitOpenTerm (mbLift w) 1),
+     return (bvLitOpenTerm (mbLift w) 0)]
   translate [nuP| BVNonzero w e |] =
     ETrans_Term <$>
     applyTransM (return $ globalOpenTerm "Prelude.not")
     (applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
      [translate w, translateRWV e,
-      return (bvNatOpenTerm (natValue $ mbLift w) 0)])
+      return (bvLitOpenTerm (mbLift w) 0)])
 
   -- Strings
   translate [nuP| Expr.StringLit (UnicodeLiteral text) |] =
