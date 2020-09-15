@@ -177,7 +177,7 @@ data ExprTrans (a :: CrucibleType) where
   -- | The computational content of functions is in their FunPerms, so functions
   -- themselves have no computational content
   ETrans_Fun :: ExprTrans (FunctionHandleType args ret)
-  
+
   -- | The unit type has no computational content
   ETrans_Unit :: ExprTrans UnitType
 
@@ -1679,7 +1679,7 @@ instance TransInfo (ImpTransInfo ext blocks tops ret ps) where
     , itiPermStack = extPermTransCtx itiPermStack
     , itiPermStackVars = RL.map Member_Step itiPermStackVars
     , .. }
-  
+
 
 -- | Return the default catch handler of a given return type, which is just a
 -- call to @errorM@ at that type
@@ -1800,7 +1800,7 @@ compReturnTypeM =
 
 -- | Like 'compReturnTypeM' but build a 'TypeTrans'
 compReturnTypeTransM :: ImpTransM ext blocks tops ret ps_out ctx (TypeTrans OpenTerm)
-compReturnTypeTransM = 
+compReturnTypeTransM =
   flip mkTypeTrans1 id <$> compReturnTypeM
 
 -- | Run a computation with a new catch handler
@@ -1889,7 +1889,7 @@ translateSimplImpl _ [nuP| SImpl_Cast _ _ p |] m =
 
 translateSimplImpl _ [nuP| SImpl_IntroEqRefl x |] m =
   withPermStackM (:>: translateVar x) (:>: PTrans_Eq (fmap PExpr_Var x)) m
-  
+
 translateSimplImpl _ [nuP| SImpl_InvertEq x y |] m =
   withPermStackM ((:>: translateVar y) . RL.tail)
   ((:>: PTrans_Eq (fmap PExpr_Var x)) . RL.tail)
@@ -2765,6 +2765,11 @@ instance (PermCheckExtC ext, TransInfo info) =>
   translate [nuP| BVShl w e1 e2 |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvShiftL")
+    [translate w, return (globalOpenTerm "Prelude.Bool"), translate w,
+     return (globalOpenTerm "Prelude.False"), translateRWV e1, translateRWV e2]
+  translate [nuP| BVAshr w e1 e2 |] =
+    ETrans_Term <$>
+    applyMultiTransM (return $ globalOpenTerm "Prelude.bvSShr")
     [translate w, return (globalOpenTerm "Prelude.Bool"), translate w,
      return (globalOpenTerm "Prelude.False"), translateRWV e1, translateRWV e2]
   translate [nuP| BoolToBV w e |] =
