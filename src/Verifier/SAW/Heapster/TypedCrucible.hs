@@ -729,6 +729,8 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     BVSCarry <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| BVShl w e1 e2 |] =
     BVShl <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+  genSubst s [nuP| BVAshr w e1 e2 |] =
+    BVAshr <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| BoolToBV w e |] =
     BoolToBV <$> genSubst s w <*> genSubst1 s e
   genSubst s [nuP| BVNonzero w e |] =
@@ -2730,7 +2732,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
             all_perms = appendDistPerms (appendDistPerms
                                          tops_perms args_perms) ghosts_perms
             doGenPerms = Some blkID `elem` stGenPermsBlocks top_st
-            perms_in = if doGenPerms then generalizeEntryPerms all_perms 
+            perms_in = if doGenPerms then generalizeEntryPerms all_perms
                                      else all_perms in
         stmtTraceM (\i ->
                      string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
