@@ -2768,10 +2768,11 @@ instance (PermCheckExtC ext, TransInfo info) =>
     [translate w, return (globalOpenTerm "Prelude.Bool"), translate w,
      return (globalOpenTerm "Prelude.False"), translateRWV e1, translateRWV e2]
   translate [nuP| BVAshr w e1 e2 |] =
+    let w_minus_1 = natOpenTerm (natValue (mbLift w) - 1) in
     ETrans_Term <$>
-    applyMultiTransM (return $ globalOpenTerm "Prelude.bvSShr")
-    [translate w, return (globalOpenTerm "Prelude.Bool"), translate w,
-     return (globalOpenTerm "Prelude.False"), translateRWV e1, translateRWV e2]
+    applyMultiTransM (return $ globalOpenTerm "Prelude.bvSShiftR")
+    [return w_minus_1, return (globalOpenTerm "Prelude.Bool"), translate w,
+     translateRWV e1, translateRWV e2]
   translate [nuP| BoolToBV w e |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
