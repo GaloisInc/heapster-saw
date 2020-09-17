@@ -2594,7 +2594,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) prop_str
     (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)])
     (translate $ mbCombine mb_impl)]
 
-
+{-
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULt e1 e2) _ |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
   | mbLift (fmap bvPropHolds prop) =
@@ -2603,6 +2603,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULt e1 e2) _ |]
                      (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
                                                     globalOpenTerm "Prelude.True"])))
     (translate $ mbCombine mb_impl)
+-}
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
                        prop@(BVProp_ULt e1 e2) prop_str |]
@@ -2619,6 +2620,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
          [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
        ]
 
+{-
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULeq e1 e2) _ |]
   [nuP| MbPermImpls_Cons _ mb_impl |]
   | mbLift (fmap bvPropHolds prop) =
@@ -2627,6 +2629,7 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULeq e1 e2) _ |]
                      (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
                                                     globalOpenTerm "Prelude.True"])))
     (translate $ mbCombine mb_impl)
+-}
 
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x
                        prop@(BVProp_ULeq e1 e2) prop_str |]
