@@ -3818,7 +3818,16 @@ proveVarImpl x mb_p =
   getPerm x >>>= \p ->
   implPushM x p >>>
   implTraceM (\i -> string "proveVarImpl:" <> line <> ppImpl i x p mb_p) >>>
-  proveVarImplH x p mb_p
+  proveVarImplH x p mb_p >>>
+
+  -- Check that the top of the stack == mb_p
+  partialSubstForceM mb_p "proveVarImpl: incomplete psubst" >>>= \p_req ->
+  getTopDistPerm x >>>= \p_actual ->
+  if p_req == p_actual then greturn () else
+    implTraceM (\i ->
+                 string "proveVarImpl: incorrect permission on top of the stack" </>
+                 string "expected:" <+> permPretty i p_req </>
+                 string "actual:" <+> permPretty i p_actual) >>>= error
 
 -- | Prove @x:p'@ assuming that the primary permissions for @x@ have all been
 -- pushed to the top of the stack and are equal to @p@. Pop the remaining
