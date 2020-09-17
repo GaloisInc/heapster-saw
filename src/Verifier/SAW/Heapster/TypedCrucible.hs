@@ -2922,12 +2922,11 @@ argPermsToAllPerms ghosts arg_perms =
 -- the normal arguments get equality permissions to their respective top-level
 -- variables.
 funPermToBlockInputs :: FunPerm ghosts args ret ->
-                        Mb (ghosts :++: args)
-                        (ValuePerms ((ghosts :++: args) :++: args))
+                        MbValuePerms ((ghosts :++: args) :++: args)
 funPermToBlockInputs fun_perm =
   let args_prxs = cruCtxProxies $ funPermArgs fun_perm
       ghosts_prxs = cruCtxProxies $ funPermGhosts fun_perm in
-  mbCombine $
+  extMbMulti args_prxs $ mbCombine $
   flip nuMultiWithElim1 (funPermIns fun_perm) $ \ghosts_ns mb_perms_in ->
   flip nuMultiWithElim1 mb_perms_in $ \args_ns perms_in ->
   appendValuePerms (appendValuePerms
@@ -2957,8 +2956,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      -- let init_args = mkCruCtx $ handleArgTypes $ cfgHandle cfg
      modifyBlockInfo (addBlockEntry init_memb $
                       BlockEntryInfo init_entryID tops inits
-                      (extMbMulti (cruCtxProxies $ funPermArgs fun_perm) $
-                       funPermToBlockInputs fun_perm))
+                      (funPermToBlockInputs fun_perm))
 
      -- Next, add entrypoints for all the block entry hints, keeping track of
      -- the hints that we actually used

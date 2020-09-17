@@ -278,6 +278,16 @@ inExtMultiTransM MNil m = m
 inExtMultiTransM (ctx :>: etrans) m =
   inExtMultiTransM ctx $ inExtTransM etrans m
 
+-- | Run a translation computation in context @(ctx1 :++: ctx2) :++: ctx2@ by
+-- copying the @ctx2@ portion of the current context
+inExtMultiTransCopyLastM :: TransInfo info => prx ctx1 -> RAssign any ctx2 ->
+                            TransM info ((ctx1 :++: ctx2) :++: ctx2) a ->
+                            TransM info (ctx1 :++: ctx2) a
+inExtMultiTransCopyLastM ctx1 ctx2 m =
+  do ectx <- infoCtx <$> ask
+     let (_,ectx2) = RL.split ctx1 ctx2 ectx
+     inExtMultiTransM ectx2 m
+
 -- | Run a translation computation in a specific context
 inCtxTransM :: TransInfo info => ExprTransCtx ctx ->
                TransM info ctx a -> TransM info RNil a
@@ -785,6 +795,12 @@ data PermTrans (ctx :: RList CrucibleType) (a :: CrucibleType) where
   -- | A conjuction of atomic permission translations
   PTrans_Conj :: [AtomicPermTrans ctx a] -> PermTrans ctx a
 
+  -- | The translation of a defined permission is a wrapper around the
+  -- translation of what it is defined as
+  PTrans_Defined :: NamedPermName (DefinedSort b) args a ->
+                    Mb ctx (PermExprs args) -> Mb ctx (PermOffset a) ->
+                    PermTrans ctx a -> PermTrans ctx a
+
   -- | The translation for disjunctive, existential, and named permissions
   PTrans_Term :: Mb ctx (ValuePerm a) -> OpenTerm -> PermTrans ctx a
 
@@ -959,6 +975,7 @@ eqPermTransCtx ns =
 instance IsTermTrans (PermTrans ctx a) where
   transTerms (PTrans_Eq _) = []
   transTerms (PTrans_Conj aps) = transTerms aps
+  transTerms (PTrans_Defined _ _ _ ptrans) = transTerms ptrans
   transTerms (PTrans_Term _ t) = [t]
 
 instance IsTermTrans (PermTransCtx ctx ps) where
@@ -1004,6 +1021,8 @@ permTransPerm _ (PTrans_Eq e) = fmap ValPerm_Eq e
 permTransPerm prxs (PTrans_Conj ts) =
   fmap ValPerm_Conj $ foldr (mbMap2 (:)) (nuMulti prxs $ const []) $
   map (atomicPermTransPerm prxs) ts
+permTransPerm prxs (PTrans_Defined npn mb_args mb_off _) =
+  mbMap2 (ValPerm_Named npn) mb_args mb_off
 permTransPerm _ (PTrans_Term p _) = p
 
 -- | Extract out the atomic permission of an atomic permission translation result
@@ -1053,6 +1072,8 @@ class ExtPermTrans f where
 instance ExtPermTrans PermTrans where
   extPermTrans (PTrans_Eq e) = PTrans_Eq $ extMb e
   extPermTrans (PTrans_Conj aps) = PTrans_Conj (map extPermTrans aps)
+  extPermTrans (PTrans_Defined n args a ptrans) =
+    PTrans_Defined n (extMb args) (extMb a) (extPermTrans ptrans)
   extPermTrans (PTrans_Term p t) = PTrans_Term (extMb p) t
 
 instance ExtPermTrans AtomicPermTrans where
@@ -1125,6 +1146,8 @@ offsetLLVMPermTrans mb_off (PTrans_Eq mb_e) =
   PTrans_Eq $ mbMap2 (\off e -> addLLVMOffset e (bvNegate off)) mb_off mb_e
 offsetLLVMPermTrans mb_off (PTrans_Conj ps) =
   PTrans_Conj $ mapMaybe (offsetLLVMAtomicPermTrans mb_off) ps
+offsetLLVMPermTrans mb_off (PTrans_Defined n args off ptrans) =
+  PTrans_Defined n args (mbMap2 addPermOffsets (fmap LLVMPermOffset mb_off) off) ptrans
 offsetLLVMPermTrans mb_off (PTrans_Term mb_p t) =
   PTrans_Term (mbMap2 offsetLLVMPerm mb_off mb_p) t
 
@@ -1318,6 +1341,11 @@ permTransInLifetime :: Mb ctx (PermExpr LifetimeType) ->
 permTransInLifetime _ p@(PTrans_Eq _) = p
 permTransInLifetime l (PTrans_Conj ps) =
   PTrans_Conj $ map (atomicPermTransInLifetime l) ps
+permTransInLifetime mb_l (PTrans_Defined npn mb_args off ptrans) =
+  PTrans_Defined npn
+  (mbMap2 (\l args ->
+            inLifetimeArgs l (namedPermNameArgs npn) args) mb_l mb_args)
+  off ptrans
 permTransInLifetime l (PTrans_Term p t) =
   PTrans_Term (mbMap2 inLifetime l p) t
 
@@ -1355,6 +1383,9 @@ permTransEndLifetime :: PermTrans ctx a -> Mb ctx (ValuePerm a) ->
 permTransEndLifetime p@(PTrans_Eq _) _ = p
 permTransEndLifetime (PTrans_Conj ptranss) [nuP| ValPerm_Conj ps |] =
   PTrans_Conj $ zipWith atomicPermTransEndLifetime ptranss (mbList ps)
+permTransEndLifetime (PTrans_Defined npn args off ptrans) _ =
+  -- FIXME: is this right?
+  PTrans_Defined npn args off ptrans
 permTransEndLifetime (PTrans_Term _ t) p2 = PTrans_Term p2 t
 permTransEndLifetime _ _ =
   error "permTransEndLifetime: permissions don't agree!"
@@ -1473,7 +1504,8 @@ instance TransInfo info =>
                                         (globalOpenTerm $ recPermTransType rp)
                                         (transTerms args_trans))
          Just (NamedPerm_Defined dp) ->
-           translate $ mbMap2 (unfoldDefinedPerm dp) args off
+           fmap (PTrans_Defined (mbLift npn) args off) <$>
+           translate (mbMap2 (unfoldDefinedPerm dp) args off)
          Nothing -> error "Unknown permission name!"
   translate [nuP| ValPerm_Conj ps |] =
     fmap PTrans_Conj <$> listTypeTrans <$> mapM translate (mbList ps)
@@ -1712,7 +1744,8 @@ type ImpTransM ext blocks tops ret ps =
 
 -- | Run an 'ImpTransM' computation in a 'TypeTransM' context (FIXME: better
 -- documentation; e.g., the pctx starts on top of the stack)
-impTransM :: RAssign (Member ctx) ps -> PermTransCtx ctx ps ->
+impTransM :: forall ctx ps ext blocks tops ret a.
+             RAssign (Member ctx) ps -> PermTransCtx ctx ps ->
              TypedBlockMapTrans ext blocks tops ret ->
              OpenTerm -> ImpTransM ext blocks tops ret ps ctx a ->
              TypeTransM ctx a
@@ -1786,7 +1819,7 @@ assertPermStackEqM :: String -> Mb ctx (DistPerms ps) ->
 assertPermStackEqM nm perms =
   getPermStackDistPerms >>= \stack_perms ->
   if perms == stack_perms then return () else
-    error ("assertPermStackEqM: expected permission stack:\n" ++
+    error ("assertPermStackEqM (" ++ nm ++ "): expected permission stack:\n" ++
            permPrettyString emptyPPInfo perms ++
            "\nFound permission stack:\n" ++
            permPrettyString emptyPPInfo stack_perms)
@@ -1811,8 +1844,11 @@ getVarPermM x = RL.get (translateVar x) <$> itiPermCtx <$> ask
 assertVarPermM :: String -> Mb ctx (ExprVar tp) -> Mb ctx (ValuePerm tp) ->
                   ImpTransM ext blocks tops ret ps ctx ()
 assertVarPermM nm x p =
-  getVarPermM x >>= \x_p ->
-  if permTransPermEq x_p p then return () else error ("translation: " ++ nm)
+  do x_p <- permTransPerm (mbToProxy p) <$> getVarPermM x
+     if x_p == p then return () else
+       error ("assertVarPermM (" ++ nm ++ "):\n" ++
+              "expected: " ++ permPrettyString emptyPPInfo p ++ "\n" ++
+              "found:" ++ permPrettyString emptyPPInfo x_p)
 
 -- | Set the (translation of the) perms for a variable in a computation
 setVarPermM :: Mb ctx (ExprVar tp) -> PermTrans ctx tp ->
@@ -1821,6 +1857,14 @@ setVarPermM :: Mb ctx (ExprVar tp) -> PermTrans ctx tp ->
 setVarPermM x p =
   local $ \info -> info { itiPermCtx =
                             RL.set (translateVar x) p $ itiPermCtx info }
+
+-- | Clear all permissions in the permission variable map in a sub-computation,
+-- leaving only those permissions on the top of the stack
+clearVarPermsM :: ImpTransM ext blocks tops ret ps ctx a ->
+                  ImpTransM ext blocks tops ret ps ctx a
+clearVarPermsM =
+  local $ \info -> info { itiPermCtx =
+                            RL.map (const PTrans_True) $ itiPermCtx info }
 
 -- | The current non-monadic return type
 returnTypeM :: ImpTransM ext blocks tops ret ps_out ctx OpenTerm
@@ -2342,12 +2386,24 @@ translateSimplImpl _ simpl@[nuP| SImpl_UnfoldNamed x np args _ |] m
                                                 ++ [transTerm1 ptrans_x])])
          m
 
--- folding/unfolding defined permissions does not effect translations
-translateSimplImpl _ [nuP| SImpl_FoldNamed _ np _ _ |] m
-  | [nuP| NamedPerm_Defined _ |] <- np = m
+translateSimplImpl _ [nuP| SImpl_FoldNamed _ np args off |] m
+  | [nuP| NamedPerm_Defined _ |] <- np =
+    do folded_trans <-
+         translate (mbMap2 ValPerm_Named (fmap namedPermName np) args
+                    `mbApply` off)
+       withPermStackM id
+         (\(pctx :>: ptrans) ->
+           pctx :>: typeTransF folded_trans (transTerms ptrans))
+         m
 
-translateSimplImpl _ [nuP| SImpl_UnfoldNamed _ np _ _ |] m
-  | [nuP| NamedPerm_Defined _ |] <- np = m
+translateSimplImpl _ [nuP| SImpl_UnfoldNamed _ np args off |] m
+  | [nuP| NamedPerm_Defined dp |] <- np =
+    do unfolded_trans <-
+         translate (mbMap2 unfoldDefinedPerm dp args `mbApply` off)
+       withPermStackM id
+         (\(pctx :>: ptrans) ->
+           pctx :>: typeTransF unfolded_trans (transTerms ptrans))
+         m
 
 {-
 translateSimplImpl _ [nuP| SImpl_Mu _ _ _ _ |] m =
@@ -2414,25 +2470,25 @@ translatePermImpl1 [nuP| Impl1_Catch |]
 
 -- A push moves the given permission from x to the top of the perm stack
 translatePermImpl1 [nuP| Impl1_Push x p |] [nuP| MbPermImpls_Cons _ mb_impl |] =
-  assertVarPermM "Impl1_Push" x p >>
-  getVarPermM x >>= \ptrans ->
-  setVarPermM x (PTrans_True)
-  (withPermStackM (:>: translateVar x) (:>: ptrans) $
-   translate (mbCombine mb_impl))
+  do () <- assertVarPermM "Impl1_Push" x p
+     ptrans <- getVarPermM x
+     setVarPermM x (PTrans_True)
+       (withPermStackM (:>: translateVar x) (:>: ptrans) $
+        translate (mbCombine mb_impl))
 
 -- A pop moves the given permission from the top of the perm stack to x
 translatePermImpl1 [nuP| Impl1_Pop x p |] [nuP| MbPermImpls_Cons _ mb_impl |] =
-  assertTopPermM "Impl1_Pop" x p >>
-  assertVarPermM "Impl1_Pop" x (nuMulti (mbToProxy p) $ const ValPerm_True) >>
-  getTopPermM >>= \ptrans ->
-  setVarPermM x ptrans
-  (withPermStackM RL.tail RL.tail $
-   translate (mbCombine mb_impl))
+  do () <- assertTopPermM "Impl1_Pop 1" x p
+     () <- assertVarPermM "Impl1_Pop 2" x (nuMulti (mbToProxy p) $
+                                           const ValPerm_True)
+     ptrans <- getTopPermM
+     setVarPermM x ptrans
+       (withPermStackM RL.tail RL.tail $ translate (mbCombine mb_impl))
 
 -- An or elimination performs a pattern-match on an Either
 translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |]
   [nuP| MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2 |] =
-  do assertTopPermM "Impl1_ElimOr" x (mbMap2 ValPerm_Or p1 p2)
+  do () <- assertTopPermM "Impl1_ElimOr" x (mbMap2 ValPerm_Or p1 p2)
      tp1 <- translate p1
      tp2 <- translate p2
      tp_ret <- compReturnTypeTransM
@@ -2449,7 +2505,7 @@ translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |]
 -- An existential elimination performs a pattern-match on a Sigma
 translatePermImpl1 [nuP| Impl1_ElimExists x p |]
   [nuP| MbPermImpls_Cons _ mb_impl |] =
-  do assertTopPermM "Impl1_ElimExists" x (fmap ValPerm_Exists p)
+  do () <- assertTopPermM "Impl1_ElimExists" x (fmap ValPerm_Exists p)
      let tp = mbBindingType p
      top_ptrans <- getTopPermM
      tp_trans <- translateClosed tp
@@ -2867,8 +2923,7 @@ debugPrettyPermCtx prxs (ptranss :>: ptrans) =
 translateApply :: String -> OpenTerm -> Mb ctx (DistPerms ps) ->
                   ImpTransM ext blocks tops ret ps ctx OpenTerm
 translateApply nm f perms =
-  do () <- assertPermStackEqM nm perms
-     expr_ctx <- itiExprCtx <$> ask
+  do expr_ctx <- itiExprCtx <$> ask
      arg_membs <- itiPermStackVars <$> ask
      let e_args = RL.map (flip RL.get expr_ctx) arg_membs
      i_args <- itiPermStack <$> ask
@@ -2885,7 +2940,8 @@ translateApply nm f perms =
 -- corresponding 'TypedEntry'
 --
 -- FIXME: check that the supplied perms match those expected by the entryID
-translateCallEntryID :: (PermCheckExtC ext,
+translateCallEntryID :: forall ext ps tops args ghosts blocks ctx ret.
+                        (PermCheckExtC ext,
                          ps ~ ((tops :++: args) :++: ghosts)) =>
                         String -> TypedEntryID blocks args ghosts ->
                         Mb ctx (DistPerms ps) ->
@@ -2895,18 +2951,21 @@ translateCallEntryID nm entryID mb_perms =
   do perms_in <-
        mbValuePermsToDistPerms <$>
        lookupEntryPermsIn entryID <$> itiBlockMapTrans <$> ask
-     () <- assertPermStackEqM nm
+     () <- assertPermStackEqM (nm ++ " 1")
        (flip nuMultiWithElim1 mb_perms $ \_ ps ->
          varSubst (permVarSubstOfNames $ distPermsVars ps) perms_in)
+     () <- assertPermStackEqM (nm ++ " 2") mb_perms
 
-     -- Now check if entryID has an associated letRec-bound function; if so,
-     -- call it, and if not, continue by translating entryID
+     -- Now check if entryID has an associated letRec-bound function
      entry_trans <- lookupEntryTrans entryID <$> itiBlockMapTrans <$> ask
      case entry_trans of
        TypedEntryTrans _ (Just f) ->
+         -- If so, call the letRec-bound function
          translateApply nm f mb_perms
        TypedEntryTrans entry Nothing ->
-         translate $
+         -- If not, continue by translating entry, setting the variable
+         -- permission map to empty (as in the beginning of a block)
+         clearVarPermsM $ translate $
          fmap (\perms ->
                 varSubst (permVarSubstOfNames $ distPermsVars perms) $
                 typedEntryBody entryID entry) mb_perms
@@ -3312,14 +3371,31 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
       fun_perm = tpcfgFunPerm cfg
       blkMap = tpcfgBlockMap cfg
       ctx = typedFnHandleAllArgs h
+      inits = typedFnHandleArgs h
       ghosts = typedFnHandleGhosts h
       retType = typedFnHandleRetType h in
   flip runNilTypeTransM env $ lambdaExprCtx ctx $
-  lambdaPermCtx ((mbCombine $ funPermIns fun_perm)
-                 :: Mb (ghosts :++: inits) (ValuePerms inits)) $
-  \(pctx :: PermTransCtx (ghosts :++: inits) inits) ->
-  do retTypeTrans <-
-       translateRetType retType (mbCombine $ tpcfgOutputPerms cfg)
+
+  -- We translate retType before extending the expr context to contain another
+  -- copy of inits, as it is easier to do it here
+  translateRetType retType (mbCombine $
+                            tpcfgOutputPerms cfg) >>= \retTypeTrans ->
+
+  -- Extend the expr context to contain another copy of the initial arguments
+  -- inits, since the initial entrypoint for the entire function takes two
+  -- copies of inits, one to represent the top-level arguments and one to
+  -- represent the local arguments to the entrypoint, which just happen to be
+  -- the same as those top-level arguments and so get eq perms to relate them
+  inExtMultiTransCopyLastM ghosts (cruCtxProxies inits) $
+
+  -- Lambda-abstract over the permissions on the initial arguments; the ghost
+  -- arguments don't get any permissions, and the second copy (discussed above)
+  -- of the initial arguments get assigned their eq perms later
+  lambdaPermCtx (extMbMulti (cruCtxProxies inits) $
+                 mbCombine $ funPermIns fun_perm) $ \pctx ->
+
+  do -- retTypeTrans <-
+     --   translateRetType retType (mbCombine $ tpcfgOutputPerms cfg)
      applyMultiTransM (return $ globalOpenTerm "Prelude.letRecM")
        [
          -- The LetRecTypes describing all the entrypoints of the CFG
@@ -3335,19 +3411,15 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
          -- The main body, that calls the first function with the input vars
        , lambdaBlockMap blkMap
          (\mapTrans ->
-           let ghosts_pctx :: PermTransCtx (ghosts :++: inits) ghosts = truePermTransCtx ghosts
-               tops_pctx :: PermTransCtx (ghosts :++: inits) (ghosts :++: inits) = RL.append ghosts_pctx pctx
-               tops_membs = RL.members tops_pctx
-               args_membs = snd $ RL.split ghosts pctx tops_membs
-               args_eq_perms = eqPermTransCtx tops_pctx args_membs
-               all_membs = RL.append tops_membs args_membs
-               all_pctx = RL.append tops_pctx args_eq_perms in
+           let ghosts_pctx = truePermTransCtx ghosts
+               all_membs = RL.members (cruCtxProxies $ appendCruCtx ctx inits)
+               inits_membs =
+                 snd $ RL.split ghosts pctx $ fst $ RL.split ctx pctx all_membs
+               inits_eq_perms = eqPermTransCtx all_membs inits_membs
+               all_pctx = RL.append (RL.append ghosts_pctx pctx) inits_eq_perms in
            impTransM all_membs all_pctx mapTrans retTypeTrans $
            translateCallEntryID "CFG" (tpcfgEntryBlockID cfg)
-           (nuMultiWithElim1 (\ns -> valuePermsToDistPerms
-                                     (RL.append ns $ snd $
-                                      RL.split ghosts pctx ns)) $
-            funPermToBlockInputs fun_perm)
+           (mbValuePermsToDistPerms $ funPermToBlockInputs fun_perm)
          )
        ]
 
