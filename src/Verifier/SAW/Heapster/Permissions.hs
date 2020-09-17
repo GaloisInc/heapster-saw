@@ -985,8 +985,14 @@ data ValuePerms as where
   ValPerms_Nil :: ValuePerms RNil
   ValPerms_Cons :: ValuePerms as -> ValuePerm a -> ValuePerms (as :> a)
 
+-- | Build a one-element 'ValuePerms' list from a single permission
 singletonValuePerms :: ValuePerm a -> ValuePerms (RNil :> a)
 singletonValuePerms = ValPerms_Cons ValPerms_Nil
+
+-- | Build a 'ValuePerms' from an 'RAssign' of permissions
+assignToPerms :: RAssign ValuePerm ps -> ValuePerms ps
+assignToPerms MNil = ValPerms_Nil
+assignToPerms (ps :>: p) = ValPerms_Cons (assignToPerms ps) p
 
 -- | A binding of 0 or more variables, each with permissions
 type MbValuePerms ctx = Mb ctx (ValuePerms ctx)
@@ -1503,6 +1509,13 @@ instance PermPretty (ValuePerm a) where
   permPrettyM ValPerm_True = return $ string "true"
   permPrettyM (ValPerm_Conj ps) =
     (hang 2 . encloseSep PP.empty PP.empty (string "*")) <$> mapM permPrettyM ps
+
+instance PermPretty (ValuePerms ps) where
+  permPrettyM perms = list <$> helper perms where
+    helper :: ValuePerms ps' -> PermPPM [Doc]
+    helper ValPerms_Nil = return []
+    helper (ValPerms_Cons ps p) =
+      (++) <$> helper ps <*> ((: []) <$> permPrettyM p)
 
 -- | Pretty-print an 'LLVMFieldPerm', either by itself as the form
 -- @[l]ptr((rw,off) |-> p)@ if the 'Bool' flag is 'False' or as part of an array

@@ -1024,6 +1024,13 @@ atomicPermTransPerm prxs (APTrans_Fun fp _) = fmap Perm_Fun fp
 atomicPermTransPerm prxs (APTrans_BVProp (BVPropTrans prop _)) =
   fmap Perm_BVProp prop
 
+-- | Extract out the permissions from a context of permission translations
+permTransCtxPerms :: RAssign Proxy ctx -> PermTransCtx ctx ps ->
+                     Mb ctx (ValuePerms ps)
+permTransCtxPerms prxs MNil = nuMulti prxs $ const ValPerms_Nil
+permTransCtxPerms prxs (ptranss :>: ptrans) =
+  mbMap2 ValPerms_Cons (permTransCtxPerms prxs ptranss) (permTransPerm prxs ptrans)
+
 -- | Extract out the LLVM borrow from its translation
 {-
 borrowTransMbBorrow :: LLVMArrayBorrowTrans ctx w -> Mb ctx (LLVMArrayBorrow w)
@@ -1633,6 +1640,7 @@ data TypedBlockTrans ext blocks tops ret args =
 type TypedBlockMapTrans ext blocks tops ret =
   RAssign (TypedBlockTrans ext blocks tops ret) blocks
 
+-- | Look up the translation of an entry by entry ID
 lookupEntryTrans :: TypedEntryID blocks args ghosts ->
                     TypedBlockMapTrans ext blocks tops ret ->
                     TypedEntryTrans ext blocks tops ret args
@@ -1653,6 +1661,17 @@ lookupEntryTrans entryID blkMap =
                ++ " not in list: "
                ++ show (map (typedEntryIndex . typedEntryTransEntry) entries)))
   entries
+
+-- | Look up the input permissions of an entry by entry ID
+lookupEntryPermsIn :: TypedEntryID blocks args ghosts ->
+                      TypedBlockMapTrans ext blocks tops ret ->
+                      MbValuePerms ((tops :++: args) :++: ghosts)
+lookupEntryPermsIn entryID blkMap =
+  case lookupEntryTrans entryID blkMap of
+    TypedEntryTrans (TypedEntry entryID' _ _ _ _ perms_in _ _) _
+      | Just Refl <- testEquality entryID entryID' -> perms_in
+    _ -> error "lookupEntryPermsIn: internal error"
+
 
 -- | Contextual info for an implication translation
 data ImpTransInfo ext blocks tops ret ps ctx =
@@ -1738,6 +1757,19 @@ withPermStackM f_vars f_p =
   info { itiPermStack = f_p (itiPermStack info),
          itiPermStackVars = f_vars (itiPermStackVars info) }
 
+-- | Get the current permission stack as a 'DistPerms' in context
+getPermStackDistPerms :: ImpTransM ext blocks tops ret ps ctx
+                         (Mb ctx (DistPerms ps))
+getPermStackDistPerms =
+  do stack <- itiPermStack <$> ask
+     stack_vars <- itiPermStackVars <$> ask
+     prxs <- RL.map (const Proxy) <$> itiPermCtx <$> ask
+     return $
+       (nuMulti prxs $ \ns ->
+         valuePermsToDistPerms (RL.map (flip RL.get ns) stack_vars))
+       `mbApply`
+       permTransCtxPerms prxs stack
+
 -- | Assert a property of the current permission stack, raising an 'error' if it
 -- fails to hold. The 'String' names the construct being translated.
 assertPermStackM :: String -> (RAssign (Member ctx) ps ->
@@ -1752,21 +1784,23 @@ assertPermStackM nm f =
 assertPermStackEqM :: String -> Mb ctx (DistPerms ps) ->
                       ImpTransM ext blocks tops ret ps ctx ()
 assertPermStackEqM nm perms =
-  assertPermStackM nm (helper perms)
-  where
-    helper :: Mb ctx (DistPerms ps) -> RAssign (Member ctx) ps ->
-              PermTransCtx ctx ps -> Bool
-    helper [nuP| DistPermsNil |] _ _ = True
-    helper [nuP| DistPermsCons perms x p |] (xs :>: x') (ptranss :>: ptrans) =
-      x' == translateVar x && permTransPermEq ptrans p &&
-      helper perms xs ptranss
+  getPermStackDistPerms >>= \stack_perms ->
+  if perms == stack_perms then return () else
+    error ("assertPermStackEqM: expected permission stack:\n" ++
+           permPrettyString emptyPPInfo perms ++
+           "\nFound permission stack:\n" ++
+           permPrettyString emptyPPInfo stack_perms)
 
 -- | Assert that the top permission is as given by the arguments
 assertTopPermM :: String -> Mb ctx (ExprVar a) -> Mb ctx (ValuePerm a) ->
                   ImpTransM ext blocks tops ret (ps :> a) ctx ()
 assertTopPermM nm x p =
-  assertPermStackM nm (\(_ :>: x_top) (_ :>: p_top) ->
-                        x_top == translateVar x && permTransPermEq p_top p)
+  getPermStackDistPerms >>= \stack_perms ->
+  case stack_perms of
+    [nuP| DistPermsCons _ x' p' |] | x == x' && p == p' -> return ()
+    _ ->
+      -- FIXME: make this error message more informative!
+      error "assertTopPermM"
 
 -- | Get the (translation of the) perms for a variable
 getVarPermM :: Mb ctx (ExprVar tp) ->
@@ -2816,6 +2850,15 @@ exprOutPerm [nuP| TypedExpr _ Nothing |] = PTrans_True
 -- * Translating Typed Crucible Jump Targets
 ----------------------------------------------------------------------
 
+{-
+debugPrettyPermCtx :: RAssign Proxy ctx -> PermTransCtx ctx ps -> [Doc]
+debugPrettyPermCtx _ MNil = []
+debugPrettyPermCtx prxs (ptranss :>: ptrans) =
+  debugPrettyPermCtx prxs ptranss ++
+  [permPretty emptyPPInfo (permTransPerm prxs ptrans) <+>
+   string ("(" ++ show (length $ transTerms ptrans) ++ " terms)")]
+-}
+
 -- | Apply the translation of a function-like construct (i.e., a
 -- 'TypedJumpTarget' or 'TypedFnHandle') to the pure plus impure translations of
 -- its arguments, given as 'DistPerms', which should match the current
@@ -2824,12 +2867,17 @@ exprOutPerm [nuP| TypedExpr _ Nothing |] = PTrans_True
 translateApply :: String -> OpenTerm -> Mb ctx (DistPerms ps) ->
                   ImpTransM ext blocks tops ret ps ctx OpenTerm
 translateApply nm f perms =
-  do assertPermStackEqM nm perms
+  do () <- assertPermStackEqM nm perms
      expr_ctx <- itiExprCtx <$> ask
      arg_membs <- itiPermStackVars <$> ask
      let e_args = RL.map (flip RL.get expr_ctx) arg_membs
      i_args <- itiPermStack <$> ask
      return $
+       trace ("translateApply for " ++ nm ++ " with perm arguments:\n" ++
+              -- renderDoc (list $ debugPrettyPermCtx (mbToProxy perms) i_args)
+              -- permPrettyString emptyPPInfo (permTransCtxPerms (mbToProxy perms) i_args)
+              permPrettyString emptyPPInfo perms
+             ) $
        applyOpenTermMulti f (exprCtxToTerms e_args ++ permCtxToTerms i_args)
 
 -- | Look up the 'TypedEntryTrans' for a 'TypedEntryID' and test if it has a
@@ -2843,8 +2891,17 @@ translateCallEntryID :: (PermCheckExtC ext,
                         Mb ctx (DistPerms ps) ->
                         ImpTransM ext blocks tops ret ps ctx OpenTerm
 translateCallEntryID nm entryID mb_perms =
-  do entry_trans <-
-       lookupEntryTrans entryID <$> itiBlockMapTrans <$> ask
+  -- First test that the stack == the required perms for entryID
+  do perms_in <-
+       mbValuePermsToDistPerms <$>
+       lookupEntryPermsIn entryID <$> itiBlockMapTrans <$> ask
+     () <- assertPermStackEqM nm
+       (flip nuMultiWithElim1 mb_perms $ \_ ps ->
+         varSubst (permVarSubstOfNames $ distPermsVars ps) perms_in)
+
+     -- Now check if entryID has an associated letRec-bound function; if so,
+     -- call it, and if not, continue by translating entryID
+     entry_trans <- lookupEntryTrans entryID <$> itiBlockMapTrans <$> ask
      case entry_trans of
        TypedEntryTrans _ (Just f) ->
          translateApply nm f mb_perms
@@ -3086,7 +3143,7 @@ instance PermCheckExtC ext =>
              mbMap2
              (\reg mbps -> varSubst (singletonVarSubst $ typedRegVar reg) mbps)
              r mb_perms
-       assertPermStackEqM "TypedRet" perms
+       () <- assertPermStackEqM "TypedRet" perms
        r_trans <- translate r
        tp_trans <- translate tp
        ret_tp <- returnTypeM
