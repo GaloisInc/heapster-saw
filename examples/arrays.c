@@ -54,3 +54,10 @@ int64_t contains0_sorted_rec (int64_t *arr, uint64_t len) {
     }
   }
 }
+
+/* Zero out an array */
+void zero_array (int64_t *arr, uint64_t len) {
+  for (uint64_t i = 0; i < len; ++i) {
+    arr[i] = 0;
+  }
+}
