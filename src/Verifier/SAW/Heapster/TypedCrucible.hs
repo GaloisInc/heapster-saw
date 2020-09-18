@@ -862,17 +862,14 @@ data TypedEntry ext blocks tops ret args where
   TypedEntry ::
     !(TypedEntryID blocks args ghosts) ->
     !(CruCtx tops) -> !(CruCtx args) -> !(TypeRepr ret) ->
-    !Bool -> !(MbValuePerms ((tops :++: args) :++: ghosts)) ->
+    !(MbValuePerms ((tops :++: args) :++: ghosts)) ->
     !(Mb ((tops :++: args) :++: ghosts :> ret) (ValuePerms (tops :> ret))) ->
     !(Mb ((tops :++: args) :++: ghosts)
       (TypedStmtSeq ext blocks tops ret ((tops :++: args) :++: ghosts))) ->
     TypedEntry ext blocks tops ret args
 
 typedEntryIndex :: TypedEntry ext blocks tops ret args -> Int
-typedEntryIndex (TypedEntry entryID _ _ _ _ _ _ _) = entryIndex entryID
-
-typedEntryIsSCC :: TypedEntry ext blocks tops ret args -> Bool
-typedEntryIsSCC (TypedEntry _ _ _ _ is_scc _ _ _) = is_scc
+typedEntryIndex (TypedEntry entryID _ _ _ _ _ _) = entryIndex entryID
 
 -- | Get the body of a 'TypedEntry' using its 'TypedEntryID' to indicate the
 -- @ghosts@ argument. It is an error if the wrong 'TypedEntryID' is given.
@@ -881,25 +878,31 @@ typedEntryBody :: TypedEntryID blocks args ghosts ->
                   Mb ((tops :++: args) :++: ghosts)
                   (TypedStmtSeq ext blocks tops ret
                    ((tops :++: args) :++: ghosts))
-typedEntryBody entryID (TypedEntry entryID' _ _ _ _ _ _ body)
+typedEntryBody entryID (TypedEntry entryID' _ _ _ _ _ body)
   | Just Refl <- testEquality entryID entryID' = body
 typedEntryBody _ _ = error "typedEntryBody"
 
 
 -- | A typed Crucible block is a list of typed entrypoints to that block
-newtype TypedBlock ext blocks tops ret args
-  = TypedBlock [TypedEntry ext blocks tops ret args]
+data TypedBlock ext blocks tops ret args =
+  TypedBlock
+  {
+    -- | The entrypoints into this block
+    typedBlockEntries :: [TypedEntry ext blocks tops ret args],
+    -- | Whether this block was jumped to after it was visited
+    typedBlockPostVisited :: Bool
+  }
 
 -- | A map assigning a 'TypedBlock' to each 'BlockID'
 type TypedBlockMap ext blocks tops ret =
   RAssign (TypedBlock ext blocks tops ret) blocks
 
 instance Show (TypedEntry ext blocks tops ret args) where
-  show (TypedEntry entryID _ _ _ _ _ _ _) =
+  show (TypedEntry entryID _ _ _ _ _ _) =
     "<entry " ++ show (entryIDIndices entryID) ++ ">"
 
 instance Show (TypedBlock ext blocks tops ret args) where
-  show (TypedBlock entries) = show entries
+  show (TypedBlock entries _) = show entries
 
 instance Show (TypedBlockMap ext blocks tops ret) where
   show blkMap = show $ RL.mapToList show blkMap
@@ -1214,19 +1217,25 @@ type family BlkArgs (args :: BlkParams) :: RList CrucibleType where
   BlkArgs ('BlkParams _ _ _ args) = args
 -}
 
--- | A change to a 'BlockInfoMap' gives a new entrypoint via a 'BlockEntryInfo'
+-- | A change to a 'BlockInfoMap'
 data BlockInfoMapDelta blocks tops ret where
-  BlockInfoMapDelta :: Member blocks args -> BlockEntryInfo blocks tops ret args ->
-                       BlockInfoMapDelta blocks tops ret
+  -- | Add a new entrypoint to a block
+  BlockInfoMapAdd :: Member blocks args ->
+                     BlockEntryInfo blocks tops ret args ->
+                     BlockInfoMapDelta blocks tops ret
 
--- | Get all the 'BlockEntryInfo's for a specific block out of a list of
+  -- | Mark a block as being jumped to after having been visited
+  BlockInfoMapPostVisit :: Member blocks (args :: RList CrucibleType) ->
+                           BlockInfoMapDelta blocks tops ret
+
+-- | Get all the 'BlockEntryInfo's for a specific block added by a list of
 -- 'BlockInfoMapDelta's
 getDeltaEntriesForBlock :: Member blocks args ->
                            [BlockInfoMapDelta blocks tops ret] ->
                            [BlockEntryInfo blocks tops ret args]
 getDeltaEntriesForBlock memb =
   mapMaybe (\delta -> case delta of
-               BlockInfoMapDelta memb' entry
+               BlockInfoMapAdd memb' entry
                  | Just Refl <- testEquality memb memb' ->
                      Just entry
                _ -> Nothing)
@@ -1239,12 +1248,25 @@ addBlockEntry memb entry =
   RL.modify memb $ \info ->
   info { blockInfoEntries = blockInfoEntries info ++ [entry] }
 
+-- | Mark a block as being jumped to after having been visited
+postVisitBlockInMap :: Member blocks (args :: RList CrucibleType) ->
+                       BlockInfoMap ext blocks tops ret ->
+                       BlockInfoMap ext blocks tops ret
+postVisitBlockInMap memb =
+  RL.modify memb $ \info ->
+  info { blockInfoBlock =
+         case blockInfoBlock info of
+           Just block -> Just $ block { typedBlockPostVisited = True }
+           Nothing -> error "postVisitBlockInMap: not visited!" }
+
 -- | Apply a 'BlockInfoMapDelta' to a 'BlockInfoMap'
 applyBlockInfoMapDelta :: BlockInfoMapDelta blocks tops ret ->
                           BlockInfoMap ext blocks tops ret ->
                           BlockInfoMap ext blocks tops ret
-applyBlockInfoMapDelta (BlockInfoMapDelta memb entry) =
+applyBlockInfoMapDelta (BlockInfoMapAdd memb entry) =
   addBlockEntry memb entry
+applyBlockInfoMapDelta (BlockInfoMapPostVisit memb) =
+  postVisitBlockInMap memb
 
 -- | The state that can be modified by "inner" computations. Note that the
 -- 'blockInfoBlock' field of any 'BlockInfo's will be ignored.
@@ -1261,8 +1283,8 @@ clEmptyInnerPermCheckState = $(mkClosed [| InnerPermCheckState [] |])
 
 
 -- | The "inner" monad that runs inside 'PermCheckM' continuations. It can see
--- but not modify the top-level state, but it can add new block entrypoints to
--- be type-checked later
+-- but not modify the top-level state, but it can add 'BlockInfoMapDelta's to
+-- be applied later to the top-level 'BlockInfoMap'
 type InnerPermCheckM ext cblocks blocks tops ret =
   ReaderT (TopPermCheckState ext cblocks blocks tops ret)
   (State (Closed (InnerPermCheckState blocks tops ret)))
@@ -1338,6 +1360,7 @@ getNextEntryID memb ghosts =
         getDeltaEntriesForBlock memb deltas in
   greturn (TypedEntryID memb ghosts (max_ix + 1))
 
+-- | Insert a new block entry point
 insNewBlockEntry :: Member blocks args -> CruCtx args -> CruCtx ghosts ->
                     Closed (MbValuePerms ((tops :++: args) :++: ghosts)) ->
                     PermCheckM ext cblocks blocks tops ret r ps r ps
@@ -1350,10 +1373,21 @@ insNewBlockEntry memb args ghosts perms_in =
                     st { innerBlockInfo =
                            innerBlockInfo st ++ [delta] } |]) `clApply`
        cl_st `clApply`
-       ($(mkClosed [| BlockInfoMapDelta |]) `clApply` toClosed memb `clApply`
+       ($(mkClosed [| BlockInfoMapAdd |]) `clApply` toClosed memb `clApply`
         ($(mkClosed [| BlockEntryInfo |]) `clApply` toClosed entryID `clApply`
          toClosed topCtx `clApply` toClosed args `clApply` perms_in))
      return entryID
+
+-- | Mark a block as being jumped to after it was visited
+postVisitBlock :: Member blocks (args :: RList CrucibleType) ->
+                  PermCheckM ext cblocks blocks tops ret r ps r ps ()
+postVisitBlock memb =
+  liftPermCheckM $ modify $ \cl_st ->
+  $(mkClosed [| \st delta ->
+               st { innerBlockInfo =
+                      innerBlockInfo st ++ [delta] } |]) `clApply`
+  cl_st `clApply`
+  ($(mkClosed [| BlockInfoMapPostVisit |]) `clApply` toClosed memb)
 
 -- | Look up the current primary permission associated with a variable
 getVarPerm :: ExprVar a ->
@@ -2674,110 +2708,126 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
   let tops_ns = stTopVars st
       args_t = tcRegs ctx args
       args_ns = typedRegsToVars args_t
-      tops_args_ns = RL.append tops_ns args_ns in
+      tops_args_ns = RL.append tops_ns args_ns
+      (gen_perms_hint, join_point_hint) =
+        case stFnHandle top_st of
+          SomeHandle h ->
+            (lookupBlockGenPermsHint (stPermEnv top_st) h
+             (stBlockTypes top_st) blkID
+            ,
+            lookupBlockJoinPointHint (stPermEnv top_st) h
+            (stBlockTypes top_st) blkID) in
+
   tcBlockID blkID >>>= \memb ->
   lookupBlockInfo memb >>>= \blkInfo ->
 
-  -- First test if we have already visited the given block
-  -- FIXME: don't add a new entrypoint if we have a block entry hint
-  if blockInfoVisited blkInfo then
-    -- If so, then jump to the first entry point, assuming there is one
-    case blockInfoEntries blkInfo of
-      [] -> error "tcJumpTarget: visited block has no entrypoints!"
-      (BlockEntryInfo entryID _ _ entry_perms_in):_ ->
+  stmtTraceM (\i ->
+               string ("tcJumpTarget " ++ show blkID ++
+                       ": join_point = " ++ show join_point_hint)) >>>
 
-        -- Substitute the top-level and normal args into the input perms
-        let ghosts = entryGhosts entryID
-            ghosts_prxs = cruCtxProxies ghosts
-            ex_perms =
-              varSubst (permVarSubstOfNames tops_args_ns) $
-              mbSeparate ghosts_prxs $
-              mbValuePermsToDistPerms entry_perms_in in
-        stmtTraceM (\i ->
-                     string ("tcJumpTarget " ++ show blkID ++ " (visited)") </>
-                     string "Input perms: " <+>
-                     hang 2 (permPretty i ex_perms)) >>>
+  -- First test if we should jump to an existing entrypoint or make a new one;
+  -- the former holds if the block has already been visited or if it is a join
+  -- point and has at least one entrypoint already
+  let maybe_entry =
+        case blockInfoEntries blkInfo of
+          entry:_ | (blockInfoVisited blkInfo || join_point_hint) -> Just entry
+          [] | blockInfoVisited blkInfo ->
+                 error "tcJumpTarget: visited block has no entrypoints!"
+          _ -> Nothing in
 
-        -- Prove the required input perms for this entrypoint and return the
-        -- jump target inside an implication
-        pcmRunImplM True ghosts
-        (\ghosts_subst ->
-          TypedJumpTarget entryID Proxy (mkCruCtx args_tps) $
-          varSubst ghosts_subst ex_perms)
-        (proveExVarsImpl ex_perms >>> getDistPerms >>>= \proved_perms ->
-          greturn (permVarSubstOfNames $ distPermsVars $ snd $
-                   splitDistPerms tops_args_ns ghosts_prxs proved_perms))
+  case maybe_entry of
+    Just (BlockEntryInfo entryID _ _ entry_perms_in) ->
+      -- We are jumping to an existing entrypoint, so mark it as post-visited
+      postVisitBlock memb >>>
 
-  else
-    -- If not, we can make a new entrypoint that takes all of the current
-    -- permissions as input
-    --
-    -- Step 1: compute the ghosts arguments as all variables needed in the
-    -- permissions for the top-level and normal arguments
-    (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
-    let tops_set =
-          RL.foldr (\n -> NameMap.insert n (Constant ()))
-          NameMap.empty tops_ns
-        cur_perms = stCurPerms st in
-    case varPermsNeededVars (RL.append tops_args_ns ext_ns) cur_perms of
-      Some ghosts_ns' ->
-        -- Step 2: compute the permissions for the three sorts of arguments,
-        -- where each normal argument that is also in the top-level arguments
-        -- gets eq permissions. Additionally, if this block has a 'GenPermsHint',
-        -- apply 'generalizeEntryPerms' to all the resulting permissions.
-        let ghosts_ns = RL.append ext_ns ghosts_ns'
-            cur_perms = stCurPerms st
-            tops_perms = varPermsMulti tops_ns cur_perms
-            ghosts_perms = varPermsMulti ghosts_ns cur_perms
-            args_perms =
-              buildDistPerms (\n -> if NameMap.member n tops_set then
-                                      ValPerm_Eq (PExpr_Var n)
-                                    else cur_perms ^. varPerm n) args_ns
-            all_perms = appendDistPerms (appendDistPerms
-                                         tops_perms args_perms) ghosts_perms
-            doGenPerms =
-              case stFnHandle top_st of
-                SomeHandle h ->
-                  lookupBlockGenPermsHint (stPermEnv top_st) h
-                  (stBlockTypes top_st) blkID
-            perms_in = if doGenPerms then generalizeEntryPerms all_perms
-                                     else all_perms in
-        stmtTraceM (\i ->
-                     string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
-                     (if doGenPerms then string "(gen) " else string "") <>
-                     string "Input perms: " <+>
-                     hang 2 (permPretty i perms_in)) >>>
+      -- Substitute the top-level and normal args into the input perms
+      let ghosts = entryGhosts entryID
+          ghosts_prxs = cruCtxProxies ghosts
+          ex_perms =
+            varSubst (permVarSubstOfNames tops_args_ns) $
+            mbSeparate ghosts_prxs $
+            mbValuePermsToDistPerms entry_perms_in in
+      stmtTraceM (\i ->
+                   string ("tcJumpTarget " ++ show blkID ++ " (visited)") </>
+                   string "Input perms: " <+>
+                   hang 2 (permPretty i ex_perms)) >>>
 
-        -- Step 3: abstract all the variables out of the input permissions. Note
-        -- that abstractVars uses the left-most occurrence of any variable that
-        -- occurs multiple times in the variable list and we want our eq perms
-        -- for our args to map to our tops, not our args, so this order works
-        -- for what we want
-        let cl_mb_perms_in =
-              case abstractVars
-                   (RL.append (RL.append tops_ns args_ns) ghosts_ns)
-                   (distPermsToValuePerms perms_in) of
-                Just ps -> ps
-                Nothing ->
-                  error "tcJumpTarget: unexpected free variable in perms_in" in
+      -- Prove the required input perms for this entrypoint and return the
+      -- jump target inside an implication
+      pcmRunImplM True ghosts
+      (\ghosts_subst ->
+        TypedJumpTarget entryID Proxy (mkCruCtx args_tps) $
+        varSubst ghosts_subst ex_perms)
+      (proveExVarsImpl ex_perms >>> getDistPerms >>>= \proved_perms ->
+        greturn (permVarSubstOfNames $ distPermsVars $ snd $
+                 splitDistPerms tops_args_ns ghosts_prxs proved_perms))
 
-        -- Step 4: insert a new block entrypoint that has all the permissions we
-        -- constructed above as input permissions
-        getVarTypes ghosts_ns >>>= \ghosts_tps ->
-        (insNewBlockEntry
-         memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
+    Nothing ->
+      -- If not, we can make a new entrypoint that takes all of the current
+      -- permissions as input
+      --
+      -- Step 1: compute the ghosts arguments as all variables needed in the
+      -- permissions for the top-level and normal arguments
+      (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
+      let tops_set =
+            RL.foldr (\n -> NameMap.insert n (Constant ()))
+            NameMap.empty tops_ns
+          cur_perms = stCurPerms st in
+      case varPermsNeededVars (RL.append tops_args_ns ext_ns) cur_perms of
+        Some ghosts_ns' ->
+          -- Step 2: compute the permissions for the three sorts of arguments,
+          -- where each normal argument that is also in the top-level arguments
+          -- gets eq permissions. Additionally, if this block has a
+          -- 'GenPermsHint', apply 'generalizeEntryPerms' to all the resulting
+          -- permissions.
+          let ghosts_ns = RL.append ext_ns ghosts_ns'
+              cur_perms = stCurPerms st
+              tops_perms = varPermsMulti tops_ns cur_perms
+              ghosts_perms = varPermsMulti ghosts_ns cur_perms
+              args_perms =
+                buildDistPerms (\n -> if NameMap.member n tops_set then
+                                        ValPerm_Eq (PExpr_Var n)
+                                      else cur_perms ^. varPerm n) args_ns
+              all_perms = appendDistPerms (appendDistPerms
+                                           tops_perms args_perms) ghosts_perms
+              perms_in = if gen_perms_hint then generalizeEntryPerms all_perms
+                         else all_perms in
+          stmtTraceM (\i ->
+                       string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
+                       (if gen_perms_hint then string "(gen) " else string "") <>
+                       string "Input perms: " <+>
+                       hang 2 (permPretty i perms_in)) >>>
 
-        -- Step 5: return a TypedJumpTarget inside a PermImpl that proves all
-        -- the required input permissions from the current permission set. If
-        -- this block doesn't have a 'GenPermsHint', this proof just copies
-        -- the existing permissions into the current distinguished perms,
-        -- except for the eq permissions for real arguments, which are proved
-        -- by reflexivity.
-        let target_t =
-              TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms_in in
-        pcmRunImplM False CruCtxNil (const target_t) $
-          if doGenPerms then proveVarsImpl (distPermsToExDistPerms perms_in)
-                        else implPushOrReflMultiM perms_in
+          -- Step 3: abstract all the variables out of the input permissions.
+          -- Note that abstractVars uses the left-most occurrence of any
+          -- variable that occurs multiple times in the variable list and we
+          -- want our eq perms for our args to map to our tops, not our args, so
+          -- this order works for what we want
+          let cl_mb_perms_in =
+                case abstractVars
+                     (RL.append (RL.append tops_ns args_ns) ghosts_ns)
+                     (distPermsToValuePerms perms_in) of
+                  Just ps -> ps
+                  Nothing ->
+                    error "tcJumpTarget: unexpected free variable in perms_in" in
+
+          -- Step 4: insert a new block entrypoint that has all the permissions
+          -- we constructed above as input permissions
+          getVarTypes ghosts_ns >>>= \ghosts_tps ->
+          (insNewBlockEntry
+           memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
+
+          -- Step 5: return a TypedJumpTarget inside a PermImpl that proves all
+          -- the required input permissions from the current permission set. If
+          -- this block doesn't have a 'GenPermsHint', this proof just copies
+          -- the existing permissions into the current distinguished perms,
+          -- except for the eq permissions for real arguments, which are proved
+          -- by reflexivity.
+          let target_t =
+                TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms_in in
+          pcmRunImplM False CruCtxNil (const target_t) $
+            if gen_perms_hint then proveVarsImpl (distPermsToExDistPerms perms_in)
+            else implPushOrReflMultiM perms_in
 
 
 -- | Type-check a termination statement
@@ -2859,18 +2909,18 @@ setInputExtState ExtRepr_LLVM _ _ =
   greturn ()
 
 -- | Type-check a single block entrypoint
-tcBlockEntry :: PermCheckExtC ext => Bool -> Block ext cblocks ret args ->
+tcBlockEntry :: PermCheckExtC ext => Block ext cblocks ret args ->
                 BlockEntryInfo blocks tops ret (CtxToRList args) ->
                 TopPermCheckM ext cblocks blocks tops ret
                 (TypedEntry ext blocks tops ret (CtxToRList args))
-tcBlockEntry is_scc blk (BlockEntryInfo {..}) =
+tcBlockEntry blk (BlockEntryInfo {..}) =
   get >>= \(TopPermCheckState {..}) ->
   let args_prxs = cruCtxProxies entryInfoArgs
       ghosts_prxs = cruCtxProxies $ entryGhosts entryInfoID
       ret_perms =
         mbCombine $ extMbMulti ghosts_prxs $ extMbMulti args_prxs $
         mbSeparate (MNil :>: Proxy) stRetPerms in
-  fmap (TypedEntry entryInfoID stTopCtx entryInfoArgs stRetType is_scc
+  fmap (TypedEntry entryInfoID stTopCtx entryInfoArgs stRetType
         entryInfoPermsIn ret_perms) $
   liftInnerToTopM $ strongMbM $
   flip nuMultiWithElim1 (mbValuePermsToDistPerms
@@ -2897,23 +2947,22 @@ tcBlockEntry is_scc blk (BlockEntryInfo {..}) =
   tcEmitStmtSeq ctx (blk ^. blockStmts)
 
 -- | Type-check a Crucible block
-tcBlock :: PermCheckExtC ext => Bool -> Member blocks (CtxToRList args) ->
+tcBlock :: PermCheckExtC ext => Member blocks (CtxToRList args) ->
            Block ext cblocks ret args ->
            TopPermCheckM ext cblocks blocks tops ret
            (TypedBlock ext blocks tops ret (CtxToRList args))
-tcBlock is_scc memb blk =
+tcBlock memb blk =
   do entries <- blockInfoEntries <$> RL.get memb <$>
        stBlockInfo <$> get
-     TypedBlock <$> mapM (tcBlockEntry is_scc blk) entries
+     TypedBlock <$> mapM (tcBlockEntry blk) entries <*> return False
 
 -- | Type-check a Crucible block and put its translation into the 'BlockInfo'
--- for that block. The 'Bool' flag indicates if the block is the head of a
--- strongly-connected component, i.e., if it is the entrypoint of a loop.
-tcEmitBlock :: PermCheckExtC ext => Bool -> Block ext cblocks ret args ->
+-- for that block
+tcEmitBlock :: PermCheckExtC ext => Block ext cblocks ret args ->
                TopPermCheckM ext cblocks blocks tops ret ()
-tcEmitBlock is_scc blk =
+tcEmitBlock blk =
   do !memb <- stLookupBlockID (blockID blk) <$> get
-     !block_t <- tcBlock is_scc memb blk
+     !block_t <- tcBlock memb blk
      modifyBlockInfo (blockInfoMapSetBlock memb block_t)
 
 -- | Extend permissions on the real arguments of a block to a 'DistPerms' for
@@ -2971,7 +3020,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      -- the hints that we actually used
      --
      -- FIXME: why does GHC need this type to be given?
-     hint_blocks :: [Some (BlockID cblocks)] <-
+     entry_hint_blocks :: [Some (BlockID cblocks)] <-
        fmap catMaybes $
        forM (lookupBlockEntryHints env h cblocks_types) $ \case
        Some (BlockHint _ _ h_blkID
@@ -2985,7 +3034,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
               modifyBlockInfo (addBlockEntry h_memb $
                                BlockEntryInfo h_entryID tops h_args h_perms_in)
               return (Just $ Some h_blkID)
-       Some (BlockHint _ _ h_blkID _) ->
+       Some (BlockHint _ _ h_blkID (BlockEntryHintSort _ _ _)) ->
          trace ("Block entry hint for block "
                 ++ show h_blkID
                 ++ " did not match arguments, skipping") $
@@ -2998,14 +3047,15 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      -- all links to a block with a block entry hint and then add a dummy start
      -- node, represented by Nothing, that has the function start block and also
      -- all blocks with hints as successors.
-     let hint_nodes = map Just hint_blocks
+     let hint_nodes = map Just entry_hint_blocks
      let nodeSuccessors (Just node) =
            filter (\node' -> notElem node' hint_nodes) $
            map Just $ cfgSuccessors cfg node
          nodeSuccessors Nothing = Just (cfgStart cfg) : hint_nodes
+     let nodes = weakTopologicalOrdering nodeSuccessors Nothing
+
      !(init_st) <- get
-     mapM_ (visit cfg hint_blocks) $ trace "visiting CFG..." $
-       weakTopologicalOrdering nodeSuccessors Nothing
+     mapM_ (visit cfg) $ trace "visiting CFG..." nodes
      !final_st <- get
      trace "visiting complete!" $ return $ TypedCFG
        { tpcfgHandle = TypedFnHandle ghosts h
@@ -3017,20 +3067,19 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
        , tpcfgEntryBlockID = init_entryID }
   where
     visit :: PermCheckExtC ext => CFG ext cblocks inits ret ->
-             [Some (BlockID cblocks)] ->
              WTOComponent (Maybe (Some (BlockID cblocks))) ->
              TopPermCheckM ext cblocks blocks tops ret ()
-    visit cfg _ (Vertex Nothing) = return ()
-    visit cfg scc_blocks (Vertex (Just (Some blkID))) =
+    visit cfg (Vertex Nothing) = return ()
+    visit cfg (Vertex (Just (Some blkID))) =
       do blkIx <- memberLength <$> stLookupBlockID blkID <$> get
-         () <- trace ("Visiting block: " ++ show blkIx ++ " (" ++ show blkID ++ ")") $ return ()
-         let is_scc = elem (Some blkID) scc_blocks
-         !ret <- tcEmitBlock is_scc (getBlock blkID (cfgBlockMap cfg))
+         () <- trace ("Visiting block: " ++ show blkIx
+                      ++ " (" ++ show blkID ++ ")") $ return ()
+         !ret <- tcEmitBlock (getBlock blkID (cfgBlockMap cfg))
          !s <- get
          trace ("Visiting block " ++ show blkIx ++ " complete") $ return ret
-    visit cfg scc_blocks (SCC (Just (Some blkID)) comps) =
-      tcEmitBlock True (getBlock blkID (cfgBlockMap cfg)) >>
-      mapM_ (visit cfg scc_blocks) comps
-    visit cfg scc_blocks (SCC Nothing comps) =
+    visit cfg (SCC (Just (Some blkID)) comps) =
+      tcEmitBlock (getBlock blkID (cfgBlockMap cfg)) >>
+      mapM_ (visit cfg) comps
+    visit cfg (SCC Nothing comps) =
       -- NOTE: this should never actually happen, as nothing jumps to Nothing
-      mapM_ (visit cfg scc_blocks) comps
+      mapM_ (visit cfg) comps

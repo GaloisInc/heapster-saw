@@ -4326,13 +4326,14 @@ lookupBlockHints env h blocks blkID =
                _ -> Nothing) $
   permEnvHints env
 
--- | Look up all hints with sort 'BlockEntryHintSort' for a 'CFG'
+-- | Look up all hints with sort 'BlockEntryHintSort' for a given function
 lookupBlockEntryHints :: PermEnv -> FnHandle init ret ->
                          Assignment CtxRepr blocks ->
                          [Some (BlockHint blocks init ret)]
 lookupBlockEntryHints env h blocks =
   mapMaybe (\hint -> case hint of
-               Hint_Block hint@(BlockHint h' blocks' blkID' sort)
+               Hint_Block hint@(BlockHint h' blocks' blkID'
+                                (BlockEntryHintSort _ _ _))
                  | Just Refl <- testEquality (handleID h') (handleID h)
                  , Just Refl <- testEquality blocks' blocks ->
                    return $ Some hint
