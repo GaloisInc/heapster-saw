@@ -21,6 +21,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Verifier.SAW.Heapster.TypedCrucible where
 
@@ -1138,8 +1139,9 @@ data TopPermCheckState ext cblocks blocks tops ret =
     stRetPerms :: MbValuePerms (tops :> ret),
     stBlockTrans :: Assignment (BlockIDTrans blocks) cblocks,
     stBlockInfo :: BlockInfoMap ext blocks tops ret,
-    stGenPermsBlocks :: [Some (BlockID cblocks)],
-    stPermEnv :: PermEnv
+    stPermEnv :: PermEnv,
+    stFnHandle :: SomeHandle,
+    stBlockTypes :: Assignment CtxRepr cblocks
   }
 
 {-
@@ -1161,17 +1163,19 @@ instance BindState (TopPermCheckState ext cblocks blocks ret) where
 
 -- | Build an empty 'TopPermCheckState' from a Crucible 'BlockMap'
 emptyTopPermCheckState ::
-  CruCtx tops -> TypeRepr ret -> MbValuePerms (tops :> ret) ->
-  BlockMap ext cblocks ret -> [Some (BlockID cblocks)] -> PermEnv ->
+  FnHandle init ret -> CruCtx tops -> MbValuePerms (tops :> ret) ->
+  BlockMap ext cblocks ret -> PermEnv ->
   TopPermCheckState ext cblocks (CtxCtxToRList cblocks) tops ret
-emptyTopPermCheckState tops ret retPerms blkMap genPermsBlocks env =
+emptyTopPermCheckState h tops retPerms blkMap env =
   TopPermCheckState { stTopCtx = tops
-                    , stRetType = ret
+                    , stRetType = handleReturnType h
                     , stRetPerms = retPerms
                     , stBlockTrans = buildBlockIDMap blkMap
                     , stBlockInfo = emptyBlockInfoMap blkMap
-                    , stGenPermsBlocks = genPermsBlocks
-                    , stPermEnv = env }
+                    , stPermEnv = env
+                    , stFnHandle = SomeHandle h
+                    , stBlockTypes = fmapFC blockInputs blkMap
+                    }
 
 
 -- | Look up a Crucible block id in a top-level perm-checking state
@@ -2731,7 +2735,11 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
                                     else cur_perms ^. varPerm n) args_ns
             all_perms = appendDistPerms (appendDistPerms
                                          tops_perms args_perms) ghosts_perms
-            doGenPerms = Some blkID `elem` stGenPermsBlocks top_st
+            doGenPerms =
+              case stFnHandle top_st of
+                SomeHandle h ->
+                  lookupBlockGenPermsHint (stPermEnv top_st) h
+                  (stBlockTypes top_st) blkID
             perms_in = if doGenPerms then generalizeEntryPerms all_perms
                                      else all_perms in
         stmtTraceM (\i ->
@@ -2939,15 +2947,16 @@ tcCFG :: PermCheckExtC ext => PermEnv ->
          CFG ext blocks inits ret ->
          TypedCFG ext (CtxCtxToRList blocks) ghosts (CtxToRList inits) ret
 tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits ret) =
-  let inits = mkCruCtx $ handleArgTypes $ cfgHandle cfg
+  let h = cfgHandle cfg
+      cblocks_types = fmapFC blockInputs $ cfgBlockMap cfg
+      inits = mkCruCtx $ handleArgTypes h
       tops = appendCruCtx ghosts inits
       perms_out = argPermsToAllPerms ghosts (funPermOuts fun_perm) in
   flip evalState (emptyTopPermCheckState
+                  h
                   tops
-                  (handleReturnType $ cfgHandle cfg)
                   perms_out
                   (cfgBlockMap cfg)
-                  (lookupGenPermsHints env cfg)
                   env) $
   do
      -- First, add a block entrypoint for the initial block of the function
@@ -2962,11 +2971,11 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      -- the hints that we actually used
      --
      -- FIXME: why does GHC need this type to be given?
-     block_entry_hints :: [Some (BlockEntryHint _ inits ret)] <-
+     hint_blocks :: [Some (BlockID cblocks)] <-
        fmap catMaybes $
-       forM (lookupBlockEntryHints env cfg) $ \some_hint -> case some_hint of
-       Some (BlockEntryHint
-             _ _ h_blkID h_topargs h_ghosts h_perms_in)
+       forM (lookupBlockEntryHints env h cblocks_types) $ \case
+       Some (BlockHint _ _ h_blkID
+             (BlockEntryHintSort h_topargs h_ghosts h_perms_in))
          | Just Refl <- testEquality h_topargs (appendCruCtx ghosts inits) ->
            do h_memb <- stLookupBlockID h_blkID <$> get
               let h_entryID = TypedEntryID h_memb h_ghosts 0
@@ -2975,10 +2984,10 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
               let h_allargs = appendCruCtx h_ghosts h_args
               modifyBlockInfo (addBlockEntry h_memb $
                                BlockEntryInfo h_entryID tops h_args h_perms_in)
-              return (Just some_hint)
-       Some hint ->
+              return (Just $ Some h_blkID)
+       Some (BlockHint _ _ h_blkID _) ->
          trace ("Block entry hint for block "
-                ++ show (blockEntryHintBlockID hint)
+                ++ show h_blkID
                 ++ " did not match arguments, skipping") $
          return Nothing
 
@@ -2989,7 +2998,6 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      -- all links to a block with a block entry hint and then add a dummy start
      -- node, represented by Nothing, that has the function start block and also
      -- all blocks with hints as successors.
-     let hint_blocks = map (fmapF blockEntryHintBlockID) block_entry_hints
      let hint_nodes = map Just hint_blocks
      let nodeSuccessors (Just node) =
            filter (\node' -> notElem node' hint_nodes) $
@@ -3000,7 +3008,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
        weakTopologicalOrdering nodeSuccessors Nothing
      !final_st <- get
      trace "visiting complete!" $ return $ TypedCFG
-       { tpcfgHandle = TypedFnHandle ghosts (cfgHandle cfg)
+       { tpcfgHandle = TypedFnHandle ghosts h
        , tpcfgFunPerm = fun_perm
        , tpcfgBlockMap =
            RL.map

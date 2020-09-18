@@ -4103,27 +4103,35 @@ data PermEnvGlobalEntry where
                         ValuePerm (LLVMPointerType w) -> [OpenTerm] ->
                         PermEnvGlobalEntry
 
--- | A "hint" from the user about how to type-check the inputs to a block
-data BlockEntryHint blocks init ret args where
-  BlockEntryHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
-                    BlockID blocks args -> CruCtx top_args -> CruCtx ghosts ->
-                    MbValuePerms ((top_args :++: CtxToRList args) :++: ghosts) ->
-                    BlockEntryHint blocks init ret args
+-- | The different sorts hints for blocks
+data BlockHintSort args where
+  -- | This hint specifies the ghost args and input permissions for a block
+  BlockEntryHintSort ::
+    CruCtx top_args -> CruCtx ghosts ->
+    MbValuePerms ((top_args :++: CtxToRList args) :++: ghosts) ->
+    BlockHintSort args
 
--- | Extract the 'BlockID' from a 'BlockEntryHint'
-blockEntryHintBlockID :: BlockEntryHint blocks init ret args -> BlockID blocks args
-blockEntryHintBlockID (BlockEntryHint _ _ blkID _ _ _) = blkID
+  -- | This hint says that the input perms for a block should be generalized
+  GenPermsHintSort :: BlockHintSort args
 
--- | A "hint" from the user about when to generalize
--- (see 'generalizeEntryPerms') the inputs to a block
-data GenPermsHint blocks init ret args where
-  GenPermsHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
-                  BlockID blocks args -> GenPermsHint blocks init ret args
+  -- | This hint says that a block should be a join point
+  JoinPointHintSort :: BlockHintSort args
+
+-- | A hint for a block
+data BlockHint blocks init ret args where
+  BlockHint :: FnHandle init ret -> Assignment CtxRepr blocks ->
+               BlockID blocks args -> BlockHintSort args ->
+               BlockHint blocks init ret args
+
+-- | Get the 'BlockHintSort' for a 'BlockHint'
+blockHintSort :: BlockHint blocks init ret args -> BlockHintSort args
+blockHintSort (BlockHint _ _ _ sort) = sort
+
+-- FIXME: all the per-block hints 
 
 -- | A "hint" from the user for type-checking
 data Hint where
-  Hint_BlockEntry :: BlockEntryHint blocks init ret args -> Hint
-  Hint_GenPerms   :: GenPermsHint blocks init ret args   -> Hint
+  Hint_Block :: BlockHint blocks init ret args -> Hint
 
 -- | A permission environment that maps function names, permission names, and
 -- 'GlobalSymbols' to their respective permission structures
@@ -4139,10 +4147,9 @@ $(mkNuMatching [t| forall args ret. SomeFunPerm args ret |])
 $(mkNuMatching [t| PermEnvFunEntry |])
 $(mkNuMatching [t| SomeNamedPerm |])
 $(mkNuMatching [t| PermEnvGlobalEntry |])
+$(mkNuMatching [t| forall args. BlockHintSort args |])
 $(mkNuMatching [t| forall blocks init ret args.
-                BlockEntryHint blocks init ret args |])
-$(mkNuMatching [t| forall blocks init ret args.
-                GenPermsHint blocks init ret args |])
+                BlockHint blocks init ret args |])
 $(mkNuMatching [t| Hint |])
 $(mkNuMatching [t| PermEnv |])
 
@@ -4306,45 +4313,50 @@ lookupGlobalSymbol env = helper (permEnvGlobalSyms env) where
   helper (_:entries) sym w = helper entries sym w
   helper [] _ _ = Nothing
 
--- | Look up a 'BlockEntryHint' for a 'BlockID' in a 'FnHandle'
-lookupBlockEntryHint :: PermEnv -> FnHandle init ret ->
-                        Assignment CtxRepr blocks -> BlockID blocks args ->
-                        Maybe (BlockEntryHint blocks init ret args)
-lookupBlockEntryHint env h blocks blkID =
-  listToMaybe $
+-- | Look up all hints associated with a 'BlockID' in a function
+lookupBlockHints :: PermEnv -> FnHandle init ret -> Assignment CtxRepr blocks ->
+                    BlockID blocks args -> [BlockHintSort args]
+lookupBlockHints env h blocks blkID =
   mapMaybe (\hint -> case hint of
-               Hint_BlockEntry be_hint@(BlockEntryHint h' blocks' blkID' _ _ _)
-                 | Just Refl <- testEquality (handleID h) (handleID h')
-                 , Just Refl <- testEquality blocks blocks'
-                 , Just Refl <- testEquality blkID blkID' -> return be_hint
+               Hint_Block (BlockHint h' blocks' blkID' sort)
+                 | Just Refl <- testEquality (handleID h') (handleID h)
+                 , Just Refl <- testEquality blocks' blocks
+                 , Just Refl <- testEquality blkID blkID' ->
+                   return sort
                _ -> Nothing) $
   permEnvHints env
 
--- | Look up all 'BlockEntryHint's for a 'CFG'
-lookupBlockEntryHints :: PermEnv -> CFG ext blocks init ret ->
-                         [Some (BlockEntryHint blocks init ret)]
-lookupBlockEntryHints env cfg =
+-- | Look up all hints with sort 'BlockEntryHintSort' for a 'CFG'
+lookupBlockEntryHints :: PermEnv -> FnHandle init ret ->
+                         Assignment CtxRepr blocks ->
+                         [Some (BlockHint blocks init ret)]
+lookupBlockEntryHints env h blocks =
   mapMaybe (\hint -> case hint of
-               Hint_BlockEntry be_hint@(BlockEntryHint h blocks blkID' _ _ _)
-                 | Just Refl <- testEquality (handleID h) (handleID $ cfgHandle cfg)
-                 , Just Refl <- testEquality blocks (fmapFC blockInputs
-                                                     (cfgBlockMap cfg)) ->
-                   return $ Some be_hint
+               Hint_Block hint@(BlockHint h' blocks' blkID' sort)
+                 | Just Refl <- testEquality (handleID h') (handleID h)
+                 , Just Refl <- testEquality blocks' blocks ->
+                   return $ Some hint
                _ -> Nothing) $
   permEnvHints env
 
--- | Look up all 'BlockID's in a 'CFG' which have 'GenPermsHint's
-lookupGenPermsHints :: PermEnv -> CFG ext blocks init ret ->
-                       [Some (BlockID blocks)]
-lookupGenPermsHints env cfg =
-  mapMaybe (\hint -> case hint of
-               Hint_GenPerms (GenPermsHint h blocks blkID)
-                 | Just Refl <- testEquality (handleID h) (handleID $ cfgHandle cfg)
-                 , Just Refl <- testEquality blocks (fmapFC blockInputs
-                                                     (cfgBlockMap cfg)) ->
-                   return $ Some blkID
-               _ -> Nothing) $
-  permEnvHints env
+-- | Test if a 'BlockID' in a 'CFG' has a hint with sort 'GenPermsHintSort'
+lookupBlockGenPermsHint :: PermEnv -> FnHandle init ret ->
+                           Assignment CtxRepr blocks -> BlockID blocks args ->
+                           Bool
+lookupBlockGenPermsHint env h blocks blkID =
+  any (\case GenPermsHintSort -> True
+             _ -> False) $
+  lookupBlockHints env h blocks blkID
+
+-- | Test if a 'BlockID' in a 'CFG' has a hint with sort 'JoinPointHintSort'
+lookupBlockJoinPointHint :: PermEnv -> FnHandle init ret ->
+                            Assignment CtxRepr blocks -> BlockID blocks args ->
+                            Bool
+lookupBlockJoinPointHint env h blocks blkID =
+  any (\case JoinPointHintSort -> True
+             _ -> False) $
+  lookupBlockHints env h blocks blkID
+
 
 ----------------------------------------------------------------------
 -- * Permission Sets
