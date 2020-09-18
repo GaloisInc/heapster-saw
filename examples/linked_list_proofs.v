@@ -37,9 +37,9 @@ Qed.
 (*
 Fixpoint is_elem_spec (x:bitvector 64) (l:W64List) : CompM {_:bitvector 64 & unit} :=
   match l with
-  | W64Nil => returnM (existT _ (bvNat 64 0) tt)
+  | W64Nil => returnM (existT _ (bvLit 64 0) tt)
   | W64Cons y l' =>
-    if bvEq 64 y x then returnM (existT _ (bvNat 64 1) tt) else
+    if bvEq 64 y x then returnM (existT _ (bvLit 64 1) tt) else
       is_elem_spec x l'
   end.
 *)
@@ -47,9 +47,9 @@ Fixpoint is_elem_spec (x:bitvector 64) (l:W64List) : CompM {_:bitvector 64 & uni
 Definition is_elem_fun (x:bitvector 64) :
   list {_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit} :=
   list_rect (fun _ => CompM {_:bitvector 64 & unit})
-            (returnM (existT _ (bvNat 64 0) tt))
+            (returnM (existT _ (bvLit 64 0) tt))
             (fun y l' rec =>
-               if bvEq 64 (projT1 y) x then returnM (existT _ (bvNat 64 1) tt) else rec).
+               if bvEq 64 (projT1 y) x then returnM (existT _ (bvLit 64 1) tt) else rec).
 
 Arguments is_elem_fun /.
 
@@ -80,9 +80,9 @@ Qed.
 Definition is_elem_pure (x:bitvector 64) (l:list {_:bitvector 64 & unit})
   : {_:bitvector 64 & unit} :=
   (list_rect (fun _ => {_:bitvector 64 & unit})
-             (existT _ (bvNat 64 0) tt)
+             (existT _ (bvLit 64 0) tt)
              (fun y l' rec =>
-                if bvEq 64 (projT1 y) x then existT _ (bvNat 64 1) tt else rec) l).
+                if bvEq 64 (projT1 y) x then existT _ (bvLit 64 1) tt else rec) l).
 
 Arguments is_elem_pure /.
 
@@ -120,7 +120,7 @@ Qed.
 Section Lemmas_is_elem_spec_ref.
 
   Lemma if_bvEq_lemma s1 a b :
-    not (bvEq 1 (if bvEq 64 s1 a then bvNat 1 1 else bvNat 1 0) (bvNat 1 0)) = b ->
+    not (bvEq 1 (if bvEq 64 s1 a then bvLit 1 1 else bvLit 1 0) (bvLit 1 0)) = b ->
     bvEq 64 s1 a = b.
   Proof. destruct (bvEq 64 s1 a). auto. auto. Qed.
 
@@ -164,8 +164,8 @@ Definition assertM (P:Prop) : CompM unit :=
 Definition is_elem_spec (x:bitvector 64) (l:list {_:bitvector 64 & unit})
   : CompM {_:bitvector 64 & unit} :=
   orM
-    (assertM (List.In (existT _ x tt) l) >> returnM (existT _ (bvNat 64 1) tt))
-    (assertM (~ List.In (existT _ x tt) l) >> returnM (existT _ (bvNat 64 0) tt)).
+    (assertM (List.In (existT _ x tt) l) >> returnM (existT _ (bvLit 64 1) tt))
+    (assertM (~ List.In (existT _ x tt) l) >> returnM (existT _ (bvLit 64 0) tt)).
 
 Arguments is_elem_spec /.
 
@@ -237,11 +237,11 @@ Qed.
 Definition any_fun (f:{_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit}) :
   list {_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit} :=
   list_rect (fun _ => CompM {_:bitvector 64 & unit})
-            (returnM (existT _ (bvNat 64 0) tt))
+            (returnM (existT _ (bvLit 64 0) tt))
             (fun y l' rec =>
                f y >>= fun call_ret_val =>
-                if not (bvEq 64 (projT1 call_ret_val) (bvNat 64 0))
-                then returnM (existT _ (bvNat 64 1) tt) else rec).
+                if not (bvEq 64 (projT1 call_ret_val) (bvLit 64 0))
+                then returnM (existT _ (bvLit 64 1) tt) else rec).
 
 Lemma any_fun_ref : refinesFun any any_fun.
 Proof.
@@ -254,8 +254,7 @@ Proof.
     + destruct a; destruct u; simpl.
       reflexivity.
     + prove_refinement.
-Admitted.
-(* Qed. *)
+Qed.
 
 
 (*
@@ -267,5 +266,6 @@ Print sorted_insert__tuple_fun.
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.
   unfold sorted_insert, sorted_insert__tuple_fun, mallocSpec, noErrorsSpec.
-  prove_refinement.
-Qed.
+Admitted.
+  (* prove_refinement. *)
+(* Qed. *)
