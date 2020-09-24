@@ -969,12 +969,16 @@ simplImplIn (SImpl_LLVMArrayOneCell x ap) =
     _ -> error "simplImplIn: SImpl_LLVMArrayOneCell: unexpected form of array permission"
 
 simplImplIn (SImpl_LLVMArrayIndexCopy x ap ix) =
-  if atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
+  if llvmArrayIndexFieldNum ix < length (llvmArrayFields ap) &&
+     atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
                                            llvmArrayIndexFieldNum ix)) then
     distPerms2 x (ValPerm_Conj [Perm_LLVMArray ap])
     x (ValPerm_Conj $ map Perm_BVProp $ llvmArrayIndexInArray ap ix)
   else
-    error "simplImplIn: SImpl_LLVMArrayIndexCopy: field is not copyable"
+    if llvmArrayIndexFieldNum ix >= length (llvmArrayFields ap) then
+      error "simplImplIn: SImpl_LLVMArrayIndexCopy: index out of range"
+    else
+      error "simplImplIn: SImpl_LLVMArrayIndexCopy: field is not copyable"
 
 simplImplIn (SImpl_LLVMArrayIndexBorrow x ap ix) =
   distPerms2 x (ValPerm_Conj [Perm_LLVMArray ap])
@@ -1047,13 +1051,19 @@ simplImplOut (SImpl_LLVMWordEq x y e) =
   distPerms1 x (ValPerm_Eq (PExpr_LLVMWord e))
 simplImplOut (SImpl_IntroConj x) = distPerms1 x ValPerm_True
 simplImplOut (SImpl_ExtractConj x ps i) =
-  distPerms2 x (ValPerm_Conj [ps !! i])
-  x (ValPerm_Conj (take i ps ++ drop (i+1) ps))
+  if i < length ps then
+    distPerms2 x (ValPerm_Conj [ps !! i])
+    x (ValPerm_Conj (take i ps ++ drop (i+1) ps))
+  else
+    error "simplImplOut: SImpl_ExtractConj: index out of bounds"
 simplImplOut (SImpl_CopyConj x ps i) =
-  if atomicPermIsCopyable (ps !! i) then
+  if i < length ps && atomicPermIsCopyable (ps !! i) then
     distPerms2 x (ValPerm_Conj [ps !! i]) x (ValPerm_Conj ps)
   else
-    error "simplImplOut: SImpl_CopyConj: permission not copyable"
+    if i >= length ps then
+      error "simplImplOut: SImpl_CopyConj: index out of bounds"
+    else
+      error "simplImplOut: SImpl_CopyConj: permission not copyable"
 simplImplOut (SImpl_InsertConj x p ps i) =
   distPerms1 x (ValPerm_Conj (take i ps ++ p : drop i ps))
 simplImplOut (SImpl_AppendConjs x ps1 ps2) =
@@ -1147,13 +1157,17 @@ simplImplOut (SImpl_LLVMArrayOneCell x ap) =
     _ -> error "simplImplOut: SImpl_LLVMArrayOneCell: unexpected form of array permission"
 
 simplImplOut (SImpl_LLVMArrayIndexCopy x ap ix) =
-  if atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
+  if llvmArrayIndexFieldNum ix < length (llvmArrayFields ap) &&
+     atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
                                            llvmArrayIndexFieldNum ix)) then
     distPerms2 x (ValPerm_Conj [Perm_LLVMField $
                                 llvmArrayFieldWithOffset ap ix])
     x (ValPerm_Conj [Perm_LLVMArray ap])
   else
-    error "simplImplOut: SImpl_LLVMArrayIndexCopy: field is not copyable"
+    if llvmArrayIndexFieldNum ix >= length (llvmArrayFields ap) then
+      error "simplImplOut: SImpl_LLVMArrayIndexCopy: index out of range"
+    else
+      error "simplImplOut: SImpl_LLVMArrayIndexCopy: field is not copyable"
 
 simplImplOut (SImpl_LLVMArrayIndexBorrow x ap ix) =
   distPerms2 x (ValPerm_Conj [Perm_LLVMField $
@@ -2723,8 +2737,11 @@ lifetimeEndPermsToDistPerms MNil = DistPermsNil
 lifetimeEndPermsToDistPerms (ps :>: LifetimeEndPerm x p) =
   DistPermsCons (lifetimeEndPermsToDistPerms ps) x p
 lifetimeEndPermsToDistPerms (ps :>: LifetimeEndConj x x_ps i) =
-  DistPermsCons (lifetimeEndPermsToDistPerms ps)
-  x (ValPerm_Conj [x_ps!!i])
+  if i < length x_ps then
+    DistPermsCons (lifetimeEndPermsToDistPerms ps)
+    x (ValPerm_Conj [x_ps!!i])
+  else
+    error "lifetimeEndPermsToDistPerms: index too large"
 
 -- | Search through all distinguished permissions @x:p@ and return any conjuncts
 -- of @p@ that contain the lifetime @l@, if @p@ is a conjunctive permission, or
@@ -2869,7 +2886,7 @@ recombinePermConj x x_ps (Perm_LLVMField fp)
               , elem (FieldBorrow ix) (llvmArrayBorrows ap) ->
                 Just (ap,i,ix)
             _ -> Nothing
-  , fp == (llvmArrayFields ap)!!i =
+  , fp == (llvmArrayFields ap)!!(llvmArrayIndexFieldNum ix) =
     implPushM x (ValPerm_Conj x_ps) >>> implExtractConjM x x_ps i >>>
     let x_ps' = deleteNth i x_ps in
     implPopM x (ValPerm_Conj x_ps') >>>
@@ -3044,6 +3061,8 @@ proveVarLLVMField ::
   PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 proveVarLLVMField x ps i off mb_fp =
+  (if i < length ps then greturn () else
+     error "proveVarLLVMField: index too large") >>>= \() ->
   implExtractConjM x ps i >>>
   let ps_rem = deleteNth i ps in
   implPopM x (ValPerm_Conj ps_rem) >>>
@@ -3566,7 +3585,8 @@ proveVarImplUnfoldLeft x (ValPerm_Named npn args off) mb_p Nothing
     proveVarImpl x mb_p
 
 proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
-  | p_i@(Perm_NamedConj npn args off) <- ps!!i
+  | i < length ps
+  , p_i@(Perm_NamedConj npn args off) <- ps!!i
   , TrueRepr <- nameCanFoldRepr npn =
     (case namedPermNameSort npn of
         RecursiveSortRepr _ -> implSetRecRecurseLeftM
