@@ -42,7 +42,8 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Lens hiding ((:>), Index, Empty)
 
-import Data.Type.RList hiding (map, foldr, set, toList)
+import Data.Type.RList (RList(..), RAssign(..), (:++:), append, memberElem,
+                        mapRAssign, mapToList)
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits.Mb (mbMap2)
 import Data.Binding.Hobbits.Closed
@@ -163,6 +164,12 @@ instance PermPretty (Name (a :: Type)) where
        case maybe_str of
          Just (StringF str) -> return $ string str
          Nothing -> return $ string (show x)
+
+instance PermPretty (SomeName CrucibleType) where
+  permPrettyM (SomeName x) = permPrettyM x
+
+instance PermPretty (SomeName Type) where
+  permPrettyM (SomeName x) = permPrettyM x
 
 instance PermPretty (RAssign Name (ctx :: RList CrucibleType)) where
   permPrettyM MNil = return PP.empty
@@ -985,6 +992,17 @@ data ValuePerms as where
   ValPerms_Nil :: ValuePerms RNil
   ValPerms_Cons :: ValuePerms as -> ValuePerm a -> ValuePerms (as :> a)
 
+-- | Fold a function over a 'ValuePerms' list, where
+--
+-- > foldValuePerms f b ('ValuePermsCons'
+-- >                     ('ValuePermsCons' (... 'ValuePermsNil' ...) p2) p1) =
+-- > f (f (... b ...) p2) p1
+--
+-- FIXME: implement more functions on ValuePerms in terms of this
+foldValuePerms :: (forall a. b -> ValuePerm a -> b) -> b -> ValuePerms as -> b
+foldValuePerms _ b ValPerms_Nil = b
+foldValuePerms f b (ValPerms_Cons ps p) = f (foldValuePerms f b ps) p
+
 -- | Build a one-element 'ValuePerms' list from a single permission
 singletonValuePerms :: ValuePerm a -> ValuePerms (RNil :> a)
 singletonValuePerms = ValPerms_Cons ValPerms_Nil
@@ -1324,6 +1342,18 @@ data DistPerms ps where
                    DistPerms (ps :> a)
 
 type MbDistPerms ps = Mb ps (DistPerms ps)
+
+-- | Fold a function over a 'DistPerms' list, where
+--
+-- > foldDistPerms f b ('DistPermsCons'
+-- >                    ('DistPermsCons' (... 'DistPermsNil' ...) x2 p2) x1 p1) =
+-- > f (f (... b ...) x2 p2) x1 p1
+--
+-- FIXME: implement more functions on DistPerms in terms of this
+foldDistPerms :: (forall a. b -> ExprVar a -> ValuePerm a -> b) ->
+                 b -> DistPerms as -> b
+foldDistPerms _ b DistPermsNil = b
+foldDistPerms f b (DistPermsCons ps x p) = f (foldDistPerms f b ps) x p
 
 -- | Combine a list of variable names and a list of permissions into a list of
 -- distinguished permissions
@@ -2134,9 +2164,12 @@ llvmArrayIndexByteOffset ap ix =
 llvmArrayFieldWithOffset :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
                             LLVMArrayIndex w -> LLVMFieldPerm w
 llvmArrayFieldWithOffset ap ix =
-  offsetLLVMFieldPerm
-  (bvAdd (llvmArrayOffset ap) (llvmArrayIndexByteOffset ap ix))
-  (llvmArrayFields ap !! llvmArrayIndexFieldNum ix)
+  if llvmArrayIndexFieldNum ix < length (llvmArrayFields ap) then
+    offsetLLVMFieldPerm
+    (bvAdd (llvmArrayOffset ap) (llvmArrayIndexByteOffset ap ix))
+    (llvmArrayFields ap !! llvmArrayIndexFieldNum ix)
+  else
+    error "llvmArrayFieldWithOffset: index out of bounds"
 
 -- | Get a list of all the fields in cell 0 of an array permission
 llvmArrayHeadFields :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
@@ -2789,6 +2822,50 @@ instance FreeVars (FunPerm ghosts args ret) where
     (NameSet.liftNameSet $ fmap freeVars $ mbCombine perms_in)
     (NameSet.liftNameSet $ fmap freeVars $ mbCombine perms_out)
 
+
+-- | Generic function to compute the /needed/ variables of a permission, meaning
+-- those whose values must be determined before that permission can be
+-- proved. This includes, e.g., all the free variables of the parts of llvm
+-- array and field permissions other than their contents, i.e., of the offsets,
+-- lengths, lifetimes, etc.
+class NeededVars a where
+  neededVars :: a -> NameSet CrucibleType
+
+instance NeededVars a => NeededVars [a] where
+  neededVars as = NameSet.unions $ map neededVars as
+
+instance NeededVars (ValuePerm a) where
+  neededVars (ValPerm_Eq _) = NameSet.empty
+  neededVars (ValPerm_Or p1 p2) = NameSet.union (neededVars p1) (neededVars p2)
+  neededVars (ValPerm_Exists mb_p) = NameSet.liftNameSet $ fmap neededVars mb_p
+  neededVars p@(ValPerm_Named _ _ _) = freeVars p
+  neededVars p@(ValPerm_Var _ _) = freeVars p
+  neededVars (ValPerm_Conj ps) = neededVars ps
+
+instance NeededVars (AtomicPerm a) where
+  neededVars (Perm_LLVMField fp) = neededVars fp
+  neededVars (Perm_LLVMArray ap) = neededVars ap
+  neededVars p = freeVars p
+
+instance NeededVars (LLVMFieldPerm w) where
+  neededVars (LLVMFieldPerm {..}) =
+    NameSet.unions [freeVars llvmFieldOffset, freeVars llvmFieldRW,
+                    freeVars llvmFieldLifetime, neededVars llvmFieldContents]
+
+instance NeededVars (LLVMArrayPerm w) where
+  neededVars (LLVMArrayPerm {..}) =
+    NameSet.unions [freeVars llvmArrayOffset, freeVars llvmArrayLen,
+                    freeVars llvmArrayBorrows, neededVars llvmArrayFields]
+
+instance NeededVars (ValuePerms as) where
+  neededVars =
+    foldValuePerms (\vars p ->
+                     NameSet.union vars (neededVars p)) NameSet.empty
+
+instance NeededVars (DistPerms as) where
+  neededVars =
+    foldDistPerms (\vars _ p ->
+                    NameSet.union vars (neededVars p)) NameSet.empty
 
 -- | Generic function to test if a permission contains a lifetime
 --
@@ -3462,13 +3539,13 @@ newtype PermSubst ctx =
   PermSubst { unPermSubst :: RAssign PermExpr ctx }
 
 emptySubst :: PermSubst RNil
-emptySubst = PermSubst empty
+emptySubst = PermSubst RL.empty
 
 consSubst :: PermSubst ctx -> PermExpr a -> PermSubst (ctx :> a)
 consSubst (PermSubst elems) e = PermSubst (elems :>: e)
 
 singletonSubst :: PermExpr a -> PermSubst (RNil :> a)
-singletonSubst e = PermSubst (empty :>: e)
+singletonSubst e = PermSubst (RL.empty :>: e)
 
 substOfExprs :: PermExprs ctx -> PermSubst ctx
 substOfExprs PExprs_Nil = PermSubst MNil
@@ -4373,6 +4450,12 @@ data PermSet ps = PermSet { _varPermMap :: NameMap ValuePerm,
 
 makeLenses ''PermSet
 
+-- | Get all variables that have permissions set in a 'PermSet'
+permSetVars :: PermSet ps -> [SomeName CrucibleType]
+permSetVars =
+  map (\case (NameAndElem n _) ->
+               SomeName n) . NameMap.assocs . view varPermMap
+
 -- | Build a 'PermSet' with only distinguished permissions
 distPermSet :: DistPerms ps -> PermSet ps
 distPermSet perms = PermSet NameMap.empty perms
@@ -4405,6 +4488,207 @@ varPermsMulti MNil _ = DistPermsNil
 varPermsMulti (ns :>: n) ps =
   DistPermsCons (varPermsMulti ns ps) n (ps ^. varPerm n)
 
+-- | Get a permission list for all variable permissions
+permSetAllVarPerms :: PermSet ps -> Some DistPerms
+permSetAllVarPerms perm_set =
+  foldr (\(NameAndElem x p) (Some perms) -> Some (DistPermsCons perms x p))
+  (Some DistPermsNil) (NameMap.assocs $ _varPermMap perm_set)
+
+-- | Convert a list of existentially quantified names to an existentially
+-- quantified assignment of names to a context
+--
+-- FIXME: this belongs in the Hobbits library somewhere
+namesListToNames :: [SomeName k] -> Some (RAssign (Name :: k -> Type))
+namesListToNames =
+  foldr (\(SomeName n) (Some ns) -> Some (ns :>: n)) (Some MNil) . reverse
+
+-- | Convert an existentially quantified assignment of names to a context to a
+-- list of existentially quantified names
+namesToNamesList :: RAssign (Name :: k -> Type) ns -> [SomeName k]
+namesToNamesList ns = mapToList SomeName ns
+
+-- FIXME: move this to Hobbits!
+instance Eq (SomeName k) where
+  (SomeName n1) == (SomeName n2) | Just Refl <- testEquality n1 n2 = True
+  _ == _ = False
+
+-- FIXME: move this to Hobbits and implement using the IntSet operation
+-- Also: change NameSet so that it requires k :: Type
+nameSetIsSubsetOf :: NameSet (k :: Type) -> NameSet k -> Bool
+nameSetIsSubsetOf s1 s2 = NameSet.null $ NameSet.difference s1 s2
+
+-- | A determined vars clause says that the variable on the right-hand side is
+-- determined (as in the description of 'determinedVars') if all those on the
+-- left-hand side are. Note that this is an if and not an iff, as there may be
+-- other ways to mark that RHS variable determined.
+data DetVarsClause =
+  DetVarsClause (NameSet CrucibleType) (SomeName CrucibleType)
+
+-- | Union a 'NameSet' to the left-hand side of a 'DetVarsClause'
+detVarsClauseAddLHS :: NameSet CrucibleType -> DetVarsClause -> DetVarsClause
+detVarsClauseAddLHS names (DetVarsClause lhs rhs) =
+  DetVarsClause (NameSet.union lhs names) rhs
+
+-- | Add a single variable to the left-hand side of a 'DetVarsClause'
+detVarsClauseAddLHSVar :: ExprVar a -> DetVarsClause -> DetVarsClause
+detVarsClauseAddLHSVar n (DetVarsClause lhs rhs) =
+  DetVarsClause (NameSet.insert n lhs) rhs
+
+-- | Compute all the variables whose values are /determined/ by the permissions
+-- on the given input variables, other than those variables themselves. The
+-- intuitive idea is that permission @x:p@ determines the value of @y@ iff there
+-- is always a uniquely determined value of @y@ for any proof of @exists y.x:p@.
+determinedVars :: PermSet ps -> RAssign ExprVar ns -> [SomeName CrucibleType]
+determinedVars top_perms vars =
+  let vars_set = NameSet.fromList $ mapToList SomeName vars
+      multigraph =
+        evalState (runReaderT (clausesForPerms (distPermsToValuePerms $
+                                                varPermsMulti vars top_perms))
+                   top_perms)
+        vars_set in
+  evalState (determinedVarsForGraph multigraph) vars_set
+  where
+    -- If x has not been visited yet, then return a clause stating that x is
+    -- determined and add all variables that are potentially determined by the
+    -- current permissions on x
+    clausesForVar :: ExprVar a ->
+                     ReaderT (PermSet ps) (State (NameSet CrucibleType))
+                     [DetVarsClause]
+    clausesForVar x =
+      do seen_vars <- get
+         perms <- ask
+         if NameSet.member x seen_vars then return [] else
+           do modify (NameSet.insert x)
+              perm_clauses <- clausesForPerm (perms ^. varPerm x)
+              return (DetVarsClause NameSet.empty (SomeName x) :
+                      map (detVarsClauseAddLHSVar x) perm_clauses)
+
+    -- Find all variables that are determined if an expression is determined
+    clausesForExpr :: PermExpr a ->
+                        ReaderT (PermSet ps) (State (NameSet CrucibleType))
+                        [DetVarsClause]
+    clausesForExpr (PExpr_Var y) = clausesForVar y
+    clausesForExpr (PExpr_LLVMWord (PExpr_Var y)) = clausesForVar y
+    clausesForExpr _ = return []
+    -- FIXME: consider adding a case for eq(y &+ e) requiring e to be determined
+
+    -- Find all variables that are potentially determined by the permission p
+    -- and return clauses stating what other variables must be determined in
+    -- order to determine each of them
+    clausesForPerm :: ValuePerm a ->
+                      ReaderT (PermSet ps) (State (NameSet CrucibleType))
+                      [DetVarsClause]
+    clausesForPerm (ValPerm_Eq e) = clausesForExpr e
+    clausesForPerm (ValPerm_Conj ps) = concat <$> mapM clausesForAtomicPerm ps
+    clausesForPerm _ = return []
+
+    -- Call clausesForPerm for each permission in a list of permissions
+    clausesForPerms :: ValuePerms as ->
+                       ReaderT (PermSet ps) (State (NameSet CrucibleType))
+                       [DetVarsClause]
+    clausesForPerms ValPerms_Nil = return []
+    clausesForPerms (ValPerms_Cons ps p) =
+      (++) <$> clausesForPerms ps <*> clausesForPerm p
+
+
+    -- Same as clauses for Perm but for atomic perms
+    clausesForAtomicPerm :: AtomicPerm a ->
+                            ReaderT (PermSet ps) (State (NameSet CrucibleType))
+                            [DetVarsClause]
+    clausesForAtomicPerm (Perm_LLVMField (LLVMFieldPerm {..})) =
+      map (detVarsClauseAddLHS
+           (NameSet.unions [freeVars llvmFieldRW, freeVars llvmFieldLifetime,
+                            freeVars llvmFieldOffset])) <$>
+      clausesForPerm llvmFieldContents
+    clausesForAtomicPerm (Perm_LLVMFrame frame_perm) =
+      concat <$> mapM (clausesForExpr . fst) frame_perm
+    clausesForAtomicPerm _ = return []
+
+    -- Find all variables that are not already marked as determined in our
+    -- NameSet state but that are determined given the current determined
+    -- variables, mark these variables as determiend, and then repeat, returning
+    -- all variables that are found in order
+    determinedVarsForGraph :: [DetVarsClause] ->
+                              State (NameSet CrucibleType) [SomeName CrucibleType]
+    determinedVarsForGraph graph =
+      do det_vars <- concat <$> mapM determinedVarsForClause graph
+         if det_vars == [] then return [] else
+           (det_vars ++) <$> determinedVarsForGraph graph
+
+         -- If the LHS of a clause has become determined but its RHS is not, return
+    -- its RHS, otherwise return nothing
+    determinedVarsForClause :: DetVarsClause ->
+                               State (NameSet CrucibleType) [SomeName CrucibleType]
+    determinedVarsForClause (DetVarsClause lhs_vars (SomeName rhs_var)) =
+      do det_vars <- get
+         if not (NameSet.member rhs_var det_vars) &&
+            nameSetIsSubsetOf lhs_vars det_vars
+           then modify (NameSet.insert rhs_var) >> return [SomeName rhs_var]
+           else return []
+
+{-
+  -- This is implemented as a depth-first search, where we maintain a NameSet of
+  -- already determined vars and keep adding to it until we are done. Note that
+  -- we don't just return all the names in this NameSet because we want maintain
+  -- the order that variable x occurs before y if x determines y.
+  evalState (runReaderT
+             (visitPerms $ distPermsToValuePerms $ varPermsMulti vars top_perms)
+             top_perms)
+  (NameSet.fromList $ RL.mapToList SomeName vars)
+  where
+    -- Append two existentially quantified lists of variables
+    appendSomes :: Some (RAssign ExprVar) -> Some (RAssign ExprVar) ->
+                   Some (RAssign ExprVar)
+    appendSomes (Some ns1) (Some ns2) = Some $ RL.append ns1 ns2
+
+    -- Visit a list of permissions and recursively visit any vars they determine
+    visitPerms :: ValuePerms as ->
+                  ReaderT (PermSet ps) (State
+                                        (NameSet CrucibleType)) (Some (RAssign
+                                                                       ExprVar))
+    visitPerms ValPerms_Nil = Some MNil
+    visitPerms (ValPerms_Cons ps p) =
+      appendSomes <$> visitPerms ps <*> visitPerm p
+
+    -- Visit a variable and, if it is not already determined, add it to the
+    -- visited variables and return it and any variables it determines
+    visitAndRetVar ::
+      ExprVar a ->
+      ReaderT (PermSet ps) (State (NameSet CrucibleType)) (Some
+                                                           (RAssign ExprVar))
+    visitAndRetVar x =
+      do det_vars <- get
+         perms <- ask
+         if NameSet.member x det_vars then return (Some MNil) else
+           modify (NameSet.insert x) >>
+           appendSomes (Some $ RL.singleton x) (visitPerm $
+                                                perms ^. varPerm x)
+
+    -- Visit a single permission and recursively visit any vars it determines
+    visitPerm ::
+      ValuePerm a ->
+      ReaderT (PermSet ps) (State
+                            (NameSet CrucibleType)) (Some (RAssign ExprVar))
+    visitPerm (ValPerm_Eq (PExpr_Var y)) = visitAndRetVar y
+    visitPerm (ValPerm_Eq (PExpr_LLVMWord (PExpr_Var y))) = visitAndRetVar y
+    visitPerm (ValPerm_Conj ps) =
+      foldM (\vars p -> appendSomes vars <$> visitAtomicPerm p) (Some MNil) ps
+
+    -- Visit an atomic permission
+    visitAtomicPerm ::
+      ValuePerm a ->
+      ReaderT (PermSet ps) (State
+                            (NameSet CrucibleType)) (Some (RAssign ExprVar))
+    visitAtomicPerm (Perm_LLVMField fp) = visitPerm $ llvmFieldContents fp
+    visitAtomicPerm (Perm_LLVMFrame frame_perm) =
+      foldM (\vars (e,_) ->
+              case e of
+                PExpr_Var x -> appendSomes vars <$> visitAndRetVar x
+                _ -> return (Some MNil)) (Some MNil) ps
+    visitAtomicPerm _ = return (Some MNil)
+-}
+
+
 -- | Compute all the variables that are needed to express the permissions on
 -- some input list @ns@ of variables, which includes all variables that are free
 -- in the permissions associated with @ns@ as well as all the variables
@@ -4416,9 +4700,6 @@ varPermsNeededVars :: RAssign ExprVar ns -> PermSet ps ->
 varPermsNeededVars ns =
   helper NameSet.empty (mapToList SomeName ns)
   where
-    namesListToNames :: [SomeName CrucibleType] -> Some (RAssign ExprVar)
-    namesListToNames =
-      foldr (\(SomeName n) (Some ns) -> Some (ns :>: n)) (Some MNil) . reverse
     helper :: NameSet CrucibleType -> [SomeName CrucibleType] -> PermSet ps ->
               Some (RAssign ExprVar)
     helper seen_vars ns perms =
@@ -4572,8 +4853,11 @@ extractConj x ps _ perms
   | perms ^. topDistPerm x /= ValPerm_Conj ps
   = error "extractConj: permissions on the top of the stack not as expected"
 extractConj x ps i perms =
-  pushPerm x (ValPerm_Conj [ps !! i]) $
-  over (topDistPerm x) (deleteAtomicPerm i) perms
+  if i < length ps then
+    pushPerm x (ValPerm_Conj [ps !! i]) $
+    over (topDistPerm x) (deleteAtomicPerm i) perms
+  else
+    error "extractConj: index too large"
 
 -- | Combine the two conjunctive permissions on the top of the stack
 combineConj :: ExprVar a -> [AtomicPerm a] -> [AtomicPerm a] ->

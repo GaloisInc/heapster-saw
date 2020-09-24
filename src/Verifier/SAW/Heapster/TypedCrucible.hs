@@ -51,6 +51,8 @@ import Text.PrettyPrint.ANSI.Leijen (pretty)
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
+import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..))
+import qualified Data.Binding.Hobbits.NameSet as NameSet
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Binding.Hobbits.Mb (mbMap2)
@@ -2698,17 +2700,101 @@ generalizeEntryValPerm (ValPerm_Exists mbp) =
   ValPerm_Exists (generalizeEntryValPerm <$> mbp)
 generalizeEntryValPerm p = p
 
+
+-- | Simplify and drop permissions @p@ on variable @x@ so they only depend on
+-- the determined variables given in the supplied list
+simplify1PermForDetVars :: PermCheckExtC ext =>
+                           NameSet CrucibleType -> Name a -> ValuePerm a ->
+                           StmtPermCheckM ext cblocks blocks tops ret RNil RNil ()
+
+-- If the permissions contain an array permission with undetermined borrows,
+-- return those undetermined borrows if possible
+--
+-- FIXME: we should only return borrows if we can; currently, if there are
+-- borrows we can't return, we fail here, and should instead just drop the array
+-- permission and keep going. To do this, we have to make a way to try to prove
+-- a permission, either by changing the ImplM monad or by adding a notion of
+-- local implication proofs where failure is scoped inside a proof
+simplify1PermForDetVars det_vars x (ValPerm_Conj ps)
+  | Just i <-
+      findIndex
+      (\case
+          Perm_LLVMArray ap ->
+            any (\b -> not (nameSetIsSubsetOf
+                            (freeVars b) det_vars)) (llvmArrayBorrows ap)
+          _ -> False) ps
+  , Perm_LLVMArray ap <- ps!!i
+  , det_borrows <- filter (\b -> nameSetIsSubsetOf
+                                 (freeVars b) det_vars) (llvmArrayBorrows ap)
+  , ret_p <- ValPerm_Conj1 $ Perm_LLVMArray $ ap { llvmArrayBorrows =
+                                                     det_borrows } =
+    stmtProvePerm (TypedReg x) (emptyMb ret_p) >>>
+    stmtRecombinePerms >>>
+    getVarPerm x >>>= \new_p ->
+    simplify1PermForDetVars det_vars x new_p
+
+-- If none of the above cases match but p has only determined free variables,
+-- just leave p as is
+simplify1PermForDetVars det_vars _ p
+  | nameSetIsSubsetOf (freeVars p) det_vars = greturn ()
+
+-- Otherwise, drop p, because it is not determined
+simplify1PermForDetVars det_vars x p =
+  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+
+
+-- | Simplify and drop permissions so they only depend on the determined
+-- variables given in the supplied list
+simplifyPermsForDetVars ::
+  PermCheckExtC ext => [SomeName CrucibleType] ->
+  StmtPermCheckM ext cblocks blocks tops ret RNil RNil ()
+simplifyPermsForDetVars det_vars_list =
+  let det_vars = NameSet.fromList det_vars_list in
+  (permSetVars <$> stCurPerms <$> gget) >>>= \vars ->
+  mapM_ (\(SomeName x) -> getVarPerm x >>>=
+                          simplify1PermForDetVars det_vars x) vars
+
+
+-- | If @x@ has permission @eq(llvmword e)@ where @e@ is not a needed variable
+-- (in the supplied set), replace that perm with @x:exists z.eq(llvmword z)@
+generalizeUnneededWordEqPerms1 ::
+  NameSet CrucibleType -> Name a -> ValuePerm a ->
+  StmtPermCheckM ext cblocks blocks tops ret ps ps ()
+generalizeUnneededWordEqPerms1 needed_vars x (ValPerm_Eq (PExpr_Var y))
+  | NameSet.member y needed_vars = greturn ()
+generalizeUnneededWordEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
+  let mb_eq = nu $ \z -> ValPerm_Eq $ PExpr_LLVMWord $ PExpr_Var z in
+  stmtEmbedImplM (implPushM x p >>>
+                  introExistsM x e mb_eq >>>
+                  implPopM x (ValPerm_Exists mb_eq))
+generalizeUnneededWordEqPerms1 _ _ _ = greturn ()
+
+
+-- | Find all permissions of the form @x:eq(llvmword e)@ other than those where
+-- @e@ is a needed variable, and replace them with @x:exists z.eq(llvmword z)@
+generalizeUnneededWordEqPerms ::
+  StmtPermCheckM ext cblocks blocks tops ret ps ps ()
+generalizeUnneededWordEqPerms =
+  (permSetAllVarPerms <$> stCurPerms <$> gget) >>>= \(Some var_perms) ->
+  let needed_vars = neededVars var_perms in
+  foldDistPerms (\m x p ->
+                  m >>> generalizeUnneededWordEqPerms1 needed_vars x p)
+  (greturn ())
+  var_perms
+
 -- | Type-check a Crucible jump target
-tcJumpTarget :: CtxTrans ctx -> JumpTarget cblocks ctx ->
+tcJumpTarget :: PermCheckExtC ext => CtxTrans ctx -> JumpTarget cblocks ctx ->
                 StmtPermCheckM ext cblocks blocks tops ret RNil RNil
                 (PermImpl (TypedJumpTarget blocks tops) RNil)
 tcJumpTarget ctx (JumpTarget blkID args_tps args) =
   top_get >>>= \top_st ->
   gget >>>= \st ->
+  (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
   let tops_ns = stTopVars st
       args_t = tcRegs ctx args
       args_ns = typedRegsToVars args_t
       tops_args_ns = RL.append tops_ns args_ns
+      tops_args_ext_ns = RL.append tops_args_ns ext_ns
       (gen_perms_hint, join_point_hint) =
         case stFnHandle top_st of
           SomeHandle h ->
@@ -2721,10 +2807,6 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
   tcBlockID blkID >>>= \memb ->
   lookupBlockInfo memb >>>= \blkInfo ->
 
-  stmtTraceM (\i ->
-               string ("tcJumpTarget " ++ show blkID ++
-                       ": join_point = " ++ show join_point_hint)) >>>
-
   -- First test if we should jump to an existing entrypoint or make a new one;
   -- the former holds if the block has already been visited or if it is a join
   -- point and has at least one entrypoint already
@@ -2736,7 +2818,9 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           _ -> Nothing in
 
   case maybe_entry of
+    -- If so, prove the required permissions and jump
     Just (BlockEntryInfo entryID _ _ entry_perms_in) ->
+
       -- We are jumping to an existing entrypoint, so mark it as post-visited
       postVisitBlock memb >>>
 
@@ -2762,43 +2846,58 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
         greturn (permVarSubstOfNames $ distPermsVars $ snd $
                  splitDistPerms tops_args_ns ghosts_prxs proved_perms))
 
+
+    -- If not, make a new entrypoint that takes all of the current permissions
+    -- as input
     Nothing ->
-      -- If not, we can make a new entrypoint that takes all of the current
-      -- permissions as input
-      --
-      -- Step 1: compute the ghosts arguments as all variables needed in the
-      -- permissions for the top-level and normal arguments
-      (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
-      let tops_set =
-            RL.foldr (\n -> NameMap.insert n (Constant ()))
-            NameMap.empty tops_ns
-          cur_perms = stCurPerms st in
-      case varPermsNeededVars (RL.append tops_args_ns ext_ns) cur_perms of
+
+      -- Step 1: Compute the variables whose values are determined by the
+      -- permissions on the top and normal arguments as the starting point for
+      -- figuring out our ghost variables. The determined variables are the only
+      -- variables that could possibly be inferred by a caller, and they are the
+      -- only variables that could actually be accessed by the block we are
+      -- calling, so we should not be really giving up any permissions we need.
+      let orig_cur_perms = stCurPerms st
+          det_vars =
+            namesToNamesList tops_args_ext_ns ++
+            determinedVars orig_cur_perms tops_args_ext_ns in
+
+      -- Step 2: Simplify and drop permissions so they do not depend on
+      -- undetermined variables
+      simplifyPermsForDetVars det_vars >>>
+
+      -- Step 3: if gen_perms_hint is set, generalize any permissions of the
+      -- form eq(llvmword e) to exists z.eq(llvmword z) as long as they do not
+      -- determine a variable that we need, i.e., as long as they are not of the
+      -- form eq(llvmword x) for a variable x that we need
+      (if gen_perms_hint then generalizeUnneededWordEqPerms else greturn ()) >>>
+
+      -- Step 4: Compute the ghost variables for the target block as those
+      -- variables whose values are determined by the permissions on the top and
+      -- normal arguments after our above simplifications, adding in the
+      -- extension-specific variables as well
+      (stCurPerms <$> gget) >>>= \cur_perms ->
+      case namesListToNames $ determinedVars cur_perms tops_args_ext_ns of
         Some ghosts_ns' ->
-          -- Step 2: compute the permissions for the three sorts of arguments,
-          -- where each normal argument that is also in the top-level arguments
-          -- gets eq permissions. Additionally, if this block has a
-          -- 'GenPermsHint', apply 'generalizeEntryPerms' to all the resulting
-          -- permissions.
           let ghosts_ns = RL.append ext_ns ghosts_ns'
-              cur_perms = stCurPerms st
               tops_perms = varPermsMulti tops_ns cur_perms
+              tops_set = NameSet.fromList $ namesToNamesList tops_ns
               ghosts_perms = varPermsMulti ghosts_ns cur_perms
               args_perms =
-                buildDistPerms (\n -> if NameMap.member n tops_set then
+                buildDistPerms (\n -> if NameSet.member n tops_set then
                                         ValPerm_Eq (PExpr_Var n)
                                       else cur_perms ^. varPerm n) args_ns
-              all_perms = appendDistPerms (appendDistPerms
-                                           tops_perms args_perms) ghosts_perms
-              perms_in = if gen_perms_hint then generalizeEntryPerms all_perms
-                         else all_perms in
+              perms_in = appendDistPerms (appendDistPerms
+                                           tops_perms args_perms) ghosts_perms in
           stmtTraceM (\i ->
-                       string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") </>
-                       (if gen_perms_hint then string "(gen) " else string "") <>
-                       string "Input perms: " <+>
+                       string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") <>
+                       (if gen_perms_hint then string "(gen)" else string "") <$$>
+                       string "Determined vars:" <+>
+                       list (map (permPretty i) det_vars) <$$>
+                       string "Input perms:" <+>
                        hang 2 (permPretty i perms_in)) >>>
 
-          -- Step 3: abstract all the variables out of the input permissions.
+          -- Step 5: abstract all the variables out of the input permissions.
           -- Note that abstractVars uses the left-most occurrence of any
           -- variable that occurs multiple times in the variable list and we
           -- want our eq perms for our args to map to our tops, not our args, so
@@ -2811,23 +2910,21 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
                   Nothing ->
                     error "tcJumpTarget: unexpected free variable in perms_in" in
 
-          -- Step 4: insert a new block entrypoint that has all the permissions
+          -- Step 6: insert a new block entrypoint that has all the permissions
           -- we constructed above as input permissions
           getVarTypes ghosts_ns >>>= \ghosts_tps ->
           (insNewBlockEntry
            memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
 
-          -- Step 5: return a TypedJumpTarget inside a PermImpl that proves all
-          -- the required input permissions from the current permission set. If
-          -- this block doesn't have a 'GenPermsHint', this proof just copies
-          -- the existing permissions into the current distinguished perms,
-          -- except for the eq permissions for real arguments, which are proved
-          -- by reflexivity.
+          -- Step 6: return a TypedJumpTarget inside a PermImpl that proves all
+          -- the required input permissions from the current permission set by
+          -- copying the existing permissions into the current distinguished
+          -- perms, except for the eq permissions for real arguments, which are
+          -- proved by reflexivity.
           let target_t =
                 TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms_in in
           pcmRunImplM False CruCtxNil (const target_t) $
-            if gen_perms_hint then proveVarsImpl (distPermsToExDistPerms perms_in)
-            else implPushOrReflMultiM perms_in
+          implPushOrReflMultiM perms_in
 
 
 -- | Type-check a termination statement
