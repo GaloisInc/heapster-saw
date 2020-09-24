@@ -1258,7 +1258,9 @@ getLLVMArrayTransField :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
                           AtomicPermTrans ctx (LLVMPointerType w)
 getLLVMArrayTransField arr_trans ix_trans@(LLVMArrayIndexTrans
                                            _ _ j) prop_transs =
-  getLLVMArrayTransCell arr_trans ix_trans prop_transs !! j
+  let cell = getLLVMArrayTransCell arr_trans ix_trans prop_transs in
+  if j < length cell then cell !! j else
+    error "getLLVMArrayTransField: index too large"
 
 -- | Write a field (= element of a cell) of the translation of an LLVM array
 -- permission at a given index
@@ -1992,19 +1994,25 @@ translateSimplImpl _ [nuP| SImpl_LLVMWordEq x y e |] m =
 translateSimplImpl _ [nuP| SImpl_IntroConj x |] m =
   withPermStackM (:>: translateVar x) (:>: PTrans_True) m
 
-translateSimplImpl _ [nuP| SImpl_ExtractConj x _ i |] m =
+translateSimplImpl _ [nuP| SImpl_ExtractConj x _ mb_i |] m =
   withPermStackM (:>: translateVar x)
   (\(pctx :>: ptrans) ->
-    let ps = unPTransConj "translateSimplImpl: SImpl_ExtractConj" ptrans in
-    pctx :>: PTrans_Conj [ps !! mbLift i]
-    :>: PTrans_Conj (deleteNth (mbLift i) ps))
+    let ps = unPTransConj "translateSimplImpl: SImpl_ExtractConj" ptrans
+        i = mbLift mb_i in
+    if i < length ps then
+      pctx :>: PTrans_Conj [ps !! i]
+      :>: PTrans_Conj (deleteNth i ps)
+    else
+      error "translateSimplImpl: SImpl_ExtractConj: index out of bounds")
   m
 
-translateSimplImpl _ [nuP| SImpl_CopyConj x _ i |] m =
+translateSimplImpl _ [nuP| SImpl_CopyConj x _ mb_i |] m =
   withPermStackM (:>: translateVar x)
   (\(pctx :>: ptrans) ->
-    let ps = unPTransConj "translateSimplImpl: SImpl_CopyConj" ptrans in
-    pctx :>: PTrans_Conj [ps !! mbLift i] :>: ptrans)
+    let ps = unPTransConj "translateSimplImpl: SImpl_CopyConj" ptrans
+        i = mbLift mb_i in
+    if i < length ps then pctx :>: PTrans_Conj [ps !! i] :>: ptrans else
+      error "translateSimplImpl: SImpl_CopyConj: index out of bounds")
   m
 
 translateSimplImpl _ [nuP| SImpl_InsertConj x _ _ i |] m =
