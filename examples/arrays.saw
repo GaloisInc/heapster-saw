@@ -13,7 +13,7 @@ heapster_gen_block_perms_hint env "contains0" []; // Note that we could give spe
 heapster_typecheck_fun env "contains0" "(len:bv 64).arg0:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg1:eq(llvmword(len)) -o arg0:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg1:true, ret:exists z:(bv 64).eq(llvmword(z))";
 
 // the new way using a gen perms hint
-heapster_gen_block_perms_hint env "zero_array";
+heapster_gen_block_perms_hint env "zero_array" [];
 heapster_typecheck_fun env "zero_array" "(len:bv 64).arg0:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg1:eq(llvmword(len)) -o arg0:array(0,<len,*1,[(W,0) |-> exists z:bv 64.eq(llvmword(z))]), arg1:true, ret:true";
 
 heapster_export_coq env "arrays.v";
