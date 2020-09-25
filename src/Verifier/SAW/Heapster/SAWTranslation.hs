@@ -1682,7 +1682,7 @@ lookupEntryTrans entryID blkMap =
   let TypedBlockTrans entries = RL.get (entryBlockID entryID) blkMap in
   foldr (\trans rest ->
           case trans of
-            TypedEntryTrans (TypedEntry entryID' _ _ _ _ _ _) _
+            TypedEntryTrans (TypedEntry entryID' _ _ _ _ _ _ _) _
               | Just Refl <- testEquality entryID entryID' -> trans
             _ -> rest)
   (case find (\(TypedEntryTrans entry _) ->
@@ -1702,7 +1702,7 @@ lookupEntryPermsIn :: TypedEntryID blocks args ghosts ->
                       MbValuePerms ((tops :++: args) :++: ghosts)
 lookupEntryPermsIn entryID blkMap =
   case lookupEntryTrans entryID blkMap of
-    TypedEntryTrans (TypedEntry entryID' _ _ _ perms_in _ _) _
+    TypedEntryTrans (TypedEntry entryID' _ _ _ _ perms_in _ _) _
       | Just Refl <- testEquality entryID entryID' -> perms_in
     _ -> error "lookupEntryPermsIn: internal error"
 
@@ -3264,7 +3264,10 @@ instance PermCheckExtC ext =>
 
 -- | Fold a function over each 'TypedEntry' in a 'TypedBlockMap' that
 -- corresponds to a letrec-bound variable, which is each entry in a 'TypedBlock'
--- marked as post-visited
+-- with in-degree > 1
+--
+-- FIXME: consider whether we want let and not letRec for entrypoints that have
+-- in-degree > 1 but are not the heads of loops
 foldBlockMapLetRec :: (forall args.
                        TypedEntry ext blocks tops ret args -> b -> b) ->
                       b -> TypedBlockMap ext blocks tops ret -> b
@@ -3272,9 +3275,12 @@ foldBlockMapLetRec = helper where
   helper :: (forall args. TypedEntry ext blocks tops ret args -> b -> b) ->
             b -> RAssign (TypedBlock ext blocks tops ret) bs -> b
   helper _ b MNil = b
-  helper f b (bs :>: TypedBlock (entry:entries) True) =
-    f entry $ helper f b (bs :>: TypedBlock entries True)
-  helper f b (bs :>: TypedBlock _ _) = helper f b bs
+  helper f b (bs :>: TypedBlock (entry:entries))
+    | typedEntryHasMultiInDegree entry =
+      f entry $ helper f b (bs :>: TypedBlock entries)
+  helper f b (bs :>: TypedBlock (_:entries)) =
+    helper f b (bs :>: TypedBlock entries)
+  helper f b (bs :>: TypedBlock []) = helper f b bs
 
 -- FIXME: documentation
 lambdaLRTTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
@@ -3289,7 +3295,7 @@ lambdaLRTTransM x tps body_f =
 -- 'TypedEntry'
 translateEntryLRT :: TypedEntry ext blocks tops ret args ->
                      TypeTransM ctx OpenTerm
-translateEntryLRT (TypedEntry entryID tops args ret perms_in perms_out _) =
+translateEntryLRT (TypedEntry entryID _ tops args ret perms_in perms_out _) =
   trace "translateEntryLRT starting..." $ inEmptyCtxTransM $
   translateClosed (appendCruCtx (appendCruCtx tops args)
                    (entryGhosts entryID)) >>= \arg_tps ->
@@ -3328,19 +3334,20 @@ lambdaBlockMap = helper where
              TypeTransM ctx OpenTerm) ->
             TypeTransM ctx OpenTerm
   helper MNil f = f MNil
-  helper (bs :>: TypedBlock [] _) f =
+  helper (bs :>: TypedBlock []) f =
     helper bs (f . (:>: TypedBlockTrans []))
-  helper (bs :>: TypedBlock (entry:entries) True) f =
-    do entryLRT <- translateEntryLRT entry
-       lambdaOpenTermTransM "f" (applyOpenTerm
-                                 (globalOpenTerm "Prelude.lrtToType")
-                                 entryLRT) $ \fvar ->
-         helper (bs :>: TypedBlock entries True)
-         (\(bsTrans :>: TypedBlockTrans eTranss) ->
-           f (bsTrans :>:
-              TypedBlockTrans (TypedEntryTrans entry (Just fvar):eTranss)))
-  helper (bs :>: TypedBlock (entry:entries) False) f =
-    helper (bs :>: TypedBlock entries False)
+  helper (bs :>: TypedBlock (entry:entries)) f
+    | typedEntryHasMultiInDegree entry =
+      do entryLRT <- translateEntryLRT entry
+         lambdaOpenTermTransM "f" (applyOpenTerm
+                                   (globalOpenTerm "Prelude.lrtToType")
+                                   entryLRT) $ \fvar ->
+           helper (bs :>: TypedBlock entries)
+           (\(bsTrans :>: TypedBlockTrans eTranss) ->
+             f (bsTrans :>:
+                TypedBlockTrans (TypedEntryTrans entry (Just fvar):eTranss)))
+  helper (bs :>: TypedBlock (entry:entries)) f =
+    helper (bs :>: TypedBlock entries)
            (\(bsTrans :>: TypedBlockTrans eTranss) ->
              f (bsTrans :>:
                 TypedBlockTrans (TypedEntryTrans entry Nothing:eTranss)))
@@ -3349,7 +3356,7 @@ translateEntryBody :: PermCheckExtC ext =>
                       TypedBlockMapTrans ext blocks tops ret ->
                       TypedEntry ext blocks tops ret args ->
                       TypeTransM ctx OpenTerm
-translateEntryBody mapTrans (TypedEntry entryID tops args ret in_perms
+translateEntryBody mapTrans (TypedEntry entryID _ tops args ret in_perms
                              ret_perms stmts) =
   inEmptyCtxTransM $
   lambdaExprCtx (appendCruCtx (appendCruCtx tops args) (entryGhosts entryID)) $

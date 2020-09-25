@@ -850,12 +850,43 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
 -- * Typed Control-Flow Graphs
 ----------------------------------------------------------------------
 
+-- | This type characterizes the number and sort of jumps to a 'TypedEntry'
+data TypedEntryInDegree
+     -- | There are no jumps to the entrypoint
+  = EntryInDegree_None
+    -- | There is one jump to the entrypoint
+  | EntryInDegree_One
+    -- | There is more than one jump to the entrypoint
+  | EntryInDegree_Many
+    -- | The entrypoint is the head of a loop, so has more than one jump to it,
+    -- one of which is a back edge
+  | EntryInDegree_Loop
+
+-- | "Add" two in-degrees
+addInDegrees :: TypedEntryInDegree -> TypedEntryInDegree -> TypedEntryInDegree
+addInDegrees EntryInDegree_Loop _ = EntryInDegree_Loop
+addInDegrees _ EntryInDegree_Loop = EntryInDegree_Loop
+addInDegrees EntryInDegree_None in_deg = in_deg
+addInDegrees in_deg EntryInDegree_None = in_deg
+addInDegrees _ _ =
+  -- The last case is adding 1 or many + 1 or many = many
+  EntryInDegree_Many
+
+-- | Add one to an in-degree
+incrInDegree :: TypedEntryInDegree -> TypedEntryInDegree
+incrInDegree = addInDegrees EntryInDegree_One
+
+-- | Test if an in-degree is at least many
+inDegreeIsMulti :: TypedEntryInDegree -> Bool
+inDegreeIsMulti EntryInDegree_None = False
+inDegreeIsMulti EntryInDegree_One = False
+inDegreeIsMulti EntryInDegree_Many = True
+inDegreeIsMulti EntryInDegree_Loop = True
+
 -- | A single, typed entrypoint to a Crucible block. Note that our blocks
 -- implicitly take extra "ghost" arguments, that are needed to express the input
 -- and output permissions. The first of these ghost arguments are the top-level
--- inputs to the entire function. Each entrypoint is also marked with a 'Bool'
--- flag that indicates whether it is the head of a strongly-connected component,
--- i.e., if it is the entrypoint of a loop.
+-- inputs to the entire function.
 --
 -- FIXME: add a @ghostss@ type argument that associates a @ghosts@ type with
 -- each index of each block, rather than having @ghost@ existentially bound
@@ -863,6 +894,7 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
 data TypedEntry ext blocks tops ret args where
   TypedEntry ::
     !(TypedEntryID blocks args ghosts) ->
+    !(TypedEntryInDegree) ->
     !(CruCtx tops) -> !(CruCtx args) -> !(TypeRepr ret) ->
     !(MbValuePerms ((tops :++: args) :++: ghosts)) ->
     !(Mb ((tops :++: args) :++: ghosts :> ret) (ValuePerms (tops :> ret))) ->
@@ -870,8 +902,25 @@ data TypedEntry ext blocks tops ret args where
       (TypedStmtSeq ext blocks tops ret ((tops :++: args) :++: ghosts))) ->
     TypedEntry ext blocks tops ret args
 
+-- | Extract the index of the entrypoint in all entrypoints in the same block
 typedEntryIndex :: TypedEntry ext blocks tops ret args -> Int
-typedEntryIndex (TypedEntry entryID _ _ _ _ _ _) = entryIndex entryID
+typedEntryIndex (TypedEntry entryID _ _ _ _ _ _ _) = entryIndex entryID
+
+-- | Extract the in-degree of an entrypoint
+typedEntryInDegree :: TypedEntry ext blocks tops ret args -> TypedEntryInDegree
+typedEntryInDegree (TypedEntry _ in_deg _ _ _ _ _ _) = in_deg
+
+-- | Test if an entrypoint has a multiple in-degree
+typedEntryHasMultiInDegree :: TypedEntry ext blocks tops ret args -> Bool
+typedEntryHasMultiInDegree = inDegreeIsMulti . typedEntryInDegree
+
+-- | Add to the in-degree of an entrypoint
+entryIncrInDegree :: TypedEntry ext blocks tops ret args ->
+                     TypedEntry ext blocks tops ret args
+entryIncrInDegree (TypedEntry entryID in_deg tops args ret_tp
+                   perms_in perms_ret body) =
+  TypedEntry entryID (incrInDegree in_deg) tops args ret_tp
+  perms_in perms_ret body
 
 -- | Get the body of a 'TypedEntry' using its 'TypedEntryID' to indicate the
 -- @ghosts@ argument. It is an error if the wrong 'TypedEntryID' is given.
@@ -880,31 +929,41 @@ typedEntryBody :: TypedEntryID blocks args ghosts ->
                   Mb ((tops :++: args) :++: ghosts)
                   (TypedStmtSeq ext blocks tops ret
                    ((tops :++: args) :++: ghosts))
-typedEntryBody entryID (TypedEntry entryID' _ _ _ _ _ body)
+typedEntryBody entryID (TypedEntry entryID' _ _ _ _ _ _ body)
   | Just Refl <- testEquality entryID entryID' = body
 typedEntryBody _ _ = error "typedEntryBody"
-
 
 -- | A typed Crucible block is a list of typed entrypoints to that block
 data TypedBlock ext blocks tops ret args =
   TypedBlock
   {
     -- | The entrypoints into this block
-    typedBlockEntries :: [TypedEntry ext blocks tops ret args],
-    -- | Whether this block was jumped to after it was visited
-    typedBlockPostVisited :: Bool
+    typedBlockEntries :: [TypedEntry ext blocks tops ret args]
   }
+
+modifyEntry :: (TypedEntry ext blocks tops ret args ->
+                TypedEntry ext blocks tops ret args) ->
+               TypedEntryID blocks args ghosts ->
+               TypedBlock ext blocks tops ret args ->
+               TypedBlock ext blocks tops ret args
+modifyEntry f entryID block =
+  TypedBlock { typedBlockEntries =
+                 map (\case
+                         e@(TypedEntry entryID' _ _ _ _ _ _ _)
+                           | Just Refl <- testEquality entryID entryID' -> f e
+                         e -> e) $
+                 typedBlockEntries block }
 
 -- | A map assigning a 'TypedBlock' to each 'BlockID'
 type TypedBlockMap ext blocks tops ret =
   RAssign (TypedBlock ext blocks tops ret) blocks
 
 instance Show (TypedEntry ext blocks tops ret args) where
-  show (TypedEntry entryID _ _ _ _ _ _) =
+  show (TypedEntry entryID _ _ _ _ _ _ _) =
     "<entry " ++ show (entryIDIndices entryID) ++ ">"
 
 instance Show (TypedBlock ext blocks tops ret args) where
-  show (TypedBlock entries _) = show entries
+  show (TypedBlock entries) = show entries
 
 instance Show (TypedBlockMap ext blocks tops ret) where
   show blkMap = show $ RL.mapToList show blkMap
@@ -1019,6 +1078,7 @@ modifySTCurPerms f_perms st = setSTCurPerms (f_perms $ stCurPerms st) st
 data BlockEntryInfo blocks tops ret args where
   BlockEntryInfo :: {
     entryInfoID :: TypedEntryID blocks args ghosts,
+    entryInfoInDegree :: TypedEntryInDegree,
     entryInfoTops :: CruCtx tops,
     entryInfoArgs :: CruCtx args,
     entryInfoPermsIn :: MbValuePerms ((tops :++: args) :++: ghosts)
@@ -1026,15 +1086,22 @@ data BlockEntryInfo blocks tops ret args where
 
 -- | Extract the 'BlockID' from entrypoint info
 entryInfoBlockID :: BlockEntryInfo blocks tops ret args -> Member blocks args
-entryInfoBlockID (BlockEntryInfo entryID _ _ _) = entryBlockID entryID
+entryInfoBlockID (BlockEntryInfo entryID _ _ _ _) = entryBlockID entryID
 
 -- | Extract the entry id from entrypoint info
 entryInfoIndex :: BlockEntryInfo blocks tops ret args -> Int
-entryInfoIndex (BlockEntryInfo entryID _ _ _) = entryIndex entryID
+entryInfoIndex (BlockEntryInfo entryID _ _ _ _) = entryIndex entryID
 
 -- | Extract the block id, entry id pair from a 'BlockEntryInfo"
 entryInfoIndices :: BlockEntryInfo blocks tops ret args -> (Int, Int)
-entryInfoIndices (BlockEntryInfo entryID _ _ _) = entryIDIndices entryID
+entryInfoIndices (BlockEntryInfo entryID _ _ _ _) = entryIDIndices entryID
+
+-- | Add one to the in-degree of a 'BlockEntryInfo'
+entryInfoIncrInDegree :: BlockEntryInfo blocks tops ret args ->
+                         BlockEntryInfo blocks tops ret args
+entryInfoIncrInDegree entry_info =
+  entry_info { entryInfoInDegree =
+                 incrInDegree (entryInfoInDegree entry_info) }
 
 -- | Information about the current state of type-checking for a block
 data BlockInfo ext blocks tops ret args =
@@ -1050,6 +1117,26 @@ data BlockInfo ext blocks tops ret args =
 blockInfoVisited :: BlockInfo ext blocks tops ret args -> Bool
 blockInfoVisited (BlockInfo { blockInfoBlock = Just _ }) = True
 blockInfoVisited _ = False
+
+-- | Modify the 'BlockEntryInfo' and, if it is defined, the 'TypedEntry', for a
+-- particular entrypoint in a 'BlockInfo'
+modifyEntryInfo :: (BlockEntryInfo blocks tops ret args ->
+                    BlockEntryInfo blocks tops ret args) ->
+                   (TypedEntry ext blocks tops ret args ->
+                    TypedEntry ext blocks tops ret args) ->
+                   TypedEntryID blocks args ghosts ->
+                   BlockInfo ext blocks tops ret args ->
+                   BlockInfo ext blocks tops ret args
+modifyEntryInfo f_info f_entry entryID info =
+  info { blockInfoEntries =
+           map (\case
+                   entry_info@(BlockEntryInfo {..})
+                     | Just Refl <- testEquality entryID entryInfoID ->
+                       f_info entry_info
+                   entry_info -> entry_info) $
+           blockInfoEntries info
+       , blockInfoBlock =
+           fmap (modifyEntry f_entry entryID) (blockInfoBlock info) }
 
 {- FIXME: remove?
 -- | Add a new 'BlockEntryInfo' to a 'BlockInfo' and return its 'TypedEntryID'.
@@ -1222,25 +1309,13 @@ type family BlkArgs (args :: BlkParams) :: RList CrucibleType where
 -- | A change to a 'BlockInfoMap'
 data BlockInfoMapDelta blocks tops ret where
   -- | Add a new entrypoint to a block
-  BlockInfoMapAdd :: Member blocks args ->
-                     BlockEntryInfo blocks tops ret args ->
-                     BlockInfoMapDelta blocks tops ret
+  BlockInfoMapAddEntry :: Member blocks args ->
+                          BlockEntryInfo blocks tops ret args ->
+                          BlockInfoMapDelta blocks tops ret
 
-  -- | Mark a block as being jumped to after having been visited
-  BlockInfoMapPostVisit :: Member blocks (args :: RList CrucibleType) ->
+  -- | Increment the number of jumps to an entrypoint
+  BlockInfoMapIncrJumps :: TypedEntryID blocks args ghosts ->
                            BlockInfoMapDelta blocks tops ret
-
--- | Get all the 'BlockEntryInfo's for a specific block added by a list of
--- 'BlockInfoMapDelta's
-getDeltaEntriesForBlock :: Member blocks args ->
-                           [BlockInfoMapDelta blocks tops ret] ->
-                           [BlockEntryInfo blocks tops ret args]
-getDeltaEntriesForBlock memb =
-  mapMaybe (\delta -> case delta of
-               BlockInfoMapAdd memb' entry
-                 | Just Refl <- testEquality memb memb' ->
-                     Just entry
-               _ -> Nothing)
 
 -- | Add a new entrypoint to a 'BlockInfoMap'
 addBlockEntry :: Member blocks args -> BlockEntryInfo blocks tops ret args ->
@@ -1250,28 +1325,33 @@ addBlockEntry memb entry =
   RL.modify memb $ \info ->
   info { blockInfoEntries = blockInfoEntries info ++ [entry] }
 
--- | Mark a block as being jumped to after having been visited
-postVisitBlockInMap :: Member blocks (args :: RList CrucibleType) ->
+-- | Increment the number of jumps to an entrypoint
+incrEntryJumpsInMap :: TypedEntryID blocks args ghosts ->
                        BlockInfoMap ext blocks tops ret ->
                        BlockInfoMap ext blocks tops ret
-postVisitBlockInMap memb =
-  RL.modify memb $ \info ->
-  info { blockInfoBlock =
-         case blockInfoBlock info of
-           Just block -> Just $ block { typedBlockPostVisited = True }
-           Nothing -> error "postVisitBlockInMap: not visited!" }
+incrEntryJumpsInMap entryID =
+  RL.modify (entryBlockID entryID) $
+  modifyEntryInfo entryInfoIncrInDegree entryIncrInDegree entryID
 
 -- | Apply a 'BlockInfoMapDelta' to a 'BlockInfoMap'
 applyBlockInfoMapDelta :: BlockInfoMapDelta blocks tops ret ->
                           BlockInfoMap ext blocks tops ret ->
                           BlockInfoMap ext blocks tops ret
-applyBlockInfoMapDelta (BlockInfoMapAdd memb entry) =
+applyBlockInfoMapDelta (BlockInfoMapAddEntry memb entry) =
   addBlockEntry memb entry
-applyBlockInfoMapDelta (BlockInfoMapPostVisit memb) =
-  postVisitBlockInMap memb
+applyBlockInfoMapDelta (BlockInfoMapIncrJumps entryID) =
+  incrEntryJumpsInMap entryID
 
--- | The state that can be modified by "inner" computations. Note that the
--- 'blockInfoBlock' field of any 'BlockInfo's will be ignored.
+-- | Apply a list of 'BlockInfoMapDelta's to a 'TopPermCheckState'
+applyDeltasToTopState :: [BlockInfoMapDelta blocks tops ret] ->
+                         TopPermCheckState ext cblocks blocks tops ret ->
+                         TopPermCheckState ext cblocks blocks tops ret
+applyDeltasToTopState deltas top_st =
+  top_st { stBlockInfo =
+             foldr applyBlockInfoMapDelta (stBlockInfo top_st) deltas }
+
+-- | The state that can be modified by "inner" computations = a list of changes
+-- / "deltas" to the current 'BlockInfoMap'
 data InnerPermCheckState blocks tops ret =
   InnerPermCheckState
   {
@@ -1329,18 +1409,20 @@ liftInnerToTopM m =
   do st <- get
      let (a, cl_inner_st) =
            runState (runReaderT m st) clEmptyInnerPermCheckState
-     let blockInfoDeltas = innerBlockInfo $ unClosed cl_inner_st
-     modify (\top_st' ->
-              top_st' { stBlockInfo =
-                          foldr applyBlockInfoMapDelta (stBlockInfo top_st')
-                          blockInfoDeltas })
+     let deltas = innerBlockInfo $ unClosed cl_inner_st
+     modify (applyDeltasToTopState deltas)
      return a
 
--- | Get the current top-level state
+-- | Get the current top-level state modulo the modifications to the current
+-- block info map
 top_get :: PermCheckM ext cblocks blocks tops ret r ps r ps
            (TopPermCheckState ext cblocks blocks tops ret)
-top_get = gcaptureCC $ \k -> ask >>= k
+top_get = gcaptureCC $ \k ->
+  do top_st <- ask
+     deltas <- innerBlockInfo <$> unClosed <$> get
+     k $ applyDeltasToTopState deltas top_st
 
+-- | Look up the 'BlockInfo' for a block
 lookupBlockInfo :: Member blocks args ->
                    PermCheckM ext cblocks blocks tops ret r ps r ps
                    (BlockInfo ext blocks tops ret args)
@@ -1348,18 +1430,15 @@ lookupBlockInfo memb =
   top_get >>>= \top_st ->
   greturn (RL.get memb $ stBlockInfo top_st)
 
+-- | Create a new entry ID for the given block with the given ghost variables
 getNextEntryID :: Member blocks args -> CruCtx ghosts ->
                   PermCheckM ext cblocks blocks tops ret r ps r ps
                   (TypedEntryID blocks args ghosts)
 getNextEntryID memb ghosts =
   (stBlockInfo <$> top_get) >>>= \blkMap ->
-  liftPermCheckM (innerBlockInfo <$> unClosed <$> get) >>>= \deltas ->
-  let max_ix1 =
-        foldr (max . entryInfoIndex) 0 $
-        blockInfoEntries $ RL.get memb blkMap in
   let max_ix =
-        foldr (max . entryInfoIndex) max_ix1 $
-        getDeltaEntriesForBlock memb deltas in
+        foldr max 0 $ map entryInfoIndex $
+        blockInfoEntries $ RL.get memb blkMap in
   greturn (TypedEntryID memb ghosts (max_ix + 1))
 
 -- | Insert a new block entry point
@@ -1375,21 +1454,22 @@ insNewBlockEntry memb args ghosts perms_in =
                     st { innerBlockInfo =
                            innerBlockInfo st ++ [delta] } |]) `clApply`
        cl_st `clApply`
-       ($(mkClosed [| BlockInfoMapAdd |]) `clApply` toClosed memb `clApply`
+       ($(mkClosed [| BlockInfoMapAddEntry |]) `clApply` toClosed memb `clApply`
         ($(mkClosed [| BlockEntryInfo |]) `clApply` toClosed entryID `clApply`
+         $(mkClosed [| EntryInDegree_One |]) `clApply`
          toClosed topCtx `clApply` toClosed args `clApply` perms_in))
      return entryID
 
 -- | Mark a block as being jumped to after it was visited
-postVisitBlock :: Member blocks (args :: RList CrucibleType) ->
+incrEntryJumps :: TypedEntryID blocks args ghosts ->
                   PermCheckM ext cblocks blocks tops ret r ps r ps ()
-postVisitBlock memb =
+incrEntryJumps entryID =
   liftPermCheckM $ modify $ \cl_st ->
   $(mkClosed [| \st delta ->
                st { innerBlockInfo =
                       innerBlockInfo st ++ [delta] } |]) `clApply`
   cl_st `clApply`
-  ($(mkClosed [| BlockInfoMapPostVisit |]) `clApply` toClosed memb)
+  ($(mkClosed [| BlockInfoMapIncrJumps |]) `clApply` toClosed entryID)
 
 -- | Look up the current primary permission associated with a variable
 getVarPerm :: ExprVar a ->
@@ -2819,10 +2899,10 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
 
   case maybe_entry of
     -- If so, prove the required permissions and jump
-    Just (BlockEntryInfo entryID _ _ entry_perms_in) ->
+    Just (BlockEntryInfo entryID _ _ _ entry_perms_in) ->
 
       -- We are jumping to an existing entrypoint, so mark it as post-visited
-      postVisitBlock memb >>>
+      incrEntryJumps entryID >>>
 
       -- Substitute the top-level and normal args into the input perms
       let ghosts = entryGhosts entryID
@@ -3006,19 +3086,20 @@ setInputExtState ExtRepr_LLVM _ _ =
   greturn ()
 
 -- | Type-check a single block entrypoint
-tcBlockEntry :: PermCheckExtC ext => Block ext cblocks ret args ->
+tcBlockEntry :: PermCheckExtC ext => TypedEntryInDegree ->
+                Block ext cblocks ret args ->
                 BlockEntryInfo blocks tops ret (CtxToRList args) ->
                 TopPermCheckM ext cblocks blocks tops ret
                 (TypedEntry ext blocks tops ret (CtxToRList args))
-tcBlockEntry blk (BlockEntryInfo {..}) =
+tcBlockEntry in_deg blk (BlockEntryInfo {..}) =
   get >>= \(TopPermCheckState {..}) ->
   let args_prxs = cruCtxProxies entryInfoArgs
       ghosts_prxs = cruCtxProxies $ entryGhosts entryInfoID
       ret_perms =
         mbCombine $ extMbMulti ghosts_prxs $ extMbMulti args_prxs $
         mbSeparate (MNil :>: Proxy) stRetPerms in
-  fmap (TypedEntry entryInfoID stTopCtx entryInfoArgs stRetType
-        entryInfoPermsIn ret_perms) $
+  fmap (TypedEntry entryInfoID (addInDegrees in_deg entryInfoInDegree)
+        stTopCtx entryInfoArgs stRetType entryInfoPermsIn ret_perms) $
   liftInnerToTopM $ strongMbM $
   flip nuMultiWithElim1 (mbValuePermsToDistPerms
                          entryInfoPermsIn) $ \ns perms ->
@@ -3044,22 +3125,24 @@ tcBlockEntry blk (BlockEntryInfo {..}) =
   tcEmitStmtSeq ctx (blk ^. blockStmts)
 
 -- | Type-check a Crucible block
-tcBlock :: PermCheckExtC ext => Member blocks (CtxToRList args) ->
+tcBlock :: PermCheckExtC ext => TypedEntryInDegree ->
+           Member blocks (CtxToRList args) ->
            Block ext cblocks ret args ->
            TopPermCheckM ext cblocks blocks tops ret
            (TypedBlock ext blocks tops ret (CtxToRList args))
-tcBlock memb blk =
+tcBlock in_deg memb blk =
   do entries <- blockInfoEntries <$> RL.get memb <$>
        stBlockInfo <$> get
-     TypedBlock <$> mapM (tcBlockEntry blk) entries <*> return False
+     TypedBlock <$> mapM (tcBlockEntry in_deg blk) entries
 
 -- | Type-check a Crucible block and put its translation into the 'BlockInfo'
 -- for that block
-tcEmitBlock :: PermCheckExtC ext => Block ext cblocks ret args ->
+tcEmitBlock :: PermCheckExtC ext => TypedEntryInDegree ->
+               Block ext cblocks ret args ->
                TopPermCheckM ext cblocks blocks tops ret ()
-tcEmitBlock blk =
+tcEmitBlock in_deg blk =
   do !memb <- stLookupBlockID (blockID blk) <$> get
-     !block_t <- tcBlock memb blk
+     !block_t <- tcBlock in_deg memb blk
      modifyBlockInfo (blockInfoMapSetBlock memb block_t)
 
 -- | Extend permissions on the real arguments of a block to a 'DistPerms' for
@@ -3110,7 +3193,7 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
      let init_entryID = TypedEntryID init_memb CruCtxNil 0
      -- let init_args = mkCruCtx $ handleArgTypes $ cfgHandle cfg
      modifyBlockInfo (addBlockEntry init_memb $
-                      BlockEntryInfo init_entryID tops inits
+                      BlockEntryInfo init_entryID EntryInDegree_One tops inits
                       (funPermToBlockInputs fun_perm))
 
      -- Next, add entrypoints for all the block entry hints, keeping track of
@@ -3129,7 +3212,8 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
                                                    blockIDIndex h_blkID)
               let h_allargs = appendCruCtx h_ghosts h_args
               modifyBlockInfo (addBlockEntry h_memb $
-                               BlockEntryInfo h_entryID tops h_args h_perms_in)
+                               BlockEntryInfo h_entryID EntryInDegree_One
+                               tops h_args h_perms_in)
               return (Just $ Some h_blkID)
        Some (BlockHint _ _ h_blkID (BlockEntryHintSort _ _ _)) ->
          trace ("Block entry hint for block "
@@ -3171,11 +3255,11 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
       do blkIx <- memberLength <$> stLookupBlockID blkID <$> get
          () <- trace ("Visiting block: " ++ show blkIx
                       ++ " (" ++ show blkID ++ ")") $ return ()
-         !ret <- tcEmitBlock (getBlock blkID (cfgBlockMap cfg))
+         !ret <- tcEmitBlock EntryInDegree_None (getBlock blkID (cfgBlockMap cfg))
          !s <- get
          trace ("Visiting block " ++ show blkIx ++ " complete") $ return ret
     visit cfg (SCC (Just (Some blkID)) comps) =
-      tcEmitBlock (getBlock blkID (cfgBlockMap cfg)) >>
+      tcEmitBlock EntryInDegree_Loop (getBlock blkID (cfgBlockMap cfg)) >>
       mapM_ (visit cfg) comps
     visit cfg (SCC Nothing comps) =
       -- NOTE: this should never actually happen, as nothing jumps to Nothing
