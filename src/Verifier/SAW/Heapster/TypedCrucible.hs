@@ -77,6 +77,7 @@ import Lang.Crucible.CFG.Expr
 import Lang.Crucible.CFG.Core
 import Lang.Crucible.CFG.Extension
 import Lang.Crucible.Analysis.Fixpoint.Components
+import Lang.Crucible.LLVM.DataLayout
 import Lang.Crucible.LLVM.Extension.Safety.UndefinedBehavior as UB
 
 import Verifier.SAW.Heapster.CruUtil
@@ -1233,7 +1234,8 @@ data TopPermCheckState ext cblocks blocks tops ret =
     stBlockInfo :: BlockInfoMap ext blocks tops ret,
     stPermEnv :: PermEnv,
     stFnHandle :: SomeHandle,
-    stBlockTypes :: Assignment CtxRepr cblocks
+    stBlockTypes :: Assignment CtxRepr cblocks,
+    stEndianness :: EndianForm
   }
 
 {-
@@ -1256,9 +1258,9 @@ instance BindState (TopPermCheckState ext cblocks blocks ret) where
 -- | Build an empty 'TopPermCheckState' from a Crucible 'BlockMap'
 emptyTopPermCheckState ::
   FnHandle init ret -> CruCtx tops -> MbValuePerms (tops :> ret) ->
-  BlockMap ext cblocks ret -> PermEnv ->
+  BlockMap ext cblocks ret -> PermEnv -> EndianForm ->
   TopPermCheckState ext cblocks (CtxCtxToRList cblocks) tops ret
-emptyTopPermCheckState h tops retPerms blkMap env =
+emptyTopPermCheckState h tops retPerms blkMap env endianness =
   TopPermCheckState { stTopCtx = tops
                     , stRetType = handleReturnType h
                     , stRetPerms = retPerms
@@ -1267,6 +1269,7 @@ emptyTopPermCheckState h tops retPerms blkMap env =
                     , stPermEnv = env
                     , stFnHandle = SomeHandle h
                     , stBlockTypes = fmapFC blockInputs blkMap
+                    , stEndianness = endianness
                     }
 
 
@@ -1810,7 +1813,60 @@ resolveConstant = helper . PExpr_Var . typedRegVar where
   helper _ = return Nothing
 
 
--- FIXME HERE: documentation!
+-- | If the alignment is less than the machine word size @w@, find any LLVM
+-- pointer or array permissions for @ptr@ at some offset @off@ such that @off %
+-- w == k@ for some @k@ that is a multiple of @2^align@. Return @ptr-k@ and
+-- @k@. If the alignment equals the machine word size, return @ptr@ and @0@. If
+-- the alignment is greater than the word size, fail.
+alignPtrToArchWidth ::
+  (1 <= w, KnownNat w, w ~ ArchWidth arch) => Proxy arch ->
+  ProgramLoc -> TypedReg (LLVMPointerType w) -> Alignment ->
+  StmtPermCheckM (LLVM arch) cblocks blocks tops ret RNil RNil
+  (TypedReg (LLVMPointerType w), Bytes)
+
+-- If the alignment == word size, just return pointer
+alignPtrToArchWidth arch _ ptr align
+  | bytesToBits (fromAlignment align) == natValue (archWidth arch) =
+    greturn (ptr, 0)
+
+-- If the alignment > word size, fail
+alignPtrToArchWidth arch _ ptr align
+  | bytesToBits (fromAlignment align) > natValue (archWidth arch) =
+    stmtFailM (const $
+               string "alignPtrToArchWidth: alignment larger than word size")
+
+-- Otherwise search for ptr perms as outlined above
+alignPtrToArchWidth arch loc ptr align =
+  let w = archWidth arch
+      w_bytes = intValue w `div` 8
+      ptr_x = typedRegVar ptr in
+  ((asLLVMOffset <$> getRegEqualsExpr ptr) >>>= \case
+      Just x_off -> greturn x_off
+      Nothing ->
+        stmtFailM (\i ->
+                    string "alignPtrToArchWidth: pointer has word value:"
+                    <+> permPretty i (typedRegVar ptr))) >>>= \(x,ptr_off) ->
+  getSimpleRegPerm (TypedReg x) >>>= \case
+    ValPerm_Conj ps
+      | perm_offs <-
+          mapMaybe (\case
+                       Perm_LLVMField fp -> Just $ llvmFieldOffset fp
+                       Perm_LLVMArray ap -> Just $ llvmArrayOffset ap
+                       _ -> Nothing) ps
+      , k:_ <- mapMaybe (\off ->
+                          bvMatchConst (bvMod off w_bytes)) perm_offs
+      , k `mod` bytesToInteger (fromAlignment align) == 0 ->
+        emitStmt knownRepr loc
+        (TypedSetRegPermExpr knownRepr $
+         PExpr_LLVMOffset ptr_x (bvInt $ negate k)) >>>= \(_ :>: ret) ->
+        stmtRecombinePerms >>>
+        greturn (TypedReg ret, Bytes k)
+    _ ->
+      stmtFailM (\i -> string "alignPtrToArchWidth: pointer was not aligned:"
+                       <+> permPretty i ptr_x)
+
+
+-- | Convert a register of one type to one of another type, if possible
 convertRegType :: ExtRepr ext -> ProgramLoc ->
                   TypedReg tp1 -> TypeRepr tp1 -> TypeRepr tp2 ->
                   StmtPermCheckM ext cblocks blocks tops ret RNil RNil
@@ -1863,6 +1919,45 @@ convertRegType _ _ x tp1 tp2 =
   stmtFailM (\i -> string "Could not cast" <+> permPretty i x
                    <+> string "from" <+> string (show tp1)
                    <+> string "to" <+> string (show tp2))
+
+
+-- | Extract the bitvector of size @sz@ at offset @off@ from a larger bitvector
+-- @bv@, using the current endianness to determine how this extraction works
+extractBVBytes :: (1 <= w, KnownNat w) =>
+                  ProgramLoc -> NatRepr sz -> Bytes -> TypedReg (BVType w) ->
+                  StmtPermCheckM (LLVM arch) cblocks blocks tops ret RNil RNil
+                  (TypedReg (BVType sz))
+extractBVBytes loc sz off_bytes (reg :: TypedReg (BVType w)) =
+  let w :: NatRepr w = knownNat in
+  (stEndianness <$> top_get) >>>= \endianness ->
+  withKnownNat sz $
+  case (endianness, decideLeq (knownNat @1) sz) of
+
+    -- For little endian, we can just call BVSelect
+    (LittleEndian, Left sz_pf)
+      | Just (Some off) <- someNat (bytesToBits off_bytes)
+      , Left off_sz_w_pf <- decideLeq (addNat off sz) w ->
+        withLeqProof sz_pf $ withLeqProof off_sz_w_pf $
+        emitStmt knownRepr loc (TypedSetReg (BVRepr sz) $
+                                  TypedExpr (BVSelect off sz w $ RegNoVal reg)
+                                  Nothing) >>>= \(_ :>: x) ->
+        stmtRecombinePerms >>>
+        greturn (TypedReg x)
+
+    -- For big endian, we call BVSelect with idx = w - off - sz
+    (BigEndian, Left sz_pf)
+      | Just (Some idx) <- someNat (intValue w
+                                    - toInteger (bytesToBits off_bytes)
+                                    - intValue sz)
+      , Left idx_sz_w_pf <- decideLeq (addNat idx sz) w ->
+        withLeqProof sz_pf $ withLeqProof idx_sz_w_pf $
+        emitStmt knownRepr loc (TypedSetReg (BVRepr sz) $
+                                TypedExpr (BVSelect idx sz w $ RegNoVal reg)
+                                Nothing) >>>= \(_ :>: x) ->
+        stmtRecombinePerms >>>
+        greturn (TypedReg x)
+    _ -> error "extractBVBytes: negative offset!"
+
 
 -- | Emit a statement in the current statement sequence, where the supplied
 -- function says how that statement modifies the current permissions, given the
@@ -2413,18 +2508,36 @@ tcEmitLLVMStmt ::
   (CtxTrans (ctx ::> tp))
 
 -- Type-check a load of an LLVM pointer
-tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp _ _) =
+tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp storage align) =
   let tptr = tcReg ctx ptr in
-  -- Prove [l]ptr ((0,rw) |-> eq(y)) for some l, rw, and y
-  stmtProvePerm tptr llvmPtr0EqExPerm >>>= \impl_res ->
+  (stEndianness <$> top_get) >>>= \endianness ->
+  -- Align tptr to a word boundary
+  alignPtrToArchWidth arch loc tptr align >>>= \(tptr_aligned, align_off) ->
+  -- Prove [l]ptr((0,rw) |-> eq(y)) for some l, rw, and y
+  stmtProvePerm tptr_aligned llvmPtr0EqExPerm >>>= \impl_res ->
   let fp = subst impl_res llvmPtr0EqEx in
   -- Emit a TypedLLVMLoad instruction
-  emitTypedLLVMLoad arch loc tptr fp DistPermsNil >>>= \z ->
+  emitTypedLLVMLoad arch loc tptr_aligned fp DistPermsNil >>>= \z ->
   -- Recombine the resulting permissions onto the stack
   stmtRecombinePerms >>>
-  -- Finally, convert the return value to the requested type and return it
-  convertRegType knownRepr loc (TypedReg z) knownRepr tp >>>= \ret ->
-  greturn (addCtxName ctx $ typedRegVar ret)
+  -- Test if our original ptr was word-aligned
+  if align_off == 0 then
+    -- If so, convert the return value to the requested type and return it
+    (convertRegType knownRepr loc (TypedReg z) knownRepr tp >>>= \ret ->
+      greturn (addCtxName ctx $ typedRegVar ret))
+
+  else
+    -- Otherwise, get the bitvector value of res, extract out the required
+    -- number of bytes at align_off, and then cast to tp
+    case someNat (bytesToBits $ storageTypeSize storage) of
+      Just (Some storage_w)
+        | Left pf <- decideLeq (knownNat @1) storage_w ->
+          withLeqProof pf $
+          (convertRegType knownRepr loc (TypedReg z)
+           knownRepr (BVRepr $ archWidth arch)) >>>= \z_bv ->
+          extractBVBytes loc storage_w align_off z_bv >>>= \z_sub_bv ->
+          convertRegType knownRepr loc z_sub_bv (BVRepr storage_w) tp >>>= \ret ->
+          greturn (addCtxName ctx $ typedRegVar ret)
 
 
 -- Type-check a store of an LLVM pointer
@@ -3171,11 +3284,12 @@ funPermToBlockInputs fun_perm =
   (eqValuePerms args_ns)
 
 -- | Type-check a Crucible CFG
-tcCFG :: PermCheckExtC ext => PermEnv ->
+tcCFG :: PermCheckExtC ext => PermEnv -> EndianForm ->
          FunPerm ghosts (CtxToRList inits) ret ->
          CFG ext blocks inits ret ->
          TypedCFG ext (CtxCtxToRList blocks) ghosts (CtxToRList inits) ret
-tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits ret) =
+tcCFG env endianness fun_perm@(FunPerm ghosts
+                               inits _ _ _) (cfg :: CFG ext cblocks inits ret) =
   let h = cfgHandle cfg
       cblocks_types = fmapFC blockInputs $ cfgBlockMap cfg
       inits = mkCruCtx $ handleArgTypes h
@@ -3186,7 +3300,8 @@ tcCFG env fun_perm@(FunPerm ghosts inits _ _ _) (cfg :: CFG ext cblocks inits re
                   tops
                   perms_out
                   (cfgBlockMap cfg)
-                  env) $
+                  env
+                  endianness) $
   do
      -- First, add a block entrypoint for the initial block of the function
      init_memb <- stLookupBlockID (cfgEntryBlockID cfg) <$> get

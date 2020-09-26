@@ -74,6 +74,7 @@ import Lang.Crucible.LLVM.Extension
 import Lang.Crucible.LLVM.Extension.Safety
 import Lang.Crucible.LLVM.MemModel
 import Lang.Crucible.LLVM.Arch.X86
+import Lang.Crucible.LLVM.DataLayout
 import Lang.Crucible.CFG.Expr
 import qualified Lang.Crucible.CFG.Expr as Expr
 import Lang.Crucible.CFG.Core
@@ -3486,9 +3487,9 @@ someCFGAndPermPtrPerm w (SomeCFGAndPerm _ _ _ fun_perm) =
 -- each @tpi@ is the @i@th type in @lrts@
 tcTranslateCFGTupleFun ::
   (1 <= ArchWidth arch, KnownNat (ArchWidth arch), w ~ ArchWidth arch) =>
-  NatRepr w -> PermEnv -> [SomeCFGAndPerm (LLVM arch)] ->
+  NatRepr w -> PermEnv -> EndianForm -> [SomeCFGAndPerm (LLVM arch)] ->
   (OpenTerm, OpenTerm)
-tcTranslateCFGTupleFun w env cfgs_and_perms =
+tcTranslateCFGTupleFun w env endianness cfgs_and_perms =
   let lrts = map (someCFGAndPermLRT env) cfgs_and_perms in
   let lrts_tm =
         foldr (\lrt lrts' -> ctorOpenTerm "Prelude.LRT_Cons" [lrt,lrts'])
@@ -3512,7 +3513,7 @@ tcTranslateCFGTupleFun w env cfgs_and_perms =
   case cfg_and_perm of
     SomeCFGAndPerm sym _ cfg fun_perm ->
       trace ("Type-checking " ++ show sym) $
-      translateCFG env' $ tcCFG env' fun_perm cfg
+      translateCFG env' $ tcCFG env' endianness fun_perm cfg
 
 
 -- | Make a "coq-safe" identifier from a string that might contain
@@ -3542,10 +3543,11 @@ mkSafeIdent mnm nm =
 tcTranslateAddCFGs ::
   (1 <= ArchWidth arch, KnownNat (ArchWidth arch), w ~ ArchWidth arch) =>
   SharedContext -> ModuleName ->
-  NatRepr w -> PermEnv -> [SomeCFGAndPerm (LLVM arch)] ->
+  NatRepr w -> PermEnv -> EndianForm -> [SomeCFGAndPerm (LLVM arch)] ->
   IO PermEnv
-tcTranslateAddCFGs sc mod_name w env cfgs_and_perms =
-  do let (lrts, tup_fun) = tcTranslateCFGTupleFun w env cfgs_and_perms
+tcTranslateAddCFGs sc mod_name w env endianness cfgs_and_perms =
+  do let (lrts, tup_fun) =
+           tcTranslateCFGTupleFun w env endianness cfgs_and_perms
      let tup_fun_ident =
            mkSafeIdent mod_name (someCFGAndPermToName (head cfgs_and_perms)
                                  ++ "__tuple_fun")
