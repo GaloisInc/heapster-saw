@@ -277,6 +277,13 @@ instance Closable (BV.BV w) where
 instance Liftable (BV.BV w) where
   mbLift = unClosed . mbLift . fmap toClosed
 
+instance Closable Bytes where
+  toClosed (Bytes i) =
+    $(mkClosed [| Bytes |]) `clApply` (toClosed i)
+
+instance Liftable Bytes where
+  mbLift = unClosed . mbLift . fmap toClosed
+
 instance Closable (StringLiteral si) where
   toClosed = unsafeClose
 
