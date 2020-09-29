@@ -265,8 +265,8 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:ptr((rw,off) |-> p) * x:prop(off=off') -o x:ptr((rw,off') |-> p)
   SImpl_CastLLVMFieldOffset ::
-    (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w -> PermExpr (BVType w) ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz -> PermExpr (BVType w) ->
     SimplImpl (RNil :> LLVMPointerType w :> LLVMPointerType w)
     (RNil :> LLVMPointerType w)
 
@@ -276,10 +276,10 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:ptr((rw,off) |-> eq(y)) * y:p -o x:ptr((rw,off) |-> p)
   SImpl_IntroLLVMFieldContents ::
-    (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> ExprVar (LLVMPointerType w) ->
-    LLVMFieldPerm w ->
-    SimplImpl (RNil :> LLVMPointerType w :> LLVMPointerType w)
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> ExprVar (LLVMPointerType sz) ->
+    LLVMFieldPerm w sz ->
+    SimplImpl (RNil :> LLVMPointerType w :> LLVMPointerType sz)
     (RNil :> LLVMPointerType w)
 
   -- | Change the lifetime of a field permission to one during which the
@@ -287,8 +287,8 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:[l1]ptr((rw,off) |-> p) * l1:[l2]lcurrent -o [l2]x:ptr((rw,off) |-> p)
   SImpl_LLVMFieldLifetimeCurrent ::
-    (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     ExprVar LifetimeType -> PermExpr LifetimeType ->
     SimplImpl (RNil :> LLVMPointerType w :> LifetimeType)
     (RNil :> LLVMPointerType w)
@@ -298,16 +298,17 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:[always]ptr((rw,off) |-> p) -o [l]x:ptr((rw,off) |-> p)
   SImpl_LLVMFieldLifetimeAlways ::
-    (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w -> PermExpr LifetimeType ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
+    PermExpr LifetimeType ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Demote an LLVM field permission from write to read:
   --
   -- > x:[ls]ptr((W,off) |-> p) -o [ls]x:ptr((R,off) |-> p)
   SImpl_DemoteLLVMFieldWrite ::
-    (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Copy an array permission out of a larger array permission, assuming that
@@ -401,8 +402,8 @@ data SimplImpl ps_in ps_out where
   -- the existing borrows:
   --
   -- > x:array(off,<len,*stride,fps,bs)
-  -- > * x:(prop(i \in [off,len)) * disjoint(bs,i*stride+j))
-  -- >   -o x:(fp_j + off+i*stride+j) * x:array(off,<len,*stride,fps,bs)
+  -- > * x:(prop(i \in [off,len)) * disjoint(bs,i*stride+offset(fp_j)))
+  -- >   -o x:(fp_j + off + i*stride) * x:array(off,<len,*stride,fps,bs)
   SImpl_LLVMArrayIndexCopy ::
     (1 <= w, KnownNat w) =>
     ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
@@ -416,9 +417,9 @@ data SimplImpl ps_in ps_out where
   -- with any of the existing borrows, and adds a borrow of the given field:
   --
   -- > x:array(off,<len,*stride,fps,bs)
-  -- > * x:(prop(i \in [off,len)) * disjoint(bs,i*stride+j))
-  -- >   -o x:(fp_j + offset i*stride)
-  -- >      * x:array(off,<len,*stride,fps,(i*stride+j):bs)
+  -- > * x:(prop(i \in [off,len)) * disjoint(bs,i*stride+offset(fp_j)))
+  -- >   -o x:(fp_j + off + i*stride)
+  -- >      * x:array(off,<len,*stride,fps,(i*stride+offset(fp_j)):bs)
   SImpl_LLVMArrayIndexBorrow ::
     (1 <= w, KnownNat w) =>
     ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
@@ -429,8 +430,8 @@ data SimplImpl ps_in ps_out where
   -- permission, where @j@ is a static 'Int' and @i@ is an expression, undoing a
   -- borrow:
   --
-  -- > x:(fp_j + offset+i*stride+j)
-  -- > * x:array(off,<len,*stride,fps,(i*stride+j):bs)
+  -- > x:(fp_j + offset + i*stride)
+  -- > * x:array(off,<len,*stride,fps,(i*stride+offset(fp_j)):bs)
   -- >   -o x:array(off,<len,*stride,fps,bs)
   SImpl_LLVMArrayIndexReturn ::
     (1 <= w, KnownNat w) =>
@@ -447,7 +448,7 @@ data SimplImpl ps_in ps_out where
   -- >           (fp1, ..., fp(i-1), fpi', fp(i+1), ..., fpn),bs)
   SImpl_LLVMArrayContents ::
     (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> Int -> LLVMFieldPerm w ->
+    ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> Int -> LLVMArrayField w ->
     PermImpl ((:~:) (RNil :> LLVMPointerType w)) (RNil :> LLVMPointerType w) ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
@@ -455,8 +456,8 @@ data SimplImpl ps_in ps_out where
   --
   -- > x:ptr((rw,off) |-> p) -o x:is_llvmptr * x:ptr((rw,off) |-> p)
   SImpl_LLVMFieldIsPtr ::
-    (1 <= w, KnownNat w) =>
-    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     SimplImpl (RNil :> LLVMPointerType w)
     (RNil :> LLVMPointerType w :> LLVMPointerType w)
 
@@ -650,10 +651,11 @@ data PermImpl1 ps_in ps_outs where
   --
   -- > x:ptr((rw,off) -> p) -o y. x:ptr((rw,off) -> eq(y)) * y:p
   Impl1_ElimLLVMFieldContents ::
-    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMFieldPerm w ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     PermImpl1 (ps :> LLVMPointerType w)
-    (RNil :> '(RNil :> LLVMPointerType w,
-               ps :> LLVMPointerType w :> LLVMPointerType w))
+    (RNil :> '(RNil :> LLVMPointerType sz,
+               ps :> LLVMPointerType w :> LLVMPointerType sz))
 
   -- | Try to prove a bitvector proposition, or fail (as in the 'Impl1_Fail'
   -- rule) if this is not possible, where the 'String' is a pretty-printing of
@@ -964,14 +966,14 @@ simplImplIn (SImpl_LLVMArrayEmpty x ap) =
 
 simplImplIn (SImpl_LLVMArrayOneCell x ap) =
   case llvmArrayAsFields ap of
-    Just (fps, []) ->
-      distPerms1 x (ValPerm_Conj $ map Perm_LLVMField fps)
+    Just (flds, []) ->
+      distPerms1 x (ValPerm_Conj $ map llvmArrayFieldToAtomicPerm flds)
     _ -> error "simplImplIn: SImpl_LLVMArrayOneCell: unexpected form of array permission"
 
 simplImplIn (SImpl_LLVMArrayIndexCopy x ap ix) =
   if llvmArrayIndexFieldNum ix < length (llvmArrayFields ap) &&
-     atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
-                                           llvmArrayIndexFieldNum ix)) then
+     atomicPermIsCopyable (llvmArrayFieldToAtomicPerm $
+                           llvmArrayFieldWithOffset ap ix) then
     distPerms2 x (ValPerm_Conj [Perm_LLVMArray ap])
     x (ValPerm_Conj $ map Perm_BVProp $ llvmArrayIndexInArray ap ix)
   else
@@ -986,8 +988,8 @@ simplImplIn (SImpl_LLVMArrayIndexBorrow x ap ix) =
 
 simplImplIn (SImpl_LLVMArrayIndexReturn x ap ix) =
   if elem (FieldBorrow ix) (llvmArrayBorrows ap) then
-    distPerms2 x (ValPerm_Conj [Perm_LLVMField $
-                                llvmArrayFieldWithOffset ap ix])
+    distPerms2 x (ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm $
+                  llvmArrayFieldWithOffset ap ix)
     x (ValPerm_Conj [Perm_LLVMArray ap])
   else
     error "simplImplIn: SImpl_LLVMArrayIndexReturn: index not being borrowed"
@@ -1158,10 +1160,10 @@ simplImplOut (SImpl_LLVMArrayOneCell x ap) =
 
 simplImplOut (SImpl_LLVMArrayIndexCopy x ap ix) =
   if llvmArrayIndexFieldNum ix < length (llvmArrayFields ap) &&
-     atomicPermIsCopyable (Perm_LLVMField (llvmArrayFields ap !!
-                                           llvmArrayIndexFieldNum ix)) then
-    distPerms2 x (ValPerm_Conj [Perm_LLVMField $
-                                llvmArrayFieldWithOffset ap ix])
+     atomicPermIsCopyable (llvmArrayFieldToAtomicPerm $
+                           llvmArrayFieldWithOffset ap ix) then
+    distPerms2 x (ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm $
+                  llvmArrayFieldWithOffset ap ix)
     x (ValPerm_Conj [Perm_LLVMArray ap])
   else
     if llvmArrayIndexFieldNum ix >= length (llvmArrayFields ap) then
@@ -1170,8 +1172,8 @@ simplImplOut (SImpl_LLVMArrayIndexCopy x ap ix) =
       error "simplImplOut: SImpl_LLVMArrayIndexCopy: field is not copyable"
 
 simplImplOut (SImpl_LLVMArrayIndexBorrow x ap ix) =
-  distPerms2 x (ValPerm_Conj [Perm_LLVMField $
-                              llvmArrayFieldWithOffset ap ix])
+  distPerms2 x (ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm $
+                llvmArrayFieldWithOffset ap ix)
   x (ValPerm_Conj [Perm_LLVMArray $
                    llvmArrayAddBorrow (FieldBorrow ix) ap])
 
@@ -2240,9 +2242,10 @@ implLetBindVar tp e =
 -- fresh variable @y@ and popping the @y@ permissions off the stack. If @p@
 -- already has the form @eq(y)@, then just return @y@.
 implElimLLVMFieldContentsM ::
-  (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMFieldPerm w ->
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+  ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w)
-  (ExprVar (LLVMPointerType w))
+  (ExprVar (LLVMPointerType sz))
 implElimLLVMFieldContentsM _ fp
   | ValPerm_Eq (PExpr_Var y) <- llvmFieldContents fp
   = greturn y
@@ -2523,23 +2526,12 @@ implSplitLifetimeM x p l =
 -- | Combine proofs of @x:ptr(pps,(off,spl) |-> eq(y))@ and @y:p@ on the top of
 -- the permission stack into a proof of @x:ptr(pps,(off,spl |-> p))@
 introLLVMFieldContentsM ::
-  ExprVar (LLVMPointerType w) ->
-  ExprVar (LLVMPointerType w) ->
-  ImplM vars s r (ps :> LLVMPointerType w)
-  (ps :> LLVMPointerType w :> LLVMPointerType w) ()
-introLLVMFieldContentsM x y =
-  getDistPerms >>>= \ps ->
-  case ps of
-    DistPermsCons
-      (DistPermsCons _ x'
-       (ValPerm_Conj [Perm_LLVMField fp@(LLVMFieldPerm
-                                         { llvmFieldContents =
-                                             ValPerm_Eq (PExpr_Var y')})]))
-      y'' p
-      | x' == x && y' == y && y'' == y ->
-        implSimplM Proxy (SImpl_IntroLLVMFieldContents x y $
-                          fp { llvmFieldContents = p })
-    _ -> error "introLLVMFieldContentsM: input perms not in expected form"
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) => ExprVar (LLVMPointerType w) ->
+  ExprVar (LLVMPointerType sz) -> LLVMFieldPerm w sz ->
+  ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w :>
+                                            LLVMPointerType sz) ()
+introLLVMFieldContentsM x y fp =
+  implSimplM Proxy (SImpl_IntroLLVMFieldContents x y fp)
 
 -- | Borrow a field from an LLVM array permission on the top of the stack, after
 -- proving (with 'implTryProveBVProps') that the index is in the array exclusive
@@ -2549,7 +2541,7 @@ implLLVMArrayIndexBorrow ::
   (1 <= w, KnownNat w) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
-  (ps :> LLVMPointerType w) (LLVMArrayPerm w, LLVMFieldPerm w)
+  (ps :> LLVMPointerType w) (LLVMArrayPerm w, LLVMArrayField w)
 implLLVMArrayIndexBorrow x ap ix =
   implTryProveBVProps x (llvmArrayIndexInArray ap ix) >>>
   implSimplM Proxy (SImpl_LLVMArrayIndexBorrow x ap ix) >>>
@@ -2622,8 +2614,8 @@ implLLVMArrayBorrowBorrow ::
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
   (ps :> LLVMPointerType w) (ValuePerm (LLVMPointerType w))
 implLLVMArrayBorrowBorrow x ap (FieldBorrow ix) =
-  implLLVMArrayIndexBorrow x ap ix >>>= \(_,fp) ->
-  greturn (ValPerm_Conj1 $ Perm_LLVMField fp)
+  implLLVMArrayIndexBorrow x ap ix >>>= \(_,field) ->
+  greturn $ ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm field
 implLLVMArrayBorrowBorrow x ap b@(RangeBorrow rng) =
   let p = permForLLVMArrayBorrow ap b
       ValPerm_Conj1 (Perm_LLVMArray sub_ap) = p
@@ -2886,7 +2878,7 @@ recombinePermConj x x_ps (Perm_LLVMField fp)
               , elem (FieldBorrow ix) (llvmArrayBorrows ap) ->
                 Just (ap,i,ix)
             _ -> Nothing
-  , fp == (llvmArrayFields ap)!!(llvmArrayIndexFieldNum ix) =
+  , LLVMArrayField fp == llvmArrayFieldWithOffset ap ix =
     implPushM x (ValPerm_Conj x_ps) >>> implExtractConjM x x_ps i >>>
     let x_ps' = deleteNth i x_ps in
     implPopM x (ValPerm_Conj x_ps') >>>
@@ -3056,9 +3048,9 @@ proveVarEqH x e _ mb_e =
 -- the top of the stack, and ensuring that any remaining permissions for @x@ get
 -- popped back to the primary permissions for @x@
 proveVarLLVMField ::
-  (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) => ExprVar (LLVMPointerType w) ->
   [AtomicPerm (LLVMPointerType w)] -> Int ->
-  PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w) ->
+  PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w sz) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 proveVarLLVMField x ps i off mb_fp =
   (if i < length ps then greturn () else
@@ -3081,9 +3073,9 @@ proveVarLLVMField x ps i off mb_fp =
 -- stack, by casting the offset, changing the lifetime if needed, and proving
 -- the contents
 proveVarLLVMFieldFromField ::
-  (1 <= w, KnownNat w) =>
-  ExprVar (LLVMPointerType w) -> LLVMFieldPerm w ->
-  PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w) ->
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+  ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
+  PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w sz) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 proveVarLLVMFieldFromField x fp off' mb_fp =
   -- Step 1: make sure to have a variable for the contents
@@ -3101,35 +3093,41 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
   -- Step 3: change the lifetime if needed
   getPSubst >>>= \psubst ->
   (case (llvmFieldLifetime fp'', fmap llvmFieldLifetime mb_fp) of
-      (l1, mb_l2) | mbLift (fmap (== l1) mb_l2) -> greturn ()
+      (l1, mb_l2) | mbLift (fmap (== l1) mb_l2) -> greturn fp''
       (l1, [nuP| PExpr_Var z |])
         | Left memb <- mbNameBoundP z
         , Nothing <- psubstLookup psubst memb ->
-          setVarM memb l1
+          setVarM memb l1 >>> greturn fp''
       (l1, [nuP| PExpr_Var z |])
         | Left memb <- mbNameBoundP z
         , Just l2 <- psubstLookup psubst memb
-        , l1 == l2 -> greturn ()
+        , l1 == l2 -> greturn fp''
       (PExpr_Always, [nuP| PExpr_Var z |])
         | Left memb <- mbNameBoundP z
         , Just l2 <- psubstLookup psubst memb ->
-          implSimplM Proxy (SImpl_LLVMFieldLifetimeAlways x fp'' l2)
+          implSimplM Proxy (SImpl_LLVMFieldLifetimeAlways x fp'' l2) >>>
+          greturn (fp'' { llvmFieldLifetime = l2 })
       (PExpr_Always, [nuP| PExpr_Var z |])
         | Right l2 <- mbNameBoundP z ->
-          implSimplM Proxy (SImpl_LLVMFieldLifetimeAlways x fp'' $ PExpr_Var l2)
+          implSimplM Proxy (SImpl_LLVMFieldLifetimeAlways x fp'' $
+                            PExpr_Var l2) >>>
+          greturn (fp'' { llvmFieldLifetime = PExpr_Var l2 })
       (PExpr_Var l1, [nuP| PExpr_Var z |])
         | Right l2_var <- mbNameBoundP z ->
           let l2 = PExpr_Var l2_var in
           let lcur_perm = ValPerm_Conj [Perm_LCurrent l2] in
           proveVarImpl l1 (fmap (const $ lcur_perm) mb_fp) >>>
-          implSimplM Proxy (SImpl_LLVMFieldLifetimeCurrent x fp'' l1 l2)
+          implSimplM Proxy (SImpl_LLVMFieldLifetimeCurrent x fp'' l1 l2) >>>
+          greturn (fp'' { llvmFieldLifetime = l2 })
       _ ->
         implFailVarM "proveVarLLVMFieldFromField" x (ValPerm_Conj1 $ Perm_LLVMField fp'')
-        (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)) >>>
+        (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)) >>>= \fp''' ->
 
   -- Step 4: prove the contents
   proveVarImpl y (fmap llvmFieldContents mb_fp) >>>
-  introLLVMFieldContentsM x y
+  partialSubstForceM (fmap llvmFieldContents mb_fp)
+  "proveVarLLVMFieldFromField: incomplete field contents" >>>= \p_y ->
+  introLLVMFieldContentsM x y (fp''' { llvmFieldContents = p_y })
 
 
 -- | Extract an LLVM field permission from the given atomic permission, leaving
@@ -3143,18 +3141,19 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
 -- a single atomic permission or @true@. The field permission and remaining
 -- atomic permission (if any) are the return values of this function.
 extractNeededLLVMFieldPerm ::
-  (1 <= w, KnownNat w) =>
-  ExprVar (LLVMPointerType w) ->
-  AtomicPerm (LLVMPointerType w) ->
-  PermExpr (BVType w) -> PartialSubst vars -> Mb vars (LLVMFieldPerm w) ->
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+  ExprVar (LLVMPointerType w) -> AtomicPerm (LLVMPointerType w) ->
+  PermExpr (BVType w) -> PartialSubst vars -> Mb vars (LLVMFieldPerm w sz) ->
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
   (ps :> LLVMPointerType w)
-  (LLVMFieldPerm w, Maybe (AtomicPerm (LLVMPointerType w)))
+  (LLVMFieldPerm w sz, Maybe (AtomicPerm (LLVMPointerType w)))
 
 -- If proving x:ptr((rw,off) |-> p) |- x:ptr((z,off') |-> p') for an RWModality
 -- variable z, set z = rw and recurse
 extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' psubst mb_fp
-  | [nuP| PExpr_Var z |] <- fmap llvmFieldRW mb_fp
+  | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp)
+  , [nuP| PExpr_Var z |] <- fmap llvmFieldRW mb_fp
   , Left memb <- mbNameBoundP z
   , Nothing <- psubstLookup psubst memb =
     setVarM memb (llvmFieldRW fp) >>>
@@ -3164,7 +3163,9 @@ extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' psubst mb_fp
 -- If proving x:ptr((rw,off) |-> p) |- x:ptr((z,off') |-> p') where z is
 -- defined, substitute for z and recurse
 extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' psubst mb_fp
-  | [nuP| PExpr_Var z |] <- fmap llvmFieldRW mb_fp
+  | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp)
+  , [nuP| PExpr_Var z |] <- fmap llvmFieldRW mb_fp
   , Left memb <- mbNameBoundP z
   , Just rw <- psubstLookup psubst memb =
     extractNeededLLVMFieldPerm x p off' psubst
@@ -3173,7 +3174,9 @@ extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' psubst mb_fp
 -- If proving x:ptr((R,off) |-> p) |- x:ptr((R,off') |-> p'), just copy the read
 -- permission
 extractNeededLLVMFieldPerm x (Perm_LLVMField fp) off' _ mb_fp
-  | PExpr_Read <- llvmFieldRW fp
+  | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp)
+  , PExpr_Read <- llvmFieldRW fp
   , [nuP| PExpr_Read |] <- fmap llvmFieldRW mb_fp
   = implCopyConjM x [Perm_LLVMField fp] 0 >>>
     greturn (fp, Just (Perm_LLVMField fp))
@@ -3181,7 +3184,9 @@ extractNeededLLVMFieldPerm x (Perm_LLVMField fp) off' _ mb_fp
 -- Cannot prove x:ptr((rw,off) |-> p) |- x:ptr((W,off') |-> p') if rw is not W,
 -- so fail
 extractNeededLLVMFieldPerm x ap@(Perm_LLVMField fp) _ _ mb_fp
-  | PExpr_Write /= llvmFieldRW fp
+  | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp)
+  , PExpr_Write /= llvmFieldRW fp
   , [nuP| PExpr_Write |] <- fmap llvmFieldRW mb_fp
   = implFailVarM "extractNeededLLVMFieldPerm" x (ValPerm_Conj1 $ ap)
     (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)
@@ -3191,7 +3196,9 @@ extractNeededLLVMFieldPerm x ap@(Perm_LLVMField fp) _ _ mb_fp
 -- we have an lowned permission for l2, and then demote to read and copy the
 -- read permission as in the R |- R case above
 extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' _ mb_fp
-  | PExpr_Read /= llvmFieldRW fp
+  | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp)
+  , PExpr_Read /= llvmFieldRW fp
   , [nuP| PExpr_Read |] <- fmap llvmFieldRW mb_fp
   = partialSubstForceM (fmap llvmFieldLifetime mb_fp)
     "extractNeededLLVMFieldPerm: incomplete RHS lifetime" >>>= \l2 ->
@@ -3227,7 +3234,9 @@ extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' _ mb_fp
 -- If proving x:ptr((rw,off) |-> p) |- x:ptr((rw,off') |-> p') for any other
 -- case, just push a true permission, because there is no remaining permission
 extractNeededLLVMFieldPerm x (Perm_LLVMField fp) off' _ mb_fp
-  | mbLift (fmap ((llvmFieldRW fp ==) . llvmFieldRW) mb_fp)
+  | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp)
+  , mbLift (fmap ((llvmFieldRW fp ==) . llvmFieldRW) mb_fp)
   = introConjM x >>> greturn (fp, Nothing)
 
 -- If proving x:array(off,<len,*stride,fps,bs) |- x:ptr((R,off) |-> p) such that
@@ -3235,7 +3244,9 @@ extractNeededLLVMFieldPerm x (Perm_LLVMField fp) off' _ mb_fp
 -- containing only copyable permissions, copy that field
 extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' _ mb_fp
   | Just ix <- matchLLVMArrayField ap off'
-  , fp <- llvmArrayFieldWithOffset ap ix
+  , LLVMArrayField fp <- llvmArrayFieldWithOffset ap ix
+  , Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp)
   , PExpr_Read <- llvmFieldRW fp
   , permIsCopyable (llvmFieldContents fp)
   , [nuP| PExpr_Read |] <- fmap llvmFieldRW mb_fp =
@@ -3246,7 +3257,9 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' _ mb_fp
 -- that off=i*stride+j in any other case, borrow that field
 extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' psubst mb_fp
   | Just ix <- matchLLVMArrayField ap off'
-  , fp <- llvmArrayFieldWithOffset ap ix =
+  , LLVMArrayField fp <- llvmArrayFieldWithOffset ap ix
+  , Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
+                                                  fmap llvmFieldSize mb_fp) =
     implLLVMArrayIndexBorrow x ap ix >>>= \(ap', _) ->
     implSwapM x (ValPerm_Conj1 $ Perm_LLVMField fp) x (ValPerm_Conj1 $
                                                        Perm_LLVMArray ap') >>>
@@ -3304,16 +3317,17 @@ proveVarLLVMArrayH x _ ps ap
 -- recursively proving the desired array permission by calling proveVarImpl,
 -- which will remove the necessary borrows.
 proveVarLLVMArrayH x _ ps ap
-  | Just (fps1, fps2) <- llvmArrayAsFields ap
-  , all (\fp ->
-          any (isLLVMFieldPermWithOffset (llvmFieldOffset fp)) ps) (fps1
-                                                                    ++ fps2) =
+  | Just (flds1, flds2) <- llvmArrayAsFields ap
+  , all (\fld ->
+          any (isLLVMFieldPermWithOffset
+               (llvmArrayFieldOffset fld)) ps) (flds1 ++ flds2) =
     implPopM x (ValPerm_Conj ps) >>>
-    mbVarsM (ValPerm_Conj $ map Perm_LLVMField fps1) >>>= \mb_p_fps ->
-    proveVarImpl x mb_p_fps >>>
+    mbVarsM (ValPerm_Conj $
+             map llvmArrayFieldToAtomicPerm flds1) >>>= \mb_p_flds ->
+    proveVarImpl x mb_p_flds >>>
     let ap' = llvmArrayAddBorrows (map (fromJust
                                         . offsetToLLVMArrayBorrow ap
-                                        . llvmFieldOffset) fps2) ap in
+                                        . llvmArrayFieldOffset) flds2) ap in
     implLLVMArrayOneCell x ap' >>>
     implPopM x (ValPerm_Conj1 $ Perm_LLVMArray ap') >>>
     mbVarsM (ValPerm_Conj1 $ Perm_LLVMArray ap) >>>= \mb_p ->
@@ -3669,8 +3683,10 @@ proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMArray mb_ap |] =
 proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFree mb_e |] =
   partialSubstForceM mb_e
   "proveVarAtomicImpl: incomplete psubst: LLVM free size" >>>= \e ->
-  case findFreePerm ps of
-    Just (i, e') ->
+  case findMaybeIndices (\case
+                            Perm_LLVMFree e' -> Just e'
+                            _ -> Nothing) ps of
+    (i, e'):_ ->
       implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps) >>>
       castLLVMFreeM x e' e
     _ -> proveVarAtomicImplUnfoldOrFail x ps ap

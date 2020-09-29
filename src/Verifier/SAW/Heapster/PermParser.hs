@@ -42,6 +42,7 @@ import Data.Parameterized.BoolRepr
 
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.MemModel
+import Lang.Crucible.LLVM.Bytes
 import Lang.Crucible.FunctionHandle
 -- import What4.FunctionName
 
@@ -563,7 +564,7 @@ parseAtomicPerm :: (Stream s Identity Char, Liftable s) => TypeRepr a ->
 parseAtomicPerm tp@(LLVMPointerRepr w)
   | Left LeqProof <- decideLeq oneRepr w =
     withKnownNat w
-    ((Perm_LLVMField <$> parseLLVMFieldPerm False) <|>
+    ((llvmArrayFieldToAtomicPerm <$> parseLLVMFieldPerm w False) <|>
      (Perm_LLVMArray <$> parseLLVMArrayPerm) <|>
      (do try (string "free" >> spaces >> char '(')
          e <- parseBVExpr
@@ -641,10 +642,11 @@ parseAtomicNamedPerm tp =
 -- so that @ptr@ and outer parentheses should be omitted. If the 'Bool' flag is
 -- 'False', only consume input if that input starts with @( )* "ptr" ( )* "("@,
 -- while if it is 'True', only consume input if it starts with @( )* "("@.
+-- Return an 'LLVMArrayField', which quantifies over the size.
 parseLLVMFieldPerm :: (Stream s Identity Char, Liftable s,
                        KnownNat w, 1 <= w) =>
-                      Bool -> PermParseM s (LLVMFieldPerm w)
-parseLLVMFieldPerm in_array =
+                      NatRepr w -> Bool -> PermParseM s (LLVMArrayField w)
+parseLLVMFieldPerm w in_array =
   do llvmFieldLifetime <- (do try (spaces >> string "[")
                               l <- parseExpr knownRepr
                               spaces >> string "]"
@@ -652,13 +654,19 @@ parseLLVMFieldPerm in_array =
      if in_array then try (spaces >> char '(' >> return ())
        else try (spaces >> string "ptr" >> spaces >> char '(' >>
                  spaces >> char '(' >> return ())
-     llvmFieldRW <- parseExpr knownRepr
-     spaces >> comma >> spaces
-     llvmFieldOffset <- parseBVExpr
-     spaces >> string ")" >> spaces >> string "|->" >> spaces
-     llvmFieldContents <- parseValPerm knownRepr
-     if in_array then return () else spaces >> string ")" >> return ()
-     return (LLVMFieldPerm {..})
+     llvmFieldRW <- parseExpr RWModalityRepr
+     spaces >> comma
+     llvmFieldOffset <- parseExpr (BVRepr w)
+     some_sz_leq <-
+       (spaces >> comma >> parseNatRepr) <|>
+       (return $ Some (Pair w LeqProof))
+     case some_sz_leq of
+       Some (Pair sz LeqProof) ->
+         withKnownNat sz $ 
+         do spaces >> string ")" >> spaces >> string "|->" >> spaces
+            llvmFieldContents <- parseValPerm (LLVMPointerRepr sz)
+            if in_array then return () else spaces >> string ")" >> return ()
+            return (LLVMArrayField $ LLVMFieldPerm {..})
 
 -- | Parse an array permission @array(off,<len,*stride,[fp1,...])@. Only consume
 -- input if that input starts with @"array" ( )* "("@.
@@ -671,9 +679,10 @@ parseLLVMArrayPerm =
      spaces >> comma >> spaces >> char '<'
      llvmArrayLen <- parseBVExpr
      spaces >> comma >> spaces >> char '*'
-     llvmArrayStride <- integer
+     llvmArrayStride <- Bytes <$> integer
      spaces >> comma >> spaces >> char '['
-     llvmArrayFields <- sepBy1 (parseLLVMFieldPerm True) (spaces >> comma)
+     llvmArrayFields <-
+       sepBy1 (parseLLVMFieldPerm knownNat True) (spaces >> comma)
      let llvmArrayBorrows = []
      spaces >> char ']' >> spaces >> char ')'
      return LLVMArrayPerm {..}

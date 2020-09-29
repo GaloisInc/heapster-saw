@@ -344,12 +344,12 @@ data TypedLLVMStmt w ret ps_in ps_out where
   -- Type:
   -- > ps, x:ptr((rw,0) |-> p), cur_ps
   -- > -o ps, x:ptr((rw,0) |-> eq(ret)), ret:p, cur_ps
-  TypedLLVMLoad :: (1 <= w, KnownNat w) =>
-                   TypedReg (LLVMPointerType w) -> LLVMFieldPerm w ->
+  TypedLLVMLoad :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                   TypedReg (LLVMPointerType w) -> LLVMFieldPerm w sz ->
                    DistPerms ps -> LifetimeCurrentPerms ps_l ->
-                   TypedLLVMStmt w (LLVMPointerType w)
+                   TypedLLVMStmt w (LLVMPointerType sz)
                    (ps :> LLVMPointerType w :++: ps_l)
-                   (ps :> LLVMPointerType w :> LLVMPointerType w :++: ps_l)
+                   (ps :> LLVMPointerType w :> LLVMPointerType sz :++: ps_l)
 
   -- | Store a machine value to the address pointed to by the given pointer
   -- using the supplied field permission, which also specifies the offset from
@@ -361,8 +361,9 @@ data TypedLLVMStmt w ret ps_in ps_out where
   -- Type:
   -- > ps, x:ptr((rw,0) |-> p), cur_ps
   -- > -o ps, x:ptr((rw,0) |-> eq(e)), cur_ps
-  TypedLLVMStore :: (1 <= w, KnownNat w) => TypedReg (LLVMPointerType w) ->
-                    LLVMFieldPerm w -> PermExpr (LLVMPointerType w) ->
+  TypedLLVMStore :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                    TypedReg (LLVMPointerType w) ->
+                    LLVMFieldPerm w sz -> PermExpr (LLVMPointerType sz) ->
                     DistPerms ps -> LifetimeCurrentPerms ps_l ->
                     TypedLLVMStmt w UnitType
                     (ps :> LLVMPointerType w :++: ps_l)
@@ -1813,59 +1814,6 @@ resolveConstant = helper . PExpr_Var . typedRegVar where
   helper _ = return Nothing
 
 
--- | If the alignment is less than the machine word size @w@, find any LLVM
--- pointer or array permissions for @ptr@ at some offset @off@ such that @off %
--- w == k@ for some @k@ that is a multiple of @2^align@. Return @ptr-k@ and
--- @k@. If the alignment equals the machine word size, return @ptr@ and @0@. If
--- the alignment is greater than the word size, fail.
-alignPtrToArchWidth ::
-  (1 <= w, KnownNat w, w ~ ArchWidth arch) => Proxy arch ->
-  ProgramLoc -> TypedReg (LLVMPointerType w) -> Alignment ->
-  StmtPermCheckM (LLVM arch) cblocks blocks tops ret RNil RNil
-  (TypedReg (LLVMPointerType w), Bytes)
-
--- If the alignment == word size, just return pointer
-alignPtrToArchWidth arch _ ptr align
-  | bytesToBits (fromAlignment align) == natValue (archWidth arch) =
-    greturn (ptr, 0)
-
--- If the alignment > word size, fail
-alignPtrToArchWidth arch _ ptr align
-  | bytesToBits (fromAlignment align) > natValue (archWidth arch) =
-    stmtFailM (const $
-               string "alignPtrToArchWidth: alignment larger than word size")
-
--- Otherwise search for ptr perms as outlined above
-alignPtrToArchWidth arch loc ptr align =
-  let w = archWidth arch
-      w_bytes = intValue w `div` 8
-      ptr_x = typedRegVar ptr in
-  ((asLLVMOffset <$> getRegEqualsExpr ptr) >>>= \case
-      Just x_off -> greturn x_off
-      Nothing ->
-        stmtFailM (\i ->
-                    string "alignPtrToArchWidth: pointer has word value:"
-                    <+> permPretty i (typedRegVar ptr))) >>>= \(x,ptr_off) ->
-  getSimpleRegPerm (TypedReg x) >>>= \case
-    ValPerm_Conj ps
-      | perm_offs <-
-          mapMaybe (\case
-                       Perm_LLVMField fp -> Just $ llvmFieldOffset fp
-                       Perm_LLVMArray ap -> Just $ llvmArrayOffset ap
-                       _ -> Nothing) ps
-      , k:_ <- mapMaybe (\off ->
-                          bvMatchConst (bvMod off w_bytes)) perm_offs
-      , k `mod` bytesToInteger (fromAlignment align) == 0 ->
-        emitStmt knownRepr loc
-        (TypedSetRegPermExpr knownRepr $
-         PExpr_LLVMOffset ptr_x (bvInt $ negate k)) >>>= \(_ :>: ret) ->
-        stmtRecombinePerms >>>
-        greturn (TypedReg ret, Bytes k)
-    _ ->
-      stmtFailM (\i -> string "alignPtrToArchWidth: pointer was not aligned:"
-                       <+> permPretty i ptr_x)
-
-
 -- | Convert a register of one type to one of another type, if possible
 convertRegType :: ExtRepr ext -> ProgramLoc ->
                   TypedReg tp1 -> TypeRepr tp1 -> TypeRepr tp2 ->
@@ -1886,6 +1834,8 @@ convertRegType _ loc reg (BVRepr w1) tp2@(BVRepr w2)
   | Left LeqProof <- decideLeq (knownNat :: NatRepr 1) w1
   , Left LeqProof <- decideLeq (knownNat :: NatRepr 1) w2
   , NatCaseLT LeqProof <- testNatCases w1 w2 =
+    -- FIXME: should this use endianness?
+    -- (stEndianness <$> top_get) >>>= \endianness ->
     withKnownNat w2 $
     emitStmt knownRepr loc (TypedSetReg tp2 $
                             TypedExpr (BVSext w2 w1 $ RegNoVal reg)
@@ -2467,13 +2417,13 @@ withLifetimeCurrentPerms l m =
 -- permission off the stack before returning. Return the resulting return
 -- register.
 emitTypedLLVMLoad ::
-  (1 <= w, KnownNat w, w ~ ArchWidth arch) =>
+  (1 <= w, KnownNat w, w ~ ArchWidth arch, 1 <= sz, KnownNat sz) =>
   Proxy arch -> ProgramLoc ->
-  TypedReg (LLVMPointerType w) -> LLVMFieldPerm w -> DistPerms ps ->
+  TypedReg (LLVMPointerType w) -> LLVMFieldPerm w sz -> DistPerms ps ->
   StmtPermCheckM (LLVM arch) cblocks blocks tops ret
-  (ps :> LLVMPointerType w :> LLVMPointerType w)
+  (ps :> LLVMPointerType w :> LLVMPointerType sz)
   (ps :> LLVMPointerType w)
-  (Name (LLVMPointerType (ArchWidth arch)))
+  (Name (LLVMPointerType sz))
 emitTypedLLVMLoad _ loc treg fp ps =
   withLifetimeCurrentPerms (llvmFieldLifetime fp) $ \cur_perms ->
   emitLLVMStmt knownRepr loc (TypedLLVMLoad treg fp ps cur_perms)
@@ -2485,11 +2435,11 @@ emitTypedLLVMLoad _ loc treg fp ps =
 -- permission off the stack before returning. Return the resulting return
 -- register of unit type.
 emitTypedLLVMStore ::
-  (1 <= w, KnownNat w, w ~ ArchWidth arch) =>
+  (1 <= w, KnownNat w, w ~ ArchWidth arch, 1 <= sz, KnownNat sz) =>
   Proxy arch -> ProgramLoc ->
-  TypedReg (LLVMPointerType (ArchWidth arch)) ->
-  LLVMFieldPerm (ArchWidth arch) ->
-  PermExpr (LLVMPointerType (ArchWidth arch)) -> DistPerms ps ->
+  TypedReg (LLVMPointerType w) ->
+  LLVMFieldPerm w sz ->
+  PermExpr (LLVMPointerType sz) -> DistPerms ps ->
   StmtPermCheckM (LLVM arch) cblocks blocks tops ret
   (ps :> LLVMPointerType w)
   (ps :> LLVMPointerType w)
@@ -2507,24 +2457,28 @@ tcEmitLLVMStmt ::
   StmtPermCheckM (LLVM arch) cblocks blocks tops ret RNil RNil
   (CtxTrans (ctx ::> tp))
 
--- Type-check a load of an LLVM pointer
-tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp storage align) =
-  let tptr = tcReg ctx ptr in
-  (stEndianness <$> top_get) >>>= \endianness ->
-  -- Align tptr to a word boundary
-  alignPtrToArchWidth arch loc tptr align >>>= \(tptr_aligned, align_off) ->
-  -- Prove [l]ptr((0,rw) |-> eq(y)) for some l, rw, and y
-  stmtProvePerm tptr_aligned llvmPtr0EqExPerm >>>= \impl_res ->
-  let fp = subst impl_res llvmPtr0EqEx in
-  -- Emit a TypedLLVMLoad instruction
-  emitTypedLLVMLoad arch loc tptr_aligned fp DistPermsNil >>>= \z ->
-  -- Recombine the resulting permissions onto the stack
-  stmtRecombinePerms >>>
-  -- Test if our original ptr was word-aligned
-  if align_off == 0 then
-    -- If so, convert the return value to the requested type and return it
+-- Type-check a word-sized load of an LLVM pointer by requiring a standard ptr
+-- permission and using TypedLLVMLoad
+tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp storage _)
+  | Just (Some sz) <- someNat $ bytesToBits $ storageTypeSize storage
+  , Left leq_proof <- decideLeq (knownNat @1) sz =
+    withKnownNat sz $ withLeqProof leq_proof $
+    let tptr = tcReg ctx ptr in
+    -- Prove [l]ptr((0,rw) |-> eq(y)) for some l, rw, and y
+    stmtProvePerm tptr (llvmPtr0EqExPerm sz) >>>= \impl_res ->
+    let fp = subst impl_res (llvmPtr0EqEx sz) in
+    -- Emit a TypedLLVMLoad instruction
+    emitTypedLLVMLoad arch loc tptr fp DistPermsNil >>>= \z ->
+    -- Recombine the resulting permissions onto the stack
+    stmtRecombinePerms >>>
+    -- Convert the return value to the requested type and return it
     (convertRegType knownRepr loc (TypedReg z) knownRepr tp >>>= \ret ->
       greturn (addCtxName ctx $ typedRegVar ret))
+
+{-
+-- Type-check a non-word-sized load of an LLVM pointer by requiring a bvptr
+tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp storage _)
+    (stEndianness <$> top_get) >>>= \endianness ->
 
   else
     -- Otherwise, get the bitvector value of res, extract out the required
@@ -2538,21 +2492,23 @@ tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp storage align) =
           extractBVBytes loc storage_w align_off z_bv >>>= \z_sub_bv ->
           convertRegType knownRepr loc z_sub_bv (BVRepr storage_w) tp >>>= \ret ->
           greturn (addCtxName ctx $ typedRegVar ret)
-
+-}
 
 -- Type-check a store of an LLVM pointer
-tcEmitLLVMStmt arch ctx loc (LLVM_Store _ (ptr :: Reg ctx (LLVMPointerType w)) tp _ _ val) =
-  let tptr :: TypedReg (LLVMPointerType w) = tcReg ctx ptr
-      tval = tcReg ctx val
-      tp_ptr = LLVMPointerRepr (knownRepr :: NatRepr w) in
-  convertRegType knownRepr loc tval tp tp_ptr >>>= \tval_ptr ->
-  stmtProvePerm tptr (llvmWriteTrueExLPerm $ bvInt 0) >>>= \subst ->
-  let l = substLookup subst Member_Base in
-  let fp = llvmFieldWriteTrueL (bvInt 0) l in
-  emitTypedLLVMStore arch loc tptr fp
-  (PExpr_Var $ typedRegVar tval_ptr) DistPermsNil >>>= \z ->
-  stmtRecombinePerms >>>
-  greturn (addCtxName ctx z)
+tcEmitLLVMStmt arch ctx loc (LLVM_Store _ ptr tp storage _ val)
+  | Just (Some sz) <- someNat $ bytesToBits $ storageTypeSize storage
+  , Left leq_proof <- decideLeq (knownNat @1) sz =
+    withKnownNat sz $ withLeqProof leq_proof $
+    let tptr = tcReg ctx ptr
+        tval = tcReg ctx val in
+    convertRegType knownRepr loc tval tp (LLVMPointerRepr sz) >>>= \tval' ->
+    stmtProvePerm tptr (llvmWriteTrueExLPerm sz $ bvInt 0) >>>= \subst ->
+    let l = substLookup subst Member_Base in
+    let fp = llvmFieldWriteTrueL sz (bvInt 0) l in
+    emitTypedLLVMStore arch loc tptr fp
+    (PExpr_Var $ typedRegVar tval') DistPermsNil >>>= \z ->
+    stmtRecombinePerms >>>
+    greturn (addCtxName ctx z)
 
 
 {- FIXME HERE: old approach that performed the case split on the current perms
@@ -2624,9 +2580,10 @@ tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes)
     let tptr = tcReg ctx ptr
         bytes' = bytes - (bytes `mod` bitsToBytes (intValue (archWidth arch)))
         off = bytesToInteger bytes' in
-    stmtProvePerm tptr (llvmWriteTrueExLPerm $ bvInt off) >>>= \subst ->
+    stmtProvePerm tptr (llvmWriteTrueExLPerm
+                        (archWidth arch) (bvInt off)) >>>= \subst ->
     let l = substLookup subst Member_Base in
-    let fp = llvmFieldWriteTrueL (bvInt off) l in
+    let fp = llvmFieldWriteTrueL (archWidth arch) (bvInt off) l in
     emitTypedLLVMStore arch loc tptr fp (PExpr_LLVMWord $
                                          bvInt 0) DistPermsNil >>>
     stmtRecombinePerms >>>
@@ -2634,13 +2591,15 @@ tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes)
 
 -- Type-check a non-empty mem-clear instruction by writing a 0 to the last word
 -- and then recursively clearing all but the last word
+-- FIXME: add support for using non-word-size ptr perms with MemClear
 tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes) =
   let tptr = tcReg ctx ptr
       bytes' = bytes - bitsToBytes (intValue (archWidth arch))
       off = bytesToInteger bytes' in
-  stmtProvePerm tptr (llvmWriteTrueExLPerm $ bvInt off) >>>= \subst ->
+  stmtProvePerm tptr (llvmWriteTrueExLPerm
+                      (archWidth arch) (bvInt off)) >>>= \subst ->
   let l = substLookup subst Member_Base in
-  let fp = llvmFieldWriteTrueL (bvInt off) l in
+  let fp = llvmFieldWriteTrueL (archWidth arch) (bvInt off) l in
   emitTypedLLVMStore arch loc tptr fp (PExpr_LLVMWord $
                                        bvInt 0) DistPermsNil >>>
   stmtRecombinePerms >>>

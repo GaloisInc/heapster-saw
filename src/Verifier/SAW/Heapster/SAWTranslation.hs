@@ -811,9 +811,9 @@ data AtomicPermTrans ctx a where
 
   -- | The translation of an LLVM field permission is just the translation of
   -- its contents
-  APTrans_LLVMField :: (1 <= w, KnownNat w) =>
-                       Mb ctx (LLVMFieldPerm w) ->
-                       PermTrans ctx (LLVMPointerType w) ->
+  APTrans_LLVMField :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                       Mb ctx (LLVMFieldPerm w sz) ->
+                       PermTrans ctx (LLVMPointerType sz) ->
                        AtomicPermTrans ctx (LLVMPointerType w)
 
   -- | LLVM array permisions are translated to an 'LLVMArrayPermTrans'
@@ -943,11 +943,15 @@ unPTransBVProps _ ptrans
 unPTransBVProps str _ = error (str ++ ": not a list of BVProp permissions")
 
 -- | Extract the body of a conjunction of a single field permission
-unPTransLLVMField :: String -> PermTrans ctx (LLVMPointerType w) ->
-                     (Mb ctx (LLVMFieldPerm w),
-                      PermTrans ctx (LLVMPointerType w))
-unPTransLLVMField _ (PTrans_Conj [APTrans_LLVMField e ptrans]) = (e, ptrans)
-unPTransLLVMField str _ = error (str ++ ": not an LLVM field permission")
+unPTransLLVMField :: String -> NatRepr sz ->
+                     PermTrans ctx (LLVMPointerType w) ->
+                     (Mb ctx (LLVMFieldPerm w sz),
+                      PermTrans ctx (LLVMPointerType sz))
+unPTransLLVMField _ sz (PTrans_Conj [APTrans_LLVMField mb_fp ptrans])
+  | Just Refl <- testEquality sz (mbLift $ fmap llvmFieldSize mb_fp)
+  = (mb_fp, ptrans)
+unPTransLLVMField str _ _ =
+  error (str ++ ": not an LLVM field permission of the required size")
 
 -- | Extract the body of a conjunction of a single array permission
 unPTransLLVMArray :: String -> PermTrans ctx (LLVMPointerType w) ->
@@ -1397,16 +1401,20 @@ permTransEndLifetime _ _ =
 atomicPermTransEndLifetime :: AtomicPermTrans ctx a -> Mb ctx (AtomicPerm a) ->
                               AtomicPermTrans ctx a
 atomicPermTransEndLifetime (APTrans_LLVMField
-                            _ ptrans) [nuP| Perm_LLVMField fld |] =
-  APTrans_LLVMField fld $
-  permTransEndLifetime ptrans (fmap llvmFieldContents fld)
+                            mb_fld ptrans) [nuP| Perm_LLVMField fld |]
+  | Just Refl <-
+      testEquality (mbLift $ fmap llvmFieldSize mb_fld)
+      (mbLift $ fmap llvmFieldSize fld) =
+    APTrans_LLVMField fld $
+    permTransEndLifetime ptrans (fmap llvmFieldContents fld)
 atomicPermTransEndLifetime (APTrans_LLVMArray
                             (LLVMArrayPermTrans _ len flds {- bs -} t))
   [nuP| Perm_LLVMArray ap |] =
   APTrans_LLVMArray $ LLVMArrayPermTrans ap len
   (fmap (\aps ->
           zipWith atomicPermTransEndLifetime aps
-          (mbList $ fmap (map Perm_LLVMField . llvmArrayFields) ap)) flds)
+          (mbList $
+           fmap (map llvmArrayFieldToAtomicPerm . llvmArrayFields) ap)) flds)
   {- bs -} t
 atomicPermTransEndLifetime p@(APTrans_LLVMFree _) _ = p
 atomicPermTransEndLifetime p@(APTrans_LLVMFunPtr _ _) _ =
@@ -1563,7 +1571,7 @@ translateLLVMArrayPerm mb_ap =
      let mb_flds = fmap llvmArrayFields mb_ap
      flds_trans <-
        tupleTypeTrans <$> listTypeTrans <$>
-       mapM (translate . fmap Perm_LLVMField) (mbList mb_flds)
+       mapM (translate . fmap llvmArrayFieldToAtomicPerm) (mbList mb_flds)
      len_term <- translate1 mb_len
      let elem_tp = typeTransType1 flds_trans
      {-
@@ -2078,11 +2086,12 @@ translateSimplImpl _ [nuP| SImpl_CastLLVMFree _ _ e2 |] m =
   ((:>: PTrans_Conj [APTrans_LLVMFree e2]) . RL.tail . RL.tail)
   m
 
-translateSimplImpl _ [nuP| SImpl_CastLLVMFieldOffset _ _ mb_off |] m =
+translateSimplImpl _ [nuP| SImpl_CastLLVMFieldOffset _ mb_fld mb_off |] m =
   withPermStackM RL.tail
   (\(pctx :>: _ :>: ptrans) ->
-    let (mb_fld,ptrans') =
-          unPTransLLVMField "translateSimplImpl: SImpl_CastLLVMPtr" ptrans in
+    let (_,ptrans') =
+          unPTransLLVMField "translateSimplImpl: SImpl_CastLLVMPtr"
+          knownNat ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (mbMap2 (\fld off -> fld { llvmFieldOffset = off })
                            mb_fld mb_off)
@@ -2095,24 +2104,26 @@ translateSimplImpl _ [nuP| SImpl_IntroLLVMFieldContents x _ mb_fld |] m =
     pctx :>: PTrans_Conj [APTrans_LLVMField mb_fld ptrans])
   m
 
-translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeCurrent _ _ _ mb_l |] m =
+translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeCurrent _ mb_fld _ mb_l |] m =
   withPermStackM RL.tail
   (\(pctx :>: ptrans :>: _) ->
-    let (mb_fld,ptrans') =
+    let (_,ptrans') =
           unPTransLLVMField
-          "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent" ptrans in
+          "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent"
+          knownNat ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (mbMap2 (\fp l -> fp { llvmFieldLifetime = l })
                            mb_fld mb_l)
                           ptrans'])
   m
 
-translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeAlways _ _ mb_l |] m =
+translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeAlways _ mb_fld mb_l |] m =
   withPermStackM id
   (\(pctx :>: ptrans) ->
-    let (mb_fld,ptrans') =
+    let (_,ptrans') =
           unPTransLLVMField
-          "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent" ptrans in
+          "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent"
+          knownNat ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (mbMap2 (\fp l -> fp { llvmFieldLifetime = l })
                            mb_fld mb_l)
@@ -2124,7 +2135,8 @@ translateSimplImpl _ [nuP| SImpl_DemoteLLVMFieldWrite _ _ |] m =
   (\(pctx :>: ptrans) ->
     let (mb_fld,ptrans') =
           unPTransLLVMField
-          "translateSimplImpl: SImpl_DemoteLLVMFieldWrite" ptrans in
+          "translateSimplImpl: SImpl_DemoteLLVMFieldWrite"
+          knownNat ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (fmap (\fld -> fld { llvmFieldRW = PExpr_Read }) mb_fld)
                           ptrans])
@@ -2546,8 +2558,8 @@ translatePermImpl1 [nuP| Impl1_ElimLLVMFieldContents
   withPermStackM (:>: Member_Base)
   (\(pctx :>: ptrans_x) ->
     let (_,ptrans') =
-          unPTransLLVMField
-          "translateSimplImpl: Impl1_ElimLLVMFieldContents" ptrans_x in
+          unPTransLLVMField "translateSimplImpl: Impl1_ElimLLVMFieldContents"
+          knownNat ptrans_x in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (mbCombine $
                            fmap (\fld -> nu $ \y ->
@@ -3108,7 +3120,7 @@ translateLLVMStmt [nuP| OffsetLLVMValue x off |] m =
         mbMap2 PExpr_LLVMOffset (fmap typedRegVar x) off))
   m
 
-translateLLVMStmt [nuP| TypedLLVMLoad _ (mb_fp :: LLVMFieldPerm w)
+translateLLVMStmt [nuP| TypedLLVMLoad _ (mb_fp :: LLVMFieldPerm w sz)
                        (_ :: DistPerms ps) cur_perms |] m =
   let prx_l = mbLifetimeCurrentPermsProxies cur_perms
       prx_ps :: Proxy (ps :> LLVMPointerType w) = Proxy in
@@ -3118,8 +3130,8 @@ translateLLVMStmt [nuP| TypedLLVMLoad _ (mb_fp :: LLVMFieldPerm w)
     RL.append (vars :>: Member_Base) vars_l)
   (\(RL.split prx_ps prx_l -> (pctx :>: p_ptr, pctx_l)) ->
     let (_, p_ret) =
-          unPTransLLVMField
-          "translateLLVMStmt: TypedLLVMLoad: expected field perm" p_ptr in
+          unPTransLLVMField "translateLLVMStmt: TypedLLVMLoad: expected field perm"
+          (knownNat @sz) p_ptr in
     RL.append
     (pctx :>: PTrans_Conj [APTrans_LLVMField
                            (mbCombine $
@@ -3131,7 +3143,7 @@ translateLLVMStmt [nuP| TypedLLVMLoad _ (mb_fp :: LLVMFieldPerm w)
      :>: p_ret) pctx_l)
   m
 
-translateLLVMStmt [nuP| TypedLLVMStore _ (mb_fp :: LLVMFieldPerm w) mb_e
+translateLLVMStmt [nuP| TypedLLVMStore _ (mb_fp :: LLVMFieldPerm w sz) mb_e
                       (_ :: DistPerms ps) cur_perms |] m =
   let prx_l = mbLifetimeCurrentPermsProxies cur_perms
       prx_ps :: Proxy (ps :> LLVMPointerType w) = Proxy in
@@ -3160,7 +3172,7 @@ translateLLVMStmt [nuP| TypedLLVMAlloca
                      flip nuMultiWithElim1 (extMb mb_fperm) $
                      \(_ :>: ret) fperm -> (PExpr_Var ret, sz):fperm]
     :>: PTrans_Conj (flip map [0 .. bytesToMachineWords w sz - 1] $ \i ->
-                      APTrans_LLVMField
+                      APTrans_LLVMField @w @w
                       (fmap
                        (const $ llvmFieldWrite0True
                         { llvmFieldOffset = bvInt (i * machineWordBytes w) })
