@@ -2931,7 +2931,12 @@ instance NeededVars a => NeededVars [a] where
   neededVars as = NameSet.unions $ map neededVars as
 
 instance NeededVars (ValuePerm a) where
-  neededVars (ValPerm_Eq _) = NameSet.empty
+  -- For an equality permission, if a variable is determined by the permission
+  -- then it is not needed yet; FIXME: call the same function to determine the
+  -- needed vars as in determinedVars
+  neededVars (ValPerm_Eq (PExpr_Var _)) = NameSet.empty
+  neededVars (ValPerm_Eq (PExpr_LLVMWord (PExpr_Var _))) = NameSet.empty
+  neededVars (ValPerm_Eq e) = freeVars e
   neededVars (ValPerm_Or p1 p2) = NameSet.union (neededVars p1) (neededVars p2)
   neededVars (ValPerm_Exists mb_p) = NameSet.liftNameSet $ fmap neededVars mb_p
   neededVars p@(ValPerm_Named _ _ _) = freeVars p
@@ -4648,8 +4653,8 @@ determinedVars top_perms vars =
 
     -- Find all variables that are determined if an expression is determined
     clausesForExpr :: PermExpr a ->
-                        ReaderT (PermSet ps) (State (NameSet CrucibleType))
-                        [DetVarsClause]
+                      ReaderT (PermSet ps) (State (NameSet CrucibleType))
+                      [DetVarsClause]
     clausesForExpr (PExpr_Var y) = clausesForVar y
     clausesForExpr (PExpr_LLVMWord (PExpr_Var y)) = clausesForVar y
     clausesForExpr _ = return []

@@ -2914,6 +2914,9 @@ generalizeUnneededWordEqPerms1 ::
   StmtPermCheckM ext cblocks blocks tops ret ps ps ()
 generalizeUnneededWordEqPerms1 needed_vars x (ValPerm_Eq (PExpr_Var y))
   | NameSet.member y needed_vars = greturn ()
+generalizeUnneededWordEqPerms1 needed_vars x (ValPerm_Eq
+                                              (PExpr_LLVMWord (PExpr_Var y)))
+  | NameSet.member y needed_vars = greturn ()
 generalizeUnneededWordEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
   let mb_eq = nu $ \z -> ValPerm_Eq $ PExpr_LLVMWord $ PExpr_Var z in
   stmtEmbedImplM (implPushM x p >>>
@@ -3040,7 +3043,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
                                         ValPerm_Eq (PExpr_Var n)
                                       else cur_perms ^. varPerm n) args_ns
               perms_in = appendDistPerms (appendDistPerms
-                                           tops_perms args_perms) ghosts_perms in
+                                          tops_perms args_perms) ghosts_perms in
           stmtTraceM (\i ->
                        string ("tcJumpTarget " ++ show blkID ++ " (unvisited)") <>
                        (if gen_perms_hint then string "(gen)" else string "") <$$>
@@ -3054,13 +3057,20 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           -- variable that occurs multiple times in the variable list and we
           -- want our eq perms for our args to map to our tops, not our args, so
           -- this order works for what we want
-          let cl_mb_perms_in =
-                case abstractVars
-                     (RL.append (RL.append tops_ns args_ns) ghosts_ns)
-                     (distPermsToValuePerms perms_in) of
-                  Just ps -> ps
-                  Nothing ->
-                    error "tcJumpTarget: unexpected free variable in perms_in" in
+          (case abstractVars
+                (RL.append (RL.append tops_ns args_ns) ghosts_ns)
+                (distPermsToValuePerms perms_in) of
+              Just ps -> greturn ps
+              Nothing
+                | Some orig_det_vars <- namesListToNames det_vars
+                , orig_perms <- varPermsMulti orig_det_vars orig_cur_perms ->
+                  stmtTraceM
+                  (\i ->
+                    string ("tcJumpTarget: unexpected free variable in perms_in:\n"
+                            ++ renderDoc (permPretty i perms_in)
+                            ++ "\norig_perms:\n"
+                            ++ renderDoc (permPretty i orig_perms))) >>>= \str ->
+                  error str) >>>= \cl_mb_perms_in ->
 
           -- Step 6: insert a new block entrypoint that has all the permissions
           -- we constructed above as input permissions
