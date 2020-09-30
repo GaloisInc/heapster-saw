@@ -263,9 +263,19 @@ Eval simpl in sorted_insert__tuple_fun.
 Print sorted_insert__tuple_fun.
 *)
 
+(* FIXME can this be replaced with careful usages of vm_compute? *)
+Ltac computeFn3 f :=
+  repeat (match goal with
+  | |- context e [ f ?a1 ?a2 ?a3 ] =>
+    let e' := eval compute in (f a1 a2 a3) in
+    let new_goal := context e [ e' ] in
+        change new_goal
+  end).
+
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.
   unfold sorted_insert, sorted_insert__tuple_fun, mallocSpec, noErrorsSpec.
+  computeFn3 bvultWithProof.
   simpl maybe.
   prove_refinement.
 Qed.
