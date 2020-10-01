@@ -2997,7 +2997,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       (\ghosts_subst ->
         TypedJumpTarget entryID Proxy (mkCruCtx args_tps) $
         varSubst ghosts_subst ex_perms)
-      (proveExVarsImpl ex_perms >>> getDistPerms >>>= \proved_perms ->
+      (proveVarsImpl ex_perms >>> getDistPerms >>>= \proved_perms ->
         greturn (permVarSubstOfNames $ distPermsVars $ snd $
                  splitDistPerms tops_args_ns ghosts_prxs proved_perms))
 

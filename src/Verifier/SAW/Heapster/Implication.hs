@@ -24,6 +24,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Verifier.SAW.Heapster.Implication where
 
@@ -42,10 +43,13 @@ import Control.Monad.Trans
 import Control.Monad.State
 import Control.Monad.Trans.Maybe
 
+import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits.Mb (mbMap2)
 import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
+import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..))
+import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
@@ -95,6 +99,14 @@ data SimplImpl ps_in ps_out where
   -- > x:p1 * y:p2 -o y:p2 * x:p1
   SImpl_Swap :: ExprVar a -> ValuePerm a -> ExprVar b -> ValuePerm b ->
                 SimplImpl (RNil :> a :> b) (RNil :> b :> a)
+
+  -- | Move permission @p@ that is on the stack below two lists @ps1@ and @ps2@
+  -- towards the top of the stack by moving it between @ps1@ and @ps2@. That is,
+  -- change the stack
+  --
+  -- > x:p, ps1, ps2 -o ps1, x:p, ps2
+  SImpl_MoveUp :: DistPerms ps1 -> ExprVar a -> ValuePerm a -> DistPerms ps2 ->
+                  SimplImpl (RNil :> a :++: ps1 :++: ps2) (ps1 :> a :++: ps2)
 
   -- | @SImpl_IntroOrL x p1 p2@ applies left disjunction introduction:
   --
@@ -864,6 +876,8 @@ simplImplIn (SImpl_Copy x p) =
   "simplImplIn: SImpl_Copy: permission is not copyable!" $
   distPerms1 x p
 simplImplIn (SImpl_Swap x p1 y p2) = distPerms2 x p1 y p2
+simplImplIn (SImpl_MoveUp ps1 x p ps2) =
+  appendDistPerms (distPerms1 x p) $ appendDistPerms ps1 ps2
 simplImplIn (SImpl_IntroOrL x p1 p2) = distPerms1 x p1
 simplImplIn (SImpl_IntroOrR x p1 p2) = distPerms1 x p2
 simplImplIn (SImpl_IntroExists x e p) =
@@ -1041,6 +1055,8 @@ simplImplOut (SImpl_Copy x p) =
   if permIsCopyable p then distPerms2 x p x p else
     error "simplImplOut: SImpl_Copy: permission is not copyable!"
 simplImplOut (SImpl_Swap x p1 y p2) = distPerms2 y p2 x p1
+simplImplOut (SImpl_MoveUp ps1 x p ps2) =
+  appendDistPerms (DistPermsCons ps1 x p) ps2
 simplImplOut (SImpl_IntroOrL x p1 p2) = distPerms1 x (ValPerm_Or p1 p2)
 simplImplOut (SImpl_IntroOrR x p1 p2) = distPerms1 x (ValPerm_Or p1 p2)
 simplImplOut (SImpl_IntroExists x _ p) = distPerms1 x (ValPerm_Exists p)
@@ -1326,6 +1342,9 @@ instance SubstVar PermVarSubst m =>
     SImpl_Copy <$> genSubst s x <*> genSubst s p
   genSubst s [nuP| SImpl_Swap x p1 y p2 |] =
     SImpl_Swap <$> genSubst s x <*> genSubst s p1 <*> genSubst s y <*> genSubst s p2
+  genSubst s [nuP| SImpl_MoveUp ps1 x p ps2 |] =
+    SImpl_MoveUp <$> genSubst s ps1 <*> genSubst s x <*>
+    genSubst s p <*> genSubst s ps2
   genSubst s [nuP| SImpl_IntroOrL x p1 p2 |] =
     SImpl_IntroOrL <$> genSubst s x <*> genSubst s p1 <*> genSubst s p2
   genSubst s [nuP| SImpl_IntroOrR x p1 p2 |] =
@@ -2289,6 +2308,37 @@ implCopyM x p = implSimplM Proxy (SImpl_Copy x p)
 implSwapM :: ExprVar a -> ValuePerm a -> ExprVar b -> ValuePerm b ->
              ImplM vars s r (ps :> b :> a) (ps :> a :> b) ()
 implSwapM x p1 y p2 = implSimplM Proxy (SImpl_Swap x p1 y p2)
+
+-- FIXME: move to Hobbits
+appendRNilConsEq :: prx1 ps1 -> prx_a a -> RAssign f ps2 ->
+                    (ps1 :++: (RNil :> a :++: ps2)) :~: (ps1 :> a :++: ps2)
+appendRNilConsEq _ _ MNil = Refl
+appendRNilConsEq ps1 a (ps2 :>: _)
+  | Refl <- appendRNilConsEq ps1 a ps2 = Refl
+
+-- | Move permission @p@ that is on the stack below two lists @ps1@ and @ps2@
+-- towards the top of the stack by moving it between @ps1@ and @ps2@. That is,
+-- change the stack
+--
+-- > perms, p, p1_1, ..., p1_n, p2_1, ..., p2_m
+--
+-- to
+--
+-- > perms, p1_1, ..., p1_n, p, p2_1, ..., p2_m
+implMoveUpM ::
+  prx ps -> RAssign f ps1 -> ExprVar a -> RAssign f ps2 ->
+  ImplM vars s r (ps :++: ps1 :> a :++: ps2) (ps :> a :++: ps1 :++: ps2) ()
+implMoveUpM (ps :: prx ps) ps1 (x :: ExprVar a) ps2 =
+  -- FIXME: this is gross! Find a better way to do all this!
+  getDistPerms >>>= \perms ->
+  let (perms0x, perms12) =
+        splitDistPerms (Proxy :: Proxy (ps :> a)) (RL.append ps1 ps2) perms
+      (perms1, perms2) = splitDistPerms ps1 ps2 perms12 in
+  case (perms0x, appendRNilConsEq ps x (RL.append ps1 ps2)) of
+    (DistPermsCons perms0 x' p, Refl)
+      | Just Refl <- testEquality x x' ->
+        implSimplM (Proxy :: Proxy ps) (SImpl_MoveUp perms1 x p perms2)
+    (DistPermsCons _ x' _, _) -> error "implMoveUpM: unexpected variable"
 
 -- | Eliminate disjunctives and existentials on the top of the stack and return
 -- the resulting permission
@@ -4092,76 +4142,21 @@ proveVarImplH x (ValPerm_Var z off) [nuP| ValPerm_Var mb_z' mb_off |]
 proveVarImplH x p mb_p = implFailVarM "proveVarImplH" x p mb_p
 
 
--- | A list of distinguished permissions with existential variables
-data ExDistPerms vars ps where
-  ExDistPermsNil :: ExDistPerms vars RNil
-  ExDistPermsCons :: ExDistPerms vars ps -> ExprVar a -> Mb vars (ValuePerm a) ->
-                     ExDistPerms vars (ps :> a)
-
-$(mkNuMatching [t| forall vars ps. ExDistPerms vars ps |])
-
--- | Existentially quantify a list of distinguished permissions over the empty
--- set of existential variables
-distPermsToExDistPerms :: DistPerms ps -> ExDistPerms RNil ps
-distPermsToExDistPerms DistPermsNil = ExDistPermsNil
-distPermsToExDistPerms (DistPermsCons ps x p) =
-  ExDistPermsCons (distPermsToExDistPerms ps) x (emptyMb p)
-
--- | Combine a list of names and a sequence of permissions inside a name-binding
--- to get an 'ExDistPerms'
-mbValuePermsToExDistPerms :: RAssign Name ps -> Mb vars (ValuePerms ps) ->
-                             ExDistPerms vars ps
-mbValuePermsToExDistPerms MNil _ = ExDistPermsNil
-mbValuePermsToExDistPerms (ns :>: n) [nuP| ValPerms_Cons ps p |] =
-  ExDistPermsCons (mbValuePermsToExDistPerms ns ps) n p
-
--- | Substitute arguments into a function permission to get the existentially
--- quantified input permissions needed on the arguments
-funPermExDistIns :: FunPerm ghosts args ret -> RAssign Name args ->
-                    ExDistPerms ghosts args
-funPermExDistIns fun_perm args =
-  mbValuePermsToExDistPerms args $ fmap (varSubst (permVarSubstOfNames args)) $
-  funPermIns fun_perm
-
--- | Prove a list of existentially-quantified distinguished permissions
-proveVarsImpl :: ExDistPerms vars as ->
-                 ImplM vars s r as RNil ()
-proveVarsImpl ExDistPermsNil = return ()
-proveVarsImpl (ExDistPermsCons ps x p) = proveVarsImpl ps >>> proveVarImpl x p
-
--- | Like 'proveVarsImpl' but the starting permission set need not be empty, and
--- so is appended to
-proveVarsImplAppend :: ExDistPerms vars ps' ->
-                       ImplM vars s r (ps :++: ps') ps ()
-proveVarsImplAppend ExDistPermsNil = return ()
-proveVarsImplAppend (ExDistPermsCons ps x p) =
-  proveVarsImplAppend ps >>> proveVarImpl x p
-
-
 ----------------------------------------------------------------------
 -- * Proving Permission Implications for Existential Variables
 ----------------------------------------------------------------------
 
--- | Prove a list of existentially-quantified distinguished permissions where
--- some of the variables holding the permissions could themselves be
--- existentially-quantified. This only works when each existentially-quantified
--- variable is fully determined by proving the earlier implications in the list.
-proveExVarsImpl :: Mb vars (DistPerms ps) -> ImplM vars s r ps RNil ()
-proveExVarsImpl [nuP| DistPermsNil |] = greturn ()
-proveExVarsImpl [nuP| DistPermsCons ps x p |] =
-  proveExVarsImpl ps >>> getPSubst >>>= \psubst -> proveExVarImpl psubst x p
-
 -- | Prove an existentially-quantified permission where the variable holding the
--- permission could itself be existentially-quantified. This only works in a
--- limited set of cases depending on what permissions are on an
--- existentially-quantified variable.
+-- permission could itself be existentially-quantified. Return the variable that
+-- the potentially existentially-quantified has been set to.
 proveExVarImpl :: PartialSubst vars -> Mb vars (Name tp) ->
-                  Mb vars (ValuePerm tp) -> ImplM vars s r (ps :> tp) ps ()
+                  Mb vars (ValuePerm tp) ->
+                  ImplM vars s r (ps :> tp) ps (Name tp)
 
 -- If the variable is instantiated to another variable, just call proveVarImpl
 proveExVarImpl psubst mb_x mb_p
   | Just (PExpr_Var n) <- partialSubst psubst (fmap PExpr_Var mb_x)
-  = proveVarImpl n mb_p
+  = proveVarImpl n mb_p >>> greturn n
 
 -- If the variable is instantiated to a non-variable expression, bind a fresh
 -- variable for it and then call proveVarImpl
@@ -4172,7 +4167,7 @@ proveExVarImpl psubst mb_x mb_p
         Right x -> implGetVarType x) >>>= \tp ->
     implLetBindVar tp e >>>= \n ->
     implPopM n (ValPerm_Eq e) >>>
-    proveVarImpl n mb_p
+    proveVarImpl n mb_p >>> greturn n
 
 -- Special case: if proving an LLVM frame permission, look for an LLVM frame in
 -- the current context and use it
@@ -4181,7 +4176,7 @@ proveExVarImpl _ mb_x mb_p@[nuP| ValPerm_Conj [Perm_LLVMFrame mb_fperms] |]
     getExVarType memb >>>= \x_tp ->
     implFindVarOfType x_tp >>>= \maybe_n ->
     case maybe_n of
-      Just n -> setVarM memb (PExpr_Var n) >>> proveVarImpl n mb_p
+      Just n -> setVarM memb (PExpr_Var n) >>> proveVarImpl n mb_p >>> greturn n
       Nothing ->
         implFailMsgM "proveExVarImpl: No LLVM frame pointer in scope"
 
@@ -4192,3 +4187,118 @@ proveExVarImpl _ mb_x mb_p =
                     string "not resolved when trying to prove:" </>
                     permPretty i mb_p) >>>=
   implFailM
+
+
+----------------------------------------------------------------------
+-- * Proving Multiple Permission Implications
+----------------------------------------------------------------------
+
+-- | A list of distinguished permissions with existential variables
+type ExDistPerms vars ps = Mb vars (DistPerms ps)
+
+-- | Existentially quantify a list of distinguished permissions over the empty
+-- set of existential variables
+distPermsToExDistPerms :: DistPerms ps -> ExDistPerms RNil ps
+distPermsToExDistPerms = emptyMb
+
+-- FIXME: move to Hobbits
+rlistHead :: RAssign f (ctx :> a) -> f a
+rlistHead (_ :>: x) = x
+
+-- | Combine a list of names and a sequence of permissions inside a name-binding
+-- to get an 'ExDistPerms'
+mbValuePermsToExDistPerms :: RAssign Name ps -> Mb vars (ValuePerms ps) ->
+                             ExDistPerms vars ps
+mbValuePermsToExDistPerms MNil mb_ps = fmap (const DistPermsNil) mb_ps
+mbValuePermsToExDistPerms (xs :>: x) mb_ps =
+  mbMap2 (\ps p -> DistPermsCons ps x p)
+  (mbValuePermsToExDistPerms xs (fmap RL.tail mb_ps))
+  (fmap rlistHead mb_ps)
+
+-- | Substitute arguments into a function permission to get the existentially
+-- quantified input permissions needed on the arguments
+funPermExDistIns :: FunPerm ghosts args ret -> RAssign Name args ->
+                    ExDistPerms ghosts args
+funPermExDistIns fun_perm args =
+  mbValuePermsToExDistPerms args $ fmap (varSubst (permVarSubstOfNames args)) $
+  funPermIns fun_perm
+
+-- | A splitting of an existential list of permissions into a prefix, a single
+-- variable plus permission, and then a suffix
+data ExDistPermsSplit vars ps where
+  ExDistPermsSplit :: ExDistPerms vars ps1 ->
+                      Mb vars (ExprVar a) -> Mb vars (ValuePerm a) ->
+                      ExDistPerms vars ps2 ->
+                      ExDistPermsSplit vars (ps1 :> a :++: ps2)
+
+-- | Extend the @ps@ argument of a 'ExDistPermsSplit'
+extExDistPermsSplit :: ExDistPermsSplit vars ps ->
+                       Mb vars (ExprVar b) -> Mb vars (ValuePerm b) ->
+                       ExDistPermsSplit vars (ps :> b)
+extExDistPermsSplit (ExDistPermsSplit ps1 mb_x mb_p ps2) y p' =
+  ExDistPermsSplit ps1 mb_x mb_p $
+  mbMap2 DistPermsCons ps2 y `mbApply` p'
+
+
+-- | Find a permission in the supplied list where 'proveExVarImpl' will succeed,
+-- given the current set of existential variables whose values have not been
+-- set, and split out that permission from the list
+findProvablePerm :: Mb vars (NameSet CrucibleType) -> ExDistPerms vars ps ->
+                    Maybe (ExDistPermsSplit vars ps)
+
+-- First try to recurse on the LHS and see if we can prove a permission there
+findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |]
+  | Just ret <- findProvablePerm mbUnsetVars ps =
+    Just $ extExDistPermsSplit ret mb_x mb_p
+
+-- If not, test if x and all the needed vars in p are set so we can choose x
+findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |]
+  | mbNeeded <- mbMap2 (\x p -> NameSet.insert x $ neededVars p) mb_x mb_p
+  , mbLift $ mbMap2 (\s1 s2 ->
+                      NameSet.null $
+                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars =
+    Just $ ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p)
+
+-- Special case: an LLVMFrame permission can always be proved
+findProvablePerm _ [nuP| DistPermsCons ps mb_x
+                       mb_p@(ValPerm_Conj [Perm_LLVMFrame _]) |] =
+  Just $ ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p)
+
+-- Otherwise we fail
+findProvablePerm _ _ = Nothing
+
+
+-- | Prove a list of existentially-quantified distinguished permissions, adding
+-- those proofs to the top of the stack
+proveVarsImplAppend :: ExDistPerms vars ps ->
+                       ImplM vars s r (ps_in :++: ps) ps_in ()
+proveVarsImplAppend [nuP| DistPermsNil |] = return ()
+proveVarsImplAppend ps =
+  getPSubst >>>= \psubst ->
+  getPerms >>>= \cur_perms ->
+  case findProvablePerm (psubstMbUnsetVars psubst) ps of
+    Just (ExDistPermsSplit ps1 mb_x mb_p ps2) ->
+      proveExVarImpl psubst mb_x mb_p >>>= \x ->
+      proveVarsImplAppend (mbMap2 appendDistPerms ps1 ps2) >>>
+      implMoveUpM cur_perms (mbDistPermsToProxies ps1) x (mbDistPermsToProxies ps2)
+    Nothing ->
+      implTraceM
+      (\i ->
+        sep [string
+             "Could not determine enough variables to prove permissions:" </>
+             permPretty i ps]) >>>=
+      implFailM
+
+
+-- | Prove that @'RNil' :++: ctx@ equals @ctx@
+--
+-- FIXME: move to Hobbits
+prependRNilEq :: RAssign f ctx -> RNil :++: ctx :~: ctx
+prependRNilEq MNil = Refl
+prependRNilEq (ctx :>: _) | Refl <- prependRNilEq ctx = Refl
+
+-- | Prove a list of existentially-quantified distinguished permissions
+proveVarsImpl :: ExDistPerms vars as -> ImplM vars s r as RNil ()
+proveVarsImpl ps
+  | Refl <- mbLift (fmap prependRNilEq $ mbDistPermsToValuePerms ps) =
+    proveVarsImplAppend ps

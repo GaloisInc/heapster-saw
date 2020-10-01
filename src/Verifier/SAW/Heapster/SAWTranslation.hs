@@ -1944,6 +1944,32 @@ translateSimplImpl _ [nuP| SImpl_Swap _ _ _ _ |] m =
   (\(pctx :>: px :>: py) -> pctx :>: py :>: px)
   m
 
+translateSimplImpl (ps0
+                    :: Proxy ps0) [nuP| SImpl_MoveUp
+                                      (mb_ps1 :: DistPerms ps1)
+                                      (mb_x :: ExprVar a)
+                                      _
+                                      (mb_ps2 :: DistPerms ps2) |] m =
+  let mkProxies :: forall vars ps. Mb vars (DistPerms ps) -> RAssign Proxy ps
+      mkProxies = mbLift . fmap (RL.map (const Proxy)) . mbDistPermsToValuePerms
+      ps1 = mkProxies mb_ps1
+      ps2 = mkProxies mb_ps2
+      prxa = Proxy :: Proxy a
+      prx0a = Proxy :: Proxy (ps0 :> a) in
+  case (appendRNilConsEq ps0 prxa (RL.append ps1 ps2)) of
+    Refl ->
+      withPermStackM
+      (\xs ->
+        let ((xs0 :>: x), xs12) = RL.split prx0a (RL.append ps1 ps2) xs
+            (xs1, xs2) = RL.split ps1 ps2 xs12 in
+        RL.append xs0 $ RL.append (xs1 :>: x) xs2)
+      (\pctx ->
+        let ((pctx0 :>: ptrans), pctx12) =
+              RL.split prx0a (RL.append ps1 ps2) pctx
+            (pctx1, pctx2) = RL.split ps1 ps2 pctx12 in
+        RL.append pctx0 $ RL.append (pctx1 :>: ptrans) pctx2)
+      m
+
 translateSimplImpl _ [nuP| SImpl_IntroOrL _ p1 p2 |] m =
   do tp1 <- translate p1
      tp2 <- translate p2
@@ -2383,7 +2409,7 @@ translateSimplImpl _ [nuP| SImpl_LCurrentTrans l1 l2 l3 |] m =
 translateSimplImpl _ simpl@[nuP| SImpl_FoldNamed x np args _ |] m
   | [nuP| NamedPerm_Rec rp |] <- np =
     do args_trans <- translate args
-       ttrans <- translate $  fmap (distPermsHeadPerm . simplImplOut) simpl
+       ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
        let fold_ident = mbLift $ fmap recPermFoldFun rp
        withPermStackM id
          (\(pctx :>: ptrans_x) ->
@@ -2396,7 +2422,7 @@ translateSimplImpl _ simpl@[nuP| SImpl_FoldNamed x np args _ |] m
 translateSimplImpl _ simpl@[nuP| SImpl_UnfoldNamed x np args _ |] m
   | [nuP| NamedPerm_Rec rp |] <- np =
     do args_trans <- translate args
-       ttrans <- translate $  fmap (distPermsHeadPerm . simplImplOut) simpl
+       ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
        let unfold_ident = mbLift $ fmap recPermUnfoldFun rp
        withPermStackM id
          (\(pctx :>: ptrans_x) ->

@@ -83,6 +83,43 @@ import Debug.Trace
 -- * Utility Functions
 ----------------------------------------------------------------------
 
+-- | Convert a list of existentially quantified names to an existentially
+-- quantified assignment of names to a context
+--
+-- FIXME: this belongs in the Hobbits library somewhere
+namesListToNames :: [SomeName k] -> Some (RAssign (Name :: k -> Type))
+namesListToNames =
+  foldr (\(SomeName n) (Some ns) -> Some (ns :>: n)) (Some MNil) . reverse
+
+-- | Convert an existentially quantified assignment of names to a context to a
+-- list of existentially quantified names
+namesToNamesList :: RAssign (Name :: k -> Type) ns -> [SomeName k]
+namesToNamesList ns = mapToList SomeName ns
+
+-- FIXME: move this to Hobbits and implement using the IntSet operation
+-- Also: change NameSet so that it requires k :: Type
+nameSetIsSubsetOf :: NameSet (k :: Type) -> NameSet k -> Bool
+nameSetIsSubsetOf s1 s2 = NameSet.null $ NameSet.difference s1 s2
+
+-- FIXME: move this to Hobbits!
+instance Eq (SomeName k) where
+  (SomeName n1) == (SomeName n2) | Just Refl <- testEquality n1 n2 = True
+  _ == _ = False
+
+-- | Existential return value from 'splitAtMember'
+data SplitAtMemberRet f ctx a where
+  SplitAtMemberRet :: RAssign f ctx1 -> f a -> RAssign f ctx2 ->
+                      SplitAtMemberRet f (ctx1 :> a :++: ctx2) a
+
+-- | Split an assignment at the point specified by a 'Member' proof
+--
+-- FIXME: move to Hobbits
+splitAtMember :: RAssign f ctx -> Member ctx a -> SplitAtMemberRet f ctx a
+splitAtMember (ctx :>: x) Member_Base = SplitAtMemberRet ctx x MNil
+splitAtMember (ctx :>: y) (Member_Step memb) =
+  case splitAtMember ctx memb of
+    SplitAtMemberRet ctx1 x ctx2 -> SplitAtMemberRet ctx1 x (ctx2 :>: y)
+
 -- | Delete the nth element of a list
 deleteNth :: Int -> [a] -> [a]
 deleteNth i xs | i >= length xs = error "deleteNth"
@@ -1028,9 +1065,17 @@ pattern ValPerm_Conj1 :: AtomicPerm a -> ValuePerm a
 pattern ValPerm_Conj1 p = ValPerm_Conj [p]
 
 -- | A sequence of value permissions
+{-
 data ValuePerms as where
   ValPerms_Nil :: ValuePerms RNil
   ValPerms_Cons :: ValuePerms as -> ValuePerm a -> ValuePerms (as :> a)
+-}
+
+type ValuePerms = RAssign ValuePerm
+
+pattern ValPerms_Nil = MNil
+pattern ValPerms_Cons ps p = ps :>: p
+
 
 -- | Fold a function over a 'ValuePerms' list, where
 --
@@ -1741,7 +1786,11 @@ $(mkNuMatching [t| forall w. BVRange w |])
 $(mkNuMatching [t| forall w. BVProp w |])
 $(mkNuMatching [t| forall a . AtomicPerm a |])
 $(mkNuMatching [t| forall a . ValuePerm a |])
-$(mkNuMatching [t| forall as. ValuePerms as |])
+-- $(mkNuMatching [t| forall as. ValuePerms as |])
+
+instance NuMatchingAny1 ValuePerm where
+  nuMatchingAny1Proof = nuMatchingProof
+
 $(mkNuMatching [t| forall w sz . LLVMFieldPerm w sz |])
 $(mkNuMatching [t| forall w . LLVMArrayPerm w |])
 $(mkNuMatching [t| RWModality |])
@@ -2919,6 +2968,21 @@ instance FreeVars (FunPerm ghosts args ret) where
     (NameSet.liftNameSet $ fmap freeVars $ mbCombine perms_out)
 
 
+-- | Test if an expression @e@ is a /determining/ expression, meaning that
+-- proving @x:eq(e)@ will necessarily determine the values of the free variables
+-- of @e@ in the sense of 'determinedVars'.
+isDeterminingExpr :: PermExpr a -> Bool
+isDeterminingExpr (PExpr_Var _) = True
+isDeterminingExpr (PExpr_LLVMWord e) = isDeterminingExpr e
+isDeterminingExpr (PExpr_BV [BVFactor _ _] _) =
+  -- A linear expression N*x + M lets you solve for x when it is possible
+  True
+isDeterminingExpr e =
+  -- If an expression has no free variables then it vacuously determines all of
+  -- its free variables
+  NameSet.null $ freeVars e
+  -- FIXME: consider adding a case for y &+ e
+
 -- | Generic function to compute the /needed/ variables of a permission, meaning
 -- those whose values must be determined before that permission can be
 -- proved. This includes, e.g., all the free variables of the parts of llvm
@@ -2934,9 +2998,8 @@ instance NeededVars (ValuePerm a) where
   -- For an equality permission, if a variable is determined by the permission
   -- then it is not needed yet; FIXME: call the same function to determine the
   -- needed vars as in determinedVars
-  neededVars (ValPerm_Eq (PExpr_Var _)) = NameSet.empty
-  neededVars (ValPerm_Eq (PExpr_LLVMWord (PExpr_Var _))) = NameSet.empty
-  neededVars (ValPerm_Eq e) = freeVars e
+  neededVars (ValPerm_Eq e) =
+    if isDeterminingExpr e then NameSet.empty else freeVars e
   neededVars (ValPerm_Or p1 p2) = NameSet.union (neededVars p1) (neededVars p2)
   neededVars (ValPerm_Exists mb_p) = NameSet.liftNameSet $ fmap neededVars mb_p
   neededVars p@(ValPerm_Named _ _ _) = freeVars p
@@ -3765,6 +3828,28 @@ emptyPSubst = PartialSubst . helper where
   helper CruCtxNil = MNil
   helper (CruCtxCons ctx' _) = helper ctx' :>: PSubstElem Nothing
 
+-- | Return the set of variables that have been assigned values by a partial
+-- substitution inside a binding for all of its variables
+psubstMbDom :: PartialSubst ctx -> Mb ctx (NameSet CrucibleType)
+psubstMbDom (PartialSubst elems) =
+  nuMulti elems $ \ns ->
+  NameSet.fromList $ catMaybes $ RL.toList $
+  RL.map2 (\n (PSubstElem maybe_e) ->
+            if isJust maybe_e
+            then Constant (Just $ SomeName n)
+            else Constant Nothing) ns elems
+
+-- | Return the set of variables that have not been assigned values by a partial
+-- substitution inside a binding for all of its variables
+psubstMbUnsetVars :: PartialSubst ctx -> Mb ctx (NameSet CrucibleType)
+psubstMbUnsetVars (PartialSubst elems) =
+  nuMulti elems $ \ns ->
+  NameSet.fromList $ catMaybes $ RL.toList $
+  RL.map2 (\n (PSubstElem maybe_e) ->
+            if maybe_e == Nothing
+            then Constant (Just $ SomeName n)
+            else Constant Nothing) ns elems
+
 -- | Set the expression associated with a variable in a partial substitution. It
 -- is an error if it is already set.
 psubstSet :: Member ctx a -> PermExpr a -> PartialSubst ctx ->
@@ -4582,29 +4667,6 @@ permSetAllVarPerms perm_set =
   foldr (\(NameAndElem x p) (Some perms) -> Some (DistPermsCons perms x p))
   (Some DistPermsNil) (NameMap.assocs $ _varPermMap perm_set)
 
--- | Convert a list of existentially quantified names to an existentially
--- quantified assignment of names to a context
---
--- FIXME: this belongs in the Hobbits library somewhere
-namesListToNames :: [SomeName k] -> Some (RAssign (Name :: k -> Type))
-namesListToNames =
-  foldr (\(SomeName n) (Some ns) -> Some (ns :>: n)) (Some MNil) . reverse
-
--- | Convert an existentially quantified assignment of names to a context to a
--- list of existentially quantified names
-namesToNamesList :: RAssign (Name :: k -> Type) ns -> [SomeName k]
-namesToNamesList ns = mapToList SomeName ns
-
--- FIXME: move this to Hobbits!
-instance Eq (SomeName k) where
-  (SomeName n1) == (SomeName n2) | Just Refl <- testEquality n1 n2 = True
-  _ == _ = False
-
--- FIXME: move this to Hobbits and implement using the IntSet operation
--- Also: change NameSet so that it requires k :: Type
-nameSetIsSubsetOf :: NameSet (k :: Type) -> NameSet k -> Bool
-nameSetIsSubsetOf s1 s2 = NameSet.null $ NameSet.difference s1 s2
-
 -- | A determined vars clause says that the variable on the right-hand side is
 -- determined (as in the description of 'determinedVars') if all those on the
 -- left-hand side are. Note that this is an if and not an iff, as there may be
@@ -4655,10 +4717,11 @@ determinedVars top_perms vars =
     clausesForExpr :: PermExpr a ->
                       ReaderT (PermSet ps) (State (NameSet CrucibleType))
                       [DetVarsClause]
-    clausesForExpr (PExpr_Var y) = clausesForVar y
-    clausesForExpr (PExpr_LLVMWord (PExpr_Var y)) = clausesForVar y
+    clausesForExpr e
+      | isDeterminingExpr e =
+        concat <$> mapM (\(SomeName n) -> clausesForVar n) (NameSet.toList $
+                                                            freeVars e)
     clausesForExpr _ = return []
-    -- FIXME: consider adding a case for eq(y &+ e) requiring e to be determined
 
     -- Find all variables that are potentially determined by the permission p
     -- and return clauses stating what other variables must be determined in
