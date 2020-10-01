@@ -83,9 +83,26 @@ instance Closable Ident where
 instance Liftable Ident where
   mbLift = unClosed . mbLift . fmap toClosed
 
--- FIXME: this Natural should go into Hobbits
+-- FIXME: this Natural instance should go into Hobbits
 instance Closable Natural where
   toClosed = unsafeClose
+
+-- FIXME: move to Hobbits
+class NuMatchingAny1 f => LiftableAny1 f where
+  mbLiftAny1 :: Mb ctx (f a) -> f a
+
+-- FIXME: move to Hobbits
+instance NuMatchingAny1 Proxy where
+  nuMatchingAny1Proof = nuMatchingProof
+
+-- FIXME: move to Hobbits
+instance LiftableAny1 Proxy where
+  mbLiftAny1 = mbLift
+
+-- FIXME: move to Hobbits
+instance LiftableAny1 f => Liftable (RAssign f ctx) where
+  mbLift [nuP| MNil |] = MNil
+  mbLift [nuP| xs :>: x |] = mbLift xs :>: mbLiftAny1 x
 
 instance NuMatching OpenTerm where
   nuMatchingProof = unsafeMbTypeRepr
