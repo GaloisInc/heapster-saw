@@ -59,19 +59,27 @@ Definition bvMem_lo :=
 Definition bvMem_hi :=
   Eval compute in bvLit_0b"0000111111111111111111111111111111111111111111111111111111111111".
 
-Definition zero_array_noErrors : lrtToType zero_array_lrt := fun x _ =>
-  assumingM (isBvsle 64 (bvLit 64 0) x /\ isBvsle 64 x bvMem_hi)
+Definition zero_array_precond x
+  := isBvsle 64 (bvLit 64 0) x /\ isBvsle 64 x bvMem_hi.
+
+Definition zero_array_invariant x x' (i : { _ & unit })
+  := isBvsle 64 (bvLit 64 0) (projT1 i) /\ isBvsle 64 (projT1 i) x /\ x = x'.
+
+Arguments zero_array_precond x /.
+Arguments zero_array_invariant x x' i /.
+
+Definition zero_array_noErrors_letRec : lrtToType zero_array_lrt := fun x _ =>
+  assumingM (zero_array_precond x)
    (letRecM (lrts:=LRT_Cons zero_array_letRec_lrt LRT_Nil)
-            (fun _ => (fun x' _ i => assumingM (   isBvsle 64 (bvLit 64 0) (projT1 i)
-                                                /\ isBvsle 64 (projT1 i) x
-                                                /\ x = x')
+            (fun _ => (fun x' _ i => assumingM (zero_array_invariant x x' i)
                                      noErrorsSpec, tt))
             (fun _ => noErrorsSpec)).
 
-Lemma no_errors_zero_array : refinesFun zero_array zero_array_noErrors.
+Lemma no_errors_zero_array
+  : refinesFun zero_array (fun x _ => assumingM (zero_array_precond x) noErrorsSpec).
 Proof.
-  unfold zero_array, zero_array__tuple_fun, zero_array_noErrors, noErrorsSpec.
-  unfold zero_array_lrt, zero_array_letRec_lrt.
+  transitivity zero_array_noErrors_letRec; try reflexivity.
+  unfold zero_array, zero_array__tuple_fun, zero_array_noErrors_letRec, noErrorsSpec.
   unfold bvultWithProof.
   unfold true, false; fold bvMem_lo; fold bvMem_hi.
   prove_refinement.
@@ -132,19 +140,28 @@ Definition contains0_letRec_lrt
                (BVVec 64 arg0 {_ : bitvector 64 & unit} *
                 ({_ : bitvector 64 & unit} * unit))))).
 
-Definition contains0_noErrors : lrtToType contains0_lrt := fun l _ =>
-  assumingM (isBvsle 64 (bvLit 64 0) l /\ isBvsle 64 l bvMem_hi)
+Definition contains0_precond l
+  := isBvsle 64 (bvLit 64 0) l /\ isBvsle 64 l bvMem_hi.
+
+Definition contains0_invariant l l' (i : { _ & unit })
+  := isBvsle 64 (bvLit 64 0) (projT1 i) /\ isBvsle 64 (projT1 i) l /\ l = l'.
+
+Arguments contains0_precond l /.
+Arguments contains0_invariant l l' i /.
+
+Definition contains0_noErrors_letRec : lrtToType contains0_lrt := fun x _ =>
+  assumingM (contains0_precond x)
    (letRecM (lrts:=LRT_Cons contains0_letRec_lrt LRT_Nil)
-            (fun _ => (fun l' _ i => assumingM (   isBvsle 64 (bvLit 64 0) (projT1 i)
-                                                /\ isBvsle 64 (projT1 i) l
-                                                /\ l = l')
+            (fun _ => (fun x' _ i => assumingM (contains0_invariant x x' i)
                                      noErrorsSpec, tt))
             (fun _ => noErrorsSpec)).
 
 (* This proof is *identical* to no_errors_zero_array except for in the two noted spots *)
-Lemma no_errors_contains0 : refinesFun contains0 contains0_noErrors.
+Lemma no_errors_contains0
+  : refinesFun contains0 (fun x _ => assumingM (contains0_precond x) noErrorsSpec).
 Proof.
-  unfold contains0, contains0__tuple_fun, contains0_noErrors, noErrorsSpec.
+  transitivity contains0_noErrors_letRec; try reflexivity.
+  unfold contains0, contains0__tuple_fun, contains0_noErrors_letRec, noErrorsSpec.
   unfold contains0_lrt, contains0_letRec_lrt.
   unfold bvultWithProof.
   unfold true, false; fold bvMem_lo; fold bvMem_hi.
