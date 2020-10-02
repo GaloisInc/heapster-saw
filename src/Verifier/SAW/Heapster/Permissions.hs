@@ -1857,7 +1857,7 @@ exPermBody tp (ValPerm_Exists (p :: Binding tp' (ValuePerm a)))
 exPermBody _ _ = error "exPermBody"
 
 -- | Test if an 'AtomicPerm' is a field permission
-isLLVMFieldPerm :: AtomicPerm (LLVMPointerType w) -> Bool
+isLLVMFieldPerm :: AtomicPerm a -> Bool
 isLLVMFieldPerm (Perm_LLVMField _) = True
 isLLVMFieldPerm _ = False
 

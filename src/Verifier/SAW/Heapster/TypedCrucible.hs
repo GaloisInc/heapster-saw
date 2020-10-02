@@ -57,7 +57,7 @@ import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Binding.Hobbits.Mb (mbMap2)
 
-import Data.Parameterized.Context hiding ((:>), empty, take, view, last)
+import Data.Parameterized.Context hiding ((:>), empty, take, view, last, drop)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
 import Data.Parameterized.TraversableF
@@ -2908,7 +2908,10 @@ simplifyPermsForDetVars det_vars_list =
 
 
 -- | If @x@ has permission @eq(llvmword e)@ where @e@ is not a needed variable
--- (in the supplied set), replace that perm with @x:exists z.eq(llvmword z)@
+-- (in the supplied set), replace that perm with @x:exists z.eq(llvmword z)@.
+-- Also do this inside pointer permissions, by recursively destructing any
+-- pointer permissions @ptr((rw,off) |-> p)@ to @ptr((rw,off) |-> eq(y))@ for
+-- fresh variable @y@ and generalizing unneeded word equalities for @y@.
 generalizeUnneededWordEqPerms1 ::
   NameSet CrucibleType -> Name a -> ValuePerm a ->
   StmtPermCheckM ext cblocks blocks tops ret ps ps ()
@@ -2922,8 +2925,25 @@ generalizeUnneededWordEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
   stmtEmbedImplM (implPushM x p >>>
                   introExistsM x e mb_eq >>>
                   implPopM x (ValPerm_Exists mb_eq))
+generalizeUnneededWordEqPerms1 needed_vars x p@(ValPerm_Conj ps)
+  | Just i <- findIndex isLLVMFieldPerm ps
+  , Perm_LLVMField fp <- ps!!i
+  , y_p <- llvmFieldContents fp
+  , ps' <- deleteNth i ps
+  , (case y_p of
+        ValPerm_Eq (PExpr_Var _) -> False
+        _ -> True) =
+    stmtEmbedImplM
+    (implPushM x p >>> implExtractConjM x ps i >>>
+     implPopM x (ValPerm_Conj ps') >>>
+     implElimLLVMFieldContentsM x fp >>>= \y ->
+     let fp' = fp { llvmFieldContents = ValPerm_Eq (PExpr_Var y) } in
+     implPushM x (ValPerm_Conj ps') >>>
+     implInsertConjM x (Perm_LLVMField fp') ps' i >>>
+     implPopM x (ValPerm_Conj (take i ps' ++ Perm_LLVMField fp' : drop i ps')) >>>
+     greturn y) >>>= \y ->
+    generalizeUnneededWordEqPerms1 needed_vars y y_p
 generalizeUnneededWordEqPerms1 _ _ _ = greturn ()
-
 
 -- | Find all permissions of the form @x:eq(llvmword e)@ other than those where
 -- @e@ is a needed variable, and replace them with @x:exists z.eq(llvmword z)@
