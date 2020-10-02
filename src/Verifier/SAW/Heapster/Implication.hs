@@ -2827,6 +2827,25 @@ implPushLifetimeEndPerms (ps :>: LifetimeEndConj x x_ps i) =
 -- * Recombining Permissions
 ----------------------------------------------------------------------
 
+-- | Simplify an equality permission @x:eq(e)@ that we assume is on the top of
+-- the stack by substituting any equality permissions on variables in @e@,
+-- returning the resulting expression
+simplEqPerm :: ExprVar a -> PermExpr a ->
+               ImplM vars s r (as :> a) (as :> a) (PermExpr a)
+simplEqPerm x e@(PExpr_Var y) =
+  getPerm y >>>= \case
+  p@(ValPerm_Eq e') ->
+    implPushM y p >>> implCopyM y p >>> implPopM y p >>>
+    introCastM x y p >>> greturn e'
+  _ -> greturn e
+simplEqPerm x e@(PExpr_LLVMOffset y off) =
+  getPerm y >>>= \case
+  p@(ValPerm_Eq e') ->
+    implPushM y p >>> implCopyM y p >>> implPopM y p >>>
+    castLLVMPtrM y p off x >>> greturn (addLLVMOffset e' off)
+  _ -> greturn e
+simplEqPerm _ e = greturn e
+
 -- | Recombine the permission @x:p@ on top of the stack back into the existing
 -- permission for @x@
 recombinePerm :: ExprVar a -> ValuePerm a -> ImplM vars s r as (as :> a) ()
@@ -2848,6 +2867,8 @@ recombinePermExpl x x_p p =
 recombinePerm' :: ExprVar a -> ValuePerm a -> ValuePerm a ->
                   ImplM vars s r as (as :> a) ()
 recombinePerm' x _ p@ValPerm_True = implDropM x p
+recombinePerm' x ValPerm_True (ValPerm_Eq e) =
+  simplEqPerm x e >>>= \e' ->  implPopM x (ValPerm_Eq e')
 recombinePerm' x ValPerm_True p = implPopM x p
 recombinePerm' x (ValPerm_Eq (PExpr_Var y)) _
   | y == x = error "recombinePerm: variable x has permission eq(x)!"
