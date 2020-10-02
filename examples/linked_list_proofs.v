@@ -71,8 +71,7 @@ Proof.
   - apply refinesM_letRecM0.
     apply refinesM_if_r; intro H; rewrite H; simpl.
     + reflexivity.
-    + setoid_rewrite existT_eta_unit.
-      setoid_rewrite bindM_returnM_CompM.
+    + unshelve (rewrite_strat (bottomup (hints refinesM))).
       reflexivity.
 Qed.
 
@@ -276,5 +275,6 @@ Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpe
 Proof.
   unfold sorted_insert, sorted_insert__tuple_fun, mallocSpec, noErrorsSpec.
   computeFn3 bvultWithProof.
+  simpl maybe.
   prove_refinement.
 Qed.
