@@ -3191,19 +3191,14 @@ translateLLVMStmt [nuP| TypedLLVMAlloca
   let sz = mbLift mb_sz
       w :: Proxy w = Proxy in
   inExtTransM ETrans_LLVM $
+  translateClosed (llvmFieldsPermOfSize w sz) >>= \ptrans_tp ->
   withPermStackM (:>: Member_Base)
   (\(pctx :>: _) ->
     pctx
     :>: PTrans_Conj [APTrans_LLVMFrame $
                      flip nuMultiWithElim1 (extMb mb_fperm) $
                      \(_ :>: ret) fperm -> (PExpr_Var ret, sz):fperm]
-    :>: PTrans_Conj (flip map [0 .. bytesToMachineWords w sz - 1] $ \i ->
-                      APTrans_LLVMField @w @w
-                      (fmap
-                       (const $ llvmFieldWrite0True
-                        { llvmFieldOffset = bvInt (i * machineWordBytes w) })
-                       (extMb mb_fperm))
-                      PTrans_True))
+    :>: typeTransF ptrans_tp [])
   m
 
 translateLLVMStmt mb_stmt@[nuP| TypedLLVMCreateFrame |] m =

@@ -1986,13 +1986,19 @@ llvmRead0EqPerm l e =
                                 llvmFieldOffset = bvInt 0,
                                 llvmFieldContents = ValPerm_Eq e }]
 
--- | Create a field write permission with offset 0 and @true@ permissions
-llvmFieldWrite0True :: (1 <= w, KnownNat w) => LLVMFieldPerm w w
-llvmFieldWrite0True =
+-- | Create a field write permission with offset 0 and @true@ permissions of a
+-- given size
+llvmSizedFieldWrite0True :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                            f1 w -> f2 sz -> LLVMFieldPerm w sz
+llvmSizedFieldWrite0True _ _ =
   LLVMFieldPerm { llvmFieldRW = PExpr_Write,
                   llvmFieldLifetime = PExpr_Always,
                   llvmFieldOffset = bvInt 0,
                   llvmFieldContents = ValPerm_True }
+
+-- | Create a field write permission with offset 0 and @true@ permissions
+llvmFieldWrite0True :: (1 <= w, KnownNat w) => LLVMFieldPerm w w
+llvmFieldWrite0True = llvmSizedFieldWrite0True Proxy Proxy
 
 -- | Create a field write permission with offset 0 and @true@ permissions
 llvmWrite0TruePerm :: (1 <= w, KnownNat w) => ValuePerm (LLVMPointerType w)
@@ -2442,22 +2448,33 @@ findLLVMArrayWithFieldBorrow fp (_ : ps) =
 
 -- | Create a list of field permissions the cover @N@ bytes:
 --
--- > ptr((w,0) |-> true, (w,W) |-> true, ..., (w,W*(M-1)) |-> true)
+-- > ptr((W,0) |-> true, (W,M) |-> true, (W,2*M) |-> true,
+-- >   ..., (W, (i-1)*M, 8*(sz-(i-1)*M)) |-> true)
 --
--- where @W@ is the number of bytes per machine word and @M@ is the number of
--- machine words for @N@ bytes, rounded up
-llvmFieldsOfSize :: (1 <= w, KnownNat w) => f w -> Integer -> [LLVMFieldPerm w w]
-llvmFieldsOfSize w n =
-  map (\i -> llvmFieldWrite0True { llvmFieldOffset =
-                                     bvInt (i * machineWordBytes w) })
-  [0 .. bytesToMachineWords w n - 1]
+-- where @sz@ is the number of bytes allocated, @M@ is the machine word size in
+-- bytes, and @i@ is the greatest natural number such that @(i-1)*M < sz@
+llvmFieldsOfSize :: (1 <= w, KnownNat w) => f w -> Integer -> [LLVMArrayField w]
+llvmFieldsOfSize (w :: f w) sz
+  | sz_last_int <- 8 * (sz - (bytesToMachineWords w sz - 1) * machineWordBytes w)
+  , Just (Some sz_last) <- someNat sz_last_int
+  , Left LeqProof <- decideLeq (knownNat @1) sz_last =
+    withKnownNat sz_last $
+    map (\i -> LLVMArrayField $
+               (llvmFieldWrite0True @w) { llvmFieldOffset =
+                                            bvInt (i * machineWordBytes w) })
+    [0 .. bytesToMachineWords w sz - 2]
+    ++
+    [LLVMArrayField $
+     (llvmSizedFieldWrite0True w sz_last)
+     { llvmFieldOffset =
+         bvInt ((bytesToMachineWords w sz - 1) * machineWordBytes w) }]
 
 -- | Return the permission built from the field permissions returned by
 -- 'llvmFieldsOfSize'
 llvmFieldsPermOfSize :: (1 <= w, KnownNat w) => f w -> Integer ->
                         ValuePerm (LLVMPointerType w)
 llvmFieldsPermOfSize w n =
-  ValPerm_Conj $ map Perm_LLVMField $ llvmFieldsOfSize w n
+  ValPerm_Conj $ map llvmArrayFieldToAtomicPerm $ llvmFieldsOfSize w n
 
 -- | Create the array ponter perm @array(0,<len,*1 |-> [ptr(0 |-> true)])@ of
 -- size @len@ words of width @w@
@@ -2625,7 +2642,7 @@ llvmFrameDeletionPerms [] = Some DistPermsNil
 llvmFrameDeletionPerms ((asLLVMOffset -> Just (x,off), sz):fperm')
   | Some del_perms <- llvmFrameDeletionPerms fperm' =
     Some $ DistPermsCons del_perms x $ ValPerm_Conj
-    (map (Perm_LLVMField . offsetLLVMFieldPerm off) $
+    (map (llvmArrayFieldToAtomicPerm . offsetLLVMArrayField off) $
      llvmFieldsOfSize knownNat sz)
     -- [offsetLLVMAtomicPerm off $ llvmArrayPtrPermOfSize sz]
 llvmFrameDeletionPerms _ =

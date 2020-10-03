@@ -369,14 +369,16 @@ data TypedLLVMStmt w ret ps_in ps_out where
                     (ps :> LLVMPointerType w :++: ps_l)
                     (ps :> LLVMPointerType w :++: ps_l)
 
-  -- | Allocate an object of the given size on the given LLVM frame
+  -- | Allocate an object of the given size on the given LLVM frame, broken into
+  -- word-sized fields followed by a field at the end with the remaining size:
   --
   -- Type:
   -- > fp:frame(ps) -o fp:frame(ps,(ret,i)),
-  -- >                 ret:ptr((w,0) |-> true, (w,M) |-> true,
-  -- >                         ..., (w,M*(i-1)) |-> true)
+  -- >                 ret:ptr((W,0) |-> true, (W,M) |-> true, (W,2*M) |-> true,
+  -- >                         ..., (w, (i-1)*M, 8*(sz-(i-1)*M)) |-> true)
   --
-  -- where @M@ is the machine word size in bytes
+  -- where @sz@ is the number of bytes allocated, @M@ is the machine word size in
+  -- bytes, and @i@ is the greatest natural number such that @(i-1)*M < sz@
   TypedLLVMAlloca :: (1 <= w, KnownNat w) => TypedReg (LLVMFrameType w) ->
                      LLVMFramePerm w -> Integer ->
                      TypedLLVMStmt w (LLVMPointerType w)
