@@ -16,11 +16,6 @@ Import arrays.
 
 Import VectorNotations.
 
-Lemma if_bv_lemma (b : bool) : not (bvEq 1 (if b then bvLit 1 1 else bvLit 1 0) (bvLit 1 0)) = b.
-Proof.
-  destruct b; reflexivity.
-Qed.
-
 Lemma and_bool_eq_true_lemma (b c : bool) : and b c = true <-> (b = true) /\ (c = true).
 Proof.
   split.
@@ -91,7 +86,7 @@ Proof.
   - assumption. (* FIXME Could prove_refinement do this automatically? *)
   (* Maybe one day Heapster will be smart enough to know that this case is
      impossible, but for now it's easy enough prove: *)
-  - rewrite if_bv_lemma in e_if.
+  - rewrite bvEq_wrapped_bool in e_if.
     cbn [ projT1 ] in e_maybe.
     rewrite e_if in e_maybe.
     discriminate e_maybe.
@@ -103,7 +98,7 @@ Proof.
         rewrite e_assuming0_H1, e_assuming_H1.
         reflexivity.
     + apply isBvslt_to_isBvsle_suc.
-      rewrite if_bv_lemma, isBvult_def in e_if.
+      rewrite bvEq_wrapped_bool, isBvult_def in e_if.
       rewrite <- e_assuming0_H2 in e_if.
       apply isBvult_to_isBvslt_pos; assumption.
     + assumption.
@@ -171,7 +166,7 @@ Proof.
   all: try destruct e_assuming0 as [ e_assuming0_H1 e_assuming0_H2 ].
   all: cbn [ projT1 ].
   - repeat (split; try assumption). (* <- different from no_errors_zero_array *)
-  - rewrite if_bv_lemma in e_if.
+  - rewrite bvEq_wrapped_bool in e_if.
     cbn [ projT1 ] in e_maybe.
     rewrite e_if in e_maybe.
     discriminate e_maybe.
@@ -182,7 +177,7 @@ Proof.
         rewrite e_assuming0_H1, e_assuming_H1.
         reflexivity.
     + apply isBvslt_to_isBvsle_suc.
-      rewrite if_bv_lemma, isBvult_def in e_if.
+      rewrite bvEq_wrapped_bool, isBvult_def in e_if.
       rewrite <- e_assuming0_H2 in e_if.
       apply isBvult_to_isBvslt_pos; assumption.
     + assumption.
