@@ -2083,6 +2083,10 @@ machineWordBytes w = natVal w `div` 8
 bytesToMachineWords :: KnownNat w => f w -> Integer -> Integer
 bytesToMachineWords w n = (n + machineWordBytes w - 1) `div` machineWordBytes w
 
+-- | Return the largest multiple of 'machineWordBytes' less than the input
+prevMachineWord :: KnownNat w => f w -> Integer -> Integer
+prevMachineWord w n = (bytesToMachineWords w n - 1) * machineWordBytes w
+
 -- | Build the permission that corresponds to a borrow from an array, i.e., that
 -- would need to be returned in order to remove this borrow. For 'RangeBorrow's,
 -- that is the sub-array permission with no borrows of its own.
@@ -2455,7 +2459,7 @@ findLLVMArrayWithFieldBorrow fp (_ : ps) =
 -- bytes, and @i@ is the greatest natural number such that @(i-1)*M < sz@
 llvmFieldsOfSize :: (1 <= w, KnownNat w) => f w -> Integer -> [LLVMArrayField w]
 llvmFieldsOfSize (w :: f w) sz
-  | sz_last_int <- 8 * (sz - (bytesToMachineWords w sz - 1) * machineWordBytes w)
+  | sz_last_int <- 8 * (sz - prevMachineWord w sz)
   , Just (Some sz_last) <- someNat sz_last_int
   , Left LeqProof <- decideLeq (knownNat @1) sz_last =
     withKnownNat sz_last $

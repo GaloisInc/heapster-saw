@@ -2477,25 +2477,6 @@ tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp storage _)
     (convertRegType knownRepr loc (TypedReg z) knownRepr tp >>>= \ret ->
       greturn (addCtxName ctx $ typedRegVar ret))
 
-{-
--- Type-check a non-word-sized load of an LLVM pointer by requiring a bvptr
-tcEmitLLVMStmt arch ctx loc (LLVM_Load _ ptr tp storage _)
-    (stEndianness <$> top_get) >>>= \endianness ->
-
-  else
-    -- Otherwise, get the bitvector value of res, extract out the required
-    -- number of bytes at align_off, and then cast to tp
-    case someNat (bytesToBits $ storageTypeSize storage) of
-      Just (Some storage_w)
-        | Left pf <- decideLeq (knownNat @1) storage_w ->
-          withLeqProof pf $
-          (convertRegType knownRepr loc (TypedReg z)
-           knownRepr (BVRepr $ archWidth arch)) >>>= \z_bv ->
-          extractBVBytes loc storage_w align_off z_bv >>>= \z_sub_bv ->
-          convertRegType knownRepr loc z_sub_bv (BVRepr storage_w) tp >>>= \ret ->
-          greturn (addCtxName ctx $ typedRegVar ret)
--}
-
 -- Type-check a store of an LLVM pointer
 tcEmitLLVMStmt arch ctx loc (LLVM_Store _ ptr tp storage _ val)
   | Just (Some sz) <- someNat $ bytesToBits $ storageTypeSize storage
@@ -2512,84 +2493,27 @@ tcEmitLLVMStmt arch ctx loc (LLVM_Store _ ptr tp storage _ val)
     stmtRecombinePerms >>>
     greturn (addCtxName ctx z)
 
+-- Type-check a clear instruction by getting the list of field permissions
+-- returned by 'llvmFieldsOfSize' and storing word 0 to each of them
+tcEmitLLVMStmt arch ctx loc (LLVM_MemClear _ ptr bytes) =
+  let tptr = tcReg ctx ptr
+      w = archWidth arch
+      flds = llvmFieldsOfSize w (bytesToInteger bytes) in
 
-{- FIXME HERE: old approach that performed the case split on the current perms
-  getAtomicLLVMPerms tptr >>>= \ps ->
-  stmtEmbedImplM
-  (foldMapWithDefault implCatchM
-   (implFailMsgM "LLVM_Store: could not find permission for offset 0")
-   greturn
-   (findMaybeIndices (llvmPermContainsOffset $ bvInt 0) ps)) >>>= \(i,_) ->
-  case ps !! i of
-    Perm_LLVMField fp
-      | PExpr_Write <- llvmFieldRW fp ->
-        -- If we found a field perm for offset 0, first extract it out of all
-        -- the other perms for x and pop all the other perms off of the stack
-        stmtEmbedImplM (implExtractConjM x ps i >>>
-                        recombinePerm x (ValPerm_Conj (deleteNth i ps))) >>>
-        -- Next, emit the typed LLVM store instruction
-        emitTypedLLVMStore arch loc tptr fp tval_ptr DistPermsNil >>>= \z ->
-        -- Finally, return the expanded context
-        stmtRecombinePerms >>>
-        greturn (addCtxName ctx z)
+  -- For each field perm, prove it and write 0 to it
+  (forM_ @_ @_ @_ @() flds $ \case
+      LLVMArrayField fp ->
+        stmtProvePerm tptr (emptyMb $ ValPerm_Conj1 $ Perm_LLVMField fp) >>>
+        emitTypedLLVMStore arch loc tptr fp (PExpr_LLVMWord $
+                                             bvInt 0) DistPermsNil >>>
+        stmtRecombinePerms) >>>
 
-    Perm_LLVMArray ap
-      | Just ix <- matchLLVMArrayField ap (bvInt 0) ->
-        -- Extract the array perm we want out of the other perms on the stack
-        -- and pop all the other perms off of the stack, then borrow the field
-        -- corresopnding to offset 0
-        stmtEmbedImplM (implExtractConjM x ps i >>>
-                        recombinePerm x (ValPerm_Conj (deleteNth i ps)) >>>
-                        implLLVMArrayIndexBorrow x ap ix) >>>= \(ap',fp) ->
-        -- Emit the typed LLVM store instruction, noting that the array
-        -- permission is on the stack below the borrowed field permission
-        emitTypedLLVMStore arch loc tptr fp tval_ptr
-        (distPerms1 x $ ValPerm_Conj1 $ Perm_LLVMArray ap') >>>= \z ->
-        -- If the permissions in the array field are copyable, then copy them
-        -- from the register value being stored and return the borrow; otherwise
-        -- leave the borrow intact
-        let field_p = llvmFieldContents fp in
-        (if permIsCopyable field_p then
-           stmtEmbedImplM
-           (proveVarImpl (typedRegVar tval_ptr) (emptyMb field_p) >>>
-            introLLVMFieldContentsM x (typedRegVar tval_ptr) >>>
-            implLLVMArrayIndexReturn x ap' ix) >>>
-           stmtRecombinePerms
-         else
-           stmtRecombinePerms) >>>
-        -- Finally, return the expanded context
-        greturn (addCtxName ctx z)
-
-    _ ->
-      error ("tcEmitLLVMStmt: LLVM_Store: "
-             ++ "unexpected permission matched by llvmPermContainsOffset")
--}
-
-
--- Type-check an empty mem-clear instruction as a no-op
-tcEmitLLVMStmt _ ctx loc (LLVM_MemClear _ _ 0) =
+  -- Return a fresh unit variable
   emitStmt knownRepr loc (TypedSetReg knownRepr $
                           TypedExpr EmptyApp
                           (Just PExpr_Unit)) >>>= \(_ :>: z) ->
   stmtRecombinePerms >>>
   greturn (addCtxName ctx z)
-
--- FIXME: For a memClear where the number of bytes is not a multiple of the
--- machine word size, we currently round up to the nearest multiple of the
--- machine word size, but this is not correct
-tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes)
-  | bytes `mod` bitsToBytes (intValue (archWidth arch)) /= 0 =
-    let tptr = tcReg ctx ptr
-        bytes' = bytes - (bytes `mod` bitsToBytes (intValue (archWidth arch)))
-        off = bytesToInteger bytes' in
-    stmtProvePerm tptr (llvmWriteTrueExLPerm
-                        (archWidth arch) (bvInt off)) >>>= \subst ->
-    let l = substLookup subst Member_Base in
-    let fp = llvmFieldWriteTrueL (archWidth arch) (bvInt off) l in
-    emitTypedLLVMStore arch loc tptr fp (PExpr_LLVMWord $
-                                         bvInt 0) DistPermsNil >>>
-    stmtRecombinePerms >>>
-    tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes')
 
 -- Type-check a non-empty mem-clear instruction by writing a 0 to the last word
 -- and then recursively clearing all but the last word
