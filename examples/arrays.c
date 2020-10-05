@@ -61,3 +61,26 @@ void zero_array (int64_t *arr, uint64_t len) {
     arr[i] = 0;
   }
 }
+
+/* Zeroes every negative element of an array and returns the
+   sum of the results */
+uint64_t filter_and_sum_pos (int64_t * arr, uint64_t len) {
+  uint64_t sum = 0;
+  for (uint64_t i = 0; i < len; ++i) {
+    if (arr[i] < 0) {
+      arr[i] = 0;
+    }
+    sum += arr[i];
+  }
+  return sum;
+}
+
+uint64_t sum_2d (int64_t **arr, uint64_t l1, uint64_t l2) {
+  uint64_t sum = 0;
+  for (uint64_t i = 0; i < l1; ++i) {
+    for (uint64_t j = 0; j < l2; ++j) {
+      sum += arr[i][j];
+    }
+  }
+  return sum;
+}
