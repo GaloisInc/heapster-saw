@@ -2969,7 +2969,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
                          string ("tcJumpTarget "
                                  ++ show blkID ++ " (visited)") <> hardline <>
                          indent 4
-                         (string "Input perms:" <+>
+                         (string "Required perms:" <+>
                           hang 2 (permPretty i ex_perms) <> hardline <>
                           string "Current perms:" <+>
                           hang 2 (permPretty i cur_var_perms)))) >>>
