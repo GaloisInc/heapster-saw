@@ -2977,12 +2977,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       -- Prove the required input perms for this entrypoint and return the
       -- jump target inside an implication
       pcmRunImplM True ghosts
-      (\ghosts_subst ->
-        TypedJumpTarget entryID Proxy (mkCruCtx args_tps) $
-        varSubst ghosts_subst ex_perms)
-      (proveVarsImpl ex_perms >>> getDistPerms >>>= \proved_perms ->
-        greturn (permVarSubstOfNames $ distPermsVars $ snd $
-                 splitDistPerms tops_args_ns ghosts_prxs proved_perms))
+      (\perms -> TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms)
+      (proveVarsImpl ex_perms >>> getDistPerms)
 
 
     -- If not, make a new entrypoint that takes all of the current permissions

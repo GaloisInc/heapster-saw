@@ -4299,7 +4299,11 @@ findProvablePerm _ _ = Nothing
 
 
 -- | Prove a list of existentially-quantified distinguished permissions, adding
--- those proofs to the top of the stack
+-- those proofs to the top of the stack. In the case that a the variable itself
+-- whose permissions are being proved is existentially-quantified --- that is,
+-- if we are proving @x:p@ for existentially-quantified @x@ --- then the
+-- resulting permission on top of the stack will be @y:[e/x]p@, where @y@ is a
+-- fresh variable and @e@ is the expression used to instantiate @x@.
 proveVarsImplAppend :: ExDistPerms vars ps ->
                        ImplM vars s r (ps_in :++: ps) ps_in ()
 proveVarsImplAppend [nuP| DistPermsNil |] = return ()
