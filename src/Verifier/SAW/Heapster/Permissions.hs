@@ -215,6 +215,9 @@ instance Liftable Doc where
 class PermPretty a where
   permPrettyM :: a -> PermPPM Doc
 
+class PermPrettyF f where
+  permPrettyMF :: f a -> PermPPM Doc
+
 permPretty :: PermPretty a => PPInfo -> a -> Doc
 permPretty info a = runReader (permPrettyM a) info
 
@@ -234,6 +237,9 @@ instance PermPretty (ExprVar a) where
          Just (StringF str) -> return $ string str
          Nothing -> return $ string (show x)
 
+instance PermPrettyF (Name :: CrucibleType -> Type) where
+  permPrettyMF = permPrettyM
+
 instance PermPretty (Name (a :: Type)) where
   permPrettyM x =
     do maybe_str <- NameMap.lookup x <$> ppPermNames <$> ask
@@ -247,13 +253,52 @@ instance PermPretty (SomeName CrucibleType) where
 instance PermPretty (SomeName Type) where
   permPrettyM (SomeName x) = permPrettyM x
 
-instance PermPretty (RAssign Name (ctx :: RList CrucibleType)) where
+instance PermPrettyF f => PermPretty (RAssign f ctx) where
   permPrettyM MNil = return PP.empty
-  permPrettyM (MNil :>: n) = permPrettyM n
-  permPrettyM (ns :>: n) =
-    do pp_ns <- permPrettyM ns
-       pp_n <- permPrettyM n
-       return (pp_ns <> comma <+> pp_n)
+  permPrettyM (MNil :>: x) = permPrettyMF x
+  permPrettyM (xs :>: x) =
+    do pp_xs <- permPrettyM xs
+       pp_x <- permPrettyMF x
+       return (pp_xs <> comma <+> pp_x)
+
+instance PermPretty (TypeRepr a) where
+  permPrettyM UnitRepr = return $ string "unit"
+  permPrettyM BoolRepr = return $ string "bool"
+  permPrettyM NatRepr = return $ string "nat"
+  permPrettyM (BVRepr w) = return (string "bv" <+> integer (intValue w))
+  permPrettyM (LLVMPointerRepr w) =
+    return (string "llvmptr" <+> integer (intValue w))
+  permPrettyM (LLVMFrameRepr w) =
+    return (string "llvmframe" <+> integer (intValue w))
+  permPrettyM LifetimeRepr = return $ string "lifetime"
+  permPrettyM RWModalityRepr = return $ string "rwmodality"
+  permPrettyM PermListRepr = return $ string "permlist"
+  permPrettyM (StructRepr flds) =
+    (string "struct" <+>) <$> parens <$>
+    foldrMFC (\tp rest ->
+               (<> (comma <+> rest)) <$> permPrettyM tp) PP.empty flds
+  permPrettyM (ValuePermRepr tp) = (string "perm" <+>) <$> permPrettyM tp
+  permPrettyM tp =
+    return (string "not-yet-printable type" <+> parens (pretty tp))
+
+instance PermPrettyF TypeRepr where
+  permPrettyMF = permPrettyM
+
+instance PermPretty (CruCtx ctx) where
+  permPrettyM = permPrettyM . cruCtxToTypes
+
+-- | A pair of a variable and its 'CrucibleType', for pretty-printing
+data VarAndType a = VarAndType (ExprVar a) (TypeRepr a)
+
+instance PermPretty (VarAndType a) where
+  permPrettyM (VarAndType x tp) =
+    do x_pp <- permPrettyM x
+       tp_pp <- permPrettyM tp
+       return (x_pp <> colon <> tp_pp)
+
+instance PermPrettyF VarAndType where
+  permPrettyMF = permPrettyM
+
 
 -- FIXME: this is just TraversableFC without having an orphan instance...
 traverseRAssign :: Applicative m => (forall a. f a -> m (g a)) ->

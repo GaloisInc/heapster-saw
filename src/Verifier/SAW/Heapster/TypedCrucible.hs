@@ -2963,10 +2963,16 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
             varSubst (permVarSubstOfNames tops_args_ns) $
             mbSeparate ghosts_prxs $
             mbValuePermsToDistPerms entry_perms_in in
-      stmtTraceM (\i ->
-                   string ("tcJumpTarget " ++ show blkID ++ " (visited)") </>
-                   string "Input perms: " <+>
-                   hang 2 (permPretty i ex_perms)) >>>
+      (case permSetAllVarPerms (stCurPerms st) of
+          Some cur_var_perms ->
+            stmtTraceM (\i ->
+                         string ("tcJumpTarget "
+                                 ++ show blkID ++ " (visited)") <> hardline <>
+                         indent 4
+                         (string "Input perms:" <+>
+                          hang 2 (permPretty i ex_perms) <> hardline <>
+                          string "Current perms:" <+>
+                          hang 2 (permPretty i cur_var_perms)))) >>>
 
       -- Prove the required input perms for this entrypoint and return the
       -- jump target inside an implication
@@ -3176,8 +3182,10 @@ tcBlockEntry in_deg blk (BlockEntryInfo {..}) =
                comma <+> string "entrypoint" <+> int (entryIndex entryInfoID)
                <> line <>
                string "Input types:"
-               <> align (pretty $
-                         appendCruCtx (entryGhosts entryInfoID) entryInfoArgs)
+               <> align (permPretty i $
+                         RL.map2 VarAndType ns $ cruCtxToTypes $
+                         appendCruCtx (appendCruCtx stTopCtx entryInfoArgs)
+                         (entryGhosts entryInfoID))
                PP.<$>
                string "Input perms:"
                <> align (permPretty i perms)) >>>

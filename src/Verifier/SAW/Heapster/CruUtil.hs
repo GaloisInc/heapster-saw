@@ -445,6 +445,13 @@ cruCtxToReprEq (CruCtxCons ctx tp) =
   case cruCtxToReprEq ctx of
     Refl -> Refl
 
+-- | Convert a 'CruCtx' to an assignment of 'TypeRepr's
+--
+-- FIXME: 'CruCtx' should just be defined as an assignment!
+cruCtxToTypes :: CruCtx ctx -> RAssign TypeRepr ctx
+cruCtxToTypes CruCtxNil = MNil
+cruCtxToTypes (CruCtxCons tps tp) = cruCtxToTypes tps :>: tp
+
 instance Show (CruCtx ctx) where
   show = show . cruCtxToRepr
 
