@@ -1659,20 +1659,20 @@ getVarTypes MNil = greturn CruCtxNil
 getVarTypes (xs :>: x) = CruCtxCons <$> getVarTypes xs <*> getVarType x
 
 -- | Remember the type of a free variable, and ensure that it has a permission
-setVarType :: ExprVar a -> TypeRepr a ->
+setVarType :: String -> ExprVar a -> TypeRepr a ->
               PermCheckM ext cblocks blocks tops ret r ps r ps ()
-setVarType x tp =
+setVarType str x tp =
   gmodify $ \st ->
   st { stCurPerms = initVarPerm x (stCurPerms st),
        stVarTypes = NameMap.insert x tp (stVarTypes st),
-       stPPInfo = ppInfoAddExprName "x" x (stPPInfo st) }
+       stPPInfo = ppInfoAddExprName str x (stPPInfo st) }
 
 -- | Remember the types of a sequence of free variables
-setVarTypes :: RAssign Name tps -> CruCtx tps ->
+setVarTypes :: String -> RAssign Name tps -> CruCtx tps ->
                PermCheckM ext cblocks blocks tops ret r ps r ps ()
-setVarTypes _ CruCtxNil = greturn ()
-setVarTypes (xs :>: x) (CruCtxCons tps tp) =
-  setVarTypes xs tps >>> setVarType x tp
+setVarTypes _ _ CruCtxNil = greturn ()
+setVarTypes str (xs :>: x) (CruCtxCons tps tp) =
+  setVarTypes str xs tps >>> setVarType str x tp
 
 -- | Get the current 'PPInfo'
 permGetPPInfo :: PermCheckM ext cblocks blocks tops ret r ps r ps PPInfo
@@ -1923,7 +1923,7 @@ emitStmt tps loc stmt =
   gopenBinding
   ((TypedConsStmt loc stmt <$>) . strongMbM)
   (nuMulti (cruCtxProxies tps) $ \vars -> ()) >>>= \(ns, ()) ->
-  setVarTypes ns tps >>>
+  setVarTypes "x" ns tps >>>
   gmodify (modifySTCurPerms $ applyTypedStmt stmt ns) >>>
   greturn ns
 
@@ -3135,9 +3135,9 @@ tcBlockEntry in_deg blk (BlockEntryInfo {..}) =
       (tops_ns, args_ns) = RL.split Proxy args_prxs tops_args
       ctx = mkCtxTrans (blockInputs blk) args_ns in
   runPermCheckM tops_ns (distPermSet perms) $
-  setVarTypes ns (appendCruCtx
-                  (appendCruCtx stTopCtx entryInfoArgs)
-                  (entryGhosts entryInfoID)) >>>
+  setVarTypes "top" tops_ns stTopCtx >>>
+  setVarTypes "local" args_ns entryInfoArgs >>>
+  setVarTypes "ghost" ghosts_ns (entryGhosts entryInfoID) >>>
   stmtTraceM (\i ->
                string "Type-checking block" <+> pretty (blockID blk) <>
                comma <+> string "entrypoint" <+> int (entryIndex entryInfoID)
