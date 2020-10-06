@@ -574,7 +574,7 @@ instance PermPretty (PermExpr a) where
   permPrettyM (PExpr_Bool b) = return $ bool b
   permPrettyM (PExpr_BV factors const) =
     do pps <- mapM permPrettyM factors
-       return $ encloseSep lparen rparen (string "+") (pps ++ [integer const])
+       return $ encloseSep PP.empty PP.empty (string "+") (pps ++ [integer const])
   permPrettyM (PExpr_Struct args) =
     (\pp -> string "struct" <+> parens pp) <$> permPrettyM args
   permPrettyM PExpr_Always = return $ string "always"
