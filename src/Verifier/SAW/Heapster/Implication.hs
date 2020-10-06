@@ -1834,14 +1834,20 @@ data ImplState vars ps =
               _implStatePermEnv :: PermEnv,
               -- ^ The current permission environment
               _implStatePPInfo :: PPInfo,
+              -- ^ Pretty-printing for all variables in scope
               _implStateNameTypes :: NameMap TypeRepr,
+              -- ^ Types of all the variables in scope
+              _implStateFailPrefix :: String,
+              -- ^ A prefix string to prepend to any failure messages
               _implStateDoTrace :: Bool
+              -- ^ Whether tracing is turned on or not
             }
 makeLenses ''ImplState
 
 mkImplState :: CruCtx vars -> PermSet ps -> PermEnv ->
-               PPInfo -> Bool -> NameMap TypeRepr -> ImplState vars ps
-mkImplState vars perms env info do_trace nameTypes =
+               PPInfo -> String -> Bool -> NameMap TypeRepr ->
+               ImplState vars ps
+mkImplState vars perms env info fail_prefix do_trace nameTypes =
   ImplState { _implStateVars = vars,
               _implStatePerms = perms,
               _implStatePSubst = emptyPSubst vars,
@@ -1850,6 +1856,7 @@ mkImplState vars perms env info do_trace nameTypes =
               _implStatePermEnv = env,
               _implStatePPInfo = info,
               _implStateNameTypes = nameTypes,
+              _implStateFailPrefix = fail_prefix,
               _implStateDoTrace = do_trace
             }
 
@@ -1872,12 +1879,13 @@ type ImplM vars s r ps_out ps_in =
 
 -- | Run an 'ImplM' computation by passing it a @vars@ context, a starting
 -- permission set, top-level state, and a continuation to consume the output
-runImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo -> Bool ->
-            NameMap TypeRepr ->
+runImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
+            String -> Bool -> NameMap TypeRepr ->
             ((a, ImplState vars ps_out) -> State (Closed s) (r ps_out)) ->
             ImplM vars s r ps_out ps_in a -> State (Closed s) (PermImpl r ps_in)
-runImplM vars perms env ppInfo do_trace nameTypes k m =
-  runGenContM (runGenStateT m (mkImplState vars perms env ppInfo do_trace nameTypes))
+runImplM vars perms env ppInfo fail_prefix do_trace nameTypes k m =
+  runGenContM (runGenStateT m (mkImplState vars perms env ppInfo
+                               fail_prefix do_trace nameTypes))
   (\as -> PermImpl_Done <$> k as)
 
 -- | Embed a sub-computation in a name-binding inside another 'ImplM'
@@ -1893,7 +1901,7 @@ embedMbImplM mb_ps_in mb_m =
        (\ps_in m ->
          runImplM CruCtxNil ps_in
          (view implStatePermEnv s) (view implStatePPInfo s)
-         (view implStateDoTrace s)
+         (view implStateFailPrefix s) (view implStateDoTrace s)
          (view implStateNameTypes s) (return . fst) m)
       mb_ps_in mb_m)
 
@@ -2159,8 +2167,9 @@ implTraceM f =
 -- | Terminate the current proof branch with a failure
 implFailM :: String -> ImplM vars s r ps_any ps a
 implFailM str =
-  implTraceM (const $ string "Implication failed") >>>
-  implApplyImpl1 (Impl1_Fail str) MNil
+  (view implStateFailPrefix <$> gget) >>>= \prefix ->
+  implTraceM (const $ string (prefix ++ "Implication failed")) >>>
+  implApplyImpl1 (Impl1_Fail (prefix ++ str)) MNil
 
 -- | Call 'implFailM' and also output a debugging message
 implFailMsgM :: String -> ImplM vars s r ps_any ps a

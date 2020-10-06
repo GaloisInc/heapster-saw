@@ -1060,11 +1060,12 @@ permCheckExtStateNames (PermCheckExtState_Unit) = Some MNil
 data PermCheckState ext tops ret ps =
   PermCheckState
   {
-    stCurPerms :: PermSet ps,
-    stExtState :: PermCheckExtState ext,
-    stTopVars  :: RAssign Name tops,
-    stVarTypes :: NameMap TypeRepr,
-    stPPInfo   :: PPInfo
+    stCurPerms  :: PermSet ps,
+    stExtState  :: PermCheckExtState ext,
+    stTopVars   :: RAssign Name tops,
+    stVarTypes  :: NameMap TypeRepr,
+    stPPInfo    :: PPInfo,
+    stLocString :: Maybe String
   }
 
 -- | Like the 'set' method of a lens, but allows the @ps@ argument to change
@@ -1401,11 +1402,12 @@ runPermCheckM :: KnownRepr ExtRepr ext =>
 runPermCheckM topVars perms m =
   do top_st <- ask
      let st = PermCheckState {
-           stCurPerms = perms,
-           stExtState = emptyPermCheckExtState knownRepr,
-           stTopVars  = topVars,
-           stVarTypes = NameMap.empty,
-           stPPInfo   = emptyPPInfo }
+           stCurPerms  = perms,
+           stExtState  = emptyPermCheckExtState knownRepr,
+           stTopVars   = topVars,
+           stVarTypes  = NameMap.empty,
+           stPPInfo    = emptyPPInfo,
+           stLocString = Nothing }
      runGenContM (runGenStateT m st) (\((), _) -> return ())
 
 -- | Lift an 'InnerPermCheckM' to a 'TopPermCheckM'
@@ -1678,6 +1680,30 @@ setVarTypes str (xs :>: x) (CruCtxCons tps tp) =
 permGetPPInfo :: PermCheckM ext cblocks blocks tops ret r ps r ps PPInfo
 permGetPPInfo = stPPInfo <$> get
 
+-- | Get the current source location as a string @str@ if it is available and
+-- return the string @"at str"@; otherwise return the empty string
+getLocationString :: PermCheckM ext cblocks blocks tops ret r ps r ps String
+getLocationString =
+  maybe "" (\s -> "at " ++ s ++ ":\n") <$> stLocString <$> gget
+
+-- | Set the current source location to a 'ProgramLoc' plus anything printable
+setLocationString :: Pretty a => ProgramLoc -> a ->
+                     PermCheckM ext cblocks blocks tops ret r ps r ps ()
+setLocationString loc a =
+  gmodify $ \st ->
+  st { stLocString =
+         Just $ renderDoc (PP.pretty (plSourceLoc loc) <+> parens (pretty a)) }
+
+-- | Set the current source location to a 'ProgramLoc' plus Crucible statement
+setLocationStringStmt :: PermCheckExtC ext =>
+                         CtxTrans ctx -> ProgramLoc -> Stmt ext ctx ctx' ->
+                         PermCheckM ext cblocks blocks tops ret r ps r ps ()
+setLocationStringStmt ctx loc stmt =
+  gmodify $ \st ->
+  st { stLocString =
+         Just $ renderDoc (PP.pretty (plSourceLoc loc) <+>
+                           parens (ppStmt (Ctx.size ctx) stmt)) }
+
 -- | Emit debugging output using the current 'PPInfo'
 stmtTraceM :: (PPInfo -> Doc) ->
               PermCheckM ext cblocks blocks tops ret r ps r ps String
@@ -1690,7 +1716,9 @@ stmtTraceM f =
 stmtFailM :: (PPInfo -> Doc) -> PermCheckM ext cblocks blocks tops ret r1 ps1
              (TypedStmtSeq ext blocks tops ret ps2) ps2 a
 stmtFailM msg =
-  stmtTraceM (\i -> string "Type-checking failure:" <+> msg i) >>>= \str ->
+  getLocationString >>>= \fail_prefix ->
+  stmtTraceM (\i -> string fail_prefix <+>
+                    string "Type-checking failure:" </> msg i) >>>= \str ->
   gabortM (return $ TypedImplStmt $
            PermImpl_Step (Impl1_Fail str) MbPermImpls_Nil)
 
@@ -1711,12 +1739,14 @@ pcmRunImplM ::
   PermCheckM ext cblocks blocks tops ret r' ps_in r' ps_in
   (PermImpl r ps_in)
 pcmRunImplM do_trace vars retF impl_m =
+  getLocationString >>>= \fail_prefix ->
   (stCurPerms <$> gget) >>>= \perms_in ->
   (stPermEnv <$> top_get) >>>= \env ->
   (stPPInfo <$> gget) >>>= \ppInfo ->
   (stVarTypes <$> gget) >>>= \varTypes ->
   liftPermCheckM $ lift $
-  runImplM vars perms_in env ppInfo do_trace varTypes (return . retF . fst) impl_m
+  runImplM vars perms_in env ppInfo fail_prefix do_trace varTypes
+  (return . retF . fst) impl_m
 
 -- | Embed an implication computation inside a permission-checking computation
 embedImplM ::
@@ -1725,6 +1755,7 @@ embedImplM ::
   PermCheckM ext cblocks blocks tops ret (r ps_out) ps_out (r ps_in) ps_in
   (PermSubst vars, a)
 embedImplM f_impl vars m =
+  getLocationString >>>= \fail_prefix ->
   gmapRet (f_impl <$>) >>>
   (stCurPerms <$> gget) >>>= \perms_in ->
   (stPermEnv <$> top_get) >>>= \env ->
@@ -1733,8 +1764,8 @@ embedImplM f_impl vars m =
   (gcaptureCC $ \k ->
     ask >>= \r ->
     lift $
-    runImplM vars perms_in env ppInfo True varTypes (flip runReaderT r
-                                                . k) m) >>>= \(a, implSt) ->
+    runImplM vars perms_in env ppInfo fail_prefix True varTypes
+    (flip runReaderT r . k) m) >>>= \(a, implSt) ->
   gmodify ((\st -> st { stPPInfo = implSt ^. implStatePPInfo,
                         stVarTypes = implSt ^. implStateNameTypes })
            . setSTCurPerms (implSt ^. implStatePerms)) >>>
@@ -3094,8 +3125,10 @@ tcEmitStmtSeq :: PermCheckExtC ext => CtxTrans ctx ->
                  (TypedStmtSeq ext blocks tops ret RNil) RNil
                  ()
 tcEmitStmtSeq ctx (ConsStmt loc stmt stmts) =
+  setLocationStringStmt ctx loc stmt >>>
   tcEmitStmt ctx loc stmt >>>= \ctx' -> tcEmitStmtSeq ctx' stmts
 tcEmitStmtSeq ctx (TermStmt loc tstmt) =
+  setLocationString loc tstmt >>>
   tcTermStmt ctx tstmt >>>= \typed_tstmt ->
   gmapRet (>> return (TypedTermStmt loc typed_tstmt))
 
