@@ -3,6 +3,7 @@ From Coq          Require Import String.
 From Coq          Require Import Vectors.Vector.
 From CryptolToCoq Require Import SAWCoreScaffolding.
 From CryptolToCoq Require Import SAWCoreVectorsAsCoqVectors.
+From CryptolToCoq Require Import SAWCoreBitvectors.
 
 From CryptolToCoq Require Import SAWCorePrelude.
 From CryptolToCoq Require Import CompMExtra.
@@ -115,51 +116,7 @@ Proof.
 Qed.
 
 
-(* Lemmas needed for is_elem_spec_ref *)
-Section Lemmas_is_elem_spec_ref.
-
-  Lemma if_bvEq_lemma s1 a b :
-    not (bvEq 1 (if bvEq 64 s1 a then bvLit 1 1 else bvLit 1 0) (bvLit 1 0)) = b ->
-    bvEq 64 s1 a = b.
-  Proof. destruct (bvEq 64 s1 a). auto. auto. Qed.
-
-  (* Require Import Coq.Program.Equality. *)
-
-  Lemma bv_eq_impl_eq k : forall x y, bvEq k x y = true -> x = y.
-  Proof.
-    unfold bitvector, bvEq, boolEq.
-    (* dependent induction x; dependent induction y.
-    - reflexivity.
-    - admit. *)
-  Admitted.
-
-  Lemma bv_neq_impl_neq k : forall x y, bvEq k x y = false -> x <> y.
-  Proof.
-    unfold bitvector, bvEq, boolEq.
-    (*
-    dependent induction x; dependent induction y.
-    - discriminate.
-    - admit. *)
-  Admitted.
-
-  Lemma deMorgan_inv (P Q : Prop) : ~ P /\ ~ Q -> ~ (P \/ Q).
-  Proof.
-    intros nPnQ PQ.
-    destruct nPnQ as [nP nQ]; destruct PQ.
-    - apply nP. assumption.
-    - apply nQ. assumption.
-  Qed.
-
-End Lemmas_is_elem_spec_ref.
-
-
-Definition orM {A} (m1 m2:CompM A) : CompM A :=
-  existsM (fun (b:bool) => if b then m1 else m2).
-
-Definition assertM (P:Prop) : CompM unit :=
-  existsM (fun (_:P) => returnM tt).
-
-(* The specification of is_elem: returns 1 if  *)
+(* A high-level specification of is_elem *)
 Definition is_elem_spec (x:bitvector 64) (l:list {_:bitvector 64 & unit})
   : CompM {_:bitvector 64 & unit} :=
   orM
@@ -172,48 +129,36 @@ Lemma is_elem_spec_ref : refinesFun is_elem is_elem_spec.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_spec.
   prove_refinement.
-  (* do some simplification of e_either relevant to every case *)
+  (* First, some manipulation of e_either which knocks out a few cases: *)
   all: destruct a0; unfold unfoldList in e_either; simpl in e_either.
-  all: try discriminate e_either.
-  all: try injection e_either; clear e_either; intro e_either.
-
-  (* The a0 = [] case *)
-  - unfold orM, assertM; prove_refinement.
-    + exact Datatypes.false.
-    + unfold List.In.
-      prove_refinement.
-      auto.
-
-  (* do some destructing useful for the remaining cases *)
+  all: discriminate e_either || injection e_either as e_either.
+  (* The a0 = [] case. *)
+  - continue_prove_refinement_right.
+    simpl; auto.
+  (* Next, some destructing useful for the remaining cases: *)
   all: destruct b as [s1 b]; destruct b as [a1 t]; destruct t.
   all: destruct s1 as [s1 t]; destruct t; simpl in e_if.
-  all: apply if_bvEq_lemma in e_if.
-
-  (* The a0 = (s1 :: a1) case where a = s1 *)
-  - unfold orM, assertM; prove_refinement.
-    + exact Datatypes.true.
-    + prove_refinement.
-      left.
-      apply (f_equal fst) in e_either; simpl in e_either.
-      rewrite e_either.
-      apply bv_eq_impl_eq in e_if.
-      rewrite e_if.
-      reflexivity.
-
-  (* The a0 = (s1 :: a1) case where a <> s1 *)
-  - pose (e_either0 := f_equal fst e_either); simpl in e_either0.
-    pose (e_either1 := f_equal (fun x => fst (snd x)) e_either); simpl in e_either1.
-    rewrite e_either0, e_either1.
-    apply bv_neq_impl_neq in e_if.
-    unfold orM, assertM.
-    apply refinesM_existsM_lr; intro b.
-    prove_refinement.
-    + right. assumption.
-    + simpl. apply deMorgan_inv.
-      split; auto.
-      intro p.
-      injection p.
-      assumption.
+  all: injection e_either as e_either_fst e_either_snd.
+  all: rewrite e_either_fst, e_either_snd.
+  (* The a0 = (s1 :: a1) case where a = s1. *)
+  - continue_prove_refinement_left; simpl List.In.
+    left.
+    rewrite e_if; reflexivity.
+  (* The a0 = (s1 :: a1) case where a <> s1, and we inductively assume
+     the left assertion of our specification *)
+  - continue_prove_refinement_left; simpl List.In.
+    right.
+    assumption.
+  (* The a0 = (s1 :: a1) case where a <> s1, and we inductively assume
+     the right assertion of our specification *)
+  - continue_prove_refinement_right; simpl List.In.
+    assert (deMorgan_inv : forall (P Q : Prop), ~ P /\ ~ Q -> ~ (P \/ Q)).
+    + intros P Q [pf_nP pf_nQ] [ pf_P | pf_Q ]; [ apply pf_nP | apply pf_nQ ]; assumption.
+    + apply deMorgan_inv.
+      split.
+      * injection as not_e_if.
+        contradiction.
+      * simpl in e_assert; assumption.
 Qed.
 
 

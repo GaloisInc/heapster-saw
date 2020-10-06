@@ -68,8 +68,7 @@ Proof.
     rewrite H.
     rewrite bvAdd_id_l.
     reflexivity.
-  - rewrite bvEq_wrapped_bool, isBvule_def_opp in e_if.
-    rewrite isBvule_n_zero in e_if.
+  - rewrite isBvule_n_zero in e_if.
     rewrite e_if, bvAdd_id_r.
     destruct a3 as [ projT1_a3 u ]; destruct u; simpl.
     reflexivity.
