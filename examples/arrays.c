@@ -62,6 +62,13 @@ void zero_array (int64_t *arr, uint64_t len) {
   }
 }
 
+/* Zero out an array starting at a given offset */
+void zero_array_from (int64_t *arr, uint64_t len, uint64_t off) {
+  for (; off < len; ++off) {
+    arr[off] = 0;
+  }
+}
+
 /* Zeroes every negative element of an array and returns the
    sum of the results */
 uint64_t filter_and_sum_pos (int64_t * arr, uint64_t len) {
