@@ -479,9 +479,20 @@ data PermExprs (as :: RList CrucibleType) where
   PExprs_Nil :: PermExprs RNil
   PExprs_Cons :: PermExprs as -> PermExpr a -> PermExprs (as :> a)
 
+-- | Convert a list of names to a 'PermExprs' list
 namesToExprs :: RAssign Name as -> PermExprs as
 namesToExprs MNil = PExprs_Nil
 namesToExprs (ns :>: n) = PExprs_Cons (namesToExprs ns) (PExpr_Var n)
+
+-- | Create a list of phantom 'Proxy' arguments from a 'PermExprs' list
+proxiesOfExprs :: PermExprs as -> RAssign Proxy as
+proxiesOfExprs PExprs_Nil = MNil
+proxiesOfExprs (PExprs_Cons es _) = proxiesOfExprs es :>: Proxy
+
+-- | Append two 'PermExprs' lists
+appendExprs :: PermExprs as -> PermExprs bs -> PermExprs (as :++: bs)
+appendExprs as PExprs_Nil = as
+appendExprs as (PExprs_Cons bs b) = PExprs_Cons (appendExprs as bs) b
 
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where

@@ -191,13 +191,14 @@ instance TestEquality (TypedEntryID blocks args) where
     | memb1 == memb2 && i1 == i2 = testEquality ghosts1 ghosts2
   testEquality _ _ = Nothing
 
--- | A typed target for jump and branch statements, where the arguments
+-- | A typed target for jump and branch statements, where the argument registers
 -- (including top-level function arguments and ghost arguments) are given with
--- their permissions as a 'DistPerms'
+-- their permissions as a 'DistPerms'; the expressions used for the ghost
+-- arguments are also supplied
 data TypedJumpTarget blocks tops ps where
      TypedJumpTarget ::
        TypedEntryID blocks args ghosts ->
-       Proxy tops -> CruCtx args ->
+       Proxy tops -> CruCtx args -> PermExprs ghosts ->
        DistPerms ((tops :++: args) :++: ghosts) ->
        TypedJumpTarget blocks tops ((tops :++: args) :++: ghosts)
 
@@ -817,9 +818,9 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedJumpTarget blocks tops ps) m where
-  genSubst s [nuP| TypedJumpTarget entryID prx ctx perms |] =
+  genSubst s [nuP| TypedJumpTarget entryID prx ctx exprs perms |] =
     TypedJumpTarget (mbLift entryID) (mbLift prx) (mbLift ctx) <$>
-    genSubst s perms
+    genSubst s exprs <*> genSubst s perms
 
 instance SubstVar PermVarSubst m =>
          Substable1 PermVarSubst (TypedJumpTarget blocks tops) m where
@@ -2977,8 +2978,11 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       -- Prove the required input perms for this entrypoint and return the
       -- jump target inside an implication
       pcmRunImplM True ghosts
-      (\perms -> TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms)
-      (proveVarsImpl ex_perms >>> getDistPerms)
+      (\(ghost_exprs, perms) ->
+        TypedJumpTarget entryID Proxy (mkCruCtx args_tps) ghost_exprs perms)
+      (proveVarsImpl ex_perms >>> getDistPerms >>>= \perms ->
+        getPSubst >>>= \psubst ->
+        greturn (exprsOfSubst (completePSubst ghosts psubst), perms))
 
 
     -- If not, make a new entrypoint that takes all of the current permissions
@@ -3063,7 +3067,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           -- perms, except for the eq permissions for real arguments, which are
           -- proved by reflexivity.
           let target_t =
-                TypedJumpTarget entryID Proxy (mkCruCtx args_tps) perms_in in
+                TypedJumpTarget entryID Proxy (mkCruCtx args_tps)
+                (namesToExprs ghosts_ns) perms_in in
           pcmRunImplM False CruCtxNil (const target_t) $
           implPushOrReflMultiM perms_in
 

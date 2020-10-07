@@ -2994,16 +2994,25 @@ translateCallEntryID :: forall ext ps tops args ghosts blocks ctx ret.
                         (PermCheckExtC ext,
                          ps ~ ((tops :++: args) :++: ghosts)) =>
                         String -> TypedEntryID blocks args ghosts ->
+                        Proxy (tops :++: args) -> Mb ctx (PermExprs ghosts) ->
                         Mb ctx (DistPerms ps) ->
                         ImpTransM ext blocks tops ret ps ctx OpenTerm
-translateCallEntryID nm entryID mb_perms =
+translateCallEntryID nm entryID prx mb_ghosts mb_perms =
   -- First test that the stack == the required perms for entryID
   do perms_in <-
        mbValuePermsToDistPerms <$>
        lookupEntryPermsIn entryID <$> itiBlockMapTrans <$> ask
      () <- assertPermStackEqM (nm ++ " 1")
-       (flip nuMultiWithElim1 mb_perms $ \_ ps ->
-         varSubst (permVarSubstOfNames $ distPermsVars ps) perms_in)
+       (mbMap2
+        (\ghosts perms ->
+          let all_ns = distPermsVars perms
+              (tops_args_ns,_) = RL.split prx (proxiesOfExprs ghosts) all_ns in
+          valuePermsToDistPerms all_ns $
+          subst (substOfExprs $
+                 appendExprs (namesToExprs tops_args_ns) ghosts) $
+          fmap distPermsToValuePerms perms_in)
+        mb_ghosts
+        mb_perms)
      () <- assertPermStackEqM (nm ++ " 2") mb_perms
 
      -- Now check if entryID has an associated letRec-bound function
@@ -3023,8 +3032,8 @@ translateCallEntryID nm entryID mb_perms =
 instance PermCheckExtC ext =>
          Translate (ImpTransInfo ext blocks tops ret ps) ctx
          (TypedJumpTarget blocks tops ps) OpenTerm where
-  translate [nuP| TypedJumpTarget entryID _ _ perms |] =
-    translateCallEntryID "TypedJumpTarget" (mbLift entryID) perms
+  translate [nuP| TypedJumpTarget entryID _ _ ghosts perms |] =
+    translateCallEntryID "TypedJumpTarget" (mbLift entryID) Proxy ghosts perms
 
 instance PermCheckExtC ext =>
          ImplTranslateF (TypedJumpTarget blocks tops) ext blocks tops ret where
@@ -3466,7 +3475,8 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
                inits_eq_perms = eqPermTransCtx all_membs inits_membs
                all_pctx = RL.append (RL.append ghosts_pctx pctx) inits_eq_perms in
            impTransM all_membs all_pctx mapTrans retTypeTrans $
-           translateCallEntryID "CFG" (tpcfgEntryBlockID cfg)
+           translateCallEntryID "CFG" (tpcfgEntryBlockID cfg) Proxy
+           (nuMulti all_pctx $ \_ -> PExprs_Nil)
            (mbValuePermsToDistPerms $ funPermToBlockInputs fun_perm)
          )
        ]
