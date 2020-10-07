@@ -3329,9 +3329,9 @@ foldBlockMapLetRec = helper where
 lambdaLRTTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
                    TransM info ctx OpenTerm
 lambdaLRTTransM x tps body_f =
-  foldr (\(i,tp) rest_f xs ->
+  foldr (\(i,tp) rest_f vars ->
           (\t -> ctorOpenTerm "Prelude.LRT_Fun" [tp, t]) <$>
-          lambdaOpenTermTransM (x ++ show i) tp (rest_f . (:xs)))
+          lambdaOpenTermTransM (x ++ show i) tp (\var -> rest_f (vars ++ [var])))
   (body_f . typeTransF tps) (zip [0..] $ typeTransTypes tps) []
 
 -- | Build a @LetRecType@ that describes the type of the translation of a
