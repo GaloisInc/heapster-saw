@@ -674,7 +674,7 @@ parseLLVMArrayPerm :: (Stream s Identity Char, Liftable s,
                        KnownNat w, 1 <= w) =>
                       PermParseM s (LLVMArrayPerm w)
 parseLLVMArrayPerm =
-  do try (string "array" >> spaces >> char '(')
+  do try (spaces >> string "array" >> spaces >> char '(')
      llvmArrayOffset <- parseBVExpr
      spaces >> comma >> spaces >> char '<'
      llvmArrayLen <- parseBVExpr
