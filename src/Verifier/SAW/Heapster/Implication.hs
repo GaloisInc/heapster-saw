@@ -4099,9 +4099,8 @@ proveVarImplH x (ValPerm_Named npn args off) mb_p
 
 -- If proving P<args> |- p1 * ... * pn for a non-conjoinable recursive P, then
 -- we unfold P because we will have to at some point to prove a conjunction
-proveVarImplH x p@(ValPerm_Named npn _ _) mb_p
-  | TrueRepr <- nameIsConjRepr npn =
-    proveVarImplUnfoldLeft x p mb_p Nothing
+proveVarImplH x p@(ValPerm_Named npn _ _) mb_p =
+  proveVarImplUnfoldLeft x p mb_p Nothing
 
 
 {- FIXME: This is an example of how we used embedMbImplM to prove the body
