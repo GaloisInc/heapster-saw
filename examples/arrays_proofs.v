@@ -56,27 +56,31 @@ Lemma no_errors_zero_array
   : refinesFun zero_array (fun x _ => assumingM (zero_array_precond x) noErrorsSpec).
 Proof.
   transitivity zero_array_noErrors_letRec; try reflexivity.
-  unfold zero_array, zero_array__tuple_fun, zero_array_noErrors_letRec, zero_array_precond, zero_array_invariant, noErrorsSpec.
+  unfold zero_array, zero_array__tuple_fun, zero_array_noErrors_letRec, zero_array_letRec_lrt, zero_array_precond, zero_array_invariant, noErrorsSpec.
   unfold bvultWithProof.
   unfold true, false; fold bvMem_lo; fold bvMem_hi.
-  cbn [ projT1 ]. (* FIXME Add this to prove_refinement? *)
-  prove_refinement; try auto.
-  (* Proving that the non-trivial bits of the loop invariant hold inductively: *)
-  - transitivity (projT1 a3).
+  time "no_errors_zero_array" prove_refinement.
+  (* A number of the remaining cases are covered exactly by hypotheses we already have in
+     scope (e.g. proving the loop invariant holds initially). Note that `prove_refinement`
+     doesn't do this automatically because it may matter which hypothesis is used, if
+     there are multiple. For this poof though, it doesn't. *)
+  all: try assumption.
+  (* Proving that the loop invariant holds inductively: *)
+  - transitivity a4.
     + assumption.
     + apply isBvsle_suc_r.
-      rewrite e_assuming0, e_assuming4.
+      rewrite e_assuming4, e_assuming1.
       reflexivity.
   - apply isBvslt_to_isBvsle_suc.
-    rewrite <- e_assuming3 in e_if.
+    rewrite <- e_assuming5 in e_if.
     apply isBvult_to_isBvslt_pos; assumption.
   (* Proving that these branches are impossible, by virtue of our loop invariant: *)
-  - rewrite <- e_assuming1 in e_if0.
-    vm_compute in e_if0; inversion e_if0.
-  - rewrite e_assuming0, e_assuming4 in e_if0.
-    apply isBvslt_antirefl in e_if0; inversion e_if0.
-  (* The remaining cases (e.g. proving the loop invariant holds initially) are all
-     taken care of by either prove_refinement or auto! *)
+  - rewrite <- e_assuming2 in e_if0.
+    discriminate e_if0.
+  - rewrite e_assuming4, e_assuming1 in e_if0.
+    apply isBvslt_antirefl in e_if0; contradiction e_if0.
+  (* The remaining cases  are all
+     taken care of by either prove_refinement or assmption! *)
 Qed.
 
 
@@ -112,34 +116,30 @@ Definition contains0_noErrors_letRec : lrtToType contains0_lrt := fun x _ =>
                                      noErrorsSpec, tt))
             (fun _ => noErrorsSpec)).
 
-(* This proof is *identical* to no_errors_zero_array except for in the three noted spots *)
+(* This proof is *identical* to no_errors_zero_array except for in the one noted spot *)
 Lemma no_errors_contains0
   : refinesFun contains0 (fun x _ => assumingM (contains0_precond x) noErrorsSpec).
 Proof.
   transitivity contains0_noErrors_letRec; try reflexivity.
-  unfold contains0, contains0__tuple_fun, contains0_noErrors_letRec, contains0_precond, contains0_invariant, noErrorsSpec.
+  unfold contains0, contains0__tuple_fun, contains0_noErrors_letRec, contains0_letRec_lrt, contains0_precond, contains0_invariant, noErrorsSpec.
   unfold bvultWithProof.
   unfold true, false; fold bvMem_lo; fold bvMem_hi.
-  cbn [ projT1 ].
-  prove_refinement; try auto.
-  (* Different from no_errors_zero_array - this used to be taken care of by `try auto` *)
-  - repeat (split; try assumption).
+  time "no_errors_contains0" prove_refinement.
+  all: try assumption.
   (* Different from no_errors_zero_array - this used to be taken care of by `prove_refinement`!
      (FIXME Figure out why this fails to be automated here but not above.) *)
   - rewrite e_if in e_maybe.
     discriminate e_maybe.
-  - transitivity (projT1 a3).
+  - transitivity a4.
     + assumption.
     + apply isBvsle_suc_r.
-      rewrite e_assuming0, e_assuming4.
+      rewrite e_assuming4, e_assuming1.
       reflexivity.
   - apply isBvslt_to_isBvsle_suc.
-    rewrite <- e_assuming3 in e_if.
+    rewrite <- e_assuming5 in e_if.
     apply isBvult_to_isBvslt_pos; assumption.
-  (* Different from no_errors_zero_array - this used to be taken care of by `try auto` *)
-  - repeat (split; try assumption).
-  - rewrite <- e_assuming1 in e_if0.
-    vm_compute in e_if0; inversion e_if0.
-  - rewrite e_assuming0, e_assuming4 in e_if0.
-    apply isBvslt_antirefl in e_if0; inversion e_if0.
+  - rewrite <- e_assuming2 in e_if0.
+    discriminate e_if0.
+  - rewrite e_assuming4, e_assuming1 in e_if0.
+    apply isBvslt_antirefl in e_if0; contradiction e_if0.
 Qed.

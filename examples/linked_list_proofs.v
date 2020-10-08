@@ -17,7 +17,7 @@ Import SAWCorePrelude.
 Lemma no_errors_is_elem : refinesFun is_elem (fun _ _ => noErrorsSpec).
 Proof.
   unfold is_elem, is_elem__tuple_fun, noErrorsSpec.
-  prove_refinement.
+  time "no_errors_is_elem" prove_refinement.
 Qed.
 
 Lemma no_errors_is_elem_manual : refinesFun is_elem (fun _ _ => noErrorsSpec).
@@ -57,7 +57,7 @@ Arguments is_elem_fun /.
 Lemma is_elem_fun_ref : refinesFun is_elem is_elem_fun.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_fun, List_def.
-  prove_refinement.
+  time "is_elem_fun_ref" prove_refinement.
 Qed.
 
 Lemma is_elem_fun_ref_manual : refinesFun is_elem is_elem_fun.
@@ -93,8 +93,8 @@ Definition is_elem_lrt : LetRecType :=
 
 Lemma is_elem_pure_fun_ref : @refinesFun is_elem_lrt is_elem_fun (fun x l => returnM (is_elem_pure x l)).
 Proof.
-  unfold is_elem_fun, is_elem_pure.
-  prove_refinement.
+  unfold is_elem_fun, is_elem_lrt, is_elem_pure.
+  time "is_elem_pure_fun_ref" prove_refinement.
 Qed.
 
 Lemma is_elem_pure_fun_ref_manual : @refinesFun is_elem_lrt is_elem_fun (fun x l => returnM (is_elem_pure x l)).
@@ -112,7 +112,7 @@ Qed.
 Lemma is_elem_pure_ref : refinesFun is_elem (fun x l => returnM (is_elem_pure x l)).
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_pure, List_def.
-  prove_refinement.
+  time "is_elem_pure_ref" prove_refinement.
 Qed.
 
 
@@ -128,37 +128,33 @@ Arguments is_elem_spec /.
 Lemma is_elem_spec_ref : refinesFun is_elem is_elem_spec.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_spec.
-  prove_refinement.
+  time "is_elem_spec_ref" prove_refinement.
   (* First, some manipulation of e_either which knocks out a few cases: *)
   all: destruct a0; unfold unfoldList in e_either; simpl in e_either.
-  all: discriminate e_either || injection e_either as e_either.
+  all: try discriminate e_either.
   (* The a0 = [] case. *)
   - continue_prove_refinement_right.
-    simpl; auto.
-  (* Next, some destructing useful for the remaining cases: *)
-  all: destruct b as [s1 b]; destruct b as [a1 t]; destruct t.
-  all: destruct s1 as [s1 t]; destruct t; simpl in e_if.
+    easy.
+  (* Next, some destructing/simplification useful for the remaining cases: *)
   all: injection e_either as e_either_fst e_either_snd.
   all: rewrite e_either_fst, e_either_snd.
+  all: simpl List.In.
   (* The a0 = (s1 :: a1) case where a = s1. *)
-  - continue_prove_refinement_left; simpl List.In.
-    left.
-    rewrite e_if; reflexivity.
+  - continue_prove_refinement_left.
+    rewrite e_if.
+    now left.
   (* The a0 = (s1 :: a1) case where a <> s1, and we inductively assume
      the left assertion of our specification *)
-  - continue_prove_refinement_left; simpl List.In.
-    right.
-    assumption.
+  - continue_prove_refinement_left.
+    now right.
   (* The a0 = (s1 :: a1) case where a <> s1, and we inductively assume
      the right assertion of our specification *)
-  - continue_prove_refinement_right; simpl List.In.
-    assert (deMorgan_inv : forall (P Q : Prop), ~ P /\ ~ Q -> ~ (P \/ Q)).
-    + intros P Q [pf_nP pf_nQ] [ pf_P | pf_Q ]; [ apply pf_nP | apply pf_nQ ]; assumption.
-    + apply deMorgan_inv.
-      split.
-      * injection as not_e_if.
-        contradiction.
-      * simpl in e_assert; assumption.
+  - continue_prove_refinement_right.
+    assert (deMorgan_inv : forall (P Q : Prop), ~ P /\ ~ Q -> ~ (P \/ Q)) by tauto.
+    apply deMorgan_inv.
+    split.
+    + injection as not_e_if; contradiction.
+    + assumption.
 Qed.
 
 
@@ -197,7 +193,7 @@ Proof.
   - apply refinesM_bind_lr.
     + destruct a; destruct u; simpl.
       reflexivity.
-    + prove_refinement.
+    + time "any_fun_ref" prove_refinement.
 Qed.
 
 
@@ -221,5 +217,5 @@ Proof.
   unfold sorted_insert, sorted_insert__tuple_fun, mallocSpec, noErrorsSpec.
   computeFn3 bvultWithProof.
   simpl maybe.
-  prove_refinement.
+  time "no_errors_sorted_insert" prove_refinement.
 Qed.

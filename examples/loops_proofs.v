@@ -13,8 +13,6 @@ Import loops.
 
 Import SAWCorePrelude.
 
-(* Print add_loop__tuple_fun. *)
-
 Definition add_loop_lrt
   := LRT_Fun {_ : bitvector 64 & unit}
       (fun _ : {_ : bitvector 64 & unit} =>
@@ -40,8 +38,8 @@ Proof.
                                     (fun _ => (fun _ _ _ _ => noErrorsSpec, tt))
                                     (fun _ => noErrorsSpec)) : lrtToType add_loop_lrt);
                try reflexivity.
-  unfold add_loop, add_loop__tuple_fun, noErrorsSpec.
-  prove_refinement.
+  unfold add_loop, add_loop__tuple_fun, add_loop_letRec_lrt, noErrorsSpec.
+  time "no_errors_add_loop" prove_refinement.
 Qed.
 
 
@@ -54,22 +52,21 @@ Proof.
                                    (fun _ => (fun _ _ ret i => add_loop_spec ret i, tt))
                                    (fun _ => add_loop_spec x y));
                try reflexivity.
-  unfold add_loop, add_loop__tuple_fun, add_loop_spec, noErrorsSpec.
-  prove_refinement; cbn [ projT1 ].
+  unfold add_loop, add_loop__tuple_fun, add_loop_spec, add_loop_letRec_lrt, noErrorsSpec.
+  time "add_loop_spec_ref" prove_refinement.
   - f_equal.
     rewrite bvAdd_assoc.
-    rewrite (bvAdd_comm _ (projT1 a4)).
-    rewrite <- (bvAdd_assoc _ _ _ (projT1 a4)).
+    rewrite (bvAdd_comm _ a5).
+    rewrite <- (bvAdd_assoc _ _ _ a5).
     unfold true, false.
     (* The next three lines could just be replaced by `vm_compute bvAdd at 3`,
        but then `Qed` hangs... *)
-    assert (bvAdd 64 (bvLit 64 1) (bvLit 64 (-1)) = bvLit 64 0) as H by reflexivity.
-    vm_compute bvLit in H.
-    rewrite H.
+    assert (bvAdd 64 (bvLit 64 1) (bvLit 64 (-1)) = bvLit 64 0) as H by reflexivity;
+    vm_compute bvLit in H;
+    rewrite H; clear H.
     rewrite bvAdd_id_l.
     reflexivity.
   - rewrite isBvule_n_zero in e_if.
     rewrite e_if, bvAdd_id_r.
-    destruct a3 as [ projT1_a3 u ]; destruct u; simpl.
     reflexivity.
 Qed.
