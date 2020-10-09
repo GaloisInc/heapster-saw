@@ -753,7 +753,6 @@ pruneFailingBranches = False
 permImplStep :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
                 MbPermImpls r ps_outs -> PermImpl r ps_in
 
-{-
 -- No need to simplify a fail
 permImplStep impl1@(Impl1_Fail msg) mb_impls = PermImpl_Step impl1 mb_impls
 
@@ -790,7 +789,6 @@ permImplStep (Impl1_ElimOr _ _ _) (MbPermImpls_Cons
   PermImpl_Step (Impl1_Fail
                  (msg1 ++ "\n\n--------------------\n\n" ++ msg2))
   MbPermImpls_Nil
--}
 
 -- Default case: just apply PermImpl_Step
 permImplStep impl1 mb_impls = PermImpl_Step impl1 mb_impls
