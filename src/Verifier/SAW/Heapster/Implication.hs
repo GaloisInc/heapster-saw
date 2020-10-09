@@ -25,6 +25,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Verifier.SAW.Heapster.Implication where
 
@@ -696,9 +697,9 @@ data PermImpl1 ps_in ps_outs where
 -- guaranteed to be the stack shape at any Impl_Done, but this would make our
 -- generalized monad below more complicated...
 data PermImpl r ps where
-  PermImpl_Done :: r ps -> PermImpl r ps
-  PermImpl_Step :: PermImpl1 ps_in ps_outs ->
-                   MbPermImpls r ps_outs ->
+  PermImpl_Done :: !(r ps) -> PermImpl r ps
+  PermImpl_Step :: !(PermImpl1 ps_in ps_outs) ->
+                   !(MbPermImpls r ps_outs) ->
                    PermImpl r ps_in
 
 -- | Helper type for 'PermImpl', that defines a collection of permission
@@ -708,7 +709,7 @@ data PermImpl r ps where
 -- contexts of bound variables for that implication tree.
 data MbPermImpls r bs_pss where
   MbPermImpls_Nil :: MbPermImpls r RNil
-  MbPermImpls_Cons :: MbPermImpls r bs_pss -> Mb bs (PermImpl r ps) ->
+  MbPermImpls_Cons :: !(MbPermImpls r bs_pss) -> !(Mb bs (PermImpl r ps)) ->
                       MbPermImpls r (bs_pss :> '(bs,ps))
 
 -- type IsLLVMPointerTypeList w ps = RAssign ((:~:) (LLVMPointerType w)) ps
@@ -727,10 +728,17 @@ pruneFailingBranches = False
 
 
 -- | Apply the 'PermImpl_Step' constructor to a 'PermImpl1' rule and its
--- sub-proofs, performing simplifications to combine failure cases and to turn
--- unary rules applied to failure cases to just failure cases.
-permImplStep :: PermImpl1 ps_in ps_outs -> MbPermImpls r ps_outs ->
-                PermImpl r ps_in
+-- sub-proofs, performing the following simplifications (some of which are
+-- performed by the helper function 'permImplCatch'), where @unary impl@
+-- represents any unary rule applied to the implication @impl@:
+--
+-- > unary (fail msg) --> fail msg
+-- > unary (catch impl (fail msg)) --> catch (unary impl) (fail msg)
+-- > catch (fail msg1) (fail msg2) --> fail (msg1 ++ msg2)
+-- > catch (catch impl1 impl2) impl3 --> catch impl1 (catch impl2 impl3)
+-- > elim_or (fail msg1) (fail msg2) --> fail (msg1 ++ msg2)
+permImplStep :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
+                MbPermImpls r ps_outs -> PermImpl r ps_in
 
 -- No need to simplify a fail
 permImplStep impl1@(Impl1_Fail msg) mb_impls = PermImpl_Step impl1 mb_impls
@@ -745,49 +753,86 @@ permImplStep Impl1_Catch ((MbPermImpls_Cons
 -- NOTE: we write the cases all out explicitly in case we add a new Impl1 rule
 -- that does not work this way, since not simplifying is better than
 -- oversimplifying
-permImplStep (Impl1_Push _ _) (MbPermImpls_Cons MbPermImpls_Nil
-                               [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
-  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
-permImplStep (Impl1_Pop _ _) (MbPermImpls_Cons MbPermImpls_Nil
-                              [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
-  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
-permImplStep (Impl1_ElimExists _ _) (MbPermImpls_Cons MbPermImpls_Nil
-                                     [nuP| PermImpl_Step
-                                         (Impl1_Fail msg) _ |]) =
-  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
-permImplStep (Impl1_Simpl _ _) (MbPermImpls_Cons MbPermImpls_Nil
-                                [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
-  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
-permImplStep (Impl1_LetBind _ _) (MbPermImpls_Cons MbPermImpls_Nil
-                                  [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
-  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
-permImplStep (Impl1_ElimLLVMFieldContents
-              _ _) (MbPermImpls_Cons MbPermImpls_Nil
-                    [nuP| PermImpl_Step (Impl1_Fail msg) _ |]) =
-  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
-permImplStep (Impl1_TryProveBVProp _ _ _) (MbPermImpls_Cons MbPermImpls_Nil
-                                           [nuP| PermImpl_Step
-                                               (Impl1_Fail msg) _ |]) =
-  PermImpl_Step (Impl1_Fail $ mbLift msg) MbPermImpls_Nil
+permImplStep impl1@(Impl1_Push _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_Pop _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_ElimExists _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_Simpl _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_LetBind _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_ElimLLVMFieldContents _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_TryProveBVProp _ _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
 
 -- An or elimination fails if both branches fail
 permImplStep (Impl1_ElimOr _ _ _) (MbPermImpls_Cons
                                    (MbPermImpls_Cons MbPermImpls_Nil
-                                    [nuP| PermImpl_Step
-                                        (Impl1_Fail msg1) _ |])
-                                   [nuP| PermImpl_Step
-                                       (Impl1_Fail msg2) _ |]) =
+                                    (matchMbImplFail -> Just msg1))
+                                   (matchMbImplFail -> Just msg2)) =
   PermImpl_Step (Impl1_Fail
-                 (mbLift msg1 ++ "\n\n--------------------\n\n" ++ mbLift msg2))
+                 (msg1 ++ "\n\n--------------------\n\n" ++ msg2))
   MbPermImpls_Nil
 
 -- Default case: just apply PermImpl_Step
 permImplStep impl1 mb_impls = PermImpl_Step impl1 mb_impls
 
 
+-- | Helper for 'permImplStep': apply the 'PermImpl_Step' constructor to a unary
+-- 'PermImpl1' rule and an implication that follows it, performing the necessary
+-- simplifications
+permImplStepUnary :: NuMatchingAny1 r =>
+                     PermImpl1 ps_in (RNil :> '(bs, ps_out)) ->
+                     MbPermImpls r (RNil :> '(bs, ps_out)) -> PermImpl r ps_in
+
+-- If the continuation implication is a failure, percolate it up
+permImplStepUnary _ (MbPermImpls_Cons _ (matchMbImplFail -> Just msg)) =
+  PermImpl_Step (Impl1_Fail msg) MbPermImpls_Nil
+
+-- If the continuation implication is a catch with a failure on the right-hand
+-- side, percolate up the catch
+{- FIXME: this exposes some weird performance bug!
+permImplStepUnary impl1 (MbPermImpls_Cons MbPermImpls_Nil
+                         (matchMbImplCatchFail -> Just (mb_impl, msg))) =
+    PermImpl_Step Impl1_Catch
+    (MbPermImpls_Cons
+     (MbPermImpls_Cons MbPermImpls_Nil $
+      emptyMb $ PermImpl_Step impl1 $
+      MbPermImpls_Cons MbPermImpls_Nil mb_impl)
+     (emptyMb $ PermImpl_Step (Impl1_Fail msg) MbPermImpls_Nil))
+-}
+
+-- Default case: just apply PermImpl_Step
+permImplStepUnary impl1 mb_impls = PermImpl_Step impl1 mb_impls
+
+
+-- | Pattern-match an implication inside a binding to see if it is just a
+-- failure, and if so, return the failure message, all without requiring a
+-- 'NuMatchingAny1' constraint on the @r@ variable
+matchMbImplFail :: NuMatchingAny1 r => Mb ctx (PermImpl r ps) -> Maybe String
+matchMbImplFail [nuP| PermImpl_Step (Impl1_Fail msg) _ |] = Just $ mbLift msg
+matchMbImplFail _ = Nothing
+
+-- | Pattern-matchin an implication inside a binding to see if it is a catch
+-- whose right-hand side is just a failure, all without requiring a
+-- 'NuMatchingAny1' constraint on the @r@ variable
+matchMbImplCatchFail :: NuMatchingAny1 r =>
+                        Mb (ctx :: RList CrucibleType) (PermImpl r ps) ->
+                        Maybe (Mb ctx (PermImpl r ps), String)
+matchMbImplCatchFail [nuP| PermImpl_Step Impl1_Catch
+                         (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1)
+                         mb_impl2) |]
+  | Just msg <- matchMbImplFail (mbCombine mb_impl2) =
+    Just (mbCombine mb_impl1, msg)
+matchMbImplCatchFail _ = Nothing
+
 -- | Produce a branching proof tree that performs the first implication and, if
 -- that one fails, falls back on the second. If 'pruneFailingBranches' is set,
--- failing branches are pruned.
+-- failing branches are pruned; otherwise, catches are reorganized so that they
+-- are right-nested, and any failures are combined.
 permImplCatch :: PermImpl r ps -> PermImpl r ps -> PermImpl r ps
 permImplCatch (PermImpl_Step (Impl1_Fail _) _) pimpl
   | pruneFailingBranches = pimpl
@@ -1556,12 +1601,12 @@ instance Applicative (GenContM r r) where
   (<*>) = ap
 
 instance Monad (GenContM r r) where
-  return x = GenContM $ \k -> k x
-  GenContM m >>= f = GenContM $ \k -> m $ \a -> runGenContM (f a) k
+  return x = GenContM $ \(!k) -> k x
+  GenContM m >>= f = GenContM $ \(!k) -> m $ \(!a) -> runGenContM (f a) k
 
 instance GenMonad GenContM where
-  greturn x = GenContM $ \k -> k x
-  (GenContM m) >>>= f = GenContM $ \k -> m $ \a -> runGenContM (f a) k
+  greturn x = GenContM $ \(!k) -> k x
+  (GenContM m) >>>= f = GenContM $ \(!k) -> m $ \(!a) -> runGenContM (f a) k
 
 {-
 -- | Change the return type constructor @r@ by mapping the new input type to the
@@ -1586,21 +1631,21 @@ instance GenMonadCaptureCC rin rout m q1 q2 =>
 
 gmapRet :: GenMonadCaptureCC rin rout m p1 p2 => (rin -> rout) -> m p1 p2 ()
 gmapRet f_ret =
-  gcaptureCC $ \k -> f_ret $ k ()
+  gcaptureCC $ \(!k) -> f_ret $ k ()
 
 -- | Name-binding in the generalized continuation monad (FIXME: explain)
 gopenBinding :: GenMonadCaptureCC rin rout m p1 p2 =>
                 (Mb ctx rin -> rout) -> Mb ctx a ->
                 m p1 p2 (RAssign Name ctx, a)
-gopenBinding f_ret mb_a =
-  gcaptureCC $ \k ->
-  f_ret $ flip nuMultiWithElim1 mb_a $ \names a ->
+gopenBinding f_ret !mb_a =
+  gcaptureCC $ \ !k ->
+  f_ret $ flip nuMultiWithElim1 mb_a $ \ !names !a ->
   k (names, a)
 
 gopenBinding1 :: GenMonadCaptureCC rin rout m p1 p2 =>
                  (Binding a rin -> rout) -> Binding a b ->
                  m p1 p2 (Name a, b)
-gopenBinding1 f_ret mb_b =
+gopenBinding1 f_ret !mb_b =
   gopenBinding f_ret mb_b >>>= \(_ :>: nm, b) -> greturn (nm,b)
 
 
@@ -1698,16 +1743,16 @@ class GenMonad m => GenMonadPut s m p1 p2 | m p1 p2 -> s where
   gput :: s -> m p1 p2 ()
 
 instance GenMonad m => GenMonadGet s (GenStateT m) '(s,q) where
-  gget = GenStateT $ \s -> greturn (s, s)
+  gget = GenStateT $ \(!s) -> greturn (s, s)
 
 instance GenMonad m =>
          GenMonadPut s1 (GenStateT m) '(s1,q) '(s2,q) where
-  gput s = GenStateT $ \_ -> greturn ((), s)
+  gput !s = GenStateT $ \_ -> greturn ((), s)
 
 gmodify :: (GenMonadGet s1 m p2, GenMonadPut s2 m p1 p2) =>
            (s1 -> s2) -> m p1 p2 ()
 gmodify f =
-  gget >>>= \s -> gput (f s)
+  gget >>>= \(!s) -> gput $! (f s)
 
 {-
 class GenMonad m =>
@@ -1965,7 +2010,7 @@ implGetRecRecurseFlag = view implStateRecRecurseFlag <$> gget
 
 -- | Perform either the first, second, or both computations with an 'implCatchM'
 -- between, depending on the recursion flag
-implRecFlagCaseM :: ImplM vars s r ps_out ps_in a ->
+implRecFlagCaseM :: NuMatchingAny1 r => ImplM vars s r ps_out ps_in a ->
                     ImplM vars s r ps_out ps_in a ->
                     ImplM vars s r ps_out ps_in a
 implRecFlagCaseM m1 m2 =
@@ -1977,7 +2022,7 @@ implRecFlagCaseM m1 m2 =
 
 -- | Set the recursive permission recursion flag to indicate recursion on the
 -- right, or fail if we are already recursing on the left
-implSetRecRecurseRightM :: ImplM vars s r ps ps ()
+implSetRecRecurseRightM :: NuMatchingAny1 r => ImplM vars s r ps ps ()
 implSetRecRecurseRightM =
   gget >>>= \s ->
   case view implStateRecRecurseFlag s of
@@ -1987,7 +2032,7 @@ implSetRecRecurseRightM =
 
 -- | Set the recursive recursion flag to indicate recursion on the left, or fail
 -- if we are already recursing on the right
-implSetRecRecurseLeftM :: ImplM vars s r ps ps ()
+implSetRecRecurseLeftM :: NuMatchingAny1 r => ImplM vars s r ps ps ()
 implSetRecRecurseLeftM =
   gget >>>= \s ->
   case view implStateRecRecurseFlag s of
@@ -2056,7 +2101,7 @@ popLifetime =
   greturn l
 
 -- | Push (as in 'implPushM') the permission for the current lifetime
-implPushCurLifetimePermM :: ExprVar LifetimeType ->
+implPushCurLifetimePermM :: NuMatchingAny1 r => ExprVar LifetimeType ->
                             ImplM vars s r (ps :> LifetimeType) ps ()
 implPushCurLifetimePermM l =
   getCurLifetime >>>= \l' ->
@@ -2068,7 +2113,7 @@ implPushCurLifetimePermM l =
     _ -> error "implPushLifetimePermM: no LOwned permission for the current lifetime!"
 
 -- | Pop (as in 'implPushM') the permission for the current lifetime
-implPopCurLifetimePermM :: ExprVar LifetimeType ->
+implPopCurLifetimePermM :: NuMatchingAny1 r => ExprVar LifetimeType ->
                            ImplM vars s r ps (ps :> LifetimeType) ()
 implPopCurLifetimePermM l =
   getCurLifetime >>>= \l' ->
@@ -2130,7 +2175,7 @@ newtype Impl1Cont vars s r ps_r a bs_ps =
 
 -- | Apply a permission implication rule, with the given continuations in the
 -- possible disjunctive branches of the result
-implApplyImpl1 :: PermImpl1 ps_in ps_outs ->
+implApplyImpl1 :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
                   RAssign (Impl1Cont vars s r ps_r a) ps_outs ->
                   ImplM vars s r ps_r ps_in a
 implApplyImpl1 impl1 mb_ms =
@@ -2165,14 +2210,14 @@ implTraceM f =
         fn False = const id
 
 -- | Terminate the current proof branch with a failure
-implFailM :: String -> ImplM vars s r ps_any ps a
+implFailM :: NuMatchingAny1 r => String -> ImplM vars s r ps_any ps a
 implFailM str =
   (view implStateFailPrefix <$> gget) >>>= \prefix ->
   implTraceM (const $ string (prefix ++ "Implication failed")) >>>
   implApplyImpl1 (Impl1_Fail (prefix ++ str)) MNil
 
 -- | Call 'implFailM' and also output a debugging message
-implFailMsgM :: String -> ImplM vars s r ps_any ps a
+implFailMsgM :: NuMatchingAny1 r => String -> ImplM vars s r ps_any ps a
 implFailMsgM msg =
   implTraceM (const $ string msg) >>>= implFailM
 
@@ -2185,8 +2230,8 @@ ppImpl i x p mb_p =
        align (permPretty i mb_p)]
 
 -- | Terminate the current proof branch with a failure proving @x:p -o mb_p@
-implFailVarM :: String -> ExprVar tp -> ValuePerm tp -> Mb vars (ValuePerm tp) ->
-                ImplM vars s r ps_any ps a
+implFailVarM :: NuMatchingAny1 r => String -> ExprVar tp -> ValuePerm tp ->
+                Mb vars (ValuePerm tp) -> ImplM vars s r ps_any ps a
 implFailVarM f x p mb_p =
   implTraceM (\i ->
                sep [string f <> colon <+> string "Could not prove",
@@ -2196,7 +2241,8 @@ implFailVarM f x p mb_p =
 -- | Produce a branching proof tree that performs the first implication and, if
 -- that one fails, falls back on the second. If 'pruneFailingBranches' is set,
 -- failing branches are pruned.
-implCatchM :: ImplM vars s r ps1 ps2 a -> ImplM vars s r ps1 ps2 a ->
+implCatchM :: NuMatchingAny1 r =>
+              ImplM vars s r ps1 ps2 a -> ImplM vars s r ps1 ps2 a ->
               ImplM vars s r ps1 ps2 a
 implCatchM m1 m2 =
   implApplyImpl1 Impl1_Catch (MNil :>: Impl1Cont (const m1)
@@ -2205,19 +2251,21 @@ implCatchM m1 m2 =
 -- | "Push" all of the permissions in the permission set for a variable, which
 -- should be equal to the supplied permission, after deleting those permissions
 -- from the input permission set. This is like a simple "proof" of @x:p@.
-implPushM :: ExprVar a -> ValuePerm a -> ImplM vars s r (ps :> a) ps ()
+implPushM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+             ImplM vars s r (ps :> a) ps ()
 implPushM x p =
   implApplyImpl1 (Impl1_Push x p) (MNil :>: Impl1Cont (const $ greturn ()))
 
 -- | Call 'implPushM' for multiple @x:p@ permissions
-implPushMultiM :: DistPerms ps -> ImplM vars s r ps RNil ()
+implPushMultiM :: NuMatchingAny1 r => DistPerms ps -> ImplM vars s r ps RNil ()
 implPushMultiM DistPermsNil = greturn ()
 implPushMultiM (DistPermsCons ps x p) =
   implPushMultiM ps >>> implPushM x p
 
 -- | For each permission @x:p@ in a list of permissions, either prove @x:eq(x)@
 -- by reflexivity if @p=eq(x)@ or push @x:p@ if @x@ has permissions @p@
-implPushOrReflMultiM :: DistPerms ps -> ImplM vars s r ps RNil ()
+implPushOrReflMultiM :: NuMatchingAny1 r => DistPerms ps ->
+                        ImplM vars s r ps RNil ()
 implPushOrReflMultiM DistPermsNil = greturn ()
 implPushOrReflMultiM (DistPermsCons ps x (ValPerm_Eq (PExpr_Var x')))
   | x == x' = implPushOrReflMultiM ps >>> introEqReflM x
@@ -2227,13 +2275,14 @@ implPushOrReflMultiM (DistPermsCons ps x p) =
 -- | Pop a permission from the top of the stack back to the primary permission
 -- for a variable, assuming that the primary permission for that variable is
 -- empty, i.e., is the @true@ permission
-implPopM :: ExprVar a -> ValuePerm a -> ImplM vars s r ps (ps :> a) ()
+implPopM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+            ImplM vars s r ps (ps :> a) ()
 implPopM x p =
   implApplyImpl1 (Impl1_Pop x p) (MNil :>: Impl1Cont (const $ greturn ()))
 
 -- | Eliminate a disjunctive permission @x:(p1 \/ p2)@, building proof trees
 -- that proceed with both @x:p1@ and @x:p2@
-implElimOrM :: ExprVar a -> ValuePerm a -> ValuePerm a ->
+implElimOrM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a -> ValuePerm a ->
                ImplM vars s r (ps :> a) (ps :> a) ()
 implElimOrM x p1 p2 =
   implTraceM (\pp_info -> string "Eliminating or:" <+>
@@ -2243,7 +2292,7 @@ implElimOrM x p1 p2 =
 
 -- | Eliminate an existential permission @x:(exists (y:tp).p)@ in the current
 -- permission set
-implElimExistsM :: KnownRepr TypeRepr tp =>
+implElimExistsM :: (NuMatchingAny1 r, KnownRepr TypeRepr tp) =>
                    ExprVar a -> Binding tp (ValuePerm a) ->
                    ImplM vars s r (ps :> a) (ps :> a) ()
 implElimExistsM x p =
@@ -2251,7 +2300,7 @@ implElimExistsM x p =
   (MNil :>: Impl1Cont (const $ greturn ()))
 
 -- | Apply a simple implication rule to the top permissions on the stack
-implSimplM :: Proxy ps -> SimplImpl ps_in ps_out ->
+implSimplM :: NuMatchingAny1 r => Proxy ps -> SimplImpl ps_in ps_out ->
               ImplM vars s r (ps :++: ps_out) (ps :++: ps_in) ()
 implSimplM prx simpl =
   implApplyImpl1 (Impl1_Simpl simpl prx)
@@ -2259,7 +2308,7 @@ implSimplM prx simpl =
 
 -- | Bind a new variable @x@ that is set to the supplied expression @e@, and
 -- push permissions @x:eq(e)@. Return @x@.
-implLetBindVar :: TypeRepr tp -> PermExpr tp ->
+implLetBindVar :: NuMatchingAny1 r => TypeRepr tp -> PermExpr tp ->
                   ImplM vars s r (ps :> tp) ps (Name tp)
 implLetBindVar tp e =
   implApplyImpl1 (Impl1_LetBind tp e)
@@ -2270,7 +2319,7 @@ implLetBindVar tp e =
 -- fresh variable @y@ and popping the @y@ permissions off the stack. If @p@
 -- already has the form @eq(y)@, then just return @y@.
 implElimLLVMFieldContentsM ::
-  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+  (NuMatchingAny1 r, 1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
   ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w)
   (ExprVar (LLVMPointerType sz))
@@ -2285,7 +2334,7 @@ implElimLLVMFieldContentsM x fp =
 
 -- | Try to prove a proposition about bitvectors dynamically, failing as in
 -- 'implFailM' if the proposition does not hold
-implTryProveBVProp :: (1 <= w, KnownNat w) =>
+implTryProveBVProp :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                       ExprVar (LLVMPointerType w) -> BVProp w ->
                       ImplM vars s r (ps :> LLVMPointerType w) ps ()
 implTryProveBVProp x p =
@@ -2295,7 +2344,7 @@ implTryProveBVProp x p =
   (MNil :>: Impl1Cont (const $ greturn ()))
 
 -- | Try to prove a sequence of propositions using 'implTryProveBVProp'
-implTryProveBVProps :: (1 <= w, KnownNat w) =>
+implTryProveBVProps :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                        ExprVar (LLVMPointerType w) -> [BVProp w] ->
                        ImplM vars s r (ps :> LLVMPointerType w) ps ()
 implTryProveBVProps x [] = introConjM x
@@ -2305,16 +2354,18 @@ implTryProveBVProps x (prop:props) =
   implInsertConjM x (Perm_BVProp prop) (map Perm_BVProp props) 0
 
 -- | Drop a permission from the top of the stack
-implDropM :: ExprVar a -> ValuePerm a -> ImplM vars s r ps (ps :> a) ()
+implDropM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+             ImplM vars s r ps (ps :> a) ()
 implDropM x p = implSimplM Proxy (SImpl_Drop x p)
 
 -- | Copy a permission on the top of the stack, assuming it is copyable
-implCopyM :: ExprVar a -> ValuePerm a ->
+implCopyM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
              ImplM vars s r (ps :> a :> a) (ps :> a) ()
 implCopyM x p = implSimplM Proxy (SImpl_Copy x p)
 
 -- | Swap the top two permissions on the top of the stack
-implSwapM :: ExprVar a -> ValuePerm a -> ExprVar b -> ValuePerm b ->
+implSwapM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+             ExprVar b -> ValuePerm b ->
              ImplM vars s r (ps :> b :> a) (ps :> a :> b) ()
 implSwapM x p1 y p2 = implSimplM Proxy (SImpl_Swap x p1 y p2)
 
@@ -2335,6 +2386,7 @@ appendRNilConsEq ps1 a (ps2 :>: _)
 --
 -- > perms, p1_1, ..., p1_n, p, p2_1, ..., p2_m
 implMoveUpM ::
+  NuMatchingAny1 r =>
   prx ps -> RAssign f ps1 -> ExprVar a -> RAssign f ps2 ->
   ImplM vars s r (ps :++: ps1 :> a :++: ps2) (ps :> a :++: ps1 :++: ps2) ()
 implMoveUpM (ps :: prx ps) ps1 (x :: ExprVar a) ps2 =
@@ -2351,7 +2403,8 @@ implMoveUpM (ps :: prx ps) ps1 (x :: ExprVar a) ps2 =
 
 -- | Eliminate disjunctives and existentials on the top of the stack and return
 -- the resulting permission
-elimOrsExistsM :: ExprVar a -> ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
+elimOrsExistsM :: NuMatchingAny1 r => ExprVar a ->
+                  ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
 elimOrsExistsM x =
   getTopDistPerm x >>>= \p ->
   case p of
@@ -2362,8 +2415,8 @@ elimOrsExistsM x =
 
 -- | Eliminate disjunctives, existentials, recusive permissions, and
 -- defined permissions on the top of the stack
-elimOrsExistsNamesM :: ExprVar a ->
-                      ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
+elimOrsExistsNamesM :: NuMatchingAny1 r => ExprVar a ->
+                       ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
 elimOrsExistsNamesM x =
   getTopDistPerm x >>>= \p ->
   case p of
@@ -2379,7 +2432,8 @@ elimOrsExistsNamesM x =
 -- | Eliminate any disjunctions, existentials, recursive permissions, or
 -- defined permissions for a variable and then return the resulting "simple"
 -- permission
-getSimpleVarPerm :: ExprVar a -> ImplM vars s r ps ps (ValuePerm a)
+getSimpleVarPerm :: NuMatchingAny1 r => ExprVar a ->
+                    ImplM vars s r ps ps (ValuePerm a)
 getSimpleVarPerm x =
   getPerm x >>>= \p_init ->
   implPushM x p_init >>>
@@ -2389,7 +2443,8 @@ getSimpleVarPerm x =
 -- | Eliminate any disjunctions, existentials, recursive permissions, or
 -- defined permissions for any variables in the supplied expression and
 -- substitute any equality permissions for those variables
-getEqualsExpr :: PermExpr a -> ImplM vars s r ps ps (PermExpr a)
+getEqualsExpr :: NuMatchingAny1 r => PermExpr a ->
+                 ImplM vars s r ps ps (PermExpr a)
 getEqualsExpr e@(PExpr_Var x) =
   getSimpleVarPerm x >>>= \p ->
   case p of
@@ -2408,28 +2463,30 @@ getEqualsExpr e = greturn e
 
 
 -- | Introduce a proof of @x:eq(x)@ onto the top of the stack
-introEqReflM :: ExprVar a -> ImplM vars s r (ps :> a) ps ()
+introEqReflM :: NuMatchingAny1 r => ExprVar a -> ImplM vars s r (ps :> a) ps ()
 introEqReflM x = implSimplM Proxy (SImpl_IntroEqRefl x)
 
 -- | Invert a proof of @x:eq(y)@ on the top of the stack to one of @y:eq(x)@
-invertEqM :: ExprVar a -> ExprVar a -> ImplM vars s r (ps :> a) (ps :> a) ()
+invertEqM :: NuMatchingAny1 r => ExprVar a -> ExprVar a ->
+             ImplM vars s r (ps :> a) (ps :> a) ()
 invertEqM x y = implSimplM Proxy (SImpl_InvertEq x y)
 
 -- | Prove @x:eq(y)@ by proving equality permissions for both @x@ and @y@ to the
 -- same expression, thereby implementing a form of transitivity of equality
 -- where the second equality is inversted:
-invTransEqM :: ExprVar a -> ExprVar a -> PermExpr a ->
+invTransEqM :: NuMatchingAny1 r => ExprVar a -> ExprVar a -> PermExpr a ->
                ImplM vars s r (ps :> a) (ps :> a :> a) ()
 invTransEqM x y e = implSimplM Proxy (SImpl_InvTransEq x y e)
 
 -- | Copy an @x:eq(e)@ permission on the top of the stack
-introEqCopyM :: ExprVar a -> PermExpr a ->
+introEqCopyM :: NuMatchingAny1 r => ExprVar a -> PermExpr a ->
                 ImplM vars s r (ps :> a :> a) (ps :> a) ()
 introEqCopyM x e = implSimplM Proxy (SImpl_CopyEq x e)
 
 -- | Cast an @eq(llvmword(y))@ proof to an @eq(llvmword(e))@ proof using a
 -- proof of @y:eq(e)@
-llvmWordEqM :: (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+llvmWordEqM :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+               ExprVar (LLVMPointerType w) ->
                ExprVar (BVType w) -> PermExpr (BVType w) ->
                ImplM vars s r (ps :> LLVMPointerType w)
                (ps :> LLVMPointerType w :> BVType w) ()
@@ -2437,30 +2494,31 @@ llvmWordEqM x y e = implSimplM Proxy (SImpl_LLVMWordEq x y e)
 
 -- | Cast a @y:p@ perm on the top of the stack to an @x:p@ perm using an
 -- @x:eq(y)@ just below it on the stack
-introCastM :: ExprVar a -> ExprVar a -> ValuePerm a ->
+introCastM :: NuMatchingAny1 r => ExprVar a -> ExprVar a -> ValuePerm a ->
               ImplM vars s r (ps :> a) (ps :> a :> a) ()
 introCastM x y p = implSimplM Proxy (SImpl_Cast x y p)
 
 -- | Introduce a proof of @x:true@ onto the top of the stack, which is the same
 -- as an empty conjunction
-introConjM :: ExprVar a -> ImplM vars s r (ps :> a) ps ()
+introConjM :: NuMatchingAny1 r => ExprVar a -> ImplM vars s r (ps :> a) ps ()
 introConjM x = implSimplM Proxy (SImpl_IntroConj x)
 
 -- | Delete the @i@th atomic permission in the conjunct on the top of the stack,
 -- assuming that conjunction contains the given atomic permissions, and put the
 -- extracted atomic permission just below the top of the stack
-implExtractConjM :: ExprVar a -> [AtomicPerm a] -> Int ->
+implExtractConjM :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] -> Int ->
                     ImplM vars s r (ps :> a :> a) (ps :> a) ()
 implExtractConjM x ps i = implSimplM Proxy (SImpl_ExtractConj x ps i)
 
 -- | Combine the top two conjunctive permissions on the stack
-implAppendConjsM :: ExprVar a -> [AtomicPerm a] -> [AtomicPerm a] ->
+implAppendConjsM :: NuMatchingAny1 r => ExprVar a ->
+                    [AtomicPerm a] -> [AtomicPerm a] ->
                     ImplM vars s r (ps :> a) (ps :> a :> a) ()
 implAppendConjsM x ps1 ps2 = implSimplM Proxy (SImpl_AppendConjs x ps1 ps2)
 
 -- | Split the conjuctive permissions on the top of the stack into the first @i@
 -- and the remaining conjuncts after those
-implSplitConjsM :: ExprVar a -> [AtomicPerm a] -> Int ->
+implSplitConjsM :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] -> Int ->
                    ImplM vars s r (ps :> a :> a) (ps :> a) ()
 implSplitConjsM x ps i = implSimplM Proxy (SImpl_SplitConjs x ps i)
 
@@ -2468,25 +2526,26 @@ implSplitConjsM x ps i = implSimplM Proxy (SImpl_SplitConjs x ps i)
 -- assuming that conjunction contains the given atomic permissions and that the
 -- given conjunct is copyable, and put the copied atomic permission just below
 -- the top of the stack
-implCopyConjM :: ExprVar a -> [AtomicPerm a] -> Int ->
+implCopyConjM :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] -> Int ->
                  ImplM vars s r (ps :> a :> a) (ps :> a) ()
 implCopyConjM x ps i = implSimplM Proxy (SImpl_CopyConj x ps i)
 
 -- | Insert an atomic permission below the top of the stack at the @i@th
 -- position in the conjunct on the top of the stack, where @i@ must be between
-implInsertConjM :: ExprVar a -> AtomicPerm a -> [AtomicPerm a] -> Int ->
+implInsertConjM :: NuMatchingAny1 r => ExprVar a ->
+                   AtomicPerm a -> [AtomicPerm a] -> Int ->
                    ImplM vars s r (ps :> a) (ps :> a :> a) ()
 implInsertConjM x p ps i = implSimplM Proxy (SImpl_InsertConj x p ps i)
 
 -- | Apply the left or-introduction rule to the top of the permission stack,
 -- changing it from @x:p1@ to @x:(p1 \/ p2)@
-introOrLM :: ExprVar a -> ValuePerm a -> ValuePerm a ->
+introOrLM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a -> ValuePerm a ->
              ImplM vars s r (ps :> a) (ps :> a) ()
 introOrLM x p1 p2 = implSimplM Proxy (SImpl_IntroOrL x p1 p2)
 
 -- | Apply the right or-introduction rule to the top of the permission stack,
 -- changing it from @x:p2@ to @x:(p1 \/ p2)@
-introOrRM :: ExprVar a -> ValuePerm a -> ValuePerm a ->
+introOrRM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a -> ValuePerm a ->
              ImplM vars s r (ps :> a) (ps :> a) ()
 introOrRM x p1 p2 = implSimplM Proxy (SImpl_IntroOrR x p1 p2)
 
@@ -2495,15 +2554,15 @@ introOrRM x p1 p2 = implSimplM Proxy (SImpl_IntroOrR x p1 p2)
 --
 -- FIXME: is there some way we could "type-check" this, to ensure that the
 -- permission on the top of the stack really equals @[e/x]p@?
-introExistsM :: KnownRepr TypeRepr tp => ExprVar a -> PermExpr tp ->
-                Binding tp (ValuePerm a) ->
+introExistsM :: (KnownRepr TypeRepr tp, NuMatchingAny1 r) =>
+                ExprVar a -> PermExpr tp -> Binding tp (ValuePerm a) ->
                 ImplM vars s r (ps :> a) (ps :> a) ()
 introExistsM x e p_body = implSimplM Proxy (SImpl_IntroExists x e p_body)
 
 -- | Cast a proof of @x:eq(LLVMWord(e1))@ to @x:eq(LLVMWord(e2))@ on the top of
 -- the stack
 castLLVMWordEqM ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> PermExpr (BVType w) -> PermExpr (BVType w) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 castLLVMWordEqM x e1 e2 =
@@ -2512,7 +2571,8 @@ castLLVMWordEqM x e1 e2 =
 
 -- | Cast a @y:p@ on the top of the stack to @x:(p - off)@ using a
 -- proof of @x:eq(y+off)@ just below it on the stack
-castLLVMPtrM :: (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+castLLVMPtrM :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                ExprVar (LLVMPointerType w) ->
                 ValuePerm (LLVMPointerType w) -> PermExpr (BVType w) ->
                 ExprVar (LLVMPointerType w) ->
                 ImplM vars s r (ps :> LLVMPointerType w)
@@ -2521,7 +2581,8 @@ castLLVMPtrM y p off x = implSimplM Proxy (SImpl_CastLLVMPtr y p off x)
 
 -- | Cast a @y:eq(word(e))@ on the top of the stack to @x:eq(word(e+off))@ using
 -- a proof of @x:eq(y+off)@ just below it on the stack
-offsetLLVMWordM :: (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+offsetLLVMWordM :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                   ExprVar (LLVMPointerType w) ->
                    PermExpr (BVType w) -> PermExpr (BVType w) ->
                    ExprVar (LLVMPointerType w) ->
                    ImplM vars s r (ps :> LLVMPointerType w)
@@ -2530,7 +2591,8 @@ offsetLLVMWordM y e off x = implSimplM Proxy (SImpl_OffsetLLVMWord y e off x)
 
 -- | Cast a proof of @x:free(e1)@ on the top of the stack to one of @x:free(e2)@
 -- by first proving that @e1=e2@
-castLLVMFreeM :: (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+castLLVMFreeM :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                 ExprVar (LLVMPointerType w) ->
                  PermExpr (BVType w) -> PermExpr (BVType w) ->
                  ImplM vars s r (ps :> LLVMPointerType w)
                  (ps :> LLVMPointerType w) ()
@@ -2539,7 +2601,7 @@ castLLVMFreeM x e1 e2 =
   implSimplM Proxy (SImpl_CastLLVMFree x e1 e2)
 
 -- | Fold a named permission (other than an opaque permission)
-implFoldNamedM :: NameSortCanFold ns ~ 'True => ExprVar a ->
+implFoldNamedM :: (NameSortCanFold ns ~ 'True, NuMatchingAny1 r) => ExprVar a ->
                   NamedPermName ns args a -> PermExprs args -> PermOffset a ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 implFoldNamedM x npn args off =
@@ -2548,8 +2610,9 @@ implFoldNamedM x npn args off =
 
 -- | Unfold a named permission (other than an opaque permission), returning the
 -- unfolding
-implUnfoldNamedM :: NameSortCanFold ns ~ 'True => ExprVar a ->
-                    NamedPermName ns args a -> PermExprs args -> PermOffset a ->
+implUnfoldNamedM :: (NameSortCanFold ns ~ 'True, NuMatchingAny1 r) =>
+                    ExprVar a -> NamedPermName ns args a ->
+                    PermExprs args -> PermOffset a ->
                     ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
 implUnfoldNamedM x npn args off =
   implLookupNamedPerm npn >>>= \np ->
@@ -2557,22 +2620,23 @@ implUnfoldNamedM x npn args off =
   greturn (unfoldPerm np args off)
 
 -- | Map a named permission that is conjoinable to a conjunction
-implNamedToConjM :: NameSortIsConj ns ~ 'True => ExprVar a ->
-                    NamedPermName ns args a -> PermExprs args -> PermOffset a ->
+implNamedToConjM :: (NameSortIsConj ns ~ 'True, NuMatchingAny1 r) =>
+                    ExprVar a -> NamedPermName ns args a ->
+                    PermExprs args -> PermOffset a ->
                     ImplM vars s r (ps :> a) (ps :> a) ()
 implNamedToConjM x npn args off =
   implSimplM Proxy (SImpl_NamedToConj x npn args off)
 
 -- | Map a conjuctive named permission to a named permission
-implNamedFromConjM :: NameSortIsConj ns ~ 'True => ExprVar a ->
-                      NamedPermName ns args a -> PermExprs args ->
+implNamedFromConjM :: (NameSortIsConj ns ~ 'True, NuMatchingAny1 r) =>
+                      ExprVar a -> NamedPermName ns args a -> PermExprs args ->
                       PermOffset a -> ImplM vars s r (ps :> a) (ps :> a) ()
 implNamedFromConjM x npn args off =
   implSimplM Proxy (SImpl_NamedFromConj x npn args off)
 
 -- | FIXME: document this!
-implSplitLifetimeM :: KnownRepr TypeRepr a => ExprVar a -> ValuePerm a ->
-                      ExprVar LifetimeType ->
+implSplitLifetimeM :: (KnownRepr TypeRepr a, NuMatchingAny1 r) =>
+                      ExprVar a -> ValuePerm a -> ExprVar LifetimeType ->
                       ImplM vars s r (ps :> a :> LifetimeType)
                       (ps :> a :> LifetimeType) ()
 implSplitLifetimeM x p l =
@@ -2585,8 +2649,9 @@ implSplitLifetimeM x p l =
 -- | Combine proofs of @x:ptr(pps,(off,spl) |-> eq(y))@ and @y:p@ on the top of
 -- the permission stack into a proof of @x:ptr(pps,(off,spl |-> p))@
 introLLVMFieldContentsM ::
-  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) => ExprVar (LLVMPointerType w) ->
-  ExprVar (LLVMPointerType sz) -> LLVMFieldPerm w sz ->
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz, NuMatchingAny1 r) =>
+  ExprVar (LLVMPointerType w) -> ExprVar (LLVMPointerType sz) ->
+  LLVMFieldPerm w sz ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w :>
                                             LLVMPointerType sz) ()
 introLLVMFieldContentsM x y fp =
@@ -2597,7 +2662,7 @@ introLLVMFieldContentsM x y fp =
 -- of any outstanding borrows (see 'llvmArrayIndexInArray'). Return the
 -- resulting array permission with the borrow and the borrowed field permission.
 implLLVMArrayIndexBorrow ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
   (ps :> LLVMPointerType w) (LLVMArrayPerm w, LLVMArrayField w)
@@ -2611,7 +2676,7 @@ implLLVMArrayIndexBorrow x ap ix =
 -- proving (with 'implTryProveBVProps') that the index is in the array exclusive
 -- of any outstanding borrows (see 'llvmArrayIndexInArray')
 implLLVMArrayIndexCopy ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
   ImplM vars s r (ps :> LLVMPointerType w
                   :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
@@ -2623,7 +2688,7 @@ implLLVMArrayIndexCopy x ap ix =
 -- where the field permission is on the top of the stack and the array
 -- permission is just below it
 implLLVMArrayIndexReturn ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
   ImplM vars s r (ps :> LLVMPointerType w)
   (ps :> LLVMPointerType w :> LLVMPointerType w) ()
@@ -2632,7 +2697,7 @@ implLLVMArrayIndexReturn x ap ix =
 
 -- | Borrow a sub-array from an array as per 'SImpl_LLVMArrayBorrow'
 implLLVMArrayBorrow ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
   (ps :> LLVMPointerType w) ()
@@ -2642,7 +2707,7 @@ implLLVMArrayBorrow x ap sub_ap =
 
 -- | Copy a sub-array from an array as per 'SImpl_LLVMArrayCopy'
 implLLVMArrayCopy ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
   (ps :> LLVMPointerType w) ()
@@ -2654,7 +2719,7 @@ implLLVMArrayCopy x ap sub_ap =
 -- return the new array permission after the return that is now on the top of
 -- the stack
 implLLVMArrayReturn ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w)
   (ps :> LLVMPointerType w :> LLVMPointerType w)
@@ -2668,7 +2733,7 @@ implLLVMArrayReturn x ap ret_ap =
 -- because the borrow is not in range of the array. The permission that is
 -- borrowed is left on top of the stack and returned as a return value.
 implLLVMArrayBorrowBorrow ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayBorrow w ->
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
   (ps :> LLVMPointerType w) (ValuePerm (LLVMPointerType w))
@@ -2687,7 +2752,7 @@ implLLVMArrayBorrowBorrow x ap b@(RangeBorrow rng) =
 -- top of the stack and the borrowed permission, which should be that returned
 -- by 'permForLLVMArrayBorrow', is just below it
 implLLVMArrayReturnBorrow ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayBorrow w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w
                                             :> LLVMPointerType w) ()
@@ -2702,7 +2767,7 @@ implLLVMArrayReturnBorrow x ap b@(RangeBorrow rng) =
 -- | Append to array permissions, assuming one ends where the other begins and
 -- that they have the same stride and fields
 implLLVMArrayAppend ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w
                                             :> LLVMPointerType w) ()
@@ -2712,7 +2777,7 @@ implLLVMArrayAppend x ap1 ap2 =
 
 -- | Rearrange the order of the borrows in an array permission
 implLLVMArrayRearrange ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 implLLVMArrayRearrange x ap_in ap_out =
@@ -2720,14 +2785,14 @@ implLLVMArrayRearrange x ap_in ap_out =
 
 -- | Prove an empty array with length 0
 implLLVMArrayEmpty ::
-  (1 <= w, KnownNat w) =>
+  (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) ps ()
 implLLVMArrayEmpty x ap = implSimplM Proxy (SImpl_LLVMArrayEmpty x ap)
 
 -- | Prove an array that can be expressed as the conjunction of @N@ fields from
 -- those @N@ fields, assuming a proof of those fields is on the top of the stack
-implLLVMArrayOneCell :: (1 <= w, KnownNat w) =>
+implLLVMArrayOneCell :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                         ExprVar (LLVMPointerType w) -> LLVMArrayPerm w ->
                         ImplM vars s r (ps :> LLVMPointerType w)
                         (ps :> LLVMPointerType w) ()
@@ -2741,7 +2806,7 @@ implLLVMArrayOneCell x ap =
 
 -- | Build a 'LifetimeCurrentPerms' to prove that a lifetime @l@ is current in
 -- the current permission set, failing if this is not possible
-getLifetimeCurrentPerms :: PermExpr LifetimeType ->
+getLifetimeCurrentPerms :: NuMatchingAny1 r => PermExpr LifetimeType ->
                            ImplM vars s r ps ps (Some LifetimeCurrentPerms)
 getLifetimeCurrentPerms PExpr_Always = greturn $ Some AlwaysCurrentPerms
 getLifetimeCurrentPerms (PExpr_Var l) =
@@ -2758,7 +2823,7 @@ getLifetimeCurrentPerms (PExpr_Var l) =
       implFailM
 
 -- | Prove the permissions represented by a 'LifetimeCurrentPerms'
-proveLifetimeCurrent :: LifetimeCurrentPerms ps_l ->
+proveLifetimeCurrent :: NuMatchingAny1 r => LifetimeCurrentPerms ps_l ->
                         ImplM vars s r (ps :++: ps_l) ps ()
 proveLifetimeCurrent AlwaysCurrentPerms = greturn ()
 proveLifetimeCurrent (LOwnedCurrentPerms l ps) =
@@ -2797,8 +2862,8 @@ lifetimeEndPermsToDistPerms (ps :>: LifetimeEndConj x x_ps i) =
 -- | Search through all distinguished permissions @x:p@ and return any conjuncts
 -- of @p@ that contain the lifetime @l@, if @p@ is a conjunctive permission, or
 -- @p@ itself if it contains @l@ and is any other construct
-buildLifetimeEndPerms :: ExprVar LifetimeType ->
-                        ImplM vars s r ps ps SomeLifetimeEndPerms
+buildLifetimeEndPerms :: NuMatchingAny1 r => ExprVar LifetimeType ->
+                         ImplM vars s r ps ps SomeLifetimeEndPerms
 buildLifetimeEndPerms l =
   getPerms >>>= \perms ->
   return $ helper (NameMap.assocs (perms ^. varPermMap)) (Some MNil)
@@ -2820,7 +2885,7 @@ buildLifetimeEndPerms l =
 
 
 -- | Call 'implPushM' for multiple @x:p@ permissions
-implPushLifetimeEndPerms :: LifetimeEndPerms ps' ->
+implPushLifetimeEndPerms :: NuMatchingAny1 r => LifetimeEndPerms ps' ->
                             ImplM vars s r (ps :++: ps') ps ()
 implPushLifetimeEndPerms MNil = greturn ()
 implPushLifetimeEndPerms (ps :>: LifetimeEndPerm x p) =
@@ -2839,7 +2904,7 @@ implPushLifetimeEndPerms (ps :>: LifetimeEndConj x x_ps i) =
 -- | Simplify an equality permission @x:eq(e)@ that we assume is on the top of
 -- the stack by substituting any equality permissions on variables in @e@,
 -- returning the resulting expression
-simplEqPerm :: ExprVar a -> PermExpr a ->
+simplEqPerm :: NuMatchingAny1 r => ExprVar a -> PermExpr a ->
                ImplM vars s r (as :> a) (as :> a) (PermExpr a)
 simplEqPerm x e@(PExpr_Var y) =
   getPerm y >>>= \case
@@ -2857,14 +2922,15 @@ simplEqPerm _ e = greturn e
 
 -- | Recombine the permission @x:p@ on top of the stack back into the existing
 -- permission for @x@
-recombinePerm :: ExprVar a -> ValuePerm a -> ImplM vars s r as (as :> a) ()
+recombinePerm :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+                 ImplM vars s r as (as :> a) ()
 recombinePerm x p = getPerm x >>>= \x_p -> recombinePermExpl x x_p p
 
 -- | Recombine the permission @x:p@ on top of the stack back into the existing
 -- permission @x_p@ for @x@, where @x_p@ is given explicitly as the first
 -- permission argument and @p@ is the second
-recombinePermExpl :: ExprVar a -> ValuePerm a -> ValuePerm a ->
-                     ImplM vars s r as (as :> a) ()
+recombinePermExpl :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+                     ValuePerm a -> ImplM vars s r as (as :> a) ()
 recombinePermExpl x x_p p =
   {-
   getPPInfo >>>= \info ->
@@ -2873,7 +2939,7 @@ recombinePermExpl x x_p p =
                </> permPretty info p) $ -}
   recombinePerm' x x_p p
 
-recombinePerm' :: ExprVar a -> ValuePerm a -> ValuePerm a ->
+recombinePerm' :: NuMatchingAny1 r => ExprVar a -> ValuePerm a -> ValuePerm a ->
                   ImplM vars s r as (as :> a) ()
 recombinePerm' x _ p@ValPerm_True = implDropM x p
 recombinePerm' x ValPerm_True (ValPerm_Eq e) =
@@ -2926,8 +2992,8 @@ recombinePerm' x _ p = implDropM x p
 -- | Recombine a single conjuct @x:p@ on top of the stack back into the existing
 -- conjuctive permission @x_p1 * ... * x_pn@ for @x@, returning the resulting
 -- permission conjucts for @x@
-recombinePermConj :: ExprVar a -> [AtomicPerm a] -> AtomicPerm a ->
-                     ImplM vars s r as (as :> a) [AtomicPerm a]
+recombinePermConj :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] ->
+                     AtomicPerm a -> ImplM vars s r as (as :> a) [AtomicPerm a]
 
 -- If p is a field read permission that is already in x_ps, drop it
 recombinePermConj x x_ps p@(Perm_LLVMField fp)
@@ -2993,13 +3059,14 @@ recombinePermConj x x_ps p =
 
 
 -- | Recombine the permissions on the stack back into the permission set
-recombinePerms :: DistPerms ps -> ImplM vars s r RNil ps ()
+recombinePerms :: NuMatchingAny1 r => DistPerms ps -> ImplM vars s r RNil ps ()
 recombinePerms DistPermsNil = greturn ()
 recombinePerms (DistPermsCons ps' x p) =
   recombinePerm x p >>> recombinePerms ps'
 
 -- | Recombine the permissions for a 'LifetimeCurrentPerms' list
-recombineLifetimeCurrentPerms :: LifetimeCurrentPerms ps_l ->
+recombineLifetimeCurrentPerms :: NuMatchingAny1 r =>
+                                 LifetimeCurrentPerms ps_l ->
                                  ImplM vars s r ps (ps :++: ps_l) ()
 recombineLifetimeCurrentPerms AlwaysCurrentPerms = greturn ()
 recombineLifetimeCurrentPerms (LOwnedCurrentPerms l ps) =
@@ -3017,7 +3084,7 @@ recombineLifetimeCurrentPerms (CurrentTransPerms cur_perms l) =
 -- | Build a proof on the top of the stack that @x:eq(e)@. Assume that all @x@
 -- permissions are on the top of the stack and given by argument @p@, and pop
 -- them back to the primary permission for @x@ at the end of the proof.
-proveVarEq :: ExprVar a -> ValuePerm a ->
+proveVarEq :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
               Mb vars (PermExpr a) -> ImplM vars s r (ps :> a) (ps :> a) ()
 proveVarEq x p mb_e =
   getPSubst >>>= \psubst ->
@@ -3045,7 +3112,7 @@ proveVarEq x p mb_e =
 
 -- | Main helper function for 'proveVarEq': prove @x:eq(e) |- x:eq(e')@ assuming
 -- the LHS equality permission is on the top of the stack
-proveVarEqH :: ExprVar a -> PermExpr a ->
+proveVarEqH :: NuMatchingAny1 r => ExprVar a -> PermExpr a ->
                PartialSubst vars -> Mb vars (PermExpr a) ->
                ImplM vars s r (ps :> a) (ps :> a) ()
 
@@ -3128,8 +3195,8 @@ proveVarEqH x e _ mb_e =
 -- the top of the stack, and ensuring that any remaining permissions for @x@ get
 -- popped back to the primary permissions for @x@
 proveVarLLVMField ::
-  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) => ExprVar (LLVMPointerType w) ->
-  [AtomicPerm (LLVMPointerType w)] -> Int ->
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz, NuMatchingAny1 r) =>
+  ExprVar (LLVMPointerType w) -> [AtomicPerm (LLVMPointerType w)] -> Int ->
   PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w sz) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 proveVarLLVMField x ps i off mb_fp =
@@ -3153,7 +3220,7 @@ proveVarLLVMField x ps i off mb_fp =
 -- stack, by casting the offset, changing the lifetime if needed, and proving
 -- the contents
 proveVarLLVMFieldFromField ::
-  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
   PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w sz) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
@@ -3221,7 +3288,7 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
 -- a single atomic permission or @true@. The field permission and remaining
 -- atomic permission (if any) are the return values of this function.
 extractNeededLLVMFieldPerm ::
-  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+  (1 <= w, KnownNat w, 1 <= sz, KnownNat sz, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> AtomicPerm (LLVMPointerType w) ->
   PermExpr (BVType w) -> PartialSubst vars -> Mb vars (LLVMFieldPerm w sz) ->
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
@@ -3366,7 +3433,7 @@ extractNeededLLVMFieldPerm x ap _ _ mb_fp =
 -- | FIXME HERE NOW: document, especially the bool flag = first iteration and
 -- that the bools with each perm are whether they can be used
 proveVarLLVMArray ::
-  (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+  (1 <= w, KnownNat w, NuMatchingAny1 r) => ExprVar (LLVMPointerType w) ->
   Bool -> [AtomicPerm (LLVMPointerType w)] -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
@@ -3381,7 +3448,7 @@ proveVarLLVMArray x first_p ps ap =
 -- | FIXME HERE NOW: document, especially the bool flag = first iteration and
 -- that the bools with each perm are whether they can be used
 proveVarLLVMArrayH ::
-  (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+  (1 <= w, KnownNat w, NuMatchingAny1 r) => ExprVar (LLVMPointerType w) ->
   Bool -> [AtomicPerm (LLVMPointerType w)] -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
@@ -3443,7 +3510,7 @@ proveVarLLVMArrayH x first_p ps ap =
 
 -- | FIXME HERE NOW: document this
 proveVarLLVMArray_ArrayStep ::
-  (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
+  (1 <= w, KnownNat w, NuMatchingAny1 r) => ExprVar (LLVMPointerType w) ->
   [AtomicPerm (LLVMPointerType w)] -> LLVMArrayPerm w ->
   Int -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
@@ -3585,7 +3652,8 @@ proveVarLLVMArray_ArrayStep _x _ps _ap _i _ap_lhs =
 -- splitting the lifetime of the input permission
 --
 -- FIXME: currently this does not do the lifetime splitting step
-proveNamedArgs :: ExprVar a -> NamedPermName ns args a -> PermExprs args ->
+proveNamedArgs :: NuMatchingAny1 r => ExprVar a ->
+                  NamedPermName ns args a -> PermExprs args ->
                   PermOffset a -> Mb vars (PermExprs args) ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveNamedArgs x npn args off mb_args =
@@ -3600,7 +3668,8 @@ proveNamedArgs x npn args off mb_args =
 -- by a 'Member' proof in the input @args@ and @arg'@ potentially has
 -- existential variables. Assume the LHS is on the top of the stack and leave
 -- the RHS, if proved, on the top of the stack.
-proveNamedArg :: ExprVar a -> NamedPermName ns args a -> PermExprs args ->
+proveNamedArg :: NuMatchingAny1 r => ExprVar a ->
+                 NamedPermName ns args a -> PermExprs args ->
                  PermOffset a -> Member args b -> PartialSubst vars ->
                  Mb vars (PermExpr b) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
@@ -3666,7 +3735,8 @@ proveNamedArg x npn args off memb _ mb_arg =
 -- @i@ is supplied, then @p1@ is a conjunctive permission whose @i@th conjunct
 -- is the named permisison to be unfolded; otherwise @p1@ itself is the named
 -- permission to be unfolded. Assume that @x:p1@ is on top of the stack.
-proveVarImplUnfoldLeft :: ExprVar a -> ValuePerm a -> Mb vars (ValuePerm a) ->
+proveVarImplUnfoldLeft :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+                          Mb vars (ValuePerm a) ->
                           Maybe Int -> ImplM vars s r (ps :> a) (ps :> a) ()
 
 proveVarImplUnfoldLeft x (ValPerm_Named npn args off) mb_p Nothing
@@ -3697,7 +3767,8 @@ proveVarImplUnfoldLeft _ _ _ _ =
 
 -- | Prove @x:p1 |- x:P<args>\@off@ where @P@ is foldable by first proving the
 -- unfolding of @P@ folding it. Assume that @x:p1@ is on top of the stack.
-proveVarImplFoldRight :: ExprVar a -> ValuePerm a -> Mb vars (ValuePerm a) ->
+proveVarImplFoldRight :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+                         Mb vars (ValuePerm a) ->
                          ImplM vars s r (ps :> a) (ps :> a) ()
 proveVarImplFoldRight x p [nuP| ValPerm_Named mb_npn mb_args mb_off |]
   | npn <- mbLift mb_npn
@@ -3723,8 +3794,8 @@ proveVarImplFoldRight _ _ _ =
 -- | We were not able to prove @x:(p1 * ... * pn) |- x:p@ as is, so try
 -- unfolding named permissions in the @pi@s as a last resort. If there are none,
 -- or our recursion flag does not allow it, then fail.
-proveVarAtomicImplUnfoldOrFail :: ExprVar a -> [AtomicPerm a] ->
-                                  Mb vars (AtomicPerm a) ->
+proveVarAtomicImplUnfoldOrFail :: NuMatchingAny1 r => ExprVar a ->
+                                  [AtomicPerm a] -> Mb vars (AtomicPerm a) ->
                                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveVarAtomicImplUnfoldOrFail x ps mb_ap =
   let p_l = ValPerm_Conj ps
@@ -3743,7 +3814,7 @@ proveVarAtomicImplUnfoldOrFail x ps mb_ap =
     -- Otherwise, we fail
     _ -> implFailVarM "proveVarAtomicImpl" x p_l mb_p_r
 
-proveVarAtomicImpl :: ExprVar a -> [AtomicPerm a] ->
+proveVarAtomicImpl :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] ->
                       Mb vars (AtomicPerm a) ->
                       ImplM vars s r (ps :> a) (ps :> a) ()
 
@@ -3898,7 +3969,7 @@ proveVarAtomicImpl x aps mb_ap = proveVarAtomicImplUnfoldOrFail x aps mb_ap
 -- Most of this machinery is actually handled by the 'proveVarImplH' cases for
 -- recursive and defined names. Here, we just have to make sure to prove defined
 -- names first, followed by recursive names and then other permissions.
-proveVarConjImpl :: ExprVar a -> [AtomicPerm a] ->
+proveVarConjImpl :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] ->
                     Mb vars [AtomicPerm a] ->
                     ImplM vars s r (ps :> a) (ps :> a) ()
 
@@ -3928,10 +3999,10 @@ proveVarConjImpl x ps mb_ps =
 ----------------------------------------------------------------------
 
 -- | Prove @x:p'@, where @p@ may have existentially-quantified variables in it
-proveVarImpl :: ExprVar a -> Mb vars (ValuePerm a) ->
+proveVarImpl :: NuMatchingAny1 r => ExprVar a -> Mb vars (ValuePerm a) ->
                 ImplM vars s r (ps :> a) ps ()
 proveVarImpl x mb_p =
-  getPerm x >>>= \p ->
+  getPerm x >>>= \ !p ->
   implPushM x p >>>
   implTraceM (\i -> string "proveVarImpl:" <> line <> ppImpl i x p mb_p) >>>
   proveVarImplH x p mb_p >>>
@@ -3948,7 +4019,7 @@ proveVarImpl x mb_p =
 -- | Prove @x:p'@ assuming that the primary permissions for @x@ have all been
 -- pushed to the top of the stack and are equal to @p@. Pop the remaining
 -- permissions for @x@ back to its primary permission when we are finished.
-proveVarImplH :: ExprVar a -> ValuePerm a ->
+proveVarImplH :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
                  Mb vars (ValuePerm a) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
 
@@ -3963,11 +4034,11 @@ proveVarImplH x p [nuP| ValPerm_Eq e |] = proveVarEq x p e
 
 -- Eliminate any disjunctions and existentials on the left
 proveVarImplH x (ValPerm_Or _ _) mb_p =
-  elimOrsExistsM x >>>= \p -> proveVarImplH x p mb_p
+  elimOrsExistsM x >>>= \ !p -> proveVarImplH x p mb_p
 
 -- Eliminate any disjunctions and existentials on the left
 proveVarImplH x (ValPerm_Exists _) mb_p =
-  elimOrsExistsM x >>>= \p -> proveVarImplH x p mb_p
+  elimOrsExistsM x >>>= \ !p -> proveVarImplH x p mb_p
 
 -- Eliminate an equality permission for a variable on the left, i.e., prove x:p
 -- from x:eq(y) by first proving y:p and then casting
@@ -4178,7 +4249,7 @@ proveVarImplH x p mb_p = implFailVarM "proveVarImplH" x p mb_p
 -- | Prove an existentially-quantified permission where the variable holding the
 -- permission could itself be existentially-quantified. Return the variable that
 -- the potentially existentially-quantified has been set to.
-proveExVarImpl :: PartialSubst vars -> Mb vars (Name tp) ->
+proveExVarImpl :: NuMatchingAny1 r => PartialSubst vars -> Mb vars (Name tp) ->
                   Mb vars (ValuePerm tp) ->
                   ImplM vars s r (ps :> tp) ps (Name tp)
 
@@ -4303,7 +4374,7 @@ findProvablePerm _ _ = Nothing
 -- if we are proving @x:p@ for existentially-quantified @x@ --- then the
 -- resulting permission on top of the stack will be @y:[e/x]p@, where @y@ is a
 -- fresh variable and @e@ is the expression used to instantiate @x@.
-proveVarsImplAppend :: ExDistPerms vars ps ->
+proveVarsImplAppend :: NuMatchingAny1 r => ExDistPerms vars ps ->
                        ImplM vars s r (ps_in :++: ps) ps_in ()
 proveVarsImplAppend [nuP| DistPermsNil |] = return ()
 proveVarsImplAppend ps =
@@ -4331,7 +4402,8 @@ prependRNilEq MNil = Refl
 prependRNilEq (ctx :>: _) | Refl <- prependRNilEq ctx = Refl
 
 -- | Prove a list of existentially-quantified distinguished permissions
-proveVarsImpl :: ExDistPerms vars as -> ImplM vars s r as RNil ()
+proveVarsImpl :: NuMatchingAny1 r => ExDistPerms vars as ->
+                 ImplM vars s r as RNil ()
 proveVarsImpl ps
   | Refl <- mbLift (fmap prependRNilEq $ mbDistPermsToValuePerms ps) =
     proveVarsImplAppend ps
