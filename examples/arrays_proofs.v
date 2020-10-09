@@ -34,16 +34,14 @@ Definition zero_array_letRec_lrt
             (fun _ : {_ : SAWCorePrelude.bitvector 64 & unit} =>
              LRT_Ret (BVVec 64 arg0 {_ : SAWCorePrelude.bitvector 64 & unit})))).
 
-Definition bvMem_lo :=
-  Eval compute in bvLit_0b"1111000000000000000000000000000000000000000000000000000000000000".
-Definition bvMem_hi :=
-  Eval compute in bvLit_0b"0000111111111111111111111111111111111111111111111111111111111111".
+Definition bvMem_lo := intToBv 64 0xf000000000000000.
+Definition bvMem_hi := intToBv 64 0x0fffffffffffffff.
 
 Definition zero_array_precond x
-  := isBvsle 64 (bvLit 64 0) x /\ isBvsle 64 x bvMem_hi.
+  := isBvsle 64 (intToBv 64 0) x /\ isBvsle 64 x bvMem_hi.
 
 Definition zero_array_invariant x x' (i : { _ & unit })
-  := isBvsle 64 (bvLit 64 0) (projT1 i) /\ isBvsle 64 (projT1 i) x /\ x = x'.
+  := isBvsle 64 (intToBv 64 0) (projT1 i) /\ isBvsle 64 (projT1 i) x /\ x = x'.
 
 Definition zero_array_noErrors_letRec : lrtToType zero_array_lrt := fun x _ =>
   assumingM (zero_array_precond x)
@@ -58,7 +56,7 @@ Proof.
   transitivity zero_array_noErrors_letRec; try reflexivity.
   unfold zero_array, zero_array__tuple_fun, zero_array_noErrors_letRec, zero_array_letRec_lrt, zero_array_precond, zero_array_invariant, noErrorsSpec.
   unfold bvultWithProof.
-  unfold true, false; fold bvMem_lo; fold bvMem_hi.
+  fold bvMem_lo; fold bvMem_hi.
   time "no_errors_zero_array" prove_refinement.
   (* A number of the remaining cases are covered exactly by hypotheses we already have in
      scope (e.g. proving the loop invariant holds initially). Note that `prove_refinement`
@@ -104,10 +102,10 @@ Definition contains0_letRec_lrt
                 ({_ : bitvector 64 & unit} * unit))))).
 
 Definition contains0_precond l
-  := isBvsle 64 (bvLit 64 0) l /\ isBvsle 64 l bvMem_hi.
+  := isBvsle 64 (intToBv 64 0) l /\ isBvsle 64 l bvMem_hi.
 
 Definition contains0_invariant l l' (i : { _ & unit })
-  := isBvsle 64 (bvLit 64 0) (projT1 i) /\ isBvsle 64 (projT1 i) l /\ l = l'.
+  := isBvsle 64 (intToBv 64 0) (projT1 i) /\ isBvsle 64 (projT1 i) l /\ l = l'.
 
 Definition contains0_noErrors_letRec : lrtToType contains0_lrt := fun x _ =>
   assumingM (contains0_precond x)
