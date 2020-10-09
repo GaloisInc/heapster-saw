@@ -41,7 +41,7 @@ import Data.Functor.Identity
 import Control.Applicative hiding (empty)
 import qualified Control.Applicative as Applicative
 import Control.Monad.Trans
-import Control.Monad.State
+import Control.Monad.State.Strict
 import Control.Monad.Trans.Maybe
 
 import qualified Data.Type.RList as RL
@@ -69,6 +69,21 @@ import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
 
 import Debug.Trace
+
+
+-- FIXME: move to Hobbits, and use BindState as in the existing instances for
+-- the lazy StateT
+instance (MonadBind m) => MonadBind (StateT (Closed s) m) where
+  mbM mb_m = StateT $ \s ->
+    mbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
+    return (fmap fst mb_as, mbLift (fmap snd mb_as))
+
+-- FIXME: move to Hobbits, and use BindState as in the existing instances for
+-- the lazy StateT
+instance (MonadStrongBind m) => MonadStrongBind (StateT (Closed s) m) where
+  strongMbM mb_m = StateT $ \s ->
+    strongMbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
+    return (fmap fst mb_as, mbLift (fmap snd mb_as))
 
 
 ----------------------------------------------------------------------
@@ -714,8 +729,6 @@ data MbPermImpls r bs_pss where
 
 -- type IsLLVMPointerTypeList w ps = RAssign ((:~:) (LLVMPointerType w)) ps
 
-
-
 $(mkNuMatching [t| forall ps_in ps_out. SimplImpl ps_in ps_out |])
 $(mkNuMatching [t| forall ps_in ps_outs. PermImpl1 ps_in ps_outs |])
 $(mkNuMatching [t| forall r bs_pss. NuMatchingAny1 r => MbPermImpls r bs_pss |])
@@ -740,6 +753,7 @@ pruneFailingBranches = False
 permImplStep :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
                 MbPermImpls r ps_outs -> PermImpl r ps_in
 
+{-
 -- No need to simplify a fail
 permImplStep impl1@(Impl1_Fail msg) mb_impls = PermImpl_Step impl1 mb_impls
 
@@ -776,6 +790,7 @@ permImplStep (Impl1_ElimOr _ _ _) (MbPermImpls_Cons
   PermImpl_Step (Impl1_Fail
                  (msg1 ++ "\n\n--------------------\n\n" ++ msg2))
   MbPermImpls_Nil
+-}
 
 -- Default case: just apply PermImpl_Step
 permImplStep impl1 mb_impls = PermImpl_Step impl1 mb_impls

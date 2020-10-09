@@ -43,7 +43,7 @@ import What4.FunctionName
 import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
 
 import Control.Lens hiding ((:>),Index)
-import Control.Monad.State
+import Control.Monad.State.Strict
 import Control.Monad.Reader
 
 import Text.PrettyPrint.ANSI.Leijen (pretty)
