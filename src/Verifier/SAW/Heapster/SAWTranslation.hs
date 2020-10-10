@@ -653,16 +653,16 @@ boolOpenTerm :: Bool -> OpenTerm
 boolOpenTerm True = globalOpenTerm "Prelude.True"
 boolOpenTerm False = globalOpenTerm "Prelude.False"
 
-intToBvOpenTerm :: NatRepr w -> Integer -> OpenTerm
-intToBvOpenTerm w n =
-  let n64 = fromInteger n :: Int64
-      n' | n64 >= 0  = applyOpenTermMulti (globalOpenTerm "Prelude.natToInt")
-                       [natOpenTerm (fromInteger (toInteger n64))]
-         | otherwise = applyOpenTermMulti (globalOpenTerm "Prelude.intNeg")
-                       [applyOpenTermMulti (globalOpenTerm "Prelude.natToInt")
-                        [natOpenTerm (fromInteger (toInteger (-n64)))]]
-   in applyOpenTermMulti (globalOpenTerm "Prelude.intToBv")
-      [natOpenTerm (natValue w), n']
+-- | Create a SAW core term for a bitvector literal
+bvLitOpenTerm :: NatRepr w -> Integer -> OpenTerm
+bvLitOpenTerm w n =
+  flatOpenTerm $ ArrayValue (globalOpenTerm "Prelude.Bool") $
+  V.fromList (map boolOpenTerm $ BV.asBitsBE w $ BV.mkBV w n)
+
+bvNatOpenTerm :: Natural -> Natural -> OpenTerm
+bvNatOpenTerm w n =
+  applyOpenTermMulti (globalOpenTerm "Prelude.bvNat")
+  [natOpenTerm w, natOpenTerm (n `mod` 2 ^ w)]
 
 bvAddOpenTerm :: Natural -> OpenTerm -> OpenTerm -> OpenTerm
 bvAddOpenTerm n x y =
@@ -739,7 +739,7 @@ instance TransInfo info =>
     return $ ETrans_Term $ natOpenTerm $ mbLift i
   translate [nuP| PExpr_BV bvfactors@[] off |] =
     let w = natRepr3 bvfactors in
-    return $ ETrans_Term $ intToBvOpenTerm w $ mbLift off
+    return $ ETrans_Term $ bvLitOpenTerm w $ mbLift off
   translate [nuP| PExpr_BV bvfactors 0 |] =
     let w = natVal3 bvfactors in
     ETrans_Term <$> foldr1 (bvAddOpenTerm w) <$>
@@ -748,7 +748,7 @@ instance TransInfo info =>
     do let w = natRepr3 bvfactors
        bv_transs <- mapM translate $ mbList bvfactors
        return $ ETrans_Term $
-         foldr (bvAddOpenTerm $ natValue w) (intToBvOpenTerm w $ mbLift off) bv_transs
+         foldr (bvAddOpenTerm $ natValue w) (bvLitOpenTerm w $ mbLift off) bv_transs
   translate [nuP| PExpr_Struct _args |] =
     error "FIXME HERE: translate struct expressions!"
   translate [nuP| PExpr_Always |] =
@@ -772,7 +772,7 @@ instance TransInfo info => Translate info ctx (BVFactor w) OpenTerm where
   translate [nuP| BVFactor 1 x |] = translate1 (fmap PExpr_Var x)
   translate [nuP| BVFactor i x |] =
     let w = natRepr4 x in
-    bvMulOpenTerm (natValue w) (intToBvOpenTerm w $ mbLift i) <$>
+    bvMulOpenTerm (natValue w) (bvLitOpenTerm w $ mbLift i) <$>
     translate1 (fmap PExpr_Var x)
 
 
@@ -2910,7 +2910,7 @@ instance (PermCheckExtC ext, TransInfo info) =>
 
   -- Bitvectors
   translate [nuP| BVLit w mb_bv |] =
-    return $ ETrans_Term $ intToBvOpenTerm (mbLift w) $
+    return $ ETrans_Term $ bvLitOpenTerm (mbLift w) $
     BV.asUnsigned $ mbLift mb_bv
   translate [nuP| BVConcat w1 w2 e1 e2 |] =
     ETrans_Term <$>
@@ -3024,14 +3024,14 @@ instance (PermCheckExtC ext, TransInfo info) =>
     applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
     [applyTransM (return $ globalOpenTerm "Prelude.bitvector") (translate w),
      translateRWV e,
-     return (intToBvOpenTerm (mbLift w) 1),
-     return (intToBvOpenTerm (mbLift w) 0)]
+     return (bvLitOpenTerm (mbLift w) 1),
+     return (bvLitOpenTerm (mbLift w) 0)]
   translate [nuP| BVNonzero w e |] =
     ETrans_Term <$>
     applyTransM (return $ globalOpenTerm "Prelude.not")
     (applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
      [translate w, translateRWV e,
-      return (intToBvOpenTerm (mbLift w) 0)])
+      return (bvLitOpenTerm (mbLift w) 0)])
 
   -- Strings
   translate [nuP| Expr.StringLit (UnicodeLiteral text) |] =
