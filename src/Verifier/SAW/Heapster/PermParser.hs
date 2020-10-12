@@ -389,18 +389,18 @@ parseBVFactor =
   (try (do i <- integer
            spaces >> char '*' >> spaces
            x <- parseExprVarOfType knownRepr
-           return $ PExpr_BV [BVFactor i x] 0)
+           return $ bvMult i (PExpr_Var x))
    <|>
    try (do x <- parseExprVarOfType knownRepr
            spaces >> char '*' >> spaces
            i <- integer
-           return $ PExpr_BV [BVFactor i x] 0)
+           return $ bvMult i (PExpr_Var x))
    <|>
    try (do x <- parseExprVarOfType knownRepr
-           return $ PExpr_BV [BVFactor 1 x] 0)
+           return $ PExpr_Var x)
    <|>
    do i <- integer
-      return $ PExpr_BV [] i)
+      return $ bvInt i)
 
 -- | Parse a bitvector expression of the form
 --

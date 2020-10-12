@@ -30,6 +30,8 @@ import Data.List
 import Data.String
 import Data.Proxy
 import Data.Functor.Constant
+import qualified Data.BitVector.Sized as BV
+import Data.BitVector.Sized (BV)
 import Data.Reflection
 import Data.Binding.Hobbits
 import Numeric.Natural
@@ -436,7 +438,7 @@ data PermExpr (a :: CrucibleType) where
   --
   -- FIXME: make the offset a 'Natural'
   PExpr_BV :: (1 <= w, KnownNat w) =>
-              [BVFactor w] -> Integer -> PermExpr (BVType w)
+              [BVFactor w] -> BV w -> PermExpr (BVType w)
 
   -- | A struct expression is an expression for each argument of the struct type
   PExpr_Struct :: PermExprs (CtxToRList args) -> PermExpr (StructType args)
@@ -498,9 +500,7 @@ appendExprs as (PExprs_Cons bs b) = PExprs_Cons (appendExprs as bs) b
 data BVFactor w where
   -- | A variable of type @'BVType' w@ multiplied by a constant @i@, which
   -- should be in the range @0 <= i < 2^w@
-  --
-  -- FIXME: make the constant a 'Natural'
-  BVFactor :: (1 <= w, KnownNat w) => Integer -> ExprVar (BVType w) ->
+  BVFactor :: (1 <= w, KnownNat w) => BV w -> ExprVar (BVType w) ->
               BVFactor w
 
 -- | Whether a permission allows reads or writes
@@ -585,7 +585,8 @@ instance PermPretty (PermExpr a) where
   permPrettyM (PExpr_Bool b) = return $ bool b
   permPrettyM (PExpr_BV factors const) =
     do pps <- mapM permPrettyM factors
-       return $ encloseSep PP.empty PP.empty (string "+") (pps ++ [integer const])
+       return $ encloseSep PP.empty PP.empty (string "+")
+         (pps ++ [integer $ BV.asUnsigned const])
   permPrettyM (PExpr_Struct args) =
     (\pp -> string "struct" <+> parens pp) <$> permPrettyM args
   permPrettyM PExpr_Always = return $ string "always"
@@ -620,7 +621,8 @@ instance PermPretty (PermExprs as) where
       (\pps pp -> pps ++ [pp]) <$> helper es <*> permPrettyM e
 
 instance PermPretty (BVFactor w) where
-  permPrettyM (BVFactor i x) = ((integer i <> string "*") <>) <$> permPrettyM x
+  permPrettyM (BVFactor i x) =
+    ((integer (BV.asUnsigned i) <> string "*") <>) <$> permPrettyM x
 
 instance PermPretty RWModality where
   permPrettyM Read = return $ string "R"
@@ -636,7 +638,7 @@ pattern PExpr_Read = PExpr_RWModality Read
 
 -- | Build a "default" expression for a given type
 zeroOfType :: TypeRepr tp -> PermExpr tp
-zeroOfType (BVRepr w) = withKnownNat w $ PExpr_BV [] 0
+zeroOfType (BVRepr w) = withKnownNat w $ PExpr_BV [] $ BV.mkBV w 0
 zeroOfType LifetimeRepr = PExpr_Always
 zeroOfType _ = error "zeroOfType"
 
@@ -645,19 +647,9 @@ zeroOfType _ = error "zeroOfType"
 -- * Operations on Bitvector and LLVM Pointer Expressions
 ----------------------------------------------------------------------
 
--- | Normalize a factor so that its coefficient is between @0@ and @(2^w)-1@
-normalizeFactor :: BVFactor w -> BVFactor w
-normalizeFactor f@(BVFactor i x) =
-  BVFactor (i `mod` (shiftL 1 $ fromInteger $ natVal f)) x
-
--- | Smart constructor for 'BVFactor'
-bvFactor :: (1 <= w, KnownNat w) => Integer -> ExprVar (BVType w) ->
-            BVFactor w
-bvFactor i x = normalizeFactor $ BVFactor i x
-
 -- | Build a 'BVFactor' for a variable
 varFactor :: (1 <= w, KnownNat w) => ExprVar (BVType w) -> BVFactor w
-varFactor = BVFactor 1
+varFactor = BVFactor $ BV.one knownNat
 
 -- | Normalize a bitvector expression, so that every variable has at most one
 -- factor and the factors are sorted by variable name. NOTE: we shouldn't
@@ -671,22 +663,22 @@ bvNormalize (PExpr_BV factors off) =
   off
   where
     norm [] = []
-    norm ((BVFactor 0 _) : factors') = norm factors'
+    norm ((BVFactor (BV.BV 0) _) : factors') = norm factors'
     norm ((BVFactor i1 x1) : (BVFactor i2 x2) : factors')
-      | x1 == x2 = norm ((bvFactor (i1+i2) x1) : factors')
-    norm (f : factors') = normalizeFactor f : norm factors'
+      | x1 == x2 = norm ((BVFactor (BV.add knownNat i1 i2) x1) : factors')
+    norm (f : factors') = f : norm factors'
 
 -- | Merge two normalized / sorted lists of 'BVFactor's
 bvMergeFactors :: [BVFactor w] -> [BVFactor w] -> [BVFactor w]
 bvMergeFactors fs1 fs2 =
-  filter (\(BVFactor i _) -> i /= 0) $
+  filter (\(BVFactor i _) -> i /= BV.zero knownNat) $
   helper fs1 fs2
   where
     helper factors1 [] = factors1
     helper [] factors2 = factors2
     helper ((BVFactor i1 x1):factors1) ((BVFactor i2 x2):factors2)
       | x1 == x2
-      = bvFactor (i1+i2) x1 : helper factors1 factors2
+      = BVFactor (BV.add knownNat i1 i2) x1 : helper factors1 factors2
     helper (f1@(BVFactor _ x1):factors1) (f2@(BVFactor _ x2):factors2)
       | x1 < x2 = f1 : helper factors1 (f2 : factors2)
     helper (f1@(BVFactor _ _):factors1) (f2@(BVFactor _ _):factors2) =
@@ -694,30 +686,24 @@ bvMergeFactors fs1 fs2 =
 
 -- | Convert a bitvector expression to a sum of factors plus a constant
 bvMatch :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
-           ([BVFactor w], Integer)
-bvMatch (PExpr_Var x) = ([varFactor x], 0)
+           ([BVFactor w], BV w)
+bvMatch (PExpr_Var x) = ([varFactor x], BV.zero knownNat)
 bvMatch (PExpr_BV factors const) = (factors, const)
 
 -- | Test if a bitvector expression is a constant value
-bvMatchConst :: PermExpr (BVType w) -> Maybe Integer
+bvMatchConst :: PermExpr (BVType w) -> Maybe (BV w)
 bvMatchConst (PExpr_BV [] const) = Just const
 bvMatchConst _ = Nothing
 
--- | Test if a bitvector expression is a constant value. If so, return its
--- signed value, i.e., subtract @2^w@ from any number @off >= 2^(w-1)@
-bvMatchSignedConst :: PermExpr (BVType w) -> Maybe Integer
-bvMatchSignedConst (PExpr_BV ([] :: [BVFactor w]) const) =
-  let w :: NatRepr w = knownRepr
-      k = const `mod` (2 ^ intValue w) in
-  if k >= (2 ^ (intValue w - 1)) then
-    Just (k - (2 ^ intValue w))
-  else Just k
-bvMatchSignedConst _ = Nothing
+-- | Test if a bitvector expression is a constant unsigned 'Integer' value
+bvMatchConstInt :: PermExpr (BVType w) -> Maybe Integer
+bvMatchConstInt = fmap BV.asUnsigned . bvMatchConst
+
 
 -- | Normalize a bitvector expression to a canonical form. Currently this just
 -- means converting @1*x+0@ to @x@.
 normalizeBVExpr :: PermExpr (BVType w) -> PermExpr (BVType w)
-normalizeBVExpr (PExpr_BV [BVFactor 1 x] 0) = PExpr_Var x
+normalizeBVExpr (PExpr_BV [BVFactor (BV.BV 1) x] (BV.BV 0)) = PExpr_Var x
 normalizeBVExpr e = e
 
 -- | Test whether two bitvector expressions are semantically equal
@@ -730,9 +716,9 @@ bvEq e1 e2 = normalizeBVExpr e1 == normalizeBVExpr e2
 -- actually 'True'. The current algorithm returns 'False' when the right-hand
 -- side is 0, 'True' for constant expressions @k1 < k2@, and 'False' otherwise.
 bvLt :: PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
-bvLt _ (PExpr_BV [] 0) = False
+bvLt _ (PExpr_BV [] (BV.BV 0)) = False
 bvLt e1 e2 | bvEq e1 e2 = False
-bvLt (PExpr_BV [] k1) (PExpr_BV [] k2) = k1 < k2
+bvLt (PExpr_BV [] k1) (PExpr_BV [] k2) = BV.ult k1 k2
 bvLt _ _ = False
 
 -- | Test whether a bitvector expression is less than another for all
@@ -740,9 +726,10 @@ bvLt _ _ = False
 -- underapproximation, meaning that it could return 'False' in cases where it is
 -- actually 'True'. The current algorithm only returns 'True' for constant
 -- expressions @k1 < k2@.
-bvSLt :: PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
-bvSLt (bvMatchSignedConst -> Just i1) (bvMatchSignedConst -> Just i2) =
-  trace ("bvSLt " ++ show i1 ++ " " ++ show i2) (i1 < i2)
+bvSLt :: (1 <= w, KnownNat w) =>
+         PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
+bvSLt (bvMatchConst -> Just i1) (bvMatchConst -> Just i2) =
+  trace ("bvSLt " ++ show i1 ++ " " ++ show i2) (BV.slt knownNat i1 i2)
 bvSLt _ _ = False
 
 -- | Test whether a bitvector expression @e@ is in a 'BVRange' for all
@@ -756,7 +743,7 @@ bvInRange e (BVRange off len) = bvLt (bvSub e off) len
 -- | Test whether a bitvector @e@ equals @0@
 bvIsZero :: PermExpr (BVType w) -> Bool
 bvIsZero (PExpr_Var _) = False
-bvIsZero (PExpr_BV [] 0) = True
+bvIsZero (PExpr_BV [] (BV.BV 0)) = True
 bvIsZero (PExpr_BV _ _) = False
 
 -- | Test whether a bitvector @e@ could equal @0@, i.e., whether the equation
@@ -766,7 +753,7 @@ bvIsZero (PExpr_BV _ _) = False
 -- complex expressions that technically cannot unify with @0@.
 bvZeroable :: PermExpr (BVType w) -> Bool
 bvZeroable (PExpr_Var _) = True
-bvZeroable (PExpr_BV _ 0) = True
+bvZeroable (PExpr_BV _ (BV.BV 0)) = True
 bvZeroable (PExpr_BV [] _) = False
 bvZeroable (PExpr_BV _ _) =
   -- NOTE: there are cases that match this pattern but are still not solvable,
@@ -791,9 +778,9 @@ bvCouldEqual _ _ = True
 -- when the right-hand side is 0 and 'True' in all other cases except constant
 -- expressions @k1 >= k2@.
 bvCouldBeLt :: PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
-bvCouldBeLt _ (PExpr_BV [] 0) = False
+bvCouldBeLt _ (PExpr_BV [] (BV.BV  0)) = False
 bvCouldBeLt e1 e2 | bvEq e1 e2 = False
-bvCouldBeLt (PExpr_BV [] k1) (PExpr_BV [] k2) = k1 < k2
+bvCouldBeLt (PExpr_BV [] (BV.BV k1)) (PExpr_BV [] (BV.BV k2)) = k1 < k2
 bvCouldBeLt _ _ = True
 
 -- | Test whether a bitvector expression could potentially be less than another,
@@ -801,9 +788,10 @@ bvCouldBeLt _ _ = True
 -- is an overapproximation, meaning that some expressions are marked as "could"
 -- be less than when they actually cannot. The current algorithm returns 'True'
 -- in all cases except constant expressions @k1 >= k2@.
-bvCouldBeSLt :: PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
-bvCouldBeSLt (bvMatchSignedConst -> Just i1) (bvMatchSignedConst -> Just i2) =
-  i1 < i2
+bvCouldBeSLt :: (1 <= w, KnownNat w) =>
+                PermExpr (BVType w) -> PermExpr (BVType w) -> Bool
+bvCouldBeSLt (bvMatchConst -> Just i1) (bvMatchConst -> Just i2) =
+  BV.slt knownNat i1 i2
 bvCouldBeSLt _ _ = True
 
 -- | Test whether a bitvector expression @e@ is in a 'BVRange' for all
@@ -910,20 +898,27 @@ bvRangeSub (BVRange off len) x = BVRange (bvSub off x) len
 
 -- | Build a bitvector expression from an integer
 bvInt :: (1 <= w, KnownNat w) => Integer -> PermExpr (BVType w)
-bvInt i = PExpr_BV [] i
+bvInt i = PExpr_BV [] $ BV.mkBV knownNat i
+
+-- | Build a bitvector expression from a Haskell bitvector
+bvBV :: (1 <= w, KnownNat w) => BV w -> PermExpr (BVType w)
+bvBV i = PExpr_BV [] i
 
 -- | Add two bitvector expressions
 bvAdd :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> PermExpr (BVType w) ->
          PermExpr (BVType w)
 bvAdd (bvMatch -> (factors1, const1)) (bvMatch -> (factors2, const2)) =
-  PExpr_BV (bvMergeFactors factors1 factors2) (const1 + const2)
+  PExpr_BV (bvMergeFactors factors1 factors2) (BV.add knownNat const1 const2)
 
 -- | Multiply a bitvector expression by a constant
 bvMult :: (1 <= w, KnownNat w) => Integer -> PermExpr (BVType w) ->
           PermExpr (BVType w)
-bvMult i (PExpr_Var x) = PExpr_BV [bvFactor i x] 0
+bvMult i (PExpr_Var x) =
+  PExpr_BV [BVFactor (BV.mkBV knownNat i) x] $ BV.zero knownNat
 bvMult i (PExpr_BV factors off) =
-  PExpr_BV (map (\(BVFactor j x) -> bvFactor (i*j) x) factors) (i*off)
+  let i_bv = BV.mkBV knownNat i in
+  PExpr_BV (map (\(BVFactor j x) -> BVFactor (BV.mul knownNat i_bv j) x) factors)
+  (BV.mul knownNat i_bv off)
 
 -- | Negate a bitvector expression
 bvNegate :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> PermExpr (BVType w)
@@ -942,28 +937,29 @@ bvSub e1 e2 = bvAdd e1 (bvNegate e2)
 bvDiv :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> Integer ->
          PermExpr (BVType w)
 bvDiv (bvMatch -> (factors, off)) n =
+  let n_bv = BV.mkBV knownNat n in
   PExpr_BV (mapMaybe (\(BVFactor i x) ->
-                       if mod i n == 0 then
-                         -- NOTE: if i is in range then so is i/n, so we do not
-                         -- need to normalize the resulting BVFactor
-                         Just (BVFactor (div i n) x)
+                       if BV.urem i n_bv == BV.zero knownNat then
+                         Just (BVFactor (BV.uquot i n_bv) x)
                        else Nothing) factors)
-  (div off n)
+  (BV.uquot off n_bv)
 
 -- | Integer Modulus on bitvector expressions, where any factors @i*x@ with @i@
 -- not a multiple of the divisor are included in the modulus
 bvMod :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> Integer ->
          PermExpr (BVType w)
 bvMod (bvMatch -> (factors, off)) n =
+  let n_bv = BV.mkBV knownNat n in
   PExpr_BV (mapMaybe (\f@(BVFactor i _) ->
-                       if mod i n /= 0 then Just f else Nothing) factors)
-  (mod off n)
+                       if BV.urem i n_bv /= BV.zero knownNat
+                       then Just f else Nothing) factors)
+  (BV.urem off n_bv)
 
 -- | Given a constant factor @a@, test if a bitvector expression can be written
 -- as @a*x+y@ for some constant @y@
 bvMatchFactorPlusConst :: (1 <= w, KnownNat w) =>
                           Integer -> PermExpr (BVType w) ->
-                          Maybe (PermExpr (BVType w), Integer)
+                          Maybe (PermExpr (BVType w), BV w)
 bvMatchFactorPlusConst a e =
   bvMatchConst (bvMod e a) >>= \y -> Just (bvDiv e a, y)
 
@@ -2229,7 +2225,7 @@ matchLLVMArrayField ap o
          bvMatchFactorPlusConst (bytesToInteger $ llvmArrayStride ap) rel_off
        fld_num <-
          findIndex (\case LLVMArrayField fp ->
-                            bvEq (llvmFieldOffset fp) (bvInt fld_off))
+                            bvEq (llvmFieldOffset fp) (bvBV fld_off))
          (llvmArrayFields ap)
        return $ LLVMArrayIndex ix fld_num
 matchLLVMArrayField _ _ = Nothing
@@ -2395,7 +2391,7 @@ llvmArrayAsFields :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
                      Maybe ([LLVMArrayField w], [LLVMArrayField w])
 -- FIXME: this code is terrible! Simplify it!
 llvmArrayAsFields ap
-  | Just len <- bvMatchConst (llvmArrayLen ap)
+  | Just len <- bvMatchConstInt (llvmArrayLen ap)
   , Just cell <-
       find (\i ->
              not $ any (bvRangesCouldOverlap
@@ -2582,7 +2578,7 @@ canOffsetLLVMAtomicPerm off p = isJust $ offsetLLVMAtomicPerm off p
 -- permissions like @free@ and @llvm_funptr@ that cannot be offset
 offsetLLVMAtomicPerm :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
                         LLVMPtrPerm w -> Maybe (LLVMPtrPerm w)
-offsetLLVMAtomicPerm (bvMatchConst -> Just 0) p = Just p
+offsetLLVMAtomicPerm (bvMatchConstInt -> Just 0) p = Just p
 offsetLLVMAtomicPerm off (Perm_LLVMField fp) =
   Just $ Perm_LLVMField $ offsetLLVMFieldPerm off fp
 offsetLLVMAtomicPerm off (Perm_LLVMArray ap) =
@@ -3584,7 +3580,7 @@ instance SubstVar s m => Substable s (Member ctx a) m where
 -- | Helper function to substitute into 'BVFactor's
 substBVFactor :: SubstVar s m => s ctx -> Mb ctx (BVFactor w) ->
                  m (PermExpr (BVType w))
-substBVFactor s [nuP| BVFactor i x |] =
+substBVFactor s [nuP| BVFactor (BV.BV i) x |] =
   bvMult (mbLift i) <$> substExprVar s x
 
 instance SubstVar s m =>
@@ -4147,6 +4143,9 @@ instance AbstractVars (RAssign Name (ctx :: RList CrucibleType)) where
 
 instance AbstractVars Integer where
   abstractPEVars ns1 ns2 i = absVarsReturnH ns1 ns2 (toClosed i)
+
+instance AbstractVars (BV w) where
+  abstractPEVars ns1 ns2 bv = absVarsReturnH ns1 ns2 (toClosed bv)
 
 instance AbstractVars Bytes where
   abstractPEVars ns1 ns2 bytes = absVarsReturnH ns1 ns2 (toClosed bytes)

@@ -1823,8 +1823,8 @@ stmtProvePerm (TypedReg x) mb_p =
   embedImplM TypedImplStmt knownRepr (proveVarImpl x mb_p) >>>= \(s,_) ->
   greturn s
 
--- | Try to prove that a register equals a constant integer using equality
--- permissions in the context
+-- | Try to prove that a register equals a constant integer (of the given input
+-- type) using equality permissions in the context
 resolveConstant :: TypedReg tp ->
                    StmtPermCheckM ext cblocks blocks tops ret ps ps
                    (Maybe Integer)
@@ -1838,11 +1838,12 @@ resolveConstant = helper . PExpr_Var . typedRegVar where
       ValPerm_Eq e -> helper e
       _ -> greturn Nothing
   helper (PExpr_Nat i) = greturn (Just $ toInteger i)
-  helper (PExpr_BV factors off) =
-    foldM (\maybe_res (BVFactor i x) ->
+  helper (PExpr_BV factors (BV.BV off)) =
+    foldM (\maybe_res (BVFactor (BV.BV i) x) ->
             helper (PExpr_Var x) >>= \maybe_x_val ->
             case (maybe_res, maybe_x_val) of
-              (Just res, Just x_val) -> return (Just (res + x_val * i))
+              (Just res, Just x_val) ->
+                return (Just (res + x_val * i))
               _ -> return Nothing)
     (Just off) factors
   helper (PExpr_LLVMWord e) = helper e
@@ -2129,15 +2130,15 @@ tcExpr (StringLit (UnicodeLiteral text)) =
 
 tcExpr (BVLit w (BV.BV i)) = withKnownNat w $ greturn $ Just $ bvInt i
 
-tcExpr (BVSext w2 _ (RegWithVal _ (bvMatchConst -> Just i))) =
+tcExpr (BVSext w2 _ (RegWithVal _ (bvMatchConstInt -> Just i))) =
   withKnownNat w2 $ greturn $ Just $ bvInt i
 
 tcExpr (BVAdd w (RegWithVal _ e1) (RegWithVal _ e2)) =
   withKnownNat w $ greturn $ Just $ bvAdd e1 e2
 
-tcExpr (BVMul w (RegWithVal _ (bvMatchConst -> Just i)) (RegWithVal _ e)) =
+tcExpr (BVMul w (RegWithVal _ (bvMatchConstInt -> Just i)) (RegWithVal _ e)) =
   withKnownNat w $ greturn $ Just $ bvMult i e
-tcExpr (BVMul w (RegWithVal _ e) (RegWithVal _ (bvMatchConst -> Just i))) =
+tcExpr (BVMul w (RegWithVal _ e) (RegWithVal _ (bvMatchConstInt -> Just i))) =
   withKnownNat w $ greturn $ Just $ bvMult i e
 
 tcExpr (BoolToBV w (RegWithVal _ (PExpr_Bool True))) =
@@ -2155,13 +2156,17 @@ tcExpr (BVUle w (RegWithVal _ e1) (RegWithVal _ e2))
   | not (bvCouldBeLt e2 e1) = greturn $ Just $ PExpr_Bool True
 
 tcExpr (BVSlt w (RegWithVal _ e1) (RegWithVal _ e2))
-  | bvSLt e1 e2 = greturn $ Just $ PExpr_Bool True
+  | withKnownNat w $ bvSLt e1 e2
+  = greturn $ Just $ PExpr_Bool True
 tcExpr (BVSlt w (RegWithVal _ e1) (RegWithVal _ e2))
-  | not (bvCouldBeSLt e1 e2) = greturn $ Just $ PExpr_Bool False
+  | withKnownNat w $ not (bvCouldBeSLt e1 e2)
+  = greturn $ Just $ PExpr_Bool False
 tcExpr (BVSle w (RegWithVal _ e1) (RegWithVal _ e2))
-  | bvSLt e2 e1 = greturn $ Just $ PExpr_Bool False
+  | withKnownNat w $ bvSLt e2 e1
+  = greturn $ Just $ PExpr_Bool False
 tcExpr (BVSle w (RegWithVal _ e1) (RegWithVal _ e2))
-  | not (bvCouldBeSLt e2 e1) = greturn $ Just $ PExpr_Bool True
+  | withKnownNat w $ not (bvCouldBeSLt e2 e1)
+  = greturn $ Just $ PExpr_Bool True
 
 tcExpr (BVNonzero w (RegWithVal _ bv))
   | bvEq bv (withKnownNat w $ bvInt 0) = greturn $ Just $ PExpr_Bool False

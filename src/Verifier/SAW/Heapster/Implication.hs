@@ -34,6 +34,8 @@ import Data.List
 import Data.Kind as Kind
 import Data.Functor.Product
 import Data.Functor.Compose
+import qualified Data.BitVector.Sized as BV
+import Data.BitVector.Sized (BV)
 import GHC.TypeLits
 import Control.Lens hiding ((:>))
 import Control.Monad
@@ -2465,7 +2467,8 @@ getEqualsExpr e@(PExpr_Var x) =
     _ -> greturn e
 getEqualsExpr (PExpr_BV factors off) =
   foldr bvAdd (PExpr_BV [] off) <$>
-  mapM (\(BVFactor i x) -> bvMult i <$> getEqualsExpr (PExpr_Var x)) factors
+  mapM (\(BVFactor (BV.BV i) x) ->
+         bvMult i <$> getEqualsExpr (PExpr_Var x)) factors
 getEqualsExpr (PExpr_LLVMWord e) =
   PExpr_LLVMWord <$> getEqualsExpr e
 getEqualsExpr (PExpr_LLVMOffset x off) =
@@ -3163,7 +3166,7 @@ proveVarEqH x (PExpr_LLVMWord e') psubst [nuP| PExpr_LLVMWord mb_e |]
 
 -- Prove x:eq(e) |- x:eq(N*z + M) where e - M is a multiple of N by setting z =
 -- (e-M)/N
-proveVarEqH x e psubst [nuP| PExpr_BV [BVFactor mb_n z] mb_m |]
+proveVarEqH x e psubst [nuP| PExpr_BV [BVFactor (BV.BV mb_n) z] (BV.BV mb_m) |]
   | Left memb <- mbNameBoundP z
   , Nothing <- psubstLookup psubst memb
   , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) =
