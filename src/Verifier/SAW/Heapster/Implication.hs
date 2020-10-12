@@ -2196,7 +2196,8 @@ implApplyImpl1 :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
 implApplyImpl1 impl1 mb_ms =
   getPerms >>>= \perms ->
   (view implStatePPInfo <$> gget) >>>= \pp_info ->
-  gmapRet (permImplStep impl1 <$>) >>>
+  gmapRet (PermImpl_Step impl1 <$>) >>>
+  -- gmapRet (permImplStep impl1 <$>) >>>
   helper (applyImpl1 pp_info impl1 perms) mb_ms
   where
     helper :: MbPermSets ps_outs ->
