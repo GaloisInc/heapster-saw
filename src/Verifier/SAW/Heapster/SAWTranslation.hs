@@ -3223,7 +3223,8 @@ translateStmt _ stmt@[nuP| EndLifetime _ ps _ end_perms |] m =
 translateStmt loc [nuP| TypedAssert e _ |] m =
   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
   [compReturnTypeM, translate1 e, m,
-   applyCatchHandlerM ("Failed Assert at " ++ show loc)]
+   applyCatchHandlerM ("Failed Assert at " ++
+                       renderDoc (ppShortFileName (plSourceLoc loc)))]
 
 translateStmt _ [nuP| TypedLLVMStmt stmt |] m = translateLLVMStmt stmt m
 

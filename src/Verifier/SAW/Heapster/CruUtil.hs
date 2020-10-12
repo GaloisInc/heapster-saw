@@ -16,12 +16,15 @@
 module Verifier.SAW.Heapster.CruUtil where
 
 import Data.Kind
-import Data.Text hiding (length)
+import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Reflection
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.ByteString
+import Numeric
 import Numeric.Natural
 import qualified Data.BitVector.Sized as BV
+import System.FilePath
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.NuMatching
@@ -37,7 +40,7 @@ import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
 import Data.Parameterized.BoolRepr
 
-import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 import qualified Text.LLVM.AST as L
 import Lang.Crucible.Types
@@ -183,6 +186,18 @@ instance Closable ProgramLoc where
 
 instance Liftable ProgramLoc where
   mbLift = unClosed . mbLift . fmap toClosed
+
+-- | Pretty-print a 'Position' with a "short" filename, without the path
+ppShortFileName :: Position -> PP.Doc
+ppShortFileName (SourcePos path l c) =
+  PP.text (takeFileName $ Text.unpack path)
+    PP.<> PP.colon PP.<> PP.int l
+    PP.<> PP.colon PP.<> PP.int c
+ppShortFileName (BinaryPos path addr) =
+  PP.text (takeFileName $ Text.unpack path) PP.<> PP.colon PP.<>
+    PP.text "0x" PP.<> PP.text (showHex addr "")
+ppShortFileName (OtherPos txt) = PP.text (Text.unpack txt)
+ppShortFileName InternalPos = PP.text "internal"
 
 instance NuMatching ByteString where
   nuMatchingProof = unsafeMbTypeRepr
@@ -413,11 +428,11 @@ instance TestEquality CruCtx where
     = Just Refl
   testEquality _ _ = Nothing
 
-instance Pretty (CruCtx ctx) where
-  pretty ctx = list $ helper ctx where
-    helper :: CruCtx ctx' -> [Doc]
+instance PP.Pretty (CruCtx ctx) where
+  pretty ctx = PP.list $ helper ctx where
+    helper :: CruCtx ctx' -> [PP.Doc]
     helper CruCtxNil = []
-    helper (CruCtxCons ctx tp) = helper ctx ++ [pretty tp]
+    helper (CruCtxCons ctx tp) = helper ctx ++ [PP.pretty tp]
 
 instance KnownRepr CruCtx RNil where
   knownRepr = CruCtxNil

@@ -31,7 +31,7 @@ Definition sorted_insert__tuple_fun : ((@CompM.lrtTupleType) (((@CompM.LRT_Cons)
   
   --------------------
   
-  at /Users/eddy/galois/saw-script/deps/heapster-saw/examples/linked_list.c:58:1 (return $1):
+  at linked_list.c:58:1 (return $1):
   proveVarImplH: Could not prove
   z17:eq(LLVMword 0)
   -o
@@ -40,7 +40,7 @@ Definition sorted_insert__tuple_fun : ((@CompM.lrtTupleType) (((@CompM.LRT_Cons)
   
   --------------------
   
-  at /Users/eddy/galois/saw-script/deps/heapster-saw/examples/linked_list.c:58:1 (return $1):
+  at linked_list.c:58:1 (return $1):
   proveVarEqH: Could not prove
   ghost7:array(0, <2, *8, [(W,0) |-> true], [(1).0,(0).0])
          *ptr((W,0) |-> eq(ghost8))
@@ -50,7 +50,7 @@ Definition sorted_insert__tuple_fun : ((@CompM.lrtTupleType) (((@CompM.LRT_Cons)
   
   --------------------
   
-  at /Users/eddy/galois/saw-script/deps/heapster-saw/examples/linked_list.c:58:1 (return $1):
+  at linked_list.c:58:1 (return $1):
   proveVarEqH: Could not prove
   top3:ptr((W,8) |-> List<exists z19. eq(LLVMword z19),always,W>)
        *ptr((W,0) |-> eq(ghost6))
@@ -59,7 +59,7 @@ Definition sorted_insert__tuple_fun : ((@CompM.lrtTupleType) (((@CompM.LRT_Cons)
   
   --------------------
   
-  at /Users/eddy/galois/saw-script/deps/heapster-saw/examples/linked_list.c:58:1 (return $1):
+  at linked_list.c:58:1 (return $1):
   proveVarEqH: Could not prove
   ghost9:array(0, <2, *8, [(W,0) |-> true], [(1).0,(0).0])
          *ptr((W,0) |-> eq(ghost10))
@@ -69,7 +69,7 @@ Definition sorted_insert__tuple_fun : ((@CompM.lrtTupleType) (((@CompM.LRT_Cons)
   
   --------------------
   
-  at /Users/eddy/galois/saw-script/deps/heapster-saw/examples/linked_list.c:58:1 (return $1):
+  at linked_list.c:58:1 (return $1):
   proveVarEqH: Could not prove
   top3:ptr((W,0) |-> eq(ghost6))*ptr((W,8) |-> eq(ghost8))
   -o

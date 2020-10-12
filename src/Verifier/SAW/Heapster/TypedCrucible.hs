@@ -1700,7 +1700,8 @@ setLocationString :: Pretty a => ProgramLoc -> a ->
 setLocationString loc a =
   gmodify $ \st ->
   st { stLocString =
-         Just $ renderDoc (PP.pretty (plSourceLoc loc) <+> parens (pretty a)) }
+         Just $ renderDoc (ppShortFileName (plSourceLoc loc)
+                           <+> parens (pretty a)) }
 
 -- | Set the current source location to a 'ProgramLoc' plus Crucible statement
 setLocationStringStmt :: PermCheckExtC ext =>
