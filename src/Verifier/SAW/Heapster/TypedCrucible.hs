@@ -2792,81 +2792,6 @@ tcEmitLLVMStmt _arch _ctx _loc _stmt =
 -- * Permission Checking for Jump Targets and Termination Statements
 ----------------------------------------------------------------------
 
--- FIXME: no longer needed?
-{-
-mkEqVarPerms :: RAssign Name ctx -> RAssign Name ctx -> DistPerms ctx
-mkEqVarPerms MNil _ = DistPermsNil
-mkEqVarPerms (xs :>: x) (ys :>: y) =
-  DistPermsCons (mkEqVarPerms xs ys) x (ValPerm_Eq $ PExpr_Var y)
-
--- | Take a set of permissions on some ghost variables as well as a set of
--- assignments @arg1=ghost1, ...@ of those ghost variables to the "real"
--- arguments of a block and add the permissions @arg1:eq(ghost1), ...@ to the
--- input permissions
-buildInputPermsH :: Mb ghosts (DistPerms ghosts) ->
-                    Mb ghosts (RAssign Name args) ->
-                    MbDistPerms (ghosts :++: args)
-buildInputPermsH mb_perms mb_args =
-  mbCombine $ mbMap2 (\perms args ->
-                        nuMulti args $ \arg_vars ->
-                        appendDistPerms perms (mkEqVarPerms arg_vars args))
-  mb_perms mb_args
-
-buildInputPerms :: PPInfo -> RAssign Name (ghosts :: RList CrucibleType) ->
-                   DistPerms ghosts -> RAssign Name args ->
-                   Closed (MbDistPerms (ghosts :++: args))
-buildInputPerms ppInfo xs perms_in args_in =
-  $(mkClosed [| buildInputPermsH |])
-  `clApply` maybe (error ("buildInputPerms:\n" ++
-                          permPrettyString ppInfo xs ++ "\n" ++
-                          permPrettyString ppInfo perms_in)) id
-  (abstractVars xs perms_in)
-  `clApply` maybe (error ("buildInputPerms: " ++
-                          permPrettyString ppInfo args_in)) id
-  (abstractVars xs args_in)
-
-abstractPermsRet :: RAssign Name (ghosts :: RList CrucibleType) ->
-                    RAssign f args ->
-                    Binding (ret :: CrucibleType) (DistPerms ret_ps) ->
-                    Closed (Mb (ghosts :++: args :> ret) (DistPerms ret_ps))
-abstractPermsRet xs args ret_perms =
-  $(mkClosed [| \args ->  mbCombine . mbCombine . fmap (nuMulti args . const) |])
-  `clApply` closedProxies args
-  `clApply` maybe (error "abstractPermsRet") id (abstractVars xs ret_perms)
--}
-
--- Recursively replace all instances of eq permissions on boolean or bitvector
--- constants with `exists x. eq(x)` in a set of distinguished permissions.
-generalizeEntryPerms :: DistPerms ps -> DistPerms ps
-generalizeEntryPerms DistPermsNil = DistPermsNil
-generalizeEntryPerms (DistPermsCons ps x p) =
-  DistPermsCons (generalizeEntryPerms ps) x (generalizeEntryValPerm p)
-
--- Recursively replace all instances of eq permissions on boolean or bitvector
--- constants with `exists x. eq(x)`.
-generalizeEntryValPerm :: ValuePerm p -> ValuePerm p
--- abstract away equality permissions on boolean and bitvector constants
-generalizeEntryValPerm (ValPerm_Eq (PExpr_BV [] _)) =
-  ValPerm_Exists (nu $ ValPerm_Eq . PExpr_Var)
-generalizeEntryValPerm (ValPerm_Eq (PExpr_Bool _)) =
-  ValPerm_Exists (nu $ ValPerm_Eq . PExpr_Var)
-generalizeEntryValPerm (ValPerm_Eq (PExpr_LLVMWord (PExpr_BV [] _))) =
-  ValPerm_Exists (nu $ ValPerm_Eq . PExpr_LLVMWord . PExpr_Var)
--- recurse into any LLVM field permissions in a conjunct
-generalizeEntryValPerm (ValPerm_Conj aps) =
-  ValPerm_Conj (generalizeEntryAtomicPerm <$> aps)
-  where  generalizeEntryAtomicPerm :: AtomicPerm p -> AtomicPerm p
-         generalizeEntryAtomicPerm (Perm_LLVMField (LLVMFieldPerm rw l o p)) =
-           Perm_LLVMField (LLVMFieldPerm rw l o (generalizeEntryValPerm p))
-         generalizeEntryAtomicPerm p = p
--- recurse into disjunctive and existential permissions
-generalizeEntryValPerm (ValPerm_Or p1 p2) =
-  ValPerm_Or (generalizeEntryValPerm p1) (generalizeEntryValPerm p2)
-generalizeEntryValPerm (ValPerm_Exists mbp) =
-  ValPerm_Exists (generalizeEntryValPerm <$> mbp)
-generalizeEntryValPerm p = p
-
-
 -- | Simplify and drop permissions @p@ on variable @x@ so they only depend on
 -- the determined variables given in the supplied list
 simplify1PermForDetVars :: PermCheckExtC ext =>
@@ -2922,24 +2847,47 @@ simplifyPermsForDetVars det_vars_list =
 
 
 -- | If @x@ has permission @eq(llvmword e)@ where @e@ is not a needed variable
--- (in the supplied set), replace that perm with @x:exists z.eq(llvmword z)@.
--- Also do this inside pointer permissions, by recursively destructing any
--- pointer permissions @ptr((rw,off) |-> p)@ to @ptr((rw,off) |-> eq(y))@ for
--- fresh variable @y@ and generalizing unneeded word equalities for @y@.
-generalizeUnneededWordEqPerms1 ::
+-- (in the supplied set), replace that perm with an existential permission
+-- @x:exists z.eq(llvmword z)@. Similarly, if @x@ has permission @eq(e)@ where
+-- @e@ is a literal, replace that permission with just @true@.  Also do this
+-- inside pointer permissions, by recursively destructing any pointer
+-- permissions @ptr((rw,off) |-> p)@ to the permission @ptr((rw,off) |-> eq(y))@
+-- for fresh variable @y@ and generalizing unneeded word equalities for @y@.
+generalizeUnneededEqPerms1 ::
   PermCheckExtC ext => NameSet CrucibleType -> Name a -> ValuePerm a ->
   StmtPermCheckM ext cblocks blocks tops ret ps ps ()
-generalizeUnneededWordEqPerms1 needed_vars x (ValPerm_Eq (PExpr_Var y))
+
+-- For x:eq(y) for needed variable y, do nothing
+generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_Var y))
   | NameSet.member y needed_vars = greturn ()
-generalizeUnneededWordEqPerms1 needed_vars x (ValPerm_Eq
-                                              (PExpr_LLVMWord (PExpr_Var y)))
-  | NameSet.member y needed_vars = greturn ()
-generalizeUnneededWordEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
+generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq e@(PExpr_BV _ _))
+  | PExpr_Var y <- normalizeBVExpr e
+  , NameSet.member y needed_vars = greturn ()
+
+-- Similarly, for x:eq(llvmword y) for needed variable y, do nothing
+generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_LLVMWord e))
+  | PExpr_Var y <- normalizeBVExpr e
+  , NameSet.member y needed_vars = greturn ()
+generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
   let mb_eq = nu $ \z -> ValPerm_Eq $ PExpr_LLVMWord $ PExpr_Var z in
   stmtEmbedImplM (implPushM x p >>>
                   introExistsM x e mb_eq >>>
                   implPopM x (ValPerm_Exists mb_eq))
-generalizeUnneededWordEqPerms1 needed_vars x p@(ValPerm_Conj ps)
+
+-- Similarly, for x:eq(y &+ off) for needed variable y, do nothing
+generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_LLVMOffset y _))
+  | NameSet.member y needed_vars = greturn ()
+
+-- For x:eq(e) where e is a literal, just drop the eq(e) permission
+generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq PExpr_Unit) =
+  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_Nat _)) =
+  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_Bool _)) =
+  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+
+-- If x:p1 * ... * pn, generalize the contents of field permissions in the pis
+generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Conj ps)
   | Just i <- findIndex isLLVMFieldPerm ps
   , Perm_LLVMField fp <- ps!!i
   , y_p <- llvmFieldContents fp
@@ -2956,18 +2904,18 @@ generalizeUnneededWordEqPerms1 needed_vars x p@(ValPerm_Conj ps)
      implInsertConjM x (Perm_LLVMField fp') ps' i >>>
      implPopM x (ValPerm_Conj (take i ps' ++ Perm_LLVMField fp' : drop i ps')) >>>
      greturn y) >>>= \y ->
-    generalizeUnneededWordEqPerms1 needed_vars y y_p
-generalizeUnneededWordEqPerms1 _ _ _ = greturn ()
+    generalizeUnneededEqPerms1 needed_vars y y_p
+generalizeUnneededEqPerms1 _ _ _ = greturn ()
 
 -- | Find all permissions of the form @x:eq(llvmword e)@ other than those where
 -- @e@ is a needed variable, and replace them with @x:exists z.eq(llvmword z)@
-generalizeUnneededWordEqPerms ::
+generalizeUnneededEqPerms ::
   PermCheckExtC ext => StmtPermCheckM ext cblocks blocks tops ret ps ps ()
-generalizeUnneededWordEqPerms =
+generalizeUnneededEqPerms =
   (permSetAllVarPerms <$> stCurPerms <$> gget) >>>= \(Some var_perms) ->
   let needed_vars = neededVars var_perms in
   foldDistPerms (\m x p ->
-                  m >>> generalizeUnneededWordEqPerms1 needed_vars x p)
+                  m >>> generalizeUnneededEqPerms1 needed_vars x p)
   (greturn ())
   var_perms
 
@@ -3065,7 +3013,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       -- form eq(llvmword e) to exists z.eq(llvmword z) as long as they do not
       -- determine a variable that we need, i.e., as long as they are not of the
       -- form eq(llvmword x) for a variable x that we need
-      (if gen_perms_hint then generalizeUnneededWordEqPerms else greturn ()) >>>
+      (if gen_perms_hint then generalizeUnneededEqPerms else greturn ()) >>>
 
       -- Step 4: Compute the ghost variables for the target block as those
       -- variables whose values are determined by the permissions on the top and
