@@ -4359,6 +4359,35 @@ extExDistPermsSplit (ExDistPermsSplit ps1 mb_x mb_p ps2) y p' =
   mbMap2 DistPermsCons ps2 y `mbApply` p'
 
 
+-- | Test if a permission is of a form where 'proveExVarImpl' will succeed,
+-- given the current set of existential variables whose values have not been set
+isProvablePerm :: Mb vars (NameSet CrucibleType) ->
+                  Mb vars (ExprVar a) -> Mb vars (ValuePerm a) -> Bool
+
+-- If x and all the needed vars in p are set, we can prove x:p
+isProvablePerm mbUnsetVars mb_x mb_p
+  | mbNeeded <- mbMap2 (\x p -> NameSet.insert x $ neededVars p) mb_x mb_p
+  , mbLift $ mbMap2 (\s1 s2 ->
+                      NameSet.null $
+                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars = True
+
+-- Special case: an LLVMFrame permission can always be proved
+isProvablePerm _ _ [nuP| ValPerm_Conj [Perm_LLVMFrame _] |] = True
+
+-- Special case: a variable permission X can always be proved when the variable
+-- x and the offset are known, since X is either a free variable, so we can
+-- substitute the current permissions on x, or X is set to a ground permission,
+-- so we can definitely try to prove it
+isProvablePerm mbUnsetVars mb_x [nuP| ValPerm_Var _ mb_off |]
+  | mbNeeded <- mbMap2 (\x off -> NameSet.insert x $ freeVars off) mb_x mb_off
+  , mbLift $ mbMap2 (\s1 s2 ->
+                      NameSet.null $
+                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars = True
+
+-- Otherwise we fail
+isProvablePerm _ _ _ = False
+
+
 -- | Find a permission in the supplied list where 'proveExVarImpl' will succeed,
 -- given the current set of existential variables whose values have not been
 -- set, and split out that permission from the list
@@ -4370,21 +4399,14 @@ findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |]
   | Just ret <- findProvablePerm mbUnsetVars ps =
     Just $ extExDistPermsSplit ret mb_x mb_p
 
--- If not, test if x and all the needed vars in p are set so we can choose x
+-- If not, test if we can prove x
 findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |]
-  | mbNeeded <- mbMap2 (\x p -> NameSet.insert x $ neededVars p) mb_x mb_p
-  , mbLift $ mbMap2 (\s1 s2 ->
-                      NameSet.null $
-                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars =
+  | isProvablePerm mbUnsetVars mb_x mb_p =
     Just $ ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p)
-
--- Special case: an LLVMFrame permission can always be proved
-findProvablePerm _ [nuP| DistPermsCons ps mb_x
-                       mb_p@(ValPerm_Conj [Perm_LLVMFrame _]) |] =
-  Just $ ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p)
 
 -- Otherwise we fail
 findProvablePerm _ _ = Nothing
+
 
 
 -- | Prove a list of existentially-quantified distinguished permissions, adding
