@@ -25,7 +25,7 @@ Proof.
   unfold is_elem, is_elem__tuple_fun.
   unfold noErrorsSpec.
   apply refinesFun_multiFixM_fst. intros x l. unfold refinesFun, Datatypes.fst.
-  apply refinesM_letRecM0.
+  apply refinesM_letRecM_Nil_l.
   apply refinesM_either_l; intros.
   - eapply refinesM_existsM_r. reflexivity.
   - apply refinesM_if_l; intros.
@@ -67,9 +67,9 @@ Proof.
   apply refinesFunStep; intro x.
   apply refinesFunStep; intro l.
   destruct l; simpl; apply noDestructArg.
-  - apply refinesM_letRecM0.
+  - apply refinesM_letRecM_Nil_l.
     reflexivity.
-  - apply refinesM_letRecM0.
+  - apply refinesM_letRecM_Nil_l.
     apply refinesM_if_r; intro H; rewrite H; simpl.
     + reflexivity.
     + unshelve (rewrite_strat (bottomup (hints refinesM))).
@@ -187,7 +187,7 @@ Lemma any_fun_ref : refinesFun any any_fun.
 Proof.
   unfold any, any__tuple_fun, any_fun.
   apply refinesFun_multiFixM_fst. intros f l.
-  apply refinesM_letRecM0.
+  apply refinesM_letRecM_Nil_l.
   induction l.
   - reflexivity.
   - apply refinesM_bind_lr.
