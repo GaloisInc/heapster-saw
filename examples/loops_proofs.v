@@ -38,8 +38,7 @@ Proof.
     rewrite bvAdd_assoc.
     rewrite (bvAdd_comm _ a5).
     rewrite <- (bvAdd_assoc _ _ _ a5).
-    assert ((bvAdd 64 (intToBv 64 1) (intToBv 64 (-1))) = intToBv 64 0) as H by reflexivity.
-    rewrite H; clear H.
+    compute_bv_funs.
     rewrite bvAdd_id_l.
     reflexivity.
   - rewrite isBvule_n_zero in e_if.

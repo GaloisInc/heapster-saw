@@ -33,7 +33,7 @@ Proof.
   prove_refinement_match_letRecM_l.
   - exact (fun a' _ i => assumingM (zero_array_invariant a a' i) noErrorsSpec).
   unfold zero_array_invariant, noErrorsSpec.
-  unfold bvultWithProof; fold bvMem_lo; fold bvMem_hi.
+  fold bvMem_lo; fold bvMem_hi.
   time "no_errors_zero_array" prove_refinement.
   (* A number of the remaining cases are covered exactly by hypotheses we already have in
      scope (e.g. proving the loop invariant holds initially). Note that `prove_refinement`
@@ -72,7 +72,7 @@ Proof.
   prove_refinement_match_letRecM_l.
   - exact (fun a' _ i => assumingM (contains0_invariant a a' i) noErrorsSpec).
   unfold contains0_invariant, noErrorsSpec.
-  unfold bvultWithProof; fold bvMem_lo; fold bvMem_hi.
+  fold bvMem_lo; fold bvMem_hi.
   time "no_errors_contains0" prove_refinement.
   all: try assumption.
   (* Different from no_errors_zero_array - this used to be taken care of by `prove_refinement`!
@@ -113,7 +113,7 @@ Proof.
   - exact (fun a' a0' _ _ i j => assumingM (sum_2d_invariant1 a a' a0 a0' i j) noErrorsSpec).
   - exact (fun a' a0' _ _ i => assumingM (sum_2d_invariant2 a a' a0 a0' i) noErrorsSpec).
   unfold sum_2d_invariant1, sum_2d_invariant2, noErrorsSpec.
-  unfold bvultWithProof; fold bvMem_lo; fold bvMem_hi.
+  fold bvMem_lo; fold bvMem_hi.
   time "no_errors_sum_2d" prove_refinement.
   all: try assumption.
   * rewrite <- isBvult_to_isBvslt_pos, e_assuming5 in e_assuming6; try assumption.
