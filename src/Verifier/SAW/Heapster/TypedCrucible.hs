@@ -1580,6 +1580,12 @@ getAtomicOrWordLLVMPerms r =
       embedImplM TypedImplStmt emptyCruCtx (introEqCopyM x e >>>
                                             recombinePerm x p) >>>
       greturn (Left e_word)
+    _ ->
+      stmtFailM (\i ->
+                  sep [string "getAtomicOrWordLLVMPerms:",
+                       string "Needed atomic permissions for" <+> permPretty i r,
+                       string "but found" <+>
+                       permPretty i p])
 
 
 -- | Like 'getAtomicOrWordLLVMPerms', but fail if an equality permission to a

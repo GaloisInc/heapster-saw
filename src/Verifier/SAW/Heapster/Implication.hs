@@ -2436,13 +2436,15 @@ elimOrsExistsNamesM :: NuMatchingAny1 r => ExprVar a ->
 elimOrsExistsNamesM x =
   getTopDistPerm x >>>= \p ->
   case p of
-    ValPerm_Or p1 p2 -> implElimOrM x p1 p2 >>> elimOrsExistsM x
+    ValPerm_Or p1 p2 -> implElimOrM x p1 p2 >>> elimOrsExistsNamesM x
     ValPerm_Exists mb_p ->
-      implElimExistsM x mb_p >>> elimOrsExistsM x
-    ValPerm_Named npn args off ->
-      case nameCanFoldRepr npn of
-        TrueRepr -> implUnfoldNamedM x npn args off >>> elimOrsExistsNamesM x
-        FalseRepr -> greturn p
+      implElimExistsM x mb_p >>> elimOrsExistsNamesM x
+    ValPerm_Named npn args off
+      | TrueRepr <- nameCanFoldRepr npn ->
+        implUnfoldNamedM x npn args off >>> elimOrsExistsNamesM x
+    ValPerm_Named npn args off
+      | TrueRepr <- nameIsConjRepr npn ->
+        implNamedToConjM x npn args off >>> getTopDistPerm x
     _ -> greturn p
 
 -- | Eliminate any disjunctions, existentials, recursive permissions, or
