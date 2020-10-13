@@ -85,13 +85,21 @@ import Debug.Trace
 -- * Utility Functions
 ----------------------------------------------------------------------
 
+-- | Build an 'RAssign' from a 'Foldable' data structure by mapping each element
+-- to 'Some' typed object
+--
+-- FIXME: this belongs in the Hobbits library, probably with a better name
+buildRAssign :: Foldable t => (a -> Some f) -> t a -> Some (RAssign f)
+buildRAssign f = foldl (\(Some as) (f -> Some a) -> Some (as :>: a)) (Some MNil)
+
 -- | Convert a list of existentially quantified names to an existentially
 -- quantified assignment of names to a context
 --
--- FIXME: this belongs in the Hobbits library somewhere
+-- FIXME: this belongs in the Hobbits library somewhere; actually, it should
+-- probably be part of a @toRAssign@ function for 'NameSet's
 namesListToNames :: [SomeName k] -> Some (RAssign (Name :: k -> Type))
 namesListToNames =
-  foldr (\(SomeName n) (Some ns) -> Some (ns :>: n)) (Some MNil) . reverse
+  foldl (\(Some ns) (SomeName n) -> Some (ns :>: n)) (Some MNil)
 
 -- | Convert an existentially quantified assignment of names to a context to a
 -- list of existentially quantified names

@@ -561,3 +561,25 @@ stmtOutputRegs sz (WriteRefCell r1 r2) = [Some r1, Some r2]
 stmtOutputRegs sz (DropRefCell r) = [Some r]
 stmtOutputRegs sz (Assert r1 r2) = [Some r1, Some r2]
 stmtOutputRegs sz (Assume r1 r2) = [Some r1, Some r2]
+
+-- | Get all the registers used in a Crucible 'JumpTarget'
+jumpTargetRegs :: JumpTarget blocks ctx -> [Some (Reg ctx)]
+jumpTargetRegs (JumpTarget _ _ regs) = foldMapFC (\r -> [Some r]) regs
+
+-- | Get all the registers used in a Crucible 'SwitchTarget'
+switchTargetRegs :: SwitchTarget blocks ctx tp -> [Some (Reg ctx)]
+switchTargetRegs (SwitchTarget _ _ regs) = foldMapFC (\r -> [Some r]) regs
+
+-- | Get all the registers used in a Crucible termination statement
+termStmtRegs :: TermStmt blocks ret ctx -> [Some (Reg ctx)]
+termStmtRegs (Jump tgt) = jumpTargetRegs tgt
+termStmtRegs (Br cond tgt1 tgt2) =
+  Some cond : jumpTargetRegs tgt1 ++ jumpTargetRegs tgt2
+termStmtRegs (MaybeBranch _ cond stgt tgt) =
+  Some cond : switchTargetRegs stgt ++ jumpTargetRegs tgt
+termStmtRegs (VariantElim _ cond stgts) =
+  Some cond : foldMapFC switchTargetRegs stgts
+termStmtRegs (Return reg) = [Some reg]
+termStmtRegs (TailCall reg _ regs) =
+  Some reg : foldMapFC (\r -> [Some r]) regs
+termStmtRegs (ErrorStmt reg) = [Some reg]

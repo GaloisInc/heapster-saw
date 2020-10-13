@@ -31,45 +31,88 @@ Definition sorted_insert__tuple_fun : ((@CompM.lrtTupleType) (((@CompM.LRT_Cons)
   
   --------------------
   
-  at linked_list.c:58:1 (return $1):
-  proveVarImplH: Could not prove
-  z17:eq(LLVMword 0)
-  -o
-  (). ptr((W,0) |-> exists z18. eq(LLVMword z18))
-      *ptr((W,8) |-> List<exists z18. eq(LLVMword z18),always,W>)
+  At linked_list.c:58:1 (return $1)
+  Regs: $1 = x14
+  Input perms: top1:true
+               ,top2:eq(LLVMword top1)
+               ,top3:eq(LLVMword 0)
+               ,x14:eq(ghost7)
+               ,ghost7:array(0, <2, *8, [(W,0) |-> true], [(1).0,(0).0])
+                       *ptr((W,0) |-> eq(ghost8))
+                       *ptr((W,8) |-> eq(LLVMword 0))
+               ,ghost8:eq(top2)
+  Could not prove: top1:true
+                   ,top2:true
+                   ,top3:true
+                   ,x14:List<exists z17. eq(LLVMword z17),always,W>
   
-  --------------------
-  
-  at linked_list.c:58:1 (return $1):
   proveVarEqH: Could not prove
   ghost7:array(0, <2, *8, [(W,0) |-> true], [(1).0,(0).0])
          *ptr((W,0) |-> eq(ghost8))
          *ptr((W,8) |-> eq(LLVMword 0))
   -o
-  (). eq(LLVMword 0)")%string))))))))) (((@SAWCorePrelude.bvultWithProof) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (2%Z)))))))) (((@SAWCorePrelude.bvultWithProof) (64) (((intToBv) (64) (0%Z))) (((intToBv) (64) (2%Z))))))))))) ((fun (x_right0 : ((prod) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((prod) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (unit))))) => if ((@SAWCoreScaffolding.not) (((@SAWCorePrelude.bvEq) (1) (if ((@SAWCoreVectorsAsCoqVectors.bvsle) (64) (e0) (((@projT1) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_elimEx0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((SAWCoreScaffolding.fst) (x_right0)))))) then ((intToBv) (1) ((-1)%Z)) else ((intToBv) (1) (0%Z))) (((intToBv) (1) (0%Z)))))) then ((((@bindM) (CompM) (_))) (((@SAWCorePrelude.BVVec) (64) (((intToBv) (64) (2%Z))) (unit))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@mallocSpec) (((intToBv) (64) (2%Z))))) ((fun (call_ret_val : ((@SAWCorePrelude.BVVec) (64) (((intToBv) (64) (2%Z))) (unit))) => ((@SAWCorePrelude.maybe) (((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (0%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) (((CompM) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))))) (((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (("0 <u 2")%string))) ((fun (ult_pf0 : ((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (0%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) => ((@SAWCorePrelude.maybe) (((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) (((CompM) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))))) (((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (("1 <u 2")%string))) ((fun (ult_pf0_0 : ((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) => if ((@SAWCorePrelude.bvEq) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (0%Z)))) then ((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (("1 /= 0")%string)) else (((fun (catchpoint : forall (msg : ((@SAWCoreScaffolding.String))), ((CompM) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))))) => ((((@returnM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@SAWCorePrelude.foldList) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((@SAWCorePrelude.Right) (unit) (((prod) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((prod) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (unit))))) (((pair) (((@existT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (e0) (tt))) (((pair) (((@SAWCorePrelude.foldList) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((@SAWCorePrelude.Right) (unit) (((prod) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((prod) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (unit))))) (((pair) (((@existT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((@projT1) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_elimEx0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((SAWCoreScaffolding.fst) (x_right0))))) (tt))) (((pair) (((SAWCoreScaffolding.fst) (((SAWCoreScaffolding.snd) (x_right0))))) (tt))))))))) (tt)))))))))))) ((fun (msg : ((@SAWCoreScaffolding.String))) => ((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@SAWCoreScaffolding.appendString) (msg) (("
-  
-  --------------------
-  
-  at linked_list.c:58:1 (return $1):
-  proveVarEqH: Could not prove
-  top3:ptr((W,8) |-> List<exists z19. eq(LLVMword z19),always,W>)
-       *ptr((W,0) |-> eq(ghost6))
-  -o
   (). eq(LLVMword 0)
   
   --------------------
   
-  at linked_list.c:58:1 (return $1):
+  proveVarImplH: Could not prove
+  z17:eq(LLVMword 0)
+  -o
+  (). ptr((W,0) |-> exists z18. eq(LLVMword z18))
+      *ptr((W,8) |-> List<exists z18. eq(LLVMword z18),always,W>)")%string))))))))) (((@SAWCorePrelude.bvultWithProof) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (2%Z)))))))) (((@SAWCorePrelude.bvultWithProof) (64) (((intToBv) (64) (0%Z))) (((intToBv) (64) (2%Z))))))))))) ((fun (x_right0 : ((prod) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((prod) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (unit))))) => if ((@SAWCoreScaffolding.not) (((@SAWCorePrelude.bvEq) (1) (if ((@SAWCoreVectorsAsCoqVectors.bvsle) (64) (e0) (((@projT1) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_elimEx0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((SAWCoreScaffolding.fst) (x_right0)))))) then ((intToBv) (1) ((-1)%Z)) else ((intToBv) (1) (0%Z))) (((intToBv) (1) (0%Z)))))) then ((((@bindM) (CompM) (_))) (((@SAWCorePrelude.BVVec) (64) (((intToBv) (64) (2%Z))) (unit))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@mallocSpec) (((intToBv) (64) (2%Z))))) ((fun (call_ret_val : ((@SAWCorePrelude.BVVec) (64) (((intToBv) (64) (2%Z))) (unit))) => ((@SAWCorePrelude.maybe) (((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (0%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) (((CompM) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))))) (((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (("0 <u 2")%string))) ((fun (ult_pf0 : ((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (0%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) => ((@SAWCorePrelude.maybe) (((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) (((CompM) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))))) (((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (("1 <u 2")%string))) ((fun (ult_pf0_0 : ((@SAWCoreScaffolding.EqP) (((@SAWCoreScaffolding.Bool))) (((@SAWCoreVectorsAsCoqVectors.bvult) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (2%Z))))) (((@SAWCoreScaffolding.true))))) => if ((@SAWCorePrelude.bvEq) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (0%Z)))) then ((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (("1 /= 0")%string)) else (((fun (catchpoint : forall (msg : ((@SAWCoreScaffolding.String))), ((CompM) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))))) => ((((@returnM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@SAWCorePrelude.foldList) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((@SAWCorePrelude.Right) (unit) (((prod) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((prod) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (unit))))) (((pair) (((@existT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (e0) (tt))) (((pair) (((@SAWCorePrelude.foldList) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((@SAWCorePrelude.Right) (unit) (((prod) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((prod) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (unit))))) (((pair) (((@existT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((@projT1) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_elimEx0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((SAWCoreScaffolding.fst) (x_right0))))) (tt))) (((pair) (((SAWCoreScaffolding.fst) (((SAWCoreScaffolding.snd) (x_right0))))) (tt))))))))) (tt)))))))))))) ((fun (msg : ((@SAWCoreScaffolding.String))) => ((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@SAWCoreScaffolding.appendString) (msg) (("
+  
+  --------------------
+  
+  At linked_list.c:58:1 (return $1)
+  Regs: $1 = x16
+  Input perms: top1:true
+               ,top2:eq(LLVMword top1)
+               ,top3:ptr((W,8) |-> List<exists z19. eq(LLVMword z19),always,W>)
+                     *ptr((W,0) |-> eq(ghost6))
+               ,x16:eq(ghost9)
+               ,ghost6:eq(LLVMword ghost7)
+               ,ghost9:array(0, <2, *8, [(W,0) |-> true], [(1).0,(0).0])
+                       *ptr((W,0) |-> eq(ghost10))
+                       *ptr((W,8) |-> eq(ghost11))
+               ,ghost7:true
+               ,ghost10:eq(LLVMword top1)
+               ,ghost11:eq(top3)
+  Could not prove: top1:true
+                   ,top2:true
+                   ,top3:true
+                   ,x16:List<exists z19. eq(LLVMword z19),always,W>
+  
   proveVarEqH: Could not prove
   ghost9:array(0, <2, *8, [(W,0) |-> true], [(1).0,(0).0])
          *ptr((W,0) |-> eq(ghost10))
          *ptr((W,8) |-> eq(ghost11))
   -o
+  (). eq(LLVMword 0)
+  
+  --------------------
+  
+  proveVarEqH: Could not prove
+  top3:ptr((W,8) |-> List<exists z19. eq(LLVMword z19),always,W>)
+       *ptr((W,0) |-> eq(ghost6))
+  -o
   (). eq(LLVMword 0)")%string))))))))) (((@SAWCorePrelude.bvultWithProof) (64) (((intToBv) (64) (1%Z))) (((intToBv) (64) (2%Z)))))))) (((@SAWCorePrelude.bvultWithProof) (64) (((intToBv) (64) (0%Z))) (((intToBv) (64) (2%Z))))))))) else ((((@bindM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((sorted_insert) (e0) (((SAWCoreScaffolding.fst) (((SAWCoreScaffolding.snd) (x_right0))))))) ((fun (call_ret_val : ((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) => (((fun (catchpoint : forall (msg : ((@SAWCoreScaffolding.String))), ((CompM) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))))) => ((((@returnM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@SAWCorePrelude.foldList) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((@SAWCorePrelude.Right) (unit) (((prod) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))) (((prod) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (unit))))) (((pair) (((@existT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((@projT1) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_elimEx0 : ((@SAWCorePrelude.bitvector) (64))) => unit)) (((SAWCoreScaffolding.fst) (x_right0))))) (tt))) (((pair) (call_ret_val) (tt)))))))))))) ((fun (msg : ((@SAWCoreScaffolding.String))) => ((((@errorM) (CompM) (_))) (((@SAWCorePrelude.List_def) (((@sigT) (((@SAWCorePrelude.bitvector) (64))) ((fun (x_ex0 : ((@SAWCorePrelude.bitvector) (64))) => unit)))))) (((@SAWCoreScaffolding.appendString) (msg) (("
   
   --------------------
   
-  at linked_list.c:58:1 (return $1):
+  At linked_list.c:58:1 (return $1)
+  Regs: $1 = x15
+  Input perms: top1:true
+               ,top2:eq(LLVMword top1)
+               ,top3:ptr((W,0) |-> eq(ghost6))*ptr((W,8) |-> eq(ghost8))
+               ,x15:eq(top3)
+               ,ghost6:eq(LLVMword ghost7)
+               ,ghost8:List<exists z19. eq(LLVMword z19),always,W>
+               ,ghost7:true
+  Could not prove: top1:true
+                   ,top2:true
+                   ,top3:true
+                   ,x15:List<exists z19. eq(LLVMword z19),always,W>
+  
   proveVarEqH: Could not prove
   top3:ptr((W,0) |-> eq(ghost6))*ptr((W,8) |-> eq(ghost8))
   -o

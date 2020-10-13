@@ -1901,12 +1901,14 @@ withCatchHandlerM :: OpenTerm -> ImpTransM ext blocks tops ret ps_out ctx a ->
 withCatchHandlerM h =
   local (\info -> info { itiCatchHandler = applyOpenTerm h })
 
--- | Run a computation with the default catch handler
+-- | Run a computation with the default catch handler and with no previous error
+-- message
 withDefaultCatchHandlerM :: ImpTransM ext blocks tops ret ps_out ctx a ->
                             ImpTransM ext blocks tops ret ps_out ctx a
 withDefaultCatchHandlerM m =
   returnTypeM >>= \retType ->
-  local (\info -> info { itiCatchHandler = defaultCatchHandler retType }) m
+  local (\info -> info { itiCatchHandler = defaultCatchHandler retType,
+                         itiPrevErrMessage = Nothing }) m
 
 -- | Apply the current catch handler to a string error message, prepending the
 -- previous error message if there is one
@@ -2508,25 +2510,29 @@ data PermImplTrans ext blocks tops ret ps ctx
   = PermImplTransJust !(ImpTransM ext blocks tops ret ps ctx OpenTerm) ![String]
   | PermImplTransNothing ![String]
 
--- | Extract the error messages from a 'PermImplTrans'
+-- | A lens that refers to the error messages of a 'PermImplTrans'
 permImplTransErrs :: PermImplTrans ext blocks tops ret ps ctx -> [String]
 permImplTransErrs (PermImplTransJust _ errs) = errs
 permImplTransErrs (PermImplTransNothing errs) = errs
 
 -- | Convert a 'PermImplTrans' to a (computation of a) term that performs any
--- necessary catch and/or failures
-permImplTransToTerm :: PermImplTrans ext blocks tops ret ps ctx ->
+-- necessary catch and/or failures, prepending the given string to the first
+-- error message
+permImplTransToTerm :: Maybe String ->
+                       PermImplTrans ext blocks tops ret ps ctx ->
                        ImpTransM ext blocks tops ret ps ctx OpenTerm
-permImplTransToTerm (PermImplTransJust m []) = m
-permImplTransToTerm (PermImplTransJust m errs) =
+permImplTransToTerm _ (PermImplTransJust m []) = m
+permImplTransToTerm pre_err (PermImplTransJust m errs) =
   do compMType <- compReturnTypeM
      letTransM "catchpoint" (arrowOpenTerm "msg" stringTypeOpenTerm compMType)
        (lambdaOpenTermTransM "msg" stringTypeOpenTerm $ \msg ->
-         withPrevErrMessage msg (permImplTransToTerm
+         withPrevErrMessage msg (permImplTransToTerm pre_err
                                  (PermImplTransNothing errs)))
        (\handler -> withCatchHandlerM handler m)
-permImplTransToTerm (PermImplTransNothing errs) =
-  applyCatchHandlerM (concat $ intersperse "\n\n--------------------\n\n" errs)
+permImplTransToTerm maybe_pre_err (PermImplTransNothing errs) =
+  let pre_err = maybe "" (++ "\n\n") maybe_pre_err in
+  applyCatchHandlerM (pre_err ++
+                      concat (intersperse "\n\n--------------------\n\n" errs))
 
 -- | The intermediate translation of an 'MbPermImpls' list
 data MbPermImplsTrans ext blocks tops ret bs_pss ctx where
@@ -2604,8 +2610,15 @@ translatePermImpl1 [nuP| Impl1_Pop x p |] (MbPermImplsTrans_Cons _
       setVarPermM x ptrans (withPermStackM RL.tail RL.tail m))
   errs
 
--- An or elimination performs a pattern-match on an Either; any failures are
--- caught in their respective branches
+-- If both branches of an or elimination fails, the whole thing fails
+translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |] (MbPermImplsTrans_Cons
+                                                  (MbPermImplsTrans_Cons _
+                                                   (PermImplTransNothing errs1))
+                                                  (PermImplTransNothing errs2)) =
+  PermImplTransNothing (errs1 ++ errs2)
+
+-- Otherwise, an or elimination performs a pattern-match on an Either, and any
+-- failures are caught in their respective branches
 translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |] (MbPermImplsTrans_Cons
                                                   (MbPermImplsTrans_Cons _
                                                    trans1) trans2) =
@@ -2618,10 +2631,10 @@ translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |] (MbPermImplsTrans_Cons
       eitherElimTransM tp1 tp2 tp_ret
         (\ptrans ->
           withPermStackM id ((:>: ptrans) . RL.tail) $
-          permImplTransToTerm trans1)
+          permImplTransToTerm Nothing trans1)
         (\ptrans ->
           withPermStackM id ((:>: ptrans) . RL.tail) $
-          permImplTransToTerm trans2)
+          permImplTransToTerm Nothing trans2)
         (transTupleTerm top_ptrans))
   []
 
@@ -2781,7 +2794,8 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x
         ])
   errs
 
--- Any other case is just a failure
+-- Any other case means at least one of the arguments was just a failure, so we
+-- fail too
 translatePermImpl1 _ mb_impls_trans =
   PermImplTransNothing $ mbPermImplsTransErrs mb_impls_trans
 
@@ -2807,8 +2821,9 @@ translatePermImpl [nuP| PermImpl_Step impl1 mb_impls |] =
 
 instance ImplTranslateF r ext blocks tops ret =>
          Translate (ImpTransInfo
-                    ext blocks tops ret ps) ctx (PermImpl r ps) OpenTerm where
-  translate = permImplTransToTerm . translatePermImpl
+                    ext blocks tops ret ps) ctx (AnnotPermImpl r ps) OpenTerm where
+  translate [nuP| AnnotPermImpl err mb_impl |] =
+    permImplTransToTerm (Just $ mbLift err) $ translatePermImpl mb_impl
 
 
 ----------------------------------------------------------------------

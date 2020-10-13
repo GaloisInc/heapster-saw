@@ -47,6 +47,7 @@ import Control.Monad.State.Strict
 import Control.Monad.Reader
 
 import Text.PrettyPrint.ANSI.Leijen (pretty)
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
@@ -86,14 +87,6 @@ import Verifier.SAW.Heapster.Implication
 
 import Debug.Trace
 
--- | Make a program location with "internal" posiotion that has the same
--- function name as another location
--- FIXME: figure out where to put this
-internalLoc :: ProgramLoc -> ProgramLoc
-internalLoc loc = mkProgramLoc (plFunction loc) InternalPos
-
-
--- FIXME: move to Hobbits
 
 ----------------------------------------------------------------------
 -- * Typed Jump Targets and Function Handles
@@ -571,6 +564,10 @@ applyTypedStmt stmt rets =
 -- * Typed Sequences of Crucible Statements
 ----------------------------------------------------------------------
 
+-- | A permission implication annotated a top-level error message to be printed
+-- on failure
+data AnnotPermImpl r ps = AnnotPermImpl !String !(PermImpl r ps)
+
 -- | Typed return argument
 data TypedRet tops ret ps =
   TypedRet
@@ -581,19 +578,19 @@ data TypedRet tops ret ps =
 -- | Typed Crucible block termination statements
 data TypedTermStmt blocks tops ret ps_in where
   -- | Jump to the given jump target
-  TypedJump :: !(PermImpl (TypedJumpTarget blocks tops) ps_in) ->
+  TypedJump :: !(AnnotPermImpl (TypedJumpTarget blocks tops) ps_in) ->
                TypedTermStmt blocks tops ret ps_in
 
   -- | Branch on condition: if true, jump to the first jump target, and
   -- otherwise jump to the second jump target
   TypedBr :: !(TypedReg BoolType) ->
-             !(PermImpl (TypedJumpTarget blocks tops) ps_in) ->
-             !(PermImpl (TypedJumpTarget blocks tops) ps_in) ->
+             !(AnnotPermImpl (TypedJumpTarget blocks tops) ps_in) ->
+             !(AnnotPermImpl (TypedJumpTarget blocks tops) ps_in) ->
              TypedTermStmt blocks tops ret ps_in
 
   -- | Return from function, providing the return value and also proof that the
   -- current permissions imply the required return permissions
-  TypedReturn :: !(PermImpl (TypedRet tops ret) ps_in) ->
+  TypedReturn :: !(AnnotPermImpl (TypedRet tops ret) ps_in) ->
                  TypedTermStmt blocks tops ret ps_in
 
   -- | Block ends with an error
@@ -605,7 +602,7 @@ data TypedTermStmt blocks tops ret ps_in where
 data TypedStmtSeq ext blocks tops ret ps_in where
   -- | A permission implication step, which modifies the current permission
   -- set. This can include pattern-matches and/or assertion failures.
-  TypedImplStmt :: !(PermImpl (TypedStmtSeq ext blocks tops ret) ps_in) ->
+  TypedImplStmt :: !(AnnotPermImpl (TypedStmtSeq ext blocks tops ret) ps_in) ->
                    TypedStmtSeq ext blocks tops ret ps_in
 
   -- | Typed version of 'ConsStmt', which binds new variables for the return
@@ -621,6 +618,7 @@ data TypedStmtSeq ext blocks tops ret ps_in where
                    TypedStmtSeq ext blocks tops ret ps_in
 
 
+$(mkNuMatching [t| forall r ps. NuMatchingAny1 r => AnnotPermImpl r ps |])
 $(mkNuMatching [t| forall w tp ps_out ps_in.
                 TypedLLVMStmt w tp ps_out ps_in |])
 $(mkNuMatching [t| forall ext rets ps_in ps_out. NuMatchingExtC ext =>
@@ -659,6 +657,12 @@ instance SubstVar PermVarSubst m =>
   genSubst _ [nuP| TypedRegsNil |] = return TypedRegsNil
   genSubst s [nuP| TypedRegsCons rs r |] =
     TypedRegsCons <$> genSubst s rs <*> genSubst s r
+
+instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
+          Substable1 PermVarSubst r m) =>
+         Substable PermVarSubst (AnnotPermImpl r ps) m where
+  genSubst s [nuP| AnnotPermImpl err impl |] =
+    AnnotPermImpl (mbLift err) <$> genSubst s impl
 
 instance (PermCheckExtC ext, NuMatchingAny1 f,
           SubstVar PermVarSubst m, Substable1 PermVarSubst f m,
@@ -1072,7 +1076,7 @@ data PermCheckState ext tops ret ps =
     stTopVars   :: !(RAssign Name tops),
     stVarTypes  :: !(NameMap TypeRepr),
     stPPInfo    :: !PPInfo,
-    stLocString :: !(Maybe String)
+    stErrPrefix :: !(Maybe Doc)
   }
 
 -- | Like the 'set' method of a lens, but allows the @ps@ argument to change
@@ -1414,7 +1418,7 @@ runPermCheckM topVars perms m =
            stTopVars   = topVars,
            stVarTypes  = NameMap.empty,
            stPPInfo    = emptyPPInfo,
-           stLocString = Nothing }
+           stErrPrefix = Nothing }
      runGenContM (runGenStateT m st) (\((), _) -> return ())
 
 -- | Lift an 'InnerPermCheckM' to a 'TopPermCheckM'
@@ -1626,6 +1630,39 @@ ppCruRegAndPerms ctx r =
   greturn (PP.group (pretty r <+> char '=' <+> permPretty ppInfo (tcReg ctx r)
                      <> comma <+> pp))
 
+-- | Get the permissions on the variables in the input set, the variables in
+-- their permissions, the variables in those permissions etc., as in
+-- 'varPermsNeededVars'
+getRelevantPerms :: [SomeName CrucibleType] ->
+                    PermCheckM ext cblocks blocks tops ret r ps r ps (Some
+                                                                      DistPerms)
+getRelevantPerms (namesListToNames -> Some ns) =
+  stCurPerms <$> gget >>>= \perms ->
+  case varPermsNeededVars ns perms of
+    Some all_ns -> greturn (Some $ varPermsMulti (RL.append ns all_ns) perms)
+
+-- | Pretty-print a list of Crucible registers and the variables they translate
+-- to, and then pretty-print the permissions on those variables and all
+-- variables they contain, as well as the top-level input variables and the
+-- extension-specific variables
+ppCruRegsAndTopsPerms :: CtxTrans ctx -> [Some (Reg ctx)] ->
+                         PermCheckM ext cblocks blocks tops ret r ps r ps (Doc, Doc)
+ppCruRegsAndTopsPerms ctx regs =
+  permGetPPInfo >>>= \ppInfo ->
+  (stTopVars <$> gget) >>>= \tops ->
+  (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
+  let vars_pp =
+        fillSep $ punctuate comma $
+        map (\case Some r ->
+                     pretty r <+> char '=' <+>
+                     permPretty ppInfo (tcReg ctx r)) regs
+      vars =
+        namesToNamesList tops ++ namesToNamesList ext_ns ++
+        map (\(Some r) -> SomeName $ typedRegVar $ tcReg ctx r) regs in
+  getRelevantPerms vars >>>= \some_perms ->
+  case some_perms of
+    Some perms -> greturn (vars_pp, permPretty ppInfo perms)
+
 -- | Find all the variables of LLVM frame pointer type in a sequence
 -- FIXME: move to Permissions.hs
 findLLVMFrameVars :: NatRepr w -> CruCtx as -> RAssign Name as ->
@@ -1688,30 +1725,22 @@ setVarTypes str (xs :>: x) (CruCtxCons tps tp) =
 permGetPPInfo :: PermCheckM ext cblocks blocks tops ret r ps r ps PPInfo
 permGetPPInfo = stPPInfo <$> get
 
--- | Get the current source location as a string @str@ if it is available and
--- return the string @"at str"@; otherwise return the empty string
-getLocationString :: PermCheckM ext cblocks blocks tops ret r ps r ps String
-getLocationString =
-  maybe "" (\s -> "at " ++ s ++ ":\n") <$> stLocString <$> gget
+-- | Get the current prefix string to give context to error messages
+getErrorPrefix :: PermCheckM ext cblocks blocks tops ret r ps r ps Doc
+getErrorPrefix = maybe "" id <$> stErrPrefix <$> gget
 
--- | Set the current source location to a 'ProgramLoc' plus anything printable
-setLocationString :: Pretty a => ProgramLoc -> a ->
-                     PermCheckM ext cblocks blocks tops ret r ps r ps ()
-setLocationString loc a =
-  gmodify $ \st ->
-  st { stLocString =
-         Just $ renderDoc (ppShortFileName (plSourceLoc loc)
-                           <+> parens (pretty a)) }
-
--- | Set the current source location to a 'ProgramLoc' plus Crucible statement
-setLocationStringStmt :: PermCheckExtC ext =>
-                         CtxTrans ctx -> ProgramLoc -> Stmt ext ctx ctx' ->
-                         PermCheckM ext cblocks blocks tops ret r ps r ps ()
-setLocationStringStmt ctx loc stmt =
-  gmodify $ \st ->
-  st { stLocString =
-         Just $ renderDoc (PP.pretty (plSourceLoc loc) <+>
-                           parens (ppStmt (Ctx.size ctx) stmt)) }
+-- | Set the current prefix string to give context to error messages
+setErrorPrefix :: ProgramLoc -> Doc -> CtxTrans ctx -> [Some (Reg ctx)] ->
+                  PermCheckM ext cblocks blocks tops ret r ps r ps ()
+setErrorPrefix loc stmt_pp ctx regs =
+  ppCruRegsAndTopsPerms ctx regs >>>= \(regs_pp, perms_pp) ->
+  let prefix =
+        PP.sep
+        [PP.group (string "At" <+> ppShortFileName (plSourceLoc loc)
+                  <+> parens stmt_pp),
+         PP.group (string "Regs:" <+> regs_pp),
+         PP.group (string "Input perms:" <+> perms_pp)] in
+  gmodify $ \st -> st { stErrPrefix = Just prefix }
 
 -- | Emit debugging output using the current 'PPInfo'
 stmtTraceM :: (PPInfo -> Doc) ->
@@ -1725,16 +1754,11 @@ stmtTraceM f =
 stmtFailM :: (PPInfo -> Doc) -> PermCheckM ext cblocks blocks tops ret r1 ps1
              (TypedStmtSeq ext blocks tops ret ps2) ps2 a
 stmtFailM msg =
-  getLocationString >>>= \fail_prefix ->
-  stmtTraceM (\i -> string fail_prefix <+>
+  getErrorPrefix >>>= \err_prefix ->
+  stmtTraceM (\i -> err_prefix PP.<$>
                     string "Type-checking failure:" </> msg i) >>>= \str ->
-  gabortM (return $ TypedImplStmt $
-           PermImpl_Step (Impl1_Fail str) MbPermImpls_Nil)
-
--- | Smart constructor for applying a function on 'PermImpl's
-applyImplFun :: (PermImpl r ps -> r ps) -> PermImpl r ps -> r ps
-applyImplFun _ (PermImpl_Done r) = r
-applyImplFun f impl = f impl
+  gabortM (return $ TypedImplStmt $ AnnotPermImpl str $
+           PermImpl_Step (Impl1_Fail "") MbPermImpls_Nil)
 
 -- | FIXME HERE: Make 'ImplM' quantify over any underlying monad, so that we do
 -- not have to use 'traversePermImpl' after we run an 'ImplM'
@@ -1743,29 +1767,32 @@ data WithImplState vars a ps ps' =
 
 -- | Call 'runImplM' in the 'PermCheckM' monad
 pcmRunImplM ::
-  Bool -> CruCtx vars -> (a -> r ps_out) ->
+  Bool -> CruCtx vars -> Doc -> (a -> r ps_out) ->
   ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in a ->
   PermCheckM ext cblocks blocks tops ret r' ps_in r' ps_in
-  (PermImpl r ps_in)
-pcmRunImplM do_trace vars retF impl_m =
-  getLocationString >>>= \fail_prefix ->
+  (AnnotPermImpl r ps_in)
+pcmRunImplM do_trace vars fail_doc retF impl_m =
+  getErrorPrefix >>>= \err_prefix ->
   (stCurPerms <$> gget) >>>= \perms_in ->
   (stPermEnv <$> top_get) >>>= \env ->
   (stPPInfo <$> gget) >>>= \ppInfo ->
   (stVarTypes <$> gget) >>>= \varTypes ->
   liftPermCheckM $ lift $
-  runImplM vars perms_in env ppInfo fail_prefix do_trace varTypes
+  fmap (AnnotPermImpl (renderDoc (err_prefix PP.<$> fail_doc))) $
+  runImplM vars perms_in env ppInfo "" do_trace varTypes
   (return . retF . fst) impl_m
 
--- | Embed an implication computation inside a permission-checking computation
-embedImplM ::
-  (forall ps. PermImpl r ps -> r ps) -> CruCtx vars ->
+-- | Embed an implication computation inside a permission-checking computation,
+-- also supplying an overall error message for failures
+embedImplWithErrM ::
+  (forall ps. AnnotPermImpl r ps -> r ps) -> CruCtx vars -> Doc ->
   ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in a ->
   PermCheckM ext cblocks blocks tops ret (r ps_out) ps_out (r ps_in) ps_in
   (PermSubst vars, a)
-embedImplM f_impl vars m =
-  getLocationString >>>= \fail_prefix ->
-  gmapRet (f_impl <$>) >>>
+embedImplWithErrM f_impl vars fail_doc m =
+  getErrorPrefix >>>= \err_prefix ->
+  gmapRet ((f_impl . AnnotPermImpl (renderDoc
+                                    (err_prefix PP.<$> fail_doc))) <$>) >>>
   (stCurPerms <$> gget) >>>= \perms_in ->
   (stPermEnv <$> top_get) >>>= \env ->
   (stPPInfo <$> gget) >>>= \ppInfo ->
@@ -1773,12 +1800,20 @@ embedImplM f_impl vars m =
   (gcaptureCC $ \k ->
     ask >>= \r ->
     lift $
-    runImplM vars perms_in env ppInfo fail_prefix True varTypes
+    runImplM vars perms_in env ppInfo "" True varTypes
     (flip runReaderT r . k) m) >>>= \(a, implSt) ->
   gmodify ((\st -> st { stPPInfo = implSt ^. implStatePPInfo,
                         stVarTypes = implSt ^. implStateNameTypes })
            . setSTCurPerms (implSt ^. implStatePerms)) >>>
   greturn (completePSubst vars (implSt ^. implStatePSubst), a)
+
+-- | Embed an implication computation inside a permission-checking computation
+embedImplM ::
+  (forall ps. AnnotPermImpl r ps -> r ps) -> CruCtx vars ->
+  ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in a ->
+  PermCheckM ext cblocks blocks tops ret (r ps_out) ps_out (r ps_in) ps_in
+  (PermSubst vars, a)
+embedImplM f_impl vars m = embedImplWithErrM f_impl vars PP.empty m
 
 -- | Special case of 'embedImplM' for a statement type-checking context where
 -- @vars@ is empty
@@ -1805,7 +1840,9 @@ stmtProvePerms' :: PermCheckExtC ext =>
                    StmtPermCheckM ext cblocks blocks tops ret
                    ps RNil (PermSubst vars)
 stmtProvePerms' vars ps =
-  embedImplM TypedImplStmt vars (proveVarsImpl ps) >>>= \(s,_) ->
+  permGetPPInfo >>>= \ppInfo ->
+  let err = string "Could not prove" <+> permPretty ppInfo ps in
+  embedImplWithErrM TypedImplStmt vars err (proveVarsImpl ps) >>>= \(s,_) ->
   greturn s
 
 -- | Prove permissions in the context of type-checking statements
@@ -1821,7 +1858,12 @@ stmtProvePerm :: (PermCheckExtC ext, KnownRepr CruCtx vars) =>
                  StmtPermCheckM ext cblocks blocks tops ret
                  (ps :> a) ps (PermSubst vars)
 stmtProvePerm (TypedReg x) mb_p =
-  embedImplM TypedImplStmt knownRepr (proveVarImpl x mb_p) >>>= \(s,_) ->
+  permGetPPInfo >>>= \ppInfo ->
+  let err =
+        string "Could not prove" <+>
+        permPretty ppInfo (fmap (distPerms1 x) mb_p) in
+  embedImplWithErrM TypedImplStmt knownRepr err (proveVarImpl
+                                                 x mb_p) >>>= \(s,_) ->
   greturn s
 
 -- | Try to prove that a register equals a constant integer (of the given input
@@ -2932,7 +2974,7 @@ generalizeUnneededWordEqPerms =
 -- | Type-check a Crucible jump target
 tcJumpTarget :: PermCheckExtC ext => CtxTrans ctx -> JumpTarget cblocks ctx ->
                 StmtPermCheckM ext cblocks blocks tops ret RNil RNil
-                (PermImpl (TypedJumpTarget blocks tops) RNil)
+                (AnnotPermImpl (TypedJumpTarget blocks tops) RNil)
 tcJumpTarget ctx (JumpTarget blkID args_tps args) =
   top_get >>>= \top_st ->
   gget >>>= \st ->
@@ -2992,6 +3034,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       -- Prove the required input perms for this entrypoint and return the
       -- jump target inside an implication
       pcmRunImplM True ghosts
+      (string "Could not prove: " <+> permPretty (stPPInfo st) ex_perms)
       (\(ghost_exprs, perms) ->
         TypedJumpTarget entryID Proxy (mkCruCtx args_tps) ghost_exprs perms)
       (proveVarsImpl ex_perms >>> getDistPerms >>>= \perms ->
@@ -3083,7 +3126,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           let target_t =
                 TypedJumpTarget entryID Proxy (mkCruCtx args_tps)
                 (namesToExprs ghosts_ns) perms_in in
-          pcmRunImplM False CruCtxNil (const target_t) $
+          pcmRunImplM False CruCtxNil PP.empty (const target_t) $
           implPushOrReflMultiM perms_in
 
 
@@ -3115,12 +3158,14 @@ tcTermStmt ctx (Return reg) =
       mb_ret_perms =
         varSubst (permVarSubstOfNames tops) $
         mbSeparate (MNil :>: Proxy) $
-        mbValuePermsToDistPerms (stRetPerms top_st) in
+        mbValuePermsToDistPerms (stRetPerms top_st)
+      req_perms =
+        varSubst (singletonVarSubst $ typedRegVar treg) mb_ret_perms
+      err = string "Could not prove:" <+> permPretty (stPPInfo st) req_perms in
   TypedReturn <$>
-  pcmRunImplM True CruCtxNil
+  pcmRunImplM True CruCtxNil err
   (const $ TypedRet Refl (stRetType top_st) treg mb_ret_perms)
-  (proveVarsImpl $ distPermsToExDistPerms $
-   varSubst (singletonVarSubst $ typedRegVar treg) mb_ret_perms)
+  (proveVarsImpl $ distPermsToExDistPerms req_perms)
 tcTermStmt ctx (ErrorStmt reg) =
   let treg = tcReg ctx reg in
   getRegPerm treg >>>= \treg_p ->
@@ -3146,10 +3191,10 @@ tcEmitStmtSeq :: PermCheckExtC ext => CtxTrans ctx ->
                  (TypedStmtSeq ext blocks tops ret RNil) RNil
                  ()
 tcEmitStmtSeq ctx (ConsStmt loc stmt stmts) =
-  setLocationStringStmt ctx loc stmt >>>
+  setErrorPrefix loc (ppStmt (Ctx.size ctx) stmt) ctx (stmtInputRegs stmt) >>>
   tcEmitStmt ctx loc stmt >>>= \ctx' -> tcEmitStmtSeq ctx' stmts
 tcEmitStmtSeq ctx (TermStmt loc tstmt) =
-  setLocationString loc tstmt >>>
+  setErrorPrefix loc (pretty tstmt) ctx (termStmtRegs tstmt) >>>
   tcTermStmt ctx tstmt >>>= \typed_tstmt ->
   gmapRet (>> return (TypedTermStmt loc typed_tstmt))
 
