@@ -9,3 +9,14 @@ int64_t add_loop (int64_t x, int64_t y) {
   }
   return ret;
 }
+
+int64_t compare (int64_t x, int64_t y) {
+  int64_t d = add_loop(x, y);
+  if (d > 0) {
+    return 1;
+  } else if (d < 0) {
+    return -1;
+  } else {
+    return 0;
+  }
+}

@@ -7,4 +7,6 @@ heapster_block_entry_hint env "add_loop" 3 "top0:llvmptr 64,top1:llvmptr 64" "fr
 
 heapster_typecheck_fun env "add_loop" "().arg0:int64<>, arg1:int64<> -o ret:int64<>";
 
+heapster_typecheck_fun env "compare" "().arg0:int64<>, arg1:int64<> -o ret:int64<>";
+
 heapster_export_coq env "loops.v";
