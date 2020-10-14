@@ -3023,6 +3023,12 @@ instance (PermCheckExtC ext, TransInfo info) =>
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvSCarry")
     [return w_minus_1, translateRWV e1, translateRWV e2]
+  translate [nuP| BVSBorrow w e1 e2 |] =
+    -- NOTE: bvSBorrow adds 1 to the bitvector length
+    let w_minus_1 = natOpenTerm (natValue (mbLift w) - 1) in
+    ETrans_Term <$>
+    applyMultiTransM (return $ globalOpenTerm "Prelude.bvSBorrow")
+    [return w_minus_1, translateRWV e1, translateRWV e2]
   translate [nuP| BVShl w e1 e2 |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvShiftL")

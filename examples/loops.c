@@ -10,7 +10,8 @@ int64_t add_loop (int64_t x, int64_t y) {
   return ret;
 }
 
-int64_t compare (int64_t x, int64_t y) {
+/* Returns the sign of the sum of the two inputs, using add_loop! */
+int64_t sign_of_sum (int64_t x, int64_t y) {
   int64_t d = add_loop(x, y);
   if (d > 0) {
     return 1;
@@ -19,4 +20,10 @@ int64_t compare (int64_t x, int64_t y) {
   } else {
     return 0;
   }
+}
+
+/* Returns 1 if x < y+z, -1 if x > y+z, and 0 otherwise, using add_loop
+   for the sum and sign_of_sum for the comparison! */
+int64_t compare_sum (int64_t x, int64_t y, int64_t z) {
+  return sign_of_sum(-x, add_loop(y, z));
 }
