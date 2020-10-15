@@ -45,3 +45,101 @@ Proof.
     rewrite e_if, bvAdd_id_r.
     reflexivity.
 Qed.
+
+
+(* Add `add_loop_spec_ref` to the hint database. Unfortunately, Coq will not unfold refinesFun
+   and add_loop_spec when rewriting, and the only workaround I know right now is this :/ *)
+Definition add_loop_spec_ref' : ltac:(let tp := type of add_loop_spec_ref in
+                                      let tp' := eval unfold refinesFun, add_loop_spec in tp
+                                       in exact tp') := add_loop_spec_ref.
+Hint Rewrite add_loop_spec_ref' : refinement_proofs.
+
+Lemma no_errors_sign_of_sum : refinesFun sign_of_sum (fun _ _ => noErrorsSpec).
+Proof.
+  unfold sign_of_sum, sign_of_sum__tuple_fun, noErrorsSpec.
+  time "no_errors_sign_of_sum" prove_refinement.
+Qed.
+
+Definition sign_of_sum_spec (x y : {_ : bitvector 64 & unit}) : CompM {_ : bitvector 64 & unit} :=
+  orM (     assertM (isBvslt _ (intToBv _ 0) (bvAdd _ (projT1 x) (projT1 y)))
+                    >> returnM (existT _ (intToBv _ 1) tt))
+      (orM (assertM (isBvslt _ (bvAdd _ (projT1 x) (projT1 y)) (intToBv _ 0))
+                    >> returnM (existT _ (intToBv _ (-1)) tt))
+           (assertM (bvAdd _ (projT1 x) (projT1 y) = intToBv _ 0)
+                    >> returnM (existT _ (intToBv _ 0) tt))).
+
+Lemma sign_of_sum_spec_ref : refinesFun sign_of_sum sign_of_sum_spec.
+Proof.
+  unfold sign_of_sum, sign_of_sum__tuple_fun, sign_of_sum_spec.
+  time "sign_of_sum_spec_ref" prove_refinement.
+  - continue_prove_refinement_left.
+    assumption.
+  - continue_prove_refinement_right;
+    continue_prove_refinement_left.
+    assumption.
+  - continue_prove_refinement_right;
+    continue_prove_refinement_right.
+    apply isBvsle_antisymm; assumption.
+Qed.
+
+
+(* Add `no_errors_sign_of_sum` to the hint database. Unfortunately, Coq will not unfold refinesFun
+   and no_errors_sign_of_sum when rewriting, and the only workaround I know right now is this :/ *)
+Definition no_errors_sign_of_sum' : ltac:(let tp := type of no_errors_sign_of_sum in
+                                          let tp' := eval unfold refinesFun, noErrorsSpec in tp
+                                           in exact tp') := no_errors_sign_of_sum.
+Hint Rewrite no_errors_sign_of_sum' : refinement_proofs.
+
+Lemma no_errors_compare_sum : refinesFun compare_sum (fun _ _ _ => noErrorsSpec).
+Proof.
+  unfold compare_sum, compare_sum__tuple_fun, noErrorsSpec.
+  time "no_errors_compare_sum" prove_refinement.
+  - assumption.
+  - rewrite e_if0 in e_if1.
+    discriminate e_if1.
+Qed.
+
+
+(* Remove `no_errors_sign_of_sum` from the database! *)
+Remove Hints no_errors_sign_of_sum' : refinement_proofs.
+
+(* Add `sign_of_sum_spec_ref` to the hint database. Unfortunately, Coq will not unfold refinesFun
+   and no_errors_sign_of_sum when rewriting, and the only workaround I know right now is this :/ *)
+Definition sign_of_sum_spec_ref' : ltac:(let tp := type of sign_of_sum_spec_ref in
+                                         let tp' := eval unfold refinesFun, sign_of_sum_spec in tp
+                                          in exact tp') := sign_of_sum_spec_ref.
+Hint Rewrite sign_of_sum_spec_ref' : refinement_proofs.
+
+
+Definition compare_sum_spec (x y z : {_ : bitvector 64 & unit}) : CompM {_ : bitvector 64 & unit} :=
+  orM (     assertM (isBvslt _ (projT1 x) (bvAdd _ (projT1 y) (projT1 z)))
+                    >> returnM (existT _ (intToBv _ 1) tt))
+      (orM (assertM (isBvslt _ (bvAdd _ (projT1 y) (projT1 z)) (projT1 x))
+                    >> returnM (existT _ (intToBv _ (-1)) tt))
+           (assertM (projT1 x = bvAdd _ (projT1 y) (projT1 z))
+                    >> returnM (existT _ (intToBv _ 0) tt))).
+
+Lemma compare_sum_spec_ref : refinesFun compare_sum compare_sum_spec.
+Proof.
+  unfold compare_sum, compare_sum__tuple_fun, compare_sum_spec.
+  (* This takes a long time and needs more bitvector proofs, but you get the idea! *)
+  (* time "compare_sum_spec_ref" prove_refinement. *)
+  (* - continue_prove_refinement_left. *)
+  (*   admit. *)
+  (* - continue_prove_refinement_right; *)
+  (*   continue_prove_refinement_left. *)
+  (*   admit. *)
+  (* - continue_prove_refinement_right; *)
+  (*   continue_prove_refinement_right. *)
+  (*   admit. *)
+  (* - continue_prove_refinement_left. *)
+  (*   admit. *)
+  (* - continue_prove_refinement_right; *)
+  (*   continue_prove_refinement_left. *)
+  (*   admit. *)
+  (* - continue_prove_refinement_right; *)
+  (*   continue_prove_refinement_right. *)
+  (*   admit. *)
+  (* - rewrite e_if0 in e_if1. *)
+  (*   discriminate e_if1. *)
+Admitted.

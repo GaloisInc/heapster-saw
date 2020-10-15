@@ -72,8 +72,7 @@ Proof.
   - apply refinesM_letRecM_Nil_l.
     apply refinesM_if_r; intro H; rewrite H; simpl.
     + reflexivity.
-    + unshelve (rewrite_strat (bottomup (hints refinesM))).
-      reflexivity.
+    + prove_refinement.
 Qed.
 
 (* The pure version of is_elem *)
