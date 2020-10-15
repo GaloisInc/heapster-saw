@@ -1481,6 +1481,20 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
            [natOpenTerm w, t1, t2],
            trueOpenTerm])
 
+  translate prop@[nuP| BVProp_ULeq_Diff e1 e2 e3 |] =
+    do let w = natVal4 e1
+       t1 <- translate1 e1
+       t2 <- translate1 e2
+       t3 <- translate1 e3
+       return $ flip mkTypeTrans1 (BVPropTrans prop)
+         (dataTypeOpenTerm "Prelude.EqP"
+          [globalOpenTerm "Prelude.Bool",
+           applyOpenTermMulti (globalOpenTerm "Prelude.bvule")
+           [natOpenTerm w, t1,
+            applyOpenTermMulti (globalOpenTerm "Prelude.bvSub")
+            [natOpenTerm w, t2, t3]],
+           trueOpenTerm])
+
 instance (1 <= w, KnownNat w, TransInfo info) =>
          Translate info ctx (BVRange w) (BVRangeTrans ctx w) where
   translate rng@[nuP| BVRange off len |] =
@@ -2755,6 +2769,26 @@ translatePermImpl1 prx [nuP| Impl1_TryProveBVProp x
            trans k)
        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvuleWithProof")
          [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
+       ]
+
+
+translatePermImpl1 prx [nuP| Impl1_TryProveBVProp x
+                           prop@(BVProp_ULeq_Diff e1 e2 e3) prop_str |]
+  [nuP| MbPermImpls_Cons _ mb_impl |] =
+  translatePermImpl prx (mbCombine mb_impl) >>= \trans ->
+  return $ \k ->
+  do prop_tp_trans <- translate prop
+     applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
+       [ return (typeTransType1 prop_tp_trans), compReturnTypeM
+       , implTransAltErr (mbLift prop_str) k
+       , lambdaTransM "ule_pf" prop_tp_trans
+         (\prop_trans ->
+           withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
+           trans k)
+       , applyMultiTransM (return $ globalOpenTerm "Prelude.bvuleWithProof")
+         [ return (natOpenTerm $ natVal2 prop), translate1 e1,
+           applyMultiTransM (return $ globalOpenTerm "Prelude.bvSub")
+           [return (natOpenTerm $ natVal2 prop), translate1 e2, translate1 e3]]
        ]
 
 

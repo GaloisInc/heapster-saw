@@ -21,6 +21,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Verifier.SAW.Heapster.Permissions where
 
@@ -819,6 +820,8 @@ bvPropHolds (BVProp_Eq e1 e2) = bvEq e1 e2
 bvPropHolds (BVProp_Neq e1 e2) = not (bvCouldEqual e1 e2)
 bvPropHolds (BVProp_ULt e1 e2) = bvLt e1 e2
 bvPropHolds (BVProp_ULeq e1 e2) = not (bvCouldBeLt e2 e1)
+bvPropHolds (BVProp_ULeq_Diff e1 e2 e3) =
+  not (bvCouldBeLt (bvSub e2 e3) e1)
 
 -- | Test whether a 'BVProp' "could" hold for all substitutions of the free
 -- variables. This is an overapproximation, meaning that some propositions are
@@ -828,6 +831,7 @@ bvPropCouldHold (BVProp_Eq e1 e2) = bvCouldEqual e1 e2
 bvPropCouldHold (BVProp_Neq e1 e2) = not (bvEq e1 e2)
 bvPropCouldHold (BVProp_ULt e1 e2) = bvCouldBeLt e1 e2
 bvPropCouldHold (BVProp_ULeq e1 e2) = not (bvLt e2 e1)
+bvPropCouldHold (BVProp_ULeq_Diff e1 e2 e3) = not (bvLt (bvSub e2 e3) e1)
 
 -- | Negate a 'BVProp'
 bvPropNegate :: BVProp w -> BVProp w
@@ -835,6 +839,8 @@ bvPropNegate (BVProp_Eq e1 e2) = BVProp_Neq e1 e2
 bvPropNegate (BVProp_Neq e1 e2) = BVProp_Eq e1 e2
 bvPropNegate (BVProp_ULt e1 e2) = BVProp_ULeq e2 e1
 bvPropNegate (BVProp_ULeq e1 e2) = BVProp_ULt e2 e1
+bvPropNegate (BVProp_ULeq_Diff e1 e2 e3) =
+  BVProp_ULt (bvSub e2 e3) e1
 
 -- | Build the proposition that @x@ is in the range @[off,off+len)@ as the
 -- proposition
@@ -867,11 +873,16 @@ bvPropNotInRange e rng = bvPropNegate $ bvPropInRange e rng
 -- always hold when @len1=0@ while the first proposition above does not always
 -- hold in this case, but we are ok with this. Equivalently, this approach views
 -- @[off1,off1+len1)@ as always containing @off1@ even when @len1=0@.
+--
+-- NOTE: we cannot simplify the subtraction @len2 - (off1 - off2)@ because when
+-- we translate to SAW core both @len2@ and @(off1 - off2)@ become different
+-- arguments to @sliceBVVec@ and @updSliceBVVec@, and SAW core does not simplify
+-- the subtraction of these two arguments.
 bvPropRangeSubset :: (1 <= w, KnownNat w) =>
                      BVRange w -> BVRange w -> [BVProp w]
 bvPropRangeSubset (BVRange off1 len1) (BVRange off2 len2) =
   [BVProp_ULeq (bvSub off1 off2) len2,
-   BVProp_ULeq len1 (bvSub len2 (bvSub off1 off2))]
+   BVProp_ULeq_Diff len1 len2 (bvSub off1 off2)]
 
 -- | Build the proposition that @[off1,off1+len1)@ and @[off2,off2+len2)@ are
 -- disjoint as following pair of propositions:
@@ -1024,7 +1035,13 @@ data BVProp w
   | BVProp_ULt (PermExpr (BVType w)) (PermExpr (BVType w))
     -- | True iff the first expression is unsigned @<=@ the second
   | BVProp_ULeq (PermExpr (BVType w)) (PermExpr (BVType w))
-  deriving Eq
+    -- | True iff the first expression is unsigned @<=@ the difference of the
+    -- second minus the third
+  | (1 <= w, KnownNat w) =>
+    BVProp_ULeq_Diff (PermExpr (BVType w)) (PermExpr (BVType w))
+    (PermExpr (BVType w))
+
+deriving instance Eq (BVProp w)
 
 -- | An atomic permission is a value permission that is not one of the compound
 -- constructs in the 'ValuePerm' type; i.e., not a disjunction, existential,
@@ -1821,6 +1838,9 @@ instance PermPretty (BVProp w) where
     (\pp1 pp2 -> pp1 <+> string "<u" <+> pp2) <$> permPrettyM e1 <*> permPrettyM e2
   permPrettyM (BVProp_ULeq e1 e2) =
     (\pp1 pp2 -> pp1 <+> string "<=u" <+> pp2) <$> permPrettyM e1 <*> permPrettyM e2
+  permPrettyM (BVProp_ULeq_Diff e1 e2 e3) =
+    (\pp1 pp2 pp3 -> pp1 <+> string "<=u" <+> pp2 <+> char '-' <+> pp3)
+    <$> permPrettyM e1 <*> permPrettyM e2 <*> permPrettyM e3
 
 instance PermPretty (LLVMArrayBorrow w) where
   permPrettyM (FieldBorrow (LLVMArrayIndex ix fld_num)) =
@@ -2987,6 +3007,8 @@ instance FreeVars (BVProp w) where
   freeVars (BVProp_Neq e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
   freeVars (BVProp_ULt e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
   freeVars (BVProp_ULeq e1 e2) = NameSet.union (freeVars e1) (freeVars e2)
+  freeVars (BVProp_ULeq_Diff e1 e2 e3) =
+    NameSet.unions [freeVars e1, freeVars e2, freeVars e3]
 
 instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMField fp) = freeVars fp
@@ -3644,6 +3666,8 @@ instance SubstVar s m => Substable s (BVProp w) m where
     BVProp_ULt <$> genSubst s e1 <*> genSubst s e2
   genSubst s [nuP| BVProp_ULeq e1 e2 |] =
     BVProp_ULeq <$> genSubst s e1 <*> genSubst s e2
+  genSubst s [nuP| BVProp_ULeq_Diff e1 e2 e3 |] =
+    BVProp_ULeq_Diff <$> genSubst s e1 <*> genSubst s e2 <*> genSubst s e3
 
 instance SubstVar s m => Substable s (AtomicPerm a) m where
   genSubst s [nuP| Perm_LLVMField fp |] = Perm_LLVMField <$> genSubst s fp
@@ -4275,6 +4299,11 @@ instance AbstractVars (BVProp w) where
     absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_ULeq |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 e1
     `clMbMbApplyM` abstractPEVars ns1 ns2 e2
+  abstractPEVars ns1 ns2 (BVProp_ULeq_Diff e1 e2 e3) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| BVProp_ULeq_Diff |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e1
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e2
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e3
 
 instance AbstractVars (AtomicPerm a) where
   abstractPEVars ns1 ns2 (Perm_LLVMField fp) =
