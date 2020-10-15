@@ -2681,7 +2681,7 @@ translatePermImpl1 prx [nuP| Impl1_TryProveBVProp
        , lambdaTransM "eq_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
-           implTransAltErr (mbLift prop_str) k)
+           trans k)
        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEqWithProof")
          [ return (natOpenTerm $ natVal2 prop) , translate1 e1, translate1 e2]]
 
@@ -2699,7 +2699,7 @@ translatePermImpl1 prx [nuP| Impl1_TryProveBVProp
   , implTransAltErr (mbLift prop_str) k
   , withPermStackM (:>: translateVar x)
     (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)]) $
-    implTransAltErr (mbLift prop_str) k]
+    trans k]
 
 {-
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULt e1 e2) _ |]
@@ -2724,7 +2724,7 @@ translatePermImpl1 prx [nuP| Impl1_TryProveBVProp x
        , lambdaTransM "ult_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
-           implTransAltErr (mbLift prop_str) k)
+           trans k)
        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvultWithProof")
          [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
        ]
@@ -2752,7 +2752,7 @@ translatePermImpl1 prx [nuP| Impl1_TryProveBVProp x
        , lambdaTransM "ule_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
-           implTransAltErr (mbLift prop_str) k)
+           trans k)
        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvuleWithProof")
          [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
        ]
