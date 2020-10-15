@@ -47,7 +47,9 @@ import Control.Lens hiding ((:>),Index)
 import Control.Monad.Fail
 import Control.Monad.Reader
 import Control.Monad.State
+import Control.Monad.Writer
 import Control.Monad.Cont
+import Control.Monad.Trans.Maybe
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 
@@ -1729,8 +1731,6 @@ data ImpTransInfo ext blocks tops ret ps ctx =
     itiPermStackVars :: RAssign (Member ctx) ps,
     itiPermEnv :: PermEnv,
     itiBlockMapTrans :: TypedBlockMapTrans ext blocks tops ret,
-    itiCatchHandler :: OpenTerm -> OpenTerm,
-    itiPrevErrMessage :: Maybe OpenTerm,
     itiReturnType :: OpenTerm
   }
 
@@ -1745,12 +1745,6 @@ instance TransInfo (ImpTransInfo ext blocks tops ret ps) where
     , itiPermStackVars = RL.map Member_Step itiPermStackVars
     , .. }
 
-
--- | Return the default catch handler of a given return type, which is just a
--- call to @errorM@ at that type
-defaultCatchHandler :: OpenTerm -> OpenTerm -> OpenTerm
-defaultCatchHandler tp str =
-  applyOpenTermMulti (globalOpenTerm "Prelude.errorM") [tp, str]
 
 -- | The monad for translating permission implications
 type ImpTransM ext blocks tops ret ps =
@@ -1771,8 +1765,6 @@ impTransM pvars pctx mapTrans retType =
                  itiPermStackVars = pvars,
                  itiPermEnv = env,
                  itiBlockMapTrans = mapTrans,
-                 itiCatchHandler = defaultCatchHandler retType,
-                 itiPrevErrMessage = Nothing,
                  itiReturnType = retType }
 
 -- | Embed a type translation into an impure translation
@@ -1895,40 +1887,11 @@ compReturnTypeTransM :: ImpTransM ext blocks tops ret ps_out ctx (TypeTrans Open
 compReturnTypeTransM =
   flip mkTypeTrans1 id <$> compReturnTypeM
 
--- | Run a computation with a new catch handler
-withCatchHandlerM :: OpenTerm -> ImpTransM ext blocks tops ret ps_out ctx a ->
-                     ImpTransM ext blocks tops ret ps_out ctx a
-withCatchHandlerM h =
-  local (\info -> info { itiCatchHandler = applyOpenTerm h })
-
--- | Run a computation with the default catch handler and with no previous error
--- message
-withDefaultCatchHandlerM :: ImpTransM ext blocks tops ret ps_out ctx a ->
-                            ImpTransM ext blocks tops ret ps_out ctx a
-withDefaultCatchHandlerM m =
-  returnTypeM >>= \retType ->
-  local (\info -> info { itiCatchHandler = defaultCatchHandler retType,
-                         itiPrevErrMessage = Nothing }) m
-
--- | Apply the current catch handler to a string error message, prepending the
--- previous error message if there is one
-applyCatchHandlerM :: String ->
-                      ImpTransM ext blocks tops ret ps_out ctx OpenTerm
-applyCatchHandlerM msg =
-  do info <- ask
-     let msg_trm = case itiPrevErrMessage info of
-           Just prev_msg ->
-             applyOpenTermMulti (globalOpenTerm "Prelude.appendString")
-             [prev_msg,
-              stringLitOpenTerm ("\n\n--------------------\n\n" ++ msg)]
-           Nothing -> stringLitOpenTerm msg
-     return $ itiCatchHandler info msg_trm
-
--- | Run a computation with a new error message variable
-withPrevErrMessage :: OpenTerm -> ImpTransM ext blocks tops ret ps_out ctx a ->
-                      ImpTransM ext blocks tops ret ps_out ctx a
-withPrevErrMessage msg =
-  local (\info -> info { itiPrevErrMessage = Just msg })
+-- | Build an @errorM@ computation with the given error message
+mkErrorCompM :: String -> ImpTransM ext blocks tops ret ps_out ctx OpenTerm
+mkErrorCompM msg =
+  applyMultiTransM (return $ globalOpenTerm "Prelude.errorM")
+  [returnTypeM, return $ stringLitOpenTerm msg]
 
 -- | The typeclass for the implication translation of a functor at any
 -- permission set inside any binding to an 'OpenTerm'
@@ -2504,241 +2467,239 @@ translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedArgRead _ _ _ _ _ |] m =
   m
 
 
--- | The intermediate translation of a 'PermImpl' is a computation to translate
--- the potentially non-failing branch(es) along with a list of failure strings
-data PermImplTrans ext blocks tops ret ps ctx
-  = PermImplTransJust !(ImpTransM ext blocks tops ret ps ctx OpenTerm) ![String]
-  | PermImplTransNothing ![String]
+-- | The monad for translating 'PermImpl's, which accumulates all failure
+-- messages in all branches of a 'PermImpl' and either returns a result or
+-- results in only failures
+type PermImplTransM = MaybeT (Writer [String])
 
--- | A lens that refers to the error messages of a 'PermImplTrans'
-permImplTransErrs :: PermImplTrans ext blocks tops ret ps ctx -> [String]
-permImplTransErrs (PermImplTransJust _ errs) = errs
-permImplTransErrs (PermImplTransNothing errs) = errs
+-- | Run a 'PermImplTransM' computation
+runPermImplTransM :: PermImplTransM a -> (Maybe a, [String])
+runPermImplTransM = runWriter . runMaybeT
 
--- | Convert a 'PermImplTrans' to a (computation of a) term that performs any
--- necessary catch and/or failures, prepending the given string to the first
--- error message
-permImplTransToTerm :: Maybe String ->
-                       PermImplTrans ext blocks tops ret ps ctx ->
-                       ImpTransM ext blocks tops ret ps ctx OpenTerm
-permImplTransToTerm _ (PermImplTransJust m []) = m
-permImplTransToTerm pre_err (PermImplTransJust m errs) =
-  do compMType <- compReturnTypeM
-     letTransM "catchpoint" (arrowOpenTerm "msg" stringTypeOpenTerm compMType)
-       (lambdaOpenTermTransM "msg" stringTypeOpenTerm $ \msg ->
-         withPrevErrMessage msg (permImplTransToTerm pre_err
-                                 (PermImplTransNothing errs)))
-       (\handler -> withCatchHandlerM handler m)
-permImplTransToTerm maybe_pre_err (PermImplTransNothing errs) =
-  let pre_err = maybe "" (++ "\n\n") maybe_pre_err in
-  applyCatchHandlerM (pre_err ++
-                      concat (intersperse "\n\n--------------------\n\n" errs))
+-- | Catch any failures in a 'PermImplTransM' computation
+pitmCatching :: PermImplTransM a -> PermImplTransM (Maybe a)
+pitmCatching m = lift $ runMaybeT m
 
--- | The intermediate translation of an 'MbPermImpls' list
-data MbPermImplsTrans ext blocks tops ret bs_pss ctx where
-  MbPermImplsTrans_Nil :: MbPermImplsTrans ext blocks tops ret RNil ctx
-  MbPermImplsTrans_Cons ::
-    !(MbPermImplsTrans ext blocks tops ret bs_pss ctx) ->
-    !(PermImplTrans ext blocks tops ret ps (ctx :++: bs)) ->
-    MbPermImplsTrans ext blocks tops ret (bs_pss :> '(bs,ps)) ctx
+-- | Return or fail depending on whether the input is present or 'Nothing'
+pitmMaybeRet :: Maybe a -> PermImplTransM a
+pitmMaybeRet (Just a) = return a
+pitmMaybeRet Nothing = mzero
 
--- | Combine all error messages in a 'MbPermImplsTrans'
-mbPermImplsTransErrs :: MbPermImplsTrans ext blocks tops ret bs_pss ctx ->
-                        [String]
-mbPermImplsTransErrs MbPermImplsTrans_Nil = []
-mbPermImplsTransErrs (MbPermImplsTrans_Cons impls impl) =
-  mbPermImplsTransErrs impls ++ permImplTransErrs impl
+-- | A failure continuation represents any catch that is around the current
+-- 'PermImpl', and can either be a term to jump to / call (meaning that there is
+-- a catch) or an error message (meaning there is not)
+data ImplFailCont
+     -- | A continuation that calls a term on failure
+  = ImplFailContTerm OpenTerm
+    -- | An error message to print on failure
+  | ImplFailContMsg String
+
+-- | "Force" the translation of a possibly failing computation to always return
+-- a computation, even if it is just the failing computation
+forceImplTrans :: Maybe (ImplFailCont ->
+                         ImpTransM ext blocks tops ret ps ctx OpenTerm) ->
+                  ImplFailCont ->
+                  ImpTransM ext blocks tops ret ps ctx OpenTerm
+forceImplTrans (Just trans) k = trans k
+forceImplTrans Nothing (ImplFailContTerm errM) = return errM
+forceImplTrans Nothing (ImplFailContMsg str) =
+  returnTypeM >>= \tp ->
+  return (applyOpenTermMulti (globalOpenTerm "Prelude.errorM")
+          [tp, stringLitOpenTerm str])
+
+-- | Perform a failure by jumping to a failure continuation or signaling an
+-- error, using an alternate error message in the latter case
+implTransAltErr :: String -> ImplFailCont ->
+                   ImpTransM ext blocks tops ret ps ctx OpenTerm
+implTransAltErr _ (ImplFailContTerm errM) = return errM
+implTransAltErr str (ImplFailContMsg _) =
+  returnTypeM >>= \tp ->
+  return (applyOpenTermMulti (globalOpenTerm "Prelude.errorM")
+          [tp, stringLitOpenTerm str])
+
+-- | Translate a normal unary 'PermImpl1' rule that succeeds and applies the
+-- translation function if the argument succeeds and fails if the translation of
+-- the argument fails
+translatePermImplUnary ::
+  ImplTranslateF r ext blocks tops ret =>
+  Mb ctx (MbPermImpls r (RNil :> '(bs,ps_out))) ->
+  (ImpTransM ext blocks tops ret ps_out (ctx :++: bs) OpenTerm ->
+   ImpTransM ext blocks tops ret ps ctx OpenTerm) ->
+  PermImplTransM (ImplFailCont ->
+                  ImpTransM ext blocks tops ret ps ctx OpenTerm)
+translatePermImplUnary [nuP| MbPermImpls_Cons _ mb_impl |] f =
+  translatePermImpl Proxy (mbCombine mb_impl) >>= \trans ->
+  return $ \k -> f $ trans k
+
 
 -- | Translate a 'PermImpl1' to a function on translation computations
-translatePermImpl1 :: Mb ctx (PermImpl1 ps_in ps_outs) ->
-                      MbPermImplsTrans ext blocks tops ret ps_outs ctx ->
-                      PermImplTrans ext blocks tops ret ps_in ctx
+translatePermImpl1 :: ImplTranslateF r ext blocks tops ret =>
+                      Proxy '(ext, blocks, tops, ret) ->
+                      Mb ctx (PermImpl1 ps ps_outs) ->
+                      Mb ctx (MbPermImpls r ps_outs) ->
+                      PermImplTransM
+                      (ImplFailCont ->
+                       ImpTransM ext blocks tops ret ps ctx OpenTerm)
 
 -- A failure translates to a call to the catch handler, which is the most recent
 -- Impl1_Catch, if one exists, or the SAW errorM function otherwise
-translatePermImpl1 [nuP| Impl1_Fail str |] _ =
-  PermImplTransNothing [mbLift str]
+translatePermImpl1 _ [nuP| Impl1_Fail str |] _ =
+  tell [mbLift str] >> mzero
 
--- A catch runs the first computation using the second as catch handler
---
--- NOTE: don't get confused by the fact that the second computation shows up
--- first in the term; this is because it is on the RHS of the let-binding
-translatePermImpl1 [nuP| Impl1_Catch |]
-  (MbPermImplsTrans_Cons
-   (MbPermImplsTrans_Cons _
-    (PermImplTransJust m1 errs1)) (PermImplTransJust m2 errs2)) =
-  PermImplTransJust
-  (do compMType <- compReturnTypeM
-      letTransM "catchpoint" (arrowOpenTerm "msg" stringTypeOpenTerm compMType)
-        (lambdaOpenTermTransM "msg" stringTypeOpenTerm $ \msg ->
-          withPrevErrMessage msg m2)
-        (\handler -> withCatchHandlerM handler m1))
-  (errs1 ++ errs2)
-
--- A catch with just one non-failing branch just runs that branch
-translatePermImpl1 [nuP| Impl1_Catch |]
-  (MbPermImplsTrans_Cons
-   (MbPermImplsTrans_Cons _
-    (PermImplTransJust m errs1)) (PermImplTransNothing errs2)) =
-  PermImplTransJust m (errs1 ++ errs2)
-
--- A catch with just one non-failing branch just runs that branch
-translatePermImpl1 [nuP| Impl1_Catch |]
-  (MbPermImplsTrans_Cons
-   (MbPermImplsTrans_Cons _
-    (PermImplTransNothing errs1)) (PermImplTransJust m errs2)) =
-  PermImplTransJust m (errs1 ++ errs2)
+translatePermImpl1 prx [nuP| Impl1_Catch |]
+  [nuP| (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2) |] =
+  pitmCatching (translatePermImpl prx $ mbCombine mb_impl1) >>= \maybe_trans1 ->
+  pitmCatching (translatePermImpl prx $ mbCombine mb_impl2) >>= \maybe_trans2 ->
+  case (maybe_trans1, maybe_trans2) of
+    (Just trans1, Just trans2) ->
+      return $ \k ->
+      compReturnTypeM >>= \ret_tp ->
+      letTransM "catchpoint" ret_tp (trans2 k)
+      (\catchpoint -> trans1 $ ImplFailContTerm catchpoint)
+    (Nothing, Just trans2) -> return trans2
+    (_, Nothing) -> pitmMaybeRet maybe_trans1
 
 -- A push moves the given permission from x to the top of the perm stack
-translatePermImpl1 [nuP| Impl1_Push x p |] (MbPermImplsTrans_Cons _
-                                            (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (do () <- assertVarPermM "Impl1_Push" x p
-      ptrans <- getVarPermM x
-      setVarPermM x (PTrans_True)
-        (withPermStackM (:>: translateVar x) (:>: ptrans) m))
-  errs
+translatePermImpl1 _ [nuP| Impl1_Push x p |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  do () <- assertVarPermM "Impl1_Push" x p
+     ptrans <- getVarPermM x
+     setVarPermM x (PTrans_True)
+       (withPermStackM (:>: translateVar x) (:>: ptrans) m)
 
 -- A pop moves the given permission from the top of the perm stack to x
-translatePermImpl1 [nuP| Impl1_Pop x p |] (MbPermImplsTrans_Cons _
-                                            (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (do () <- assertTopPermM "Impl1_Pop 1" x p
-      () <- assertVarPermM "Impl1_Pop 2" x (nuMulti (mbToProxy p) $
-                                            const ValPerm_True)
-      ptrans <- getTopPermM
-      setVarPermM x ptrans (withPermStackM RL.tail RL.tail m))
-  errs
+translatePermImpl1 _ [nuP| Impl1_Pop x p |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  do () <- assertTopPermM "Impl1_Pop 1" x p
+     () <- assertVarPermM "Impl1_Pop 2" x (nuMulti (mbToProxy p) $
+                                           const ValPerm_True)
+     ptrans <- getTopPermM
+     setVarPermM x ptrans (withPermStackM RL.tail RL.tail m)
 
--- If both branches of an or elimination fails, the whole thing fails
-translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |] (MbPermImplsTrans_Cons
-                                                  (MbPermImplsTrans_Cons _
-                                                   (PermImplTransNothing errs1))
-                                                  (PermImplTransNothing errs2)) =
-  PermImplTransNothing (errs1 ++ errs2)
-
--- Otherwise, an or elimination performs a pattern-match on an Either, and any
--- failures are caught in their respective branches
-translatePermImpl1 [nuP| Impl1_ElimOr x p1 p2 |] (MbPermImplsTrans_Cons
-                                                  (MbPermImplsTrans_Cons _
-                                                   trans1) trans2) =
-  PermImplTransJust
-  (do () <- assertTopPermM "Impl1_ElimOr" x (mbMap2 ValPerm_Or p1 p2)
-      tp1 <- translate p1
-      tp2 <- translate p2
-      tp_ret <- compReturnTypeTransM
-      top_ptrans <- getTopPermM
-      eitherElimTransM tp1 tp2 tp_ret
-        (\ptrans ->
-          withPermStackM id ((:>: ptrans) . RL.tail) $
-          permImplTransToTerm Nothing trans1)
-        (\ptrans ->
-          withPermStackM id ((:>: ptrans) . RL.tail) $
-          permImplTransToTerm Nothing trans2)
-        (transTupleTerm top_ptrans))
-  []
+-- If both branches of an or elimination fail, the whole thing fails; otherwise,
+-- an or elimination performs a pattern-match on an Either
+translatePermImpl1 prx [nuP| Impl1_ElimOr x p1 p2 |]
+  [nuP| (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2) |] =
+  pitmCatching (translatePermImpl prx $ mbCombine mb_impl1) >>= \maybe_trans1 ->
+  pitmCatching (translatePermImpl prx $ mbCombine mb_impl2) >>= \maybe_trans2 ->
+  case (maybe_trans1, maybe_trans2) of
+    (Nothing, Nothing) -> mzero
+    _ ->
+      return $ \k ->
+      do () <- assertTopPermM "Impl1_ElimOr" x (mbMap2 ValPerm_Or p1 p2)
+         tp1 <- translate p1
+         tp2 <- translate p2
+         tp_ret <- compReturnTypeTransM
+         top_ptrans <- getTopPermM
+         eitherElimTransM tp1 tp2 tp_ret
+           (\ptrans ->
+             withPermStackM id ((:>: ptrans) . RL.tail) $
+             forceImplTrans maybe_trans1 k)
+           (\ptrans ->
+             withPermStackM id ((:>: ptrans) . RL.tail) $
+             forceImplTrans maybe_trans2 k)
+           (transTupleTerm top_ptrans)
 
 -- An existential elimination performs a pattern-match on a Sigma
-translatePermImpl1 [nuP| Impl1_ElimExists x p |] (MbPermImplsTrans_Cons _
-                                                  (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (do () <- assertTopPermM "Impl1_ElimExists" x (fmap ValPerm_Exists p)
-      let tp = mbBindingType p
-      top_ptrans <- getTopPermM
-      tp_trans <- translateClosed tp
-      sigmaElimTransM "x_elimEx" tp_trans
-        (flip inExtTransM $ translate $ mbCombine p)
-        compReturnTypeTransM
-        (\etrans ptrans ->
-          inExtTransM etrans $
-          withPermStackM id ((:>: ptrans) . RL.tail) m)
-        (transTerm1 top_ptrans))
-  errs
+translatePermImpl1 _ [nuP| Impl1_ElimExists x p |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  do () <- assertTopPermM "Impl1_ElimExists" x (fmap ValPerm_Exists p)
+     let tp = mbBindingType p
+     top_ptrans <- getTopPermM
+     tp_trans <- translateClosed tp
+     sigmaElimTransM "x_elimEx" tp_trans
+       (flip inExtTransM $ translate $ mbCombine p)
+       compReturnTypeTransM
+       (\etrans ptrans ->
+         inExtTransM etrans $
+         withPermStackM id ((:>: ptrans) . RL.tail) m)
+       (transTerm1 top_ptrans)
 
 -- A SimplImpl is translated using translateSimplImpl
-translatePermImpl1 [nuP| Impl1_Simpl simpl prx |] (MbPermImplsTrans_Cons _
-                                                   (PermImplTransJust m errs)) =
-  PermImplTransJust (translateSimplImpl (mbLift prx) simpl m) errs
+translatePermImpl1 _ [nuP| Impl1_Simpl simpl prx |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  translateSimplImpl (mbLift prx) simpl m
 
 -- A let binding becomes a let binding
-translatePermImpl1 [nuP| Impl1_LetBind _ e |] (MbPermImplsTrans_Cons _
-                                               (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (do etrans <- translate e
-      inExtTransM etrans $
-        withPermStackM (:>: Member_Base) (:>: PTrans_Eq (extMb e)) m)
-  errs
+translatePermImpl1 _ [nuP| Impl1_LetBind _ e |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  do etrans <- translate e
+     inExtTransM etrans $
+       withPermStackM (:>: Member_Base) (:>: PTrans_Eq (extMb e)) m
 
-translatePermImpl1 [nuP| Impl1_ElimLLVMFieldContents
-                       _ mb_fld |] (MbPermImplsTrans_Cons _
-                                    (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (inExtTransM ETrans_LLVM $
-   withPermStackM (:>: Member_Base)
-   (\(pctx :>: ptrans_x) ->
-     let (_,ptrans') =
-           unPTransLLVMField "translateSimplImpl: Impl1_ElimLLVMFieldContents"
-           knownNat ptrans_x in
-     pctx :>: PTrans_Conj [APTrans_LLVMField
-                           (mbCombine $
-                            fmap (\fld -> nu $ \y ->
-                                   fld { llvmFieldContents =
-                                           ValPerm_Eq (PExpr_Var y)})
-                            mb_fld) $
-                           PTrans_Eq (mbCombine $
-                                      fmap (const $ nu PExpr_Var) mb_fld)]
-     :>: ptrans')
-   m)
-  errs
+translatePermImpl1 _ [nuP| Impl1_ElimLLVMFieldContents _ mb_fld |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  inExtTransM ETrans_LLVM $
+  withPermStackM (:>: Member_Base)
+  (\(pctx :>: ptrans_x) ->
+    let (_,ptrans') =
+          unPTransLLVMField "translateSimplImpl: Impl1_ElimLLVMFieldContents"
+          knownNat ptrans_x in
+    pctx :>: PTrans_Conj [APTrans_LLVMField
+                          (mbCombine $
+                           fmap (\fld -> nu $ \y ->
+                                  fld { llvmFieldContents =
+                                          ValPerm_Eq (PExpr_Var y)})
+                           mb_fld) $
+                          PTrans_Eq (mbCombine $
+                                     fmap (const $ nu PExpr_Var) mb_fld)]
+    :>: ptrans')
+  m
 
 -- If e1 and e2 are already equal, short-circuit the proof construction and then
 -- elimination
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) _ |]
-  (MbPermImplsTrans_Cons _ (PermImplTransJust m errs))
+translatePermImpl1 _ [nuP| Impl1_TryProveBVProp
+                       x prop@(BVProp_Eq e1 e2) _ |] mb_impls
   | mbLift (mbMap2 bvEq e1 e2) =
-    PermImplTransJust
-    (do bv_tp <- typeTransType1 <$> translateClosed (mbExprType e1)
-        e1_trans <- translate1 e1
-        let pf = ctorOpenTerm "Prelude.ReflP" [bv_tp, e1_trans]
-        withPermStackM (:>: translateVar x)
-          (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop pf)])
-          m)
-    errs
+    translatePermImplUnary mb_impls $ \m ->
+    do bv_tp <- typeTransType1 <$> translateClosed (mbExprType e1)
+       e1_trans <- translate1 e1
+       let pf = ctorOpenTerm "Prelude.ReflP" [bv_tp, e1_trans]
+       withPermStackM (:>: translateVar x)
+         (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop pf)])
+         m
 
--- If e1 and e2 are definitely not equal, short-circuit the proof construction
--- and then elimination
-translatePermImpl1 [nuP| Impl1_TryProveBVProp _ (BVProp_Eq e1 e2) prop_str |]
-  (MbPermImplsTrans_Cons _ (PermImplTransJust m errs))
+-- If e1 and e2 are definitely not equal, treat this as a fail
+translatePermImpl1 _ [nuP| Impl1_TryProveBVProp _ (BVProp_Eq e1 e2) prop_str |] _
   | not $ mbLift (mbMap2 bvCouldEqual e1 e2) =
-    PermImplTransJust (applyCatchHandlerM (mbLift prop_str)) errs
+    tell [mbLift prop_str] >> mzero
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) prop_str |]
-  (MbPermImplsTrans_Cons _ (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (do prop_tp_trans <- translate prop
-      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
-        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-        , (applyCatchHandlerM (mbLift prop_str))
-        , lambdaTransM "eq_pf" prop_tp_trans
-          (\prop_trans ->
-            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) m)
-        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEqWithProof")
-          [ return (natOpenTerm $ natVal2 prop) , translate1 e1, translate1 e2]])
-  errs
+-- Otherwise, insert an equality test with proof construction. Note that, as
+-- with all TryProveBVProps, if the test fails and there is no failure
+-- continuation, we insert just the proposition failure string using
+-- implTransAltErr, not the entire type-checking error message, because this is
+-- considered just an assertion and not a failure
+translatePermImpl1 prx [nuP| Impl1_TryProveBVProp
+                           x prop@(BVProp_Eq e1 e2) prop_str |]
+  [nuP| MbPermImpls_Cons _ mb_impl |] =
+  translatePermImpl prx (mbCombine mb_impl) >>= \trans ->
+  return $ \k ->
+  do prop_tp_trans <- translate prop
+     applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
+       [ return (typeTransType1 prop_tp_trans), compReturnTypeM
+       , implTransAltErr (mbLift prop_str) k
+       , lambdaTransM "eq_pf" prop_tp_trans
+         (\prop_trans ->
+           withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
+           implTransAltErr (mbLift prop_str) k)
+       , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEqWithProof")
+         [ return (natOpenTerm $ natVal2 prop) , translate1 e1, translate1 e2]]
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) prop_str |]
-  (MbPermImplsTrans_Cons _ (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (let w = natVal2 prop in
-   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
-   [ compReturnTypeM
-   , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
-     [ return (natOpenTerm w), translate1 e1, translate1 e2 ]
-   , (applyCatchHandlerM (mbLift prop_str))
-   , withPermStackM (:>: translateVar x)
-     (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)])
-     m])
-  errs
+-- For an inequality test, we don't need a proof, so just insert an if
+translatePermImpl1 prx [nuP| Impl1_TryProveBVProp
+                           x prop@(BVProp_Neq e1 e2) prop_str |]
+  [nuP| MbPermImpls_Cons _ mb_impl |] =
+  translatePermImpl prx (mbCombine mb_impl) >>= \trans ->
+  return $ \k ->
+  let w = natVal2 prop in
+  applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
+  [ compReturnTypeM
+  , applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
+    [ return (natOpenTerm w), translate1 e1, translate1 e2 ]
+  , implTransAltErr (mbLift prop_str) k
+  , withPermStackM (:>: translateVar x)
+    (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop unitOpenTerm)]) $
+    implTransAltErr (mbLift prop_str) k]
 
 {-
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULt e1 e2) _ |]
@@ -2751,21 +2712,22 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULt e1 e2) _ |]
     (translate $ mbCombine mb_impl)
 -}
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                       prop@(BVProp_ULt e1 e2) prop_str |]
-  (MbPermImplsTrans_Cons _ (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (do prop_tp_trans <- translate prop
-      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
-        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-        , (applyCatchHandlerM (mbLift prop_str))
-        , lambdaTransM "ult_pf" prop_tp_trans
-          (\prop_trans ->
-            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) m)
-        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvultWithProof")
-          [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
-        ])
-  errs
+translatePermImpl1 prx [nuP| Impl1_TryProveBVProp x
+                           prop@(BVProp_ULt e1 e2) prop_str |]
+  [nuP| MbPermImpls_Cons _ mb_impl |] =
+  translatePermImpl prx (mbCombine mb_impl) >>= \trans ->
+  return $ \k ->
+  do prop_tp_trans <- translate prop
+     applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
+       [ return (typeTransType1 prop_tp_trans), compReturnTypeM
+       , implTransAltErr (mbLift prop_str) k
+       , lambdaTransM "ult_pf" prop_tp_trans
+         (\prop_trans ->
+           withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
+           implTransAltErr (mbLift prop_str) k)
+       , applyMultiTransM (return $ globalOpenTerm "Prelude.bvultWithProof")
+         [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
+       ]
 
 {-
 translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULeq e1 e2) _ |]
@@ -2778,52 +2740,48 @@ translatePermImpl1 [nuP| Impl1_TryProveBVProp x prop@(BVProp_ULeq e1 e2) _ |]
     (translate $ mbCombine mb_impl)
 -}
 
-translatePermImpl1 [nuP| Impl1_TryProveBVProp x
-                       prop@(BVProp_ULeq e1 e2) prop_str |]
-  (MbPermImplsTrans_Cons _ (PermImplTransJust m errs)) =
-  PermImplTransJust
-  (do prop_tp_trans <- translate prop
-      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
-        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
-        , (applyCatchHandlerM (mbLift prop_str))
-        , lambdaTransM "ule_pf" prop_tp_trans
-          (\prop_trans ->
-            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) m)
-        , applyMultiTransM (return $ globalOpenTerm "Prelude.bvuleWithProof")
-          [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
-        ])
-  errs
-
--- Any other case means at least one of the arguments was just a failure, so we
--- fail too
-translatePermImpl1 _ mb_impls_trans =
-  PermImplTransNothing $ mbPermImplsTransErrs mb_impls_trans
+translatePermImpl1 prx [nuP| Impl1_TryProveBVProp x
+                           prop@(BVProp_ULeq e1 e2) prop_str |]
+  [nuP| MbPermImpls_Cons _ mb_impl |] =
+  translatePermImpl prx (mbCombine mb_impl) >>= \trans ->
+  return $ \k ->
+  do prop_tp_trans <- translate prop
+     applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
+       [ return (typeTransType1 prop_tp_trans), compReturnTypeM
+       , implTransAltErr (mbLift prop_str) k
+       , lambdaTransM "ule_pf" prop_tp_trans
+         (\prop_trans ->
+           withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
+           implTransAltErr (mbLift prop_str) k)
+       , applyMultiTransM (return $ globalOpenTerm "Prelude.bvuleWithProof")
+         [ return (natOpenTerm $ natVal2 prop), translate1 e1, translate1 e2]
+       ]
 
 
--- | Translate an 'MbPermImpls' list
-translateMbPermImpls :: ImplTranslateF r ext blocks tops ret =>
-                        Mb ctx (MbPermImpls r bs_pss) ->
-                        MbPermImplsTrans ext blocks tops ret bs_pss ctx
-translateMbPermImpls [nuP| MbPermImpls_Nil |] = MbPermImplsTrans_Nil
-translateMbPermImpls [nuP| MbPermImpls_Cons impls impl |] =
-  MbPermImplsTrans_Cons (translateMbPermImpls impls)
-  (translatePermImpl $ mbCombine impl)
-
--- | Translate a 'PermImpl'
+-- | Translate a 'PermImpl' in the 'PermImplTransM' monad to a function that
+-- takes a failure continuation and returns a monadic computation to generate
+-- the translation as a term
 translatePermImpl :: ImplTranslateF r ext blocks tops ret =>
+                     Proxy '(ext, blocks, tops, ret) ->
                      Mb ctx (PermImpl r ps) ->
-                     PermImplTrans ext blocks tops ret ps ctx
-translatePermImpl [nuP| PermImpl_Done r |] =
-  PermImplTransJust (withDefaultCatchHandlerM $ translateF r) []
-translatePermImpl [nuP| PermImpl_Step impl1 mb_impls |] =
-  translatePermImpl1 impl1 $ translateMbPermImpls mb_impls
+                     PermImplTransM
+                     (ImplFailCont ->
+                      ImpTransM ext blocks tops ret ps ctx OpenTerm)
+translatePermImpl _ [nuP| PermImpl_Done r |] =
+  return $ const $ translateF r
+translatePermImpl prx [nuP| PermImpl_Step impl1 mb_impls |] =
+  translatePermImpl1 prx impl1 mb_impls
 
 
 instance ImplTranslateF r ext blocks tops ret =>
          Translate (ImpTransInfo
                     ext blocks tops ret ps) ctx (AnnotPermImpl r ps) OpenTerm where
-  translate [nuP| AnnotPermImpl err mb_impl |] =
-    permImplTransToTerm (Just $ mbLift err) $ translatePermImpl mb_impl
+  translate [nuP| AnnotPermImpl err impl |] =
+    let (transF, errs) = runPermImplTransM $ translatePermImpl Proxy impl in
+    forceImplTrans transF $
+    ImplFailContMsg (mbLift err ++ "\n\n"
+                     ++ concat (intersperse
+                                "\n\n--------------------\n\n" errs))
 
 
 ----------------------------------------------------------------------
@@ -3238,8 +3196,8 @@ translateStmt _ stmt@[nuP| EndLifetime _ ps _ end_perms |] m =
 translateStmt loc [nuP| TypedAssert e _ |] m =
   applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
   [compReturnTypeM, translate1 e, m,
-   applyCatchHandlerM ("Failed Assert at " ++
-                       renderDoc (ppShortFileName (plSourceLoc loc)))]
+   mkErrorCompM ("Failed Assert at " ++
+                 renderDoc (ppShortFileName (plSourceLoc loc)))]
 
 translateStmt _ [nuP| TypedLLVMStmt stmt |] m = translateLLVMStmt stmt m
 
@@ -3406,9 +3364,9 @@ instance PermCheckExtC ext =>
      translate impl_tgt1, translate impl_tgt2]
   translate [nuP| TypedReturn impl_ret |] = translate impl_ret
   translate [nuP| TypedErrorStmt (Just str) _ |] =
-    applyCatchHandlerM ("Error: " ++ mbLift str)
+    mkErrorCompM ("Error: " ++ mbLift str)
   translate [nuP| TypedErrorStmt Nothing _ |] =
-    applyCatchHandlerM "Error (unknown message)"
+    mkErrorCompM "Error (unknown message)"
 
 
 instance PermCheckExtC ext =>
