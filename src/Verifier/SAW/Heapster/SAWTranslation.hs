@@ -1851,9 +1851,11 @@ assertTopPermM nm x p =
   getPermStackDistPerms >>= \stack_perms ->
   case stack_perms of
     [nuP| DistPermsCons _ x' p' |] | x == x' && p == p' -> return ()
-    _ ->
-      -- FIXME: make this error message more informative!
-      error "assertTopPermM"
+    [nuP| DistPermsCons _ x' p' |] ->
+      error ("assertTopPermM (" ++ nm ++ "): expected top permissions:\n" ++
+             permPrettyString emptyPPInfo (mbMap2 distPerms1 x p) ++
+             "\nFound top permissions:\n" ++
+             permPrettyString emptyPPInfo (mbMap2 distPerms1 x' p'))
 
 -- | Get the (translation of the) perms for a variable
 getVarPermM :: Mb ctx (ExprVar tp) ->
@@ -2448,8 +2450,9 @@ translateSimplImpl _ [nuP| SImpl_Mu _ _ _ _ |] m =
 
 translateSimplImpl _ [nuP| SImpl_NamedToConj x npn args off |] m =
   withPermStackM id
-  (\(pctx :>: PTrans_Term _ t) ->
-    pctx :>: PTrans_Conj [APTrans_NamedConj (mbLift npn) args off t]) m
+  (\(pctx :>: ptrans) ->
+    pctx :>: PTrans_Conj [APTrans_NamedConj (mbLift npn) args off $
+                          transTerm1 ptrans]) m
 
 translateSimplImpl _ [nuP| SImpl_NamedFromConj x npn args off |] m =
   withPermStackM id
