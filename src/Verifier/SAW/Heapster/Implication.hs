@@ -3006,6 +3006,10 @@ recombinePerm' x x_p@(ValPerm_Conj x_ps) (ValPerm_Conj (p:ps)) =
   implSwapM x (ValPerm_Conj1 p) x (ValPerm_Conj ps) >>>
   recombinePermConj x x_ps p >>>= \x_ps' ->
   recombinePermExpl x (ValPerm_Conj x_ps') (ValPerm_Conj ps)
+recombinePerm' x x_p (ValPerm_Named npn args off)
+  | TrueRepr <- nameIsConjRepr npn =
+    implNamedToConjM x npn args off >>>
+    recombinePermExpl x x_p (ValPerm_Conj1 $ Perm_NamedConj npn args off)
 recombinePerm' x _ p = implDropM x p
 
 -- | Recombine a single conjuct @x:p@ on top of the stack back into the existing
