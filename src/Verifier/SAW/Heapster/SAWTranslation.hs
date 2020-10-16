@@ -1134,6 +1134,8 @@ consPermTransCtx = (:>:)
 offsetLLVMAtomicPermTrans :: (1 <= w, KnownNat w) => Mb ctx (PermExpr (BVType w)) ->
                              AtomicPermTrans ctx (LLVMPointerType w) ->
                              Maybe (AtomicPermTrans ctx (LLVMPointerType w))
+offsetLLVMAtomicPermTrans (fmap bvMatchConstInt -> [nuP| Just 0 |]) ptrans =
+  Just ptrans
 offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMField fld ptrans) =
   Just $ APTrans_LLVMField (mbMap2 offsetLLVMFieldPerm mb_off fld) ptrans
 offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMArray
@@ -1144,8 +1146,8 @@ offsetLLVMAtomicPermTrans _ (APTrans_LLVMFree _) = Nothing
 offsetLLVMAtomicPermTrans _ (APTrans_LLVMFunPtr _ _) = Nothing
 offsetLLVMAtomicPermTrans _ p@APTrans_IsLLVMPtr = Just p
 offsetLLVMAtomicPermTrans off (APTrans_NamedConj npn args off' t) =
-  Just $ APTrans_NamedConj npn args (mbMap2 (addPermOffsets
-                                             . LLVMPermOffset) off off') t
+  Just $ APTrans_NamedConj npn args (mbMap2 addPermOffsets off' $
+                                     fmap mkLLVMPermOffset off) t
 
 -- | Apply 'offsetLLVMPerm' to the permissions associated with a permission
 -- translation
@@ -1157,7 +1159,8 @@ offsetLLVMPermTrans mb_off (PTrans_Eq mb_e) =
 offsetLLVMPermTrans mb_off (PTrans_Conj ps) =
   PTrans_Conj $ mapMaybe (offsetLLVMAtomicPermTrans mb_off) ps
 offsetLLVMPermTrans mb_off (PTrans_Defined n args off ptrans) =
-  PTrans_Defined n args (mbMap2 addPermOffsets (fmap LLVMPermOffset mb_off) off) ptrans
+  PTrans_Defined n args (mbMap2 addPermOffsets off
+                         (fmap mkLLVMPermOffset mb_off)) ptrans
 offsetLLVMPermTrans mb_off (PTrans_Term mb_p t) =
   PTrans_Term (mbMap2 offsetLLVMPerm mb_off mb_p) t
 
@@ -2107,7 +2110,7 @@ translateSimplImpl _ [nuP| SImpl_CastLLVMFieldOffset _ mb_fld mb_off |] m =
   withPermStackM RL.tail
   (\(pctx :>: _ :>: ptrans) ->
     let (_,ptrans') =
-          unPTransLLVMField "translateSimplImpl: SImpl_CastLLVMPtr"
+          unPTransLLVMField "translateSimplImpl: SImpl_CastLLVMFieldOffset"
           knownNat ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (mbMap2 (\fld off -> fld { llvmFieldOffset = off })

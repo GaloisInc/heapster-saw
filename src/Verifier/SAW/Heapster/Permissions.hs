@@ -1423,6 +1423,7 @@ data SomeNamedConjPermName where
 -- permissions (at least for now...?)
 data PermOffset a where
   NoPermOffset :: PermOffset a
+  -- | NOTE: the invariant is that the bitvector offset is non-zero
   LLVMPermOffset :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
                     PermOffset (LLVMPointerType w)
 
@@ -1430,6 +1431,12 @@ instance Eq (PermOffset a) where
   NoPermOffset == NoPermOffset = True
   (LLVMPermOffset e1) == (LLVMPermOffset e2) = e1 == e2
   _ == _ = False
+
+-- | Smart constructor for 'LLVMPermOffset', that maps a 0 to 'NoPermOffset'
+mkLLVMPermOffset :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
+                    PermOffset (LLVMPointerType w)
+mkLLVMPermOffset off | bvIsZero off = NoPermOffset
+mkLLVMPermOffset off = LLVMPermOffset off
 
 -- | Test two 'PermOffset's for semantic, not just syntactic, equality
 offsetsEq :: PermOffset a -> PermOffset a -> Bool
@@ -1448,8 +1455,7 @@ addPermOffsets :: PermOffset a -> PermOffset a -> PermOffset a
 addPermOffsets NoPermOffset off = off
 addPermOffsets off NoPermOffset = off
 addPermOffsets (LLVMPermOffset off1) (LLVMPermOffset off2) =
-  if bvIsZero (bvAdd off1 off2) then NoPermOffset else
-    LLVMPermOffset (bvAdd off1 off2)
+  mkLLVMPermOffset (bvAdd off1 off2)
 
 -- | Get the @n@th expression in a 'PermExprs' list
 nthPermExpr :: PermExprs args -> Member args a -> PermExpr a
@@ -2590,9 +2596,9 @@ offsetLLVMPerm off (ValPerm_Or p1 p2) =
 offsetLLVMPerm off (ValPerm_Exists mb_p) =
   ValPerm_Exists $ fmap (offsetLLVMPerm off) mb_p
 offsetLLVMPerm off (ValPerm_Named n args off') =
-  ValPerm_Named n args (addPermOffsets off' (LLVMPermOffset off))
+  ValPerm_Named n args (addPermOffsets off' (mkLLVMPermOffset off))
 offsetLLVMPerm off (ValPerm_Var x off') =
-  ValPerm_Var x $ addPermOffsets off' (LLVMPermOffset off)
+  ValPerm_Var x $ addPermOffsets off' (mkLLVMPermOffset off)
 offsetLLVMPerm off (ValPerm_Conj ps) =
   ValPerm_Conj $ mapMaybe (offsetLLVMAtomicPerm off) ps
 
@@ -2615,7 +2621,7 @@ offsetLLVMAtomicPerm _ (Perm_LLVMFree _) = Nothing
 offsetLLVMAtomicPerm _ (Perm_LLVMFunPtr _ _) = Nothing
 offsetLLVMAtomicPerm _ p@Perm_IsLLVMPtr = Just p
 offsetLLVMAtomicPerm off (Perm_NamedConj n args off') =
-  Just $ Perm_NamedConj n args $ addPermOffsets off' (LLVMPermOffset off)
+  Just $ Perm_NamedConj n args $ addPermOffsets off' (mkLLVMPermOffset off)
 
 -- | Add an offset to a field permission
 offsetLLVMFieldPerm :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
@@ -3694,7 +3700,7 @@ instance SubstVar s m => Substable s (NamedPermName ns args a) m where
 
 instance SubstVar s m => Substable s (PermOffset a) m where
   genSubst _ [nuP| NoPermOffset |] = return NoPermOffset
-  genSubst s [nuP| LLVMPermOffset e |] = LLVMPermOffset <$> genSubst s e
+  genSubst s [nuP| LLVMPermOffset e |] = mkLLVMPermOffset <$> genSubst s e
 
 instance SubstVar s m => Substable s (NamedPerm ns args a) m where
   genSubst s [nuP| NamedPerm_Opaque p |] = NamedPerm_Opaque <$> genSubst s p
