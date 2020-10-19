@@ -36,8 +36,8 @@ Proof.
   time "add_loop_spec_ref" prove_refinement.
   - f_equal.
     rewrite bvAdd_assoc.
-    rewrite (bvAdd_comm _ a5).
-    rewrite <- (bvAdd_assoc _ _ _ a5).
+    rewrite (bvAdd_comm _ a4).
+    rewrite <- (bvAdd_assoc _ _ _ a4).
     compute_bv_funs.
     rewrite bvAdd_id_l.
     reflexivity.
@@ -94,9 +94,6 @@ Lemma no_errors_compare_sum : refinesFun compare_sum (fun _ _ _ => noErrorsSpec)
 Proof.
   unfold compare_sum, compare_sum__tuple_fun, noErrorsSpec.
   time "no_errors_compare_sum" prove_refinement.
-  - assumption.
-  - rewrite e_if0 in e_if1.
-    discriminate e_if1.
 Qed.
 
 
@@ -122,24 +119,21 @@ Definition compare_sum_spec (x y z : {_ : bitvector 64 & unit}) : CompM {_ : bit
 Lemma compare_sum_spec_ref : refinesFun compare_sum compare_sum_spec.
 Proof.
   unfold compare_sum, compare_sum__tuple_fun, compare_sum_spec.
-  (* This takes a long time and needs more bitvector proofs, but you get the idea! *)
-  (* time "compare_sum_spec_ref" prove_refinement. *)
-  (* - continue_prove_refinement_left. *)
-  (*   admit. *)
-  (* - continue_prove_refinement_right; *)
-  (*   continue_prove_refinement_left. *)
-  (*   admit. *)
-  (* - continue_prove_refinement_right; *)
-  (*   continue_prove_refinement_right. *)
-  (*   admit. *)
-  (* - continue_prove_refinement_left. *)
-  (*   admit. *)
-  (* - continue_prove_refinement_right; *)
-  (*   continue_prove_refinement_left. *)
-  (*   admit. *)
-  (* - continue_prove_refinement_right; *)
-  (*   continue_prove_refinement_right. *)
-  (*   admit. *)
-  (* - rewrite e_if0 in e_if1. *)
-  (*   discriminate e_if1. *)
-Admitted.
+  time "compare_sum_spec_ref" prove_refinement.
+  all: rewrite bvSub_zero_bvNeg in e_assert.
+  (* Note that there are two versions of each case because of the if! *)
+  (* The `x < y + z` case: *)
+  1,4: continue_prove_refinement_left.
+  1,2: rewrite bvslt_bvSub_r, bvSub_eq_bvAdd_neg, bvAdd_comm.
+  1,2: assumption.
+  (* The `x > y + z` case: *)
+  1,3: continue_prove_refinement_right;
+       continue_prove_refinement_left.
+  1,2: rewrite bvslt_bvSub_l, bvSub_eq_bvAdd_neg, bvAdd_comm.
+  1,2: assumption.
+  (* The `x = y + z` case: *)
+  1,2: continue_prove_refinement_right;
+       continue_prove_refinement_right.
+  1,2: rewrite bvEq_bvSub_r, bvSub_eq_bvAdd_neg, bvAdd_comm.
+  1,2: symmetry; assumption.
+Qed.
