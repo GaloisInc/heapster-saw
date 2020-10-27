@@ -28,3 +28,6 @@ loops.v: loops.bc loops.saw loops.sawcore
 
 arrays.v: arrays.bc arrays.saw arrays.sawcore
 	stack exec saw arrays.saw
+
+iter_linked_list.v: iter_linked_list.bc iter_linked_list.saw iter_linked_list.sawcore
+	stack exec saw iter_linked_list.saw
