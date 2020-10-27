@@ -164,6 +164,11 @@ foldr1WithDefault f def (a:as) = f a $ foldr1WithDefault f def as
 foldMapWithDefault :: (b -> b -> b) -> b -> (a -> b) -> [a] -> b
 foldMapWithDefault comb def f l = foldr1WithDefault comb def $ map f l
 
+-- | Lift a binary function function to `Mb`s
+-- FIXME: move to Hobbits
+mbMap3 :: (a -> b -> c -> d) -> Mb ctx a -> Mb ctx b -> Mb ctx c -> Mb ctx d
+mbMap3 f mb1 mb2 mb3 = mbMap2 f mb1 mb2 `mbApply` mb3
+
 
 ----------------------------------------------------------------------
 -- * Pretty-printing
@@ -1308,32 +1313,41 @@ data SomeFunPerm args ret where
 
 
 -- | The different sorts of name, each of which comes with a 'Bool' flag
--- indicating whether the name can be used as an atomic permission
-data NameSort = DefinedSort Bool | OpaqueSort Bool | RecursiveSort Bool
+-- indicating whether the name can be used as an atomic permission. A recursive
+-- sort also comes with a second flag indicating whether it is a reachability
+-- permission.
+data NameSort = DefinedSort Bool | OpaqueSort Bool | RecursiveSort Bool Bool
 
 -- | Test whether a name of a given 'NameSort' is conjoinable
 type family NameSortIsConj (ns::NameSort) :: Bool where
   NameSortIsConj (DefinedSort b) = b
   NameSortIsConj (OpaqueSort b) = b
-  NameSortIsConj (RecursiveSort b) = b
+  NameSortIsConj (RecursiveSort b _) = b
 
 -- | Test whether a name of a given 'NameSort' can be folded / unfolded
 type family NameSortCanFold (ns::NameSort) :: Bool where
   NameSortCanFold (DefinedSort _) = True
   NameSortCanFold (OpaqueSort _) = False
-  NameSortCanFold (RecursiveSort b) = True
+  NameSortCanFold (RecursiveSort b _) = True
+
+-- | Test whether a name of a given 'NameSort' is a reachability permission
+type family IsReachabilityName (ns::NameSort) :: Bool where
+  IsReachabilityName (DefinedSort _) = False
+  IsReachabilityName (OpaqueSort _) = False
+  IsReachabilityName (RecursiveSort _ reach) = reach
 
 -- | A singleton representation of 'NameSort'
 data NameSortRepr (ns::NameSort) where
   DefinedSortRepr :: BoolRepr b -> NameSortRepr (DefinedSort b)
   OpaqueSortRepr :: BoolRepr b -> NameSortRepr (OpaqueSort b)
-  RecursiveSortRepr :: BoolRepr b -> NameSortRepr (RecursiveSort b)
+  RecursiveSortRepr :: BoolRepr b -> BoolRepr reach ->
+                       NameSortRepr (RecursiveSort b reach)
 
 -- | Get a 'BoolRepr' for whether a name sort is conjunctive
 nameSortIsConjRepr :: NameSortRepr ns -> BoolRepr (NameSortIsConj ns)
 nameSortIsConjRepr (DefinedSortRepr b) = b
 nameSortIsConjRepr (OpaqueSortRepr b) = b
-nameSortIsConjRepr (RecursiveSortRepr b) = b
+nameSortIsConjRepr (RecursiveSortRepr b _) = b
 
 -- | Get a 'BoolRepr' for whether a 'NamedPermName' is conjunctive
 nameIsConjRepr :: NamedPermName ns args a -> BoolRepr (NameSortIsConj ns)
@@ -1343,7 +1357,7 @@ nameIsConjRepr = nameSortIsConjRepr . namedPermNameSort
 nameSortCanFoldRepr :: NameSortRepr ns -> BoolRepr (NameSortCanFold ns)
 nameSortCanFoldRepr (DefinedSortRepr _) = TrueRepr
 nameSortCanFoldRepr (OpaqueSortRepr _) = FalseRepr
-nameSortCanFoldRepr (RecursiveSortRepr _) = TrueRepr
+nameSortCanFoldRepr (RecursiveSortRepr _ _) = TrueRepr
 
 -- | Get a 'BoolRepr' for whether a 'NamedPermName' allows folds / unfolds
 nameCanFoldRepr :: NamedPermName ns args a -> BoolRepr (NameSortCanFold ns)
@@ -1371,16 +1385,34 @@ instance TestEquality NameSortRepr where
   testEquality (OpaqueSortRepr b1) (OpaqueSortRepr b2)
     | Just Refl <- testEquality b1 b2 = Just Refl
   testEquality (OpaqueSortRepr _) _ = Nothing
-  testEquality (RecursiveSortRepr b1) (RecursiveSortRepr b2)
-    | Just Refl <- testEquality b1 b2 = Just Refl
-  testEquality (RecursiveSortRepr _) _ = Nothing
+  testEquality (RecursiveSortRepr b1 reach1) (RecursiveSortRepr b2 reach2)
+    | Just Refl <- testEquality b1 b2
+    , Just Refl <- testEquality reach1 reach2
+    = Just Refl
+  testEquality (RecursiveSortRepr _ _) _ = Nothing
+
+-- | A constraint that the last argument of a reachability permission is a
+-- permission argument
+data NameReachConstr ns args a where
+  NameReachConstr :: (IsReachabilityName ns ~ 'True) =>
+                     NameReachConstr ns (args :> ValuePermType a) a
+  NameNonReachConstr :: (IsReachabilityName ns ~ 'False) =>
+                        NameReachConstr ns args a
+
+-- | Extract a 'BoolRepr' from a 'NameReachConstr' for whether the name it
+-- constrains is a reachability name
+nameReachConstrBool :: NameReachConstr ns args a ->
+                       BoolRepr (IsReachabilityName ns)
+nameReachConstrBool NameReachConstr = TrueRepr
+nameReachConstrBool NameNonReachConstr = FalseRepr
 
 -- | A name for a named permission
 data NamedPermName ns args a = NamedPermName {
   namedPermNameName :: String,
   namedPermNameType :: TypeRepr a,
   namedPermNameArgs :: CruCtx args,
-  namedPermNameSort :: NameSortRepr ns
+  namedPermNameSort :: NameSortRepr ns,
+  namedPermNameReachConstr :: NameReachConstr ns args a
   }
 
 -- FIXME: NamedPermNames should maybe say something about which arguments are
@@ -1393,7 +1425,7 @@ testNamedPermNameEq :: NamedPermName ns1 args1 a1 ->
                        NamedPermName ns2 args2 a2 ->
                        Maybe (ns1 :~: ns2, args1 :~: args2, a1 :~: a2)
 testNamedPermNameEq (NamedPermName
-                     str1 tp1 ctx1 ns1) (NamedPermName str2 tp2 ctx2 ns2)
+                     str1 tp1 ctx1 ns1 r1) (NamedPermName str2 tp2 ctx2 ns2 r2)
   | Just Refl <- testEquality tp1 tp2
   , Just Refl <- testEquality ctx1 ctx2
   , Just Refl <- testEquality ns1 ns2
@@ -1484,7 +1516,8 @@ getPermExprsMembers (PExprs_Cons args _) =
 -- LLVM shape
 data NamedPerm ns args a where
   NamedPerm_Opaque :: OpaquePerm b args a -> NamedPerm (OpaqueSort b) args a
-  NamedPerm_Rec :: RecPerm b args a -> NamedPerm (RecursiveSort b) args a
+  NamedPerm_Rec :: RecPerm b reach args a ->
+                   NamedPerm (RecursiveSort b reach) args a
   NamedPerm_Defined :: DefinedPerm b args a -> NamedPerm (DefinedSort b) args a
 
 -- | Extract the name back out of the interpretation of a 'NamedPerm'
@@ -1504,6 +1537,31 @@ data OpaquePerm b args a = OpaquePerm {
   opaquePermTrans :: Ident
   }
 
+-- | The interpretation of a recursive permission as a reachability permission.
+-- Reachability permissions are recursive permissions of the form
+--
+-- > reach<args,X> = X  |  p
+--
+-- where @reach@ occurs exactly one in @p@ in the form @reach<args,X>@ and @X@
+-- does not occur at all in @p@. This means their interpretations look like a
+-- value of type @X@ inside a term context with a single "hole", where the
+-- context is formed from zero or more occurrences of the interpretation of @p@
+-- and the "hole" is the final occurrence of the type variable from (the
+-- interpretation of) @X@. This yields the following structure used by Heapster,
+-- where @f@ is the type functor defined by the zero or more applications of @p@:
+--
+-- > get : f a -> a
+-- > put : f a -> b -> f b
+-- > trans : f (f a) -> f a
+data ReachMethods reach args a where
+  ReachMethods :: {
+    reachMethodGetExpr :: Ident,
+    reachMethodGetPerm :: Ident,
+    reachMethodPut :: Ident,
+    reachMethodTrans :: Ident
+    } -> ReachMethods (args :> ValuePermType a) a 'True
+  NoReachMethods :: ReachMethods args a 'False
+
 -- | A recursive permission is a disjunction of 1 or more permissions, each of
 -- which can contain the recursive permission itself. NOTE: it is an error to
 -- have an empty list of cases. A recursive permission is also associated with a
@@ -1511,14 +1569,38 @@ data OpaquePerm b args a = OpaquePerm {
 -- associated with a constructor of that datatype. The @b@ flag indicates
 -- whether this recursive permission can be used as an atomic permission, which
 -- should be 'True' iff all of the cases are conjunctive permissions as in
--- 'isConjPerm'.
-data RecPerm b args a = RecPerm {
-  recPermName :: NamedPermName (RecursiveSort b) args a,
+-- 'isConjPerm'. If the recursive permission is a reachability permission, then
+-- it also has a 'ReachMethods' structure.
+data RecPerm b reach args a = RecPerm {
+  recPermName :: NamedPermName (RecursiveSort b reach) args a,
   recPermTransType :: Ident,
   recPermFoldFun :: Ident,
   recPermUnfoldFun :: Ident,
+  recPermReachMethods :: ReachMethods args a reach,
   recPermCases :: [Mb args (ValuePerm a)]
   }
+
+-- | Get the expr part of the @get@ method from a 'RecPerm' for a reachability
+-- permission
+recPermGetExprMethod :: RecPerm b 'True args a -> Ident
+recPermGetExprMethod (RecPerm { recPermReachMethods = ReachMethods { .. }}) =
+  reachMethodGetExpr
+
+-- | Get the perm part of the @get@ method from a 'RecPerm' for a reachability
+-- permission
+recPermGetPermMethod :: RecPerm b 'True args a -> Ident
+recPermGetPermMethod (RecPerm { recPermReachMethods = ReachMethods { .. }}) =
+  reachMethodGetPerm
+
+-- | Get the @put@ method from a 'RecPerm' for a reachability permission
+recPermPutMethod :: RecPerm b 'True args a -> Ident
+recPermPutMethod (RecPerm { recPermReachMethods = ReachMethods { .. }}) =
+  reachMethodPut
+
+-- | Get the @trans@ method from a 'RecPerm' for a reachability permission
+recPermTransMethod :: RecPerm b 'True args a -> Ident
+recPermTransMethod (RecPerm { recPermReachMethods = ReachMethods { .. }}) =
+  reachMethodTrans
 
 -- | A defined permission is a name and a permission to which it is
 -- equivalent. The @b@ flag indicates whether this permission can be used as an
@@ -1707,7 +1789,7 @@ instance Eq (FunPerm ghosts args ret) where
   fperm1 == fperm2 = isJust (funPermEq fperm1 fperm2)
 
 instance PermPretty (NamedPermName ns args a) where
-  permPrettyM (NamedPermName str _ _ _) = return $ string str
+  permPrettyM (NamedPermName str _ _ _ _) = return $ string str
 
 ppCommaSep :: [Doc] -> Doc
 ppCommaSep [] = PP.empty
@@ -1886,12 +1968,14 @@ $(mkNuMatching [t| forall w . LLVMArrayBorrow w |])
 $(mkNuMatching [t| forall ghosts args ret. FunPerm ghosts args ret |])
 $(mkNuMatching [t| forall args ret. SomeFunPerm args ret |])
 $(mkNuMatching [t| forall ns. NameSortRepr ns |])
+$(mkNuMatching [t| forall ns args a. NameReachConstr ns args a |])
 $(mkNuMatching [t| forall ns args a. NamedPermName ns args a |])
 $(mkNuMatching [t| SomeNamedPermName |])
 $(mkNuMatching [t| forall a. PermOffset a |])
 $(mkNuMatching [t| forall ns args a. NamedPerm ns args a |])
 $(mkNuMatching [t| forall b args a. OpaquePerm b args a |])
-$(mkNuMatching [t| forall b args a. RecPerm b args a |])
+$(mkNuMatching [t| forall args a reach. ReachMethods args a reach |])
+$(mkNuMatching [t| forall b reach args a. RecPerm b reach args a |])
 $(mkNuMatching [t| forall b args a. DefinedPerm b args a |])
 $(mkNuMatching [t| forall ps. DistPerms ps |])
 $(mkNuMatching [t| forall ps. LifetimeCurrentPerms ps |])
@@ -1913,18 +1997,32 @@ instance Closable (NameSortRepr ns) where
     $(mkClosed [| DefinedSortRepr |]) `clApply` toClosed b
   toClosed (OpaqueSortRepr b) =
     $(mkClosed [| OpaqueSortRepr |]) `clApply` toClosed b
-  toClosed (RecursiveSortRepr b) =
-    $(mkClosed [| RecursiveSortRepr |]) `clApply` toClosed b
+  toClosed (RecursiveSortRepr b reach) =
+    $(mkClosed [| RecursiveSortRepr |])
+    `clApply` toClosed b `clApply` toClosed reach
 
 instance Liftable (NameSortRepr ns) where
   mbLift = unClosed . mbLift . fmap toClosed
 
+instance Closable (NameReachConstr ns args a) where
+  toClosed NameReachConstr = $(mkClosed [| NameReachConstr |])
+  toClosed NameNonReachConstr = $(mkClosed [| NameNonReachConstr |])
+
+instance Liftable (NameReachConstr ns args a) where
+  mbLift = unClosed . mbLift . fmap toClosed
+
 instance Liftable (NamedPermName ns args a) where
-  mbLift [nuP| NamedPermName n tp args ns |] =
-    NamedPermName (mbLift n) (mbLift tp) (mbLift args) (mbLift ns)
+  mbLift [nuP| NamedPermName n tp args ns r |] =
+    NamedPermName (mbLift n) (mbLift tp) (mbLift args) (mbLift ns) (mbLift r)
 
 instance Liftable SomeNamedPermName where
   mbLift [nuP| SomeNamedPermName rpn |] = SomeNamedPermName $ mbLift rpn
+
+instance Liftable (ReachMethods args a reach) where
+  mbLift [nuP| ReachMethods get1Ident get2Ident putIdent transIdent |] =
+    ReachMethods (mbLift get1Ident) (mbLift get2Ident) (mbLift putIdent)
+    (mbLift transIdent)
+  mbLift [nuP| NoReachMethods |] = NoReachMethods
 
 -- | Extract @p1@ from a permission of the form @p1 \/ p2@
 orPermLeft :: ValuePerm a -> ValuePerm a
@@ -1983,7 +2081,7 @@ isDefinedConjPerm _ = False
 -- | Test if an 'AtomicPerm' is a recursive conjunctive permission
 isRecursiveConjPerm :: AtomicPerm a -> Bool
 isRecursiveConjPerm (Perm_NamedConj
-                     (namedPermNameSort -> RecursiveSortRepr _) _ _) = True
+                     (namedPermNameSort -> RecursiveSortRepr _ _) _ _) = True
 isRecursiveConjPerm _ = False
 
 -- | Test that a permission is a conjunctive permission, meaning that it is
@@ -2948,7 +3046,7 @@ funPermDistOuts fun_perm args ghosts =
   subst (substOfExprs ghosts) $ funPermOuts fun_perm
 
 -- | Unfold a recursive permission given a 'RecPerm' for it
-unfoldRecPerm :: RecPerm b args a -> PermExprs args -> PermOffset a ->
+unfoldRecPerm :: RecPerm b reach args a -> PermExprs args -> PermOffset a ->
                  ValuePerm a
 unfoldRecPerm rp args off =
   offsetPerm off $ foldr1 ValPerm_Or $ map (subst (substOfExprs args)) $
@@ -3710,9 +3808,10 @@ instance SubstVar s m => Substable s (NamedPerm ns args a) m where
 instance SubstVar s m => Substable s (OpaquePerm ns args a) m where
   genSubst _ [nuP| OpaquePerm n i |] = return $ OpaquePerm (mbLift n) (mbLift i)
 
-instance SubstVar s m => Substable s (RecPerm ns args a) m where
-  genSubst s [nuP| RecPerm rpn dt_i f_i u_i cases |] =
-    RecPerm (mbLift rpn) (mbLift dt_i) (mbLift f_i) (mbLift u_i) <$>
+instance SubstVar s m => Substable s (RecPerm ns reach args a) m where
+  genSubst s [nuP| RecPerm rpn dt_i f_i u_i reachMeths cases |] =
+    RecPerm (mbLift rpn) (mbLift dt_i) (mbLift f_i) (mbLift u_i)
+    (mbLift reachMeths) <$>
     mapM (genSubst s) (mbList cases)
 
 instance SubstVar s m => Substable s (DefinedPerm ns args a) m where
@@ -4444,11 +4543,11 @@ instance AbstractVars (FunPerm ghosts args ret) where
     `clMbMbApplyM` abstractPEVars ns1 ns2 perms_out
 
 instance AbstractVars (NamedPermName ns args a) where
-  abstractPEVars ns1 ns2 (NamedPermName n tp args ns) =
+  abstractPEVars ns1 ns2 (NamedPermName n tp args ns reachConstr) =
     absVarsReturnH ns1 ns2
     ($(mkClosed [| NamedPermName |])
      `clApply` toClosed n `clApply` toClosed tp `clApply` toClosed args
-     `clApply` toClosed ns)
+     `clApply` toClosed ns`clApply` toClosed reachConstr)
 
 
 ----------------------------------------------------------------------
@@ -4531,7 +4630,8 @@ permEnvAddNamedPerm env np =
 permEnvAddOpaquePerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
                         Ident -> PermEnv
 permEnvAddOpaquePerm env str args tp i =
-  let n = NamedPermName str tp args (OpaqueSortRepr TrueRepr) in
+  let n = NamedPermName str tp args (OpaqueSortRepr
+                                     TrueRepr) NameNonReachConstr in
   permEnvAddNamedPerm env $ NamedPerm_Opaque $ OpaquePerm n i
 
 -- | Add a recursive named permission to a 'PermEnv', assuming that the
@@ -4547,37 +4647,46 @@ permEnvAddOpaquePerm env str args tp i =
 -- 'recPermCases' can be called multiple times, so should not perform any
 -- non-idempotent mutation in the monad @m@.
 permEnvAddRecPermM :: Monad m => PermEnv -> String -> CruCtx args ->
-                      TypeRepr a -> Ident ->
-                      (forall b. NamedPermName (RecursiveSort b) args a ->
+                      TypeRepr a -> Ident -> BoolRepr reach ->
+                      (forall b. NameReachConstr (RecursiveSort b reach) args a) ->
+                      (forall b. NamedPermName (RecursiveSort b reach) args a ->
                        PermEnv -> m [Mb args (ValuePerm a)]) ->
-                      (forall b. NamedPermName (RecursiveSort b) args a ->
+                      (forall b. NamedPermName (RecursiveSort b reach) args a ->
                        [Mb args (ValuePerm a)] -> PermEnv -> m (Ident, Ident)) ->
+                      (forall b. NamedPermName (RecursiveSort b reach) args a ->
+                       PermEnv -> m (ReachMethods args a reach)) ->
                       m PermEnv
-permEnvAddRecPermM env nm args tp trans_ident casesF foldIdentsF =
+permEnvAddRecPermM env nm args tp trans_ident reach reachC casesF foldIdentsF reachMethsF =
   -- NOTE: we start by assuming nm is conjoinable, and then, if it's not, we
   -- call casesF again, and thereby compute a fixed-point
-  do let mkTmpEnv :: NamedPermName (RecursiveSort b) args a -> PermEnv
+  do let mkTmpEnv :: NamedPermName (RecursiveSort b reach) args a -> PermEnv
          mkTmpEnv npn =
            permEnvAddNamedPerm env $ NamedPerm_Rec $
            RecPerm npn trans_ident
            (error "Analyzing recursive perm cases before it is defined!")
            (error "Folding recursive perm before it is defined!")
+           (error "Using reachability methods for recursive perm before it is defined!")
            (error "Unfolding recursive perm before it is defined!")
-         mkRealEnv :: Monad m => NamedPermName (RecursiveSort b) args a ->
+         mkRealEnv :: Monad m => NamedPermName (RecursiveSort b reach) args a ->
                       [Mb args (ValuePerm a)] ->
-                      (PermEnv -> m (Ident, Ident)) -> m PermEnv
-         mkRealEnv npn cases identsF =
-           do (fold_ident, unfold_ident) <- identsF (mkTmpEnv npn)
+                      (PermEnv -> m (Ident, Ident)) ->
+                      (PermEnv -> m (ReachMethods args a reach)) ->
+                      m PermEnv
+         mkRealEnv npn cases identsF rmethsF =
+           do let tmp_env = mkTmpEnv npn
+              (fold_ident, unfold_ident) <- identsF tmp_env
+              reachMeths <- rmethsF tmp_env
               return $ permEnvAddNamedPerm env $ NamedPerm_Rec $
-                RecPerm npn trans_ident fold_ident unfold_ident cases
-     let npn1 = NamedPermName nm tp args (RecursiveSortRepr TrueRepr)
+                RecPerm npn trans_ident fold_ident unfold_ident reachMeths cases
+     let npn1 = NamedPermName nm tp args (RecursiveSortRepr TrueRepr reach) reachC
      cases1 <- casesF npn1 (mkTmpEnv npn1)
      case someBool $ all (mbLift . fmap isConjPerm) cases1 of
-       Some TrueRepr -> mkRealEnv npn1 cases1 (foldIdentsF npn1 cases1)
+       Some TrueRepr -> mkRealEnv npn1 cases1 (foldIdentsF npn1 cases1) (reachMethsF npn1)
        Some FalseRepr ->
-         do let npn2 = NamedPermName nm tp args (RecursiveSortRepr FalseRepr)
+         do let npn2 = NamedPermName nm tp args (RecursiveSortRepr
+                                                 FalseRepr reach) reachC
             cases2 <- casesF npn2 (mkTmpEnv npn2)
-            mkRealEnv npn2 cases2 (foldIdentsF npn2 cases2)
+            mkRealEnv npn2 cases2 (foldIdentsF npn2 cases2) (reachMethsF npn1)
 
 -- | Add a defined named permission to a 'PermEnv'
 permEnvAddDefinedPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
@@ -4585,7 +4694,7 @@ permEnvAddDefinedPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
 permEnvAddDefinedPerm env str args tp p =
   case someBool $ mbLift $ fmap isConjPerm p of
     Some b ->
-      let n = NamedPermName str tp args (DefinedSortRepr b)
+      let n = NamedPermName str tp args (DefinedSortRepr b) NameNonReachConstr
           np = NamedPerm_Defined (DefinedPerm n p) in
       env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
 

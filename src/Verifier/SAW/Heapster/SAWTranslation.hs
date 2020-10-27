@@ -2486,6 +2486,19 @@ translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedArgRead _ _ _ _ _ |] m =
     pctx :>: PTrans_Term (fmap (distPermsHeadPerm . simplImplOut) mb_simpl) t)
   m
 
+translateSimplImpl _ simpl@[nuP| SImpl_ReachabilityTrans _ rp args _ _ p |] m =
+  do args_trans <- translate $ mbMap2 PExprs_Cons args $ fmap PExpr_ValPerm p
+     ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     let trans_ident = mbLift $ fmap recPermTransMethod rp
+     withPermStackM RL.tail
+       (\(pctx :>: ptrans_x :>: ptrans_y) ->
+         pctx :>:
+         typeTransF (tupleTypeTrans ttrans) [applyOpenTermMulti
+                                             (globalOpenTerm trans_ident)
+                                             (transTerms args_trans
+                                              ++ [transTerm1 ptrans_x])])
+       m
+
 
 -- | The monad for translating 'PermImpl's, which accumulates all failure
 -- messages in all branches of a 'PermImpl' and either returns a result or
@@ -2665,6 +2678,45 @@ translatePermImpl1 _ [nuP| Impl1_ElimLLVMFieldContents _ mb_fld |] mb_impls =
                                      fmap (const $ nu PExpr_Var) mb_fld)]
     :>: ptrans')
   m
+
+translatePermImpl1 _ [nuP| Impl1_ElimReachabilityPerm x rp args off p |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  let _get_expr_ident = mbLift $ fmap recPermGetExprMethod rp
+      get_perm_ident = mbLift $ fmap recPermGetPermMethod rp
+      put_ident = mbLift $ fmap recPermPutMethod rp
+      tp = fmap (namedPermNameType . recPermName) rp in
+  translate tp >>= \tp_trans ->
+  let tp_trans' = case typeTransTypes tp_trans of
+        [] -> tp_trans
+        _ ->
+          -- FIXME: handle this with the getExpr method
+          error ("translate: Impl1_ElimReachabilityPerm: cannot yet"
+                 ++ " handle non-unit types") in
+  inExtTransM (typeTransF tp_trans' []) $
+  do x_tp <-
+       translate $ mbMap3 (\args off y ->
+                            ValPerm_Named (mbLift $
+                                           fmap recPermName rp)
+                            (PExprs_Cons args $ PExpr_ValPerm $
+                             ValPerm_Eq $ PExpr_Var y)
+                            off)
+       (extMb args) (extMb off) (nuMulti (mbToProxy rp :>: Proxy) $
+                                 \(_ :>: y) -> y)
+     y_tp <- translate $ extMb p
+     args_trans <- translate $ extMb $ mbMap2 PExprs_Cons args $ fmap PExpr_ValPerm p
+     withPermStackM (:>: Member_Base)
+       (\(pctx :>: ptrans_x) ->
+         pctx :>:
+         typeTransF (tupleTypeTrans x_tp) [applyOpenTermMulti
+                                             (globalOpenTerm put_ident)
+                                             (transTerms args_trans
+                                              ++ [unitOpenTerm,
+                                                  transTerm1 ptrans_x])] :>:
+         typeTransF (tupleTypeTrans y_tp) [applyOpenTermMulti
+                                             (globalOpenTerm get_perm_ident)
+                                             (transTerms args_trans
+                                              ++ [transTerm1 ptrans_x])])
+       m
 
 -- If e1 and e2 are already equal, short-circuit the proof construction and then
 -- elimination

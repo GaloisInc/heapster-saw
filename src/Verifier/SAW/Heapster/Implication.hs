@@ -601,6 +601,13 @@ data SimplImpl ps_in ps_out where
                         Member args RWModalityType ->
                         SimplImpl (RNil :> a) (RNil :> a)
 
+  -- | Implements transitivity of reachability permissions:
+  --
+  -- > x:P<args,eq(y)>, y:P<args,p> -o x:P<args,p>
+  SImpl_ReachabilityTrans ::
+    ExprVar a -> RecPerm b 'True (args :> ValuePermType a) a ->
+    PermExprs args -> PermOffset a -> ExprVar a -> ValuePerm a ->
+    SimplImpl (RNil :> a :> a) (RNil :> a)
 
 
 -- | A single step of permission implication. These can have multiple,
@@ -686,6 +693,16 @@ data PermImpl1 ps_in ps_outs where
     PermImpl1 (ps :> LLVMPointerType w)
     (RNil :> '(RNil :> LLVMPointerType sz,
                ps :> LLVMPointerType w :> LLVMPointerType sz))
+
+  -- | Eliminate the contents of a reachability permission, binding a new
+  -- variable to hold those permissions and changing the contents of the
+  -- reachability permission to an equals permision for that variable:
+  --
+  -- > x:P<args,p> -o y. x:P<args,eq(y)> * y:p
+  Impl1_ElimReachabilityPerm ::
+    ExprVar a -> RecPerm b 'True (args :> ValuePermType a) a ->
+    PermExprs args -> PermOffset a -> ValuePerm a ->
+    PermImpl1 (ps :> a) (RNil :> '(RNil :> a, ps :> a :> a))
 
   -- | Try to prove a bitvector proposition, or fail (as in the 'Impl1_Fail'
   -- rule) if this is not possible, where the 'String' is a pretty-printing of
@@ -779,6 +796,8 @@ permImplStep impl1@(Impl1_Simpl _ _) mb_impls =
 permImplStep impl1@(Impl1_LetBind _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_ElimLLVMFieldContents _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_ElimReachabilityPerm _ _ _ _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_TryProveBVProp _ _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
@@ -899,6 +918,9 @@ permImplSucceeds (PermImpl_Step (Impl1_LetBind _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMFieldContents _ _)
+                  (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_ElimReachabilityPerm _ _ _ _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_TryProveBVProp _ _ _)
@@ -1106,6 +1128,12 @@ simplImplIn (SImpl_NamedArgWrite x npn args off memb _) =
     _ -> error "simplImplIn: SImplNamedArgWrite: non-Write argument!"
 simplImplIn (SImpl_NamedArgRead x npn args off _) =
   distPerms1 x (ValPerm_Named npn args off)
+simplImplIn (SImpl_ReachabilityTrans x rp args off y p) =
+  let npn = recPermName rp in
+  distPerms2 x (ValPerm_Named npn
+                (PExprs_Cons args (PExpr_ValPerm $ ValPerm_Eq $ PExpr_Var y))
+                off)
+  y (ValPerm_Named npn (PExprs_Cons args $ PExpr_ValPerm p) off)
 
 
 -- | Compute the output permissions of a 'SimplImpl' implication
@@ -1298,6 +1326,9 @@ simplImplOut (SImpl_NamedArgRead x npn args off memb) =
   distPerms1 x (ValPerm_Named npn
                 (setNthPermExpr args memb (PExpr_RWModality Read))
                 off)
+simplImplOut (SImpl_ReachabilityTrans x rp args off _ p) =
+  distPerms1 x (ValPerm_Named (recPermName rp) (PExprs_Cons args $
+                                                PExpr_ValPerm p) off)
 
 
 -- | Apply a 'SimplImpl' implication to the permissions on the top of a
@@ -1389,6 +1420,20 @@ applyImpl1 _ (Impl1_ElimLLVMFieldContents x fp) ps =
       ps)
   else
     error "applyImpl1: Impl1_ElimLLVMFieldContents: unexpected permission"
+applyImpl1 _ (Impl1_ElimReachabilityPerm x rp args off p) ps =
+  let npn = recPermName rp in
+  if ps ^. topDistPerm x == ValPerm_Named npn (PExprs_Cons args $
+                                               PExpr_ValPerm p) off then
+    (MbPermSets_Cons MbPermSets_Nil (CruCtxCons CruCtxNil $
+                                     namedPermNameType $
+                                     recPermName rp) $ nu $ \y ->
+      pushPerm y p $
+      set (topDistPerm x) (ValPerm_Named npn (PExprs_Cons args $
+                                              PExpr_ValPerm $
+                                              ValPerm_Eq $ PExpr_Var y) off)
+      ps)
+  else
+    error "applyImpl1: Impl1_ElimReachabilityPerm: unexpected permission"
 applyImpl1 _ (Impl1_TryProveBVProp x prop _) ps =
   mbPermSets1 $ emptyMb $
   pushPerm x (ValPerm_Conj [Perm_BVProp prop]) ps
@@ -1525,6 +1570,9 @@ instance SubstVar PermVarSubst m =>
   genSubst s [nuP| SImpl_NamedArgRead x npn args off memb |] =
     SImpl_NamedArgRead <$> genSubst s x <*> genSubst s npn <*>
     genSubst s args <*> genSubst s off <*> genSubst s memb
+  genSubst s [nuP| SImpl_ReachabilityTrans x rp args off y p |] =
+    SImpl_ReachabilityTrans <$> genSubst s x <*> genSubst s rp <*>
+    genSubst s args <*> genSubst s off <*> genSubst s y <*> genSubst s p
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (PermImpl1 ps_in ps_out) m where
@@ -1544,6 +1592,9 @@ instance SubstVar PermVarSubst m =>
     Impl1_LetBind (mbLift tp) <$> genSubst s e
   genSubst s [nuP| Impl1_ElimLLVMFieldContents x fp |] =
     Impl1_ElimLLVMFieldContents <$> genSubst s x <*> genSubst s fp
+  genSubst s [nuP| Impl1_ElimReachabilityPerm x rp args off p |] =
+    Impl1_ElimReachabilityPerm <$> genSubst s x <*> genSubst s rp
+     <*> genSubst s args <*> genSubst s off <*> genSubst s p
   genSubst s [nuP| Impl1_TryProveBVProp x prop prop_str |] =
     Impl1_TryProveBVProp <$> genSubst s x <*> genSubst s prop <*>
     return (mbLift prop_str)
@@ -2346,6 +2397,23 @@ implElimLLVMFieldContentsM x fp =
   implApplyImpl1 (Impl1_ElimLLVMFieldContents x fp)
   (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
   implPopM y (llvmFieldContents fp) >>>
+  greturn y
+
+-- | Eliminate a reachability permission @x:P<args,p>@ into permissions
+-- @x:P<args,eq(y)>@ and @y:p@ for a fresh variable @y@, returning the fresh
+-- variable @y@ and popping the @y@ permissions off the stack. If @p@ already
+-- has the form @eq(y)@, then just return @y@.
+implElimReachabilityPermM ::
+  NuMatchingAny1 r =>
+  ExprVar a -> RecPerm b 'True (args :> ValuePermType a) a ->
+  PermExprs args -> PermOffset a -> ValuePerm a ->
+  ImplM vars s r (ps :> a) (ps :> a) (ExprVar a)
+implElimReachabilityPermM _ _ _ _ (ValPerm_Eq (PExpr_Var y)) =
+  greturn y
+implElimReachabilityPermM x rp args off p =
+  implApplyImpl1 (Impl1_ElimReachabilityPerm x rp args off p)
+  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
+  implPopM y p >>>
   greturn y
 
 -- | Try to prove a proposition about bitvectors dynamically, failing as in
@@ -3741,6 +3809,22 @@ proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
 proveNamedArg x npn args off memb _ arg@[nuP| PExpr_RWModality Read |] =
   implSimplM Proxy (SImpl_NamedArgRead x npn args off memb)
 
+-- Prove x:P<args,p1> -o x:P<args,p2> when P is a reachability permission by
+-- eliminating the LHS into x:P<args,eq(y)> and y:p1, proving y:P<args,p2>, and
+-- applying transitivity of reachability permissions
+proveNamedArg x npn (PExprs_Cons args
+                     (PExpr_ValPerm p)) off Member_Base _ mb_e@[nuP| PExpr_ValPerm mb_p |]
+  | RecursiveSortRepr b TrueRepr <- namedPermNameSort npn
+  , NameReachConstr <- namedPermNameReachConstr npn =
+    implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
+    implElimReachabilityPermM x rp args off p >>>= \y ->
+    proveVarImpl y (fmap (\e' ->
+                           ValPerm_Named npn (PExprs_Cons
+                                              args e') off) mb_e) >>>
+    partialSubstForceM mb_p
+    "proveNamedArg: incomplete psubst: p_y" >>>= \p_y ->
+    implSimplM Proxy (SImpl_ReachabilityTrans x rp args off y p_y)
+
 -- Fail in any other case
 proveNamedArg x npn args off memb _ mb_arg =
   implFailVarM "proveNamedArg" x
@@ -3765,7 +3849,7 @@ proveVarImplUnfoldLeft :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
 proveVarImplUnfoldLeft x (ValPerm_Named npn args off) mb_p Nothing
   | TrueRepr <- nameCanFoldRepr npn =
     (case namedPermNameSort npn of
-        RecursiveSortRepr _ -> implSetRecRecurseLeftM
+        RecursiveSortRepr _ _ -> implSetRecRecurseLeftM
         _ -> greturn ()) >>>
     implUnfoldNamedM x npn args off >>>= \p' ->
     implPopM x p' >>>
@@ -3776,7 +3860,7 @@ proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
   , p_i@(Perm_NamedConj npn args off) <- ps!!i
   , TrueRepr <- nameCanFoldRepr npn =
     (case namedPermNameSort npn of
-        RecursiveSortRepr _ -> implSetRecRecurseLeftM
+        RecursiveSortRepr _ _ -> implSetRecRecurseLeftM
         _ -> greturn ()) >>>
     implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
     implNamedFromConjM x npn args off >>>
@@ -3797,7 +3881,7 @@ proveVarImplFoldRight x p [nuP| ValPerm_Named mb_npn mb_args mb_off |]
   | npn <- mbLift mb_npn
   , TrueRepr <- nameCanFoldRepr npn =
     (case namedPermNameSort npn of
-        RecursiveSortRepr _ -> implSetRecRecurseRightM
+        RecursiveSortRepr _ _ -> implSetRecRecurseRightM
         _ -> greturn ()) >>>
     implLookupNamedPerm npn >>>= \np ->
     implPopM x p >>>
@@ -4161,8 +4245,8 @@ proveVarImplH x p@(ValPerm_Conj ps) mb_p
 -- unfolding P1 or P2, depending on the recursion flags
 proveVarImplH x p@(ValPerm_Named
                    npn1 _ _) mb_p@[nuP| ValPerm_Named mb_npn2 _ _ |]
-  | RecursiveSortRepr _ <- namedPermNameSort npn1
-  , RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn2 =
+  | RecursiveSortRepr _ _ <- namedPermNameSort npn1
+  , RecursiveSortRepr _ _ <- namedPermNameSort $ mbLift mb_npn2 =
     implRecFlagCaseM
     (proveVarImplFoldRight x p mb_p)
     (proveVarImplUnfoldLeft x p mb_p Nothing)
@@ -4173,7 +4257,7 @@ proveVarImplH x p@(ValPerm_Named
 -- have been caught by one of the above cases.
 proveVarImplH x p@(ValPerm_Conj ps) mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
   | Just i <- findIndex isRecursiveConjPerm ps
-  , RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn =
+  , RecursiveSortRepr _ _ <- namedPermNameSort $ mbLift mb_npn =
     implRecFlagCaseM
     (proveVarImplUnfoldLeft x p mb_p (Just i))
     (proveVarImplFoldRight x p mb_p)
@@ -4181,7 +4265,7 @@ proveVarImplH x p@(ValPerm_Conj ps) mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
 -- If proving P<args> where P is recursive and we have gotten to this case, we
 -- know there are no recursive perms on the left, so unfold P
 proveVarImplH x p mb_p@[nuP| ValPerm_Named mb_npn _ _ |]
-  | RecursiveSortRepr _ <- namedPermNameSort $ mbLift mb_npn =
+  | RecursiveSortRepr _ _ <- namedPermNameSort $ mbLift mb_npn =
     proveVarImplFoldRight x p mb_p
 
 -- If proving P<args> |- p1 * ... * pn for a conjoinable P, then change the LHS
