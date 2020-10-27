@@ -2710,8 +2710,9 @@ translatePermImpl1 _ [nuP| Impl1_ElimReachabilityPerm x rp args off p |] mb_impl
          typeTransF (tupleTypeTrans x_tp) [applyOpenTermMulti
                                              (globalOpenTerm put_ident)
                                              (transTerms args_trans
-                                              ++ [unitOpenTerm,
-                                                  transTerm1 ptrans_x])] :>:
+                                              ++ [unitTypeOpenTerm,
+                                                  transTerm1 ptrans_x,
+                                                  unitOpenTerm])] :>:
          typeTransF (tupleTypeTrans y_tp) [applyOpenTermMulti
                                              (globalOpenTerm get_perm_ident)
                                              (transTerms args_trans

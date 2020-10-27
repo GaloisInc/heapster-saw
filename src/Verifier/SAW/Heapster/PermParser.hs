@@ -761,12 +761,24 @@ preconsSomeParsedCtx x (Some (tp :: TypeRepr tp)) (Some (ParsedCtx ns tps)) =
   (RL.append (MNil :>: (Constant x :: Constant String tp)) ns)
   (appendCruCtx (singletonCruCtx tp) tps)
 
+-- | Make a 'ParsedCtx' where the string names are @"arg0,arg1,..."@
 mkArgsParsedCtx :: CruCtx ctx -> ParsedCtx ctx
 mkArgsParsedCtx ctx = ParsedCtx (helper ctx) ctx where
   helper :: CruCtx ctx' -> RAssign (Constant String) ctx'
   helper CruCtxNil = MNil
   helper (CruCtxCons ctx tp) =
     helper ctx :>: Constant ("arg" ++ show (cruCtxLen ctx))
+
+-- | Change the type of the last element of a 'ParsedCtx'
+parsedCtxSetLastType :: TypeRepr tp -> ParsedCtx (ctx :> tp') ->
+                        ParsedCtx (ctx :> tp)
+parsedCtxSetLastType tp (ParsedCtx (xs :>: Constant str) (CruCtxCons ctx _)) =
+  (ParsedCtx (xs :>: Constant str) (CruCtxCons ctx tp))
+
+-- | Extract out the last element of a 'ParsedCtx' as a singleton 'ParsedCtx'
+parsedCtxLast :: ParsedCtx (ctx :> tp) -> ParsedCtx (RNil :> tp)
+parsedCtxLast (ParsedCtx (_ :>: Constant str) (CruCtxCons _ tp)) =
+  ParsedCtx (MNil :>: Constant str) (CruCtxCons CruCtxNil tp)
 
 -- | Parse a typing context @x1:tp1, x2:tp2, ...@
 parseCtx :: (Stream s Identity Char, Liftable s) =>

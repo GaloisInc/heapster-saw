@@ -1552,7 +1552,7 @@ data OpaquePerm b args a = OpaquePerm {
 --
 -- > get : f a -> a
 -- > put : f a -> b -> f b
--- > trans : f (f a) -> f a
+-- > trans : f () -> f a -> f a
 data ReachMethods reach args a where
   ReachMethods :: {
     reachMethodGetExpr :: Ident,
@@ -4647,7 +4647,7 @@ permEnvAddOpaquePerm env str args tp i =
 -- 'recPermCases' can be called multiple times, so should not perform any
 -- non-idempotent mutation in the monad @m@.
 permEnvAddRecPermM :: Monad m => PermEnv -> String -> CruCtx args ->
-                      TypeRepr a -> Ident -> BoolRepr reach ->
+                      TypeRepr a -> Ident ->
                       (forall b. NameReachConstr (RecursiveSort b reach) args a) ->
                       (forall b. NamedPermName (RecursiveSort b reach) args a ->
                        PermEnv -> m [Mb args (ValuePerm a)]) ->
@@ -4656,10 +4656,11 @@ permEnvAddRecPermM :: Monad m => PermEnv -> String -> CruCtx args ->
                       (forall b. NamedPermName (RecursiveSort b reach) args a ->
                        PermEnv -> m (ReachMethods args a reach)) ->
                       m PermEnv
-permEnvAddRecPermM env nm args tp trans_ident reach reachC casesF foldIdentsF reachMethsF =
+permEnvAddRecPermM env nm args tp trans_ident reachC casesF foldIdentsF reachMethsF =
   -- NOTE: we start by assuming nm is conjoinable, and then, if it's not, we
   -- call casesF again, and thereby compute a fixed-point
-  do let mkTmpEnv :: NamedPermName (RecursiveSort b reach) args a -> PermEnv
+  do let reach = nameReachConstrBool reachC
+     let mkTmpEnv :: NamedPermName (RecursiveSort b reach) args a -> PermEnv
          mkTmpEnv npn =
            permEnvAddNamedPerm env $ NamedPerm_Rec $
            RecPerm npn trans_ident
@@ -4686,7 +4687,7 @@ permEnvAddRecPermM env nm args tp trans_ident reach reachC casesF foldIdentsF re
          do let npn2 = NamedPermName nm tp args (RecursiveSortRepr
                                                  FalseRepr reach) reachC
             cases2 <- casesF npn2 (mkTmpEnv npn2)
-            mkRealEnv npn2 cases2 (foldIdentsF npn2 cases2) (reachMethsF npn1)
+            mkRealEnv npn2 cases2 (foldIdentsF npn2 cases2) (reachMethsF npn2)
 
 -- | Add a defined named permission to a 'PermEnv'
 permEnvAddDefinedPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
