@@ -2496,7 +2496,8 @@ translateSimplImpl _ simpl@[nuP| SImpl_ReachabilityTrans _ rp args _ _ p |] m =
          typeTransF (tupleTypeTrans ttrans) [applyOpenTermMulti
                                              (globalOpenTerm trans_ident)
                                              (transTerms args_trans
-                                              ++ [transTerm1 ptrans_x])])
+                                              ++ [transTerm1 ptrans_x,
+                                                  transTerm1 ptrans_y])])
        m
 
 
