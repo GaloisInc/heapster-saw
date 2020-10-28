@@ -3184,6 +3184,7 @@ isDeterminingExpr (PExpr_LLVMWord e) = isDeterminingExpr e
 isDeterminingExpr (PExpr_BV [BVFactor _ _] _) =
   -- A linear expression N*x + M lets you solve for x when it is possible
   True
+isDeterminingExpr (PExpr_ValPerm (ValPerm_Eq e)) = isDeterminingExpr e
 isDeterminingExpr e =
   -- If an expression has no free variables then it vacuously determines all of
   -- its free variables
@@ -4952,6 +4953,14 @@ determinedVars top_perms vars =
                                                             freeVars e)
     clausesForExpr _ = return []
 
+    -- Same as above for for a list of exprs
+    clausesForExprs :: PermExprs as ->
+                       ReaderT (PermSet ps) (State (NameSet CrucibleType))
+                       [DetVarsClause]
+    clausesForExprs PExprs_Nil = return []
+    clausesForExprs (PExprs_Cons es e) =
+      (++) <$> clausesForExprs es <*> clausesForExpr e
+
     -- Find all variables that are potentially determined by the permission p
     -- and return clauses stating what other variables must be determined in
     -- order to determine each of them
@@ -4960,6 +4969,10 @@ determinedVars top_perms vars =
                       [DetVarsClause]
     clausesForPerm (ValPerm_Eq e) = clausesForExpr e
     clausesForPerm (ValPerm_Conj ps) = concat <$> mapM clausesForAtomicPerm ps
+    -- FIXME: For named perms, we currently require the offset to have no free
+    -- vars, as a simplification, but this could maybe be loosened...?
+    clausesForPerm (ValPerm_Named _ args off)
+      | NameSet.null (freeVars off) = clausesForExprs args
     clausesForPerm _ = return []
 
     -- Call clausesForPerm for each permission in a list of permissions

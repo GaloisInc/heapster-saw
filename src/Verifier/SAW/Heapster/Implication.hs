@@ -3784,6 +3784,15 @@ proveNamedArg x npn args off memb psubst arg@[nuP| PExpr_Var z |]
   , Just e <- psubstLookup psubst memb_z =
     proveNamedArg x npn args off memb psubst $ fmap (const e) arg
 
+-- Special case: if the LHS is eq(e) and the RHS is eq(z) for some unassigned
+-- variable z, then just set z=e
+proveNamedArg x npn args off memb psubst arg@[nuP| PExpr_ValPerm
+                                                 (ValPerm_Eq (PExpr_Var z)) |]
+  | Left memb_z <- mbNameBoundP z
+  , Nothing <- psubstLookup psubst memb_z
+  , PExpr_ValPerm (ValPerm_Eq e) <- nthPermExpr args memb =
+    setVarM memb_z e
+
 -- Prove P<args1,always,args2> -o P<args1,l,args2>
 proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
   | Right l <- mbNameBoundP z
