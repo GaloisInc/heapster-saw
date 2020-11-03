@@ -2191,10 +2191,10 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayBorrow _ mb_ap mb_sub_ap |] m =
        (\(pctx :>: ptrans_array :>: ptrans_props) ->
          let array_trans =
                unPTransLLVMArray
-               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_array
+               "translateSimplImpl: SImpl_LLVMArrayBorrow" ptrans_array
              prop_transs =
                unPTransBVProps
-               "translateSimplImpl: SImpl_LLVMArrayCopy" ptrans_props
+               "translateSimplImpl: SImpl_LLVMArrayBorrow" ptrans_props
              {- borrow_trans =
                LLVMArrayBorrowTrans (fmap RangeBorrow mb_rng) prop_transs -}
              sub_array_trans =
@@ -2841,7 +2841,7 @@ translatePermImpl1 prx [nuP| Impl1_TryProveBVProp x
      applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
        [ return (typeTransType1 prop_tp_trans), compReturnTypeM
        , implTransAltErr (mbLift prop_str) k
-       , lambdaTransM "ule_pf" prop_tp_trans
+       , lambdaTransM "ule_diff_pf" prop_tp_trans
          (\prop_trans ->
            withPermStackM (:>: translateVar x) (:>: bvPropPerm prop_trans) $
            trans k)
