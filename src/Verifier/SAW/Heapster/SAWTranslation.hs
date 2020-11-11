@@ -904,6 +904,11 @@ data LLVMArrayPermTrans ctx w = LLVMArrayPermTrans {
 data LLVMArrayIndexTrans ctx w =
   LLVMArrayIndexTrans (Mb ctx (PermExpr (BVType w))) OpenTerm Int
 
+-- | Get back the 'LLVMArrayIndex' from an 'LLVMArrayIndexTrans'
+llvmArrayIndexUnTrans :: LLVMArrayIndexTrans ctx w -> Mb ctx (LLVMArrayIndex w)
+llvmArrayIndexUnTrans (LLVMArrayIndexTrans mb_i _ j) =
+  fmap (flip LLVMArrayIndex j) mb_i
+
 -- | The translation of an 'LLVMArrayBorrow' is an element / proof of the
 -- translation of the the 'BVProp' returned by 'llvmArrayBorrowInArrayBase'
 {-
@@ -1219,11 +1224,13 @@ llvmArrayTransRemBorrow b_trans arr_trans =
 getLLVMArrayTransCell :: (1 <= w, KnownNat w) => LLVMArrayPermTrans ctx w ->
                          LLVMArrayIndexTrans ctx w -> [BVPropTrans ctx w] ->
                          [AtomicPermTrans ctx (LLVMPointerType w)]
-getLLVMArrayTransCell arr_trans (LLVMArrayIndexTrans _ i_trans _)
+getLLVMArrayTransCell arr_trans ix@(LLVMArrayIndexTrans _ i_trans _)
   (BVPropTrans _ in_rng_term:_) =
   let w = fromInteger $ natVal arr_trans in
   mapMaybe (offsetLLVMAtomicPermTrans $
-            fmap llvmArrayOffset $ llvmArrayTransPerm arr_trans) $
+            mbMap2 (\ap ix ->
+                     bvAdd (llvmArrayOffset ap) (llvmArrayIndexByteOffset ap ix))
+            (llvmArrayTransPerm arr_trans) (llvmArrayIndexUnTrans ix)) $
   typeTransF (llvmArrayTransFields arr_trans)
   [applyOpenTermMulti (globalOpenTerm "Prelude.atBVVec")
    [natOpenTerm w, llvmArrayTransLen arr_trans,
@@ -1836,10 +1843,26 @@ assertPermStackM nm f =
   if f (itiPermStackVars info) (itiPermStack info) then return () else
     error ("translate: " ++ nm)
 
+-- | Assert that the top portion of the current permission stack equals the
+-- given 'DistPerms'
+assertPermStackTopEqM :: ps ~ (ps1 :++: ps2) =>
+                         String -> f ps1 -> Mb ctx (DistPerms ps2) ->
+                         ImpTransM ext blocks tops ret ps ctx ()
+assertPermStackTopEqM nm prx expected =
+  getPermStackDistPerms >>= \perms ->
+  let actuals =
+        fmap (snd . splitDistPerms prx (mbDistPermsToProxies expected)) perms in
+  if expected == actuals then return () else
+    error ("assertPermStackEqM (" ++ nm ++ "): expected permission stack:\n" ++
+           permPrettyString emptyPPInfo expected ++
+           "\nFound permission stack:\n" ++
+           permPrettyString emptyPPInfo actuals)
+
 -- | Assert that the current permission stack equals the given 'DistPerms'
 assertPermStackEqM :: String -> Mb ctx (DistPerms ps) ->
                       ImpTransM ext blocks tops ret ps ctx ()
 assertPermStackEqM nm perms =
+  -- FIXME: unify this function with assertPermStackTopEqM
   getPermStackDistPerms >>= \stack_perms ->
   if perms == stack_perms then return () else
     error ("assertPermStackEqM (" ++ nm ++ "): expected permission stack:\n" ++
@@ -2650,9 +2673,12 @@ translatePermImpl1 _ [nuP| Impl1_ElimExists x p |] mb_impls =
        (transTerm1 top_ptrans)
 
 -- A SimplImpl is translated using translateSimplImpl
-translatePermImpl1 _ [nuP| Impl1_Simpl simpl prx |] mb_impls =
+translatePermImpl1 _ [nuP| Impl1_Simpl simpl mb_prx |] mb_impls =
+  let prx = mbLift mb_prx in
   translatePermImplUnary mb_impls $ \m ->
-  translateSimplImpl (mbLift prx) simpl m
+  -- Check that the top perms == expected top perms
+  assertPermStackTopEqM "SimplImpl" prx (fmap simplImplIn simpl) >>= \() ->
+  translateSimplImpl prx simpl m
 
 -- A let binding becomes a let binding
 translatePermImpl1 _ [nuP| Impl1_LetBind _ e |] mb_impls =
@@ -2667,7 +2693,7 @@ translatePermImpl1 _ [nuP| Impl1_ElimLLVMFieldContents _ mb_fld |] mb_impls =
   withPermStackM (:>: Member_Base)
   (\(pctx :>: ptrans_x) ->
     let (_,ptrans') =
-          unPTransLLVMField "translateSimplImpl: Impl1_ElimLLVMFieldContents"
+          unPTransLLVMField "translatePermImpl1: Impl1_ElimLLVMFieldContents"
           knownNat ptrans_x in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (mbCombine $
