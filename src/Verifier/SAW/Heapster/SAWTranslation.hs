@@ -1349,7 +1349,7 @@ setLLVMArrayTransSlice arr_trans sub_arr_trans off_tm =
       arr_tm = llvmArrayTransTerm arr_trans
       len'_tm = llvmArrayTransLen sub_arr_trans
       sub_arr_tm = llvmArrayTransTerm sub_arr_trans in
-  sub_arr_trans
+  arr_trans
   { llvmArrayTransTerm =
       applyOpenTermMulti
       (globalOpenTerm "Prelude.updSliceBVVec")
@@ -2676,9 +2676,10 @@ translatePermImpl1 _ [nuP| Impl1_ElimExists x p |] mb_impls =
 translatePermImpl1 _ [nuP| Impl1_Simpl simpl mb_prx |] mb_impls =
   let prx = mbLift mb_prx in
   translatePermImplUnary mb_impls $ \m ->
-  -- Check that the top perms == expected top perms
-  assertPermStackTopEqM "SimplImpl" prx (fmap simplImplIn simpl) >>= \() ->
-  translateSimplImpl prx simpl m
+  assertPermStackTopEqM "SimplImpl in" prx (fmap simplImplIn simpl) >>= \() ->
+  translateSimplImpl prx simpl $
+  do () <- assertPermStackTopEqM "SimplImpl out" prx (fmap simplImplOut simpl)
+     m
 
 -- A let binding becomes a let binding
 translatePermImpl1 _ [nuP| Impl1_LetBind _ e |] mb_impls =
