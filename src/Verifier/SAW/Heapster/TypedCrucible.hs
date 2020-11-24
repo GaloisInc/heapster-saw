@@ -1642,13 +1642,13 @@ ppCruRegAndPerms ctx r =
 
 -- | Get the permissions on the variables in the input set, the variables in
 -- their permissions, the variables in those permissions etc., as in
--- 'varPermsNeededVars'
+-- 'varPermsTransFreeVars'
 getRelevantPerms :: [SomeName CrucibleType] ->
                     PermCheckM ext cblocks blocks tops ret r ps r ps (Some
                                                                       DistPerms)
 getRelevantPerms (namesListToNames -> Some ns) =
   stCurPerms <$> gget >>>= \perms ->
-  case varPermsNeededVars ns perms of
+  case varPermsTransFreeVars ns perms of
     Some all_ns -> greturn (Some $ varPermsMulti (RL.append ns all_ns) perms)
 
 -- | Pretty-print a list of Crucible registers and the variables they translate

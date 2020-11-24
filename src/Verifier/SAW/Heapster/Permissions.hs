@@ -5019,15 +5019,14 @@ determinedVars top_perms vars =
            then modify (NameSet.insert rhs_var) >> return [SomeName rhs_var]
            else return []
 
--- | Compute all the variables that are needed to express the permissions on
--- some input list @ns@ of variables, which includes all variables that are free
--- in the permissions associated with @ns@ as well as all the variables
--- transitively needed by the permissions of those variables. Every variable in
--- the returned list is guaranteed to be listed /after/ (i.e., to the right of
--- where) it is used.
-varPermsNeededVars :: RAssign ExprVar ns -> PermSet ps ->
-                      Some (RAssign ExprVar)
-varPermsNeededVars ns =
+-- | Compute the transitive free variables of the permissions on some input list
+-- @ns@ of variables, which includes all variables @ns1@ that are free in the
+-- permissions associated with @ns@, all the variables @ns2@ free in the
+-- permissions of @ns1@, etc. Every variable in the returned list is guaranteed
+-- to be listed /after/ (i.e., to the right of where) it is used.
+varPermsTransFreeVars :: RAssign ExprVar ns -> PermSet ps ->
+                         Some (RAssign ExprVar)
+varPermsTransFreeVars ns =
   helper NameSet.empty (mapToList SomeName ns)
   where
     helper :: NameSet CrucibleType -> [SomeName CrucibleType] -> PermSet ps ->
