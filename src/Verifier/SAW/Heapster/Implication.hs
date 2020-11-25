@@ -2056,7 +2056,10 @@ modifyPSubst f = gmodify (over implStatePSubst f)
 -- | Set the value for an existential variable in the current substitution,
 -- raising an error if it is already set
 setVarM :: Member vars a -> PermExpr a -> ImplM vars s r ps ps ()
-setVarM x e = modifyPSubst (psubstSet x e)
+setVarM x e =
+  implTraceM (\i -> string "Setting" <+> permPretty i x <+> string "="
+                    permPretty i e) >>>
+  modifyPSubst (psubstSet x e)
 
 -- | Run an implication computation with one more existential variable,
 -- returning the optional expression it was bound to in the current partial
@@ -2399,22 +2402,56 @@ implElimLLVMFieldContentsM x fp =
   implPopM y (llvmFieldContents fp) >>>
   greturn y
 
+-- | Prove a reachability permission @x:P<args,p>@ from a proof of @x:p@ on the
+-- top of the stack
+implReachabilityReflM ::
+  NuMatchingAny1 r =>
+  ExprVar a -> NamedPermName (RecursiveSort b 'True) args a ->
+  PermExprs args -> PermOffset a ->
+  ImplM vars s r (ps :> a) (ps :> a) ()
+implReachabilityReflM x npn (PExprs_Cons args arg@(PExpr_ValPerm p)) off
+  | NameReachConstr <- namedPermNameReachConstr npn =
+    implLookupNamedPerm npn >>>= \np ->
+    case unfoldPerm np (PExprs_Cons args arg) off of
+      ValPerm_Or p1 p2
+        | p1 == p ->
+          introOrLM x p1 p2 >>>
+          implFoldNamedM x npn (PExprs_Cons args arg) off
+      _ -> error "implReachabilityReflM: unexpected form of unfolded permission"
+
+-- | Prove a reachability permission @x:P<args,p>@ from proofs of
+-- @x:P<args,eq(y)>@ and @y:P<args,p>@ @x:p@ on the top of the stack
+implReachabilityTransM ::
+  NuMatchingAny1 r =>
+  ExprVar a -> NamedPermName (RecursiveSort b 'True) args a ->
+  PermExprs args -> PermOffset a -> ExprVar a ->
+  ImplM vars s r (ps :> a) (ps :> a :> a) ()
+implReachabilityTransM x npn (PExprs_Cons args (PExpr_ValPerm p)) off y
+  | NameReachConstr <- namedPermNameReachConstr npn =
+    implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
+    implSimplM Proxy (SImpl_ReachabilityTrans x rp args off y p)
+
 -- | Eliminate a reachability permission @x:P<args,p>@ into permissions
 -- @x:P<args,eq(y)>@ and @y:p@ for a fresh variable @y@, returning the fresh
 -- variable @y@ and popping the @y@ permissions off the stack. If @p@ already
 -- has the form @eq(y)@, then just return @y@.
 implElimReachabilityPermM ::
   NuMatchingAny1 r =>
-  ExprVar a -> RecPerm b 'True (args :> ValuePermType a) a ->
-  PermExprs args -> PermOffset a -> ValuePerm a ->
+  ExprVar a -> NamedPermName (RecursiveSort b 'True) args a ->
+  PermExprs args -> PermOffset a ->
   ImplM vars s r (ps :> a) (ps :> a) (ExprVar a)
-implElimReachabilityPermM _ _ _ _ (ValPerm_Eq (PExpr_Var y)) =
-  greturn y
-implElimReachabilityPermM x rp args off p =
-  implApplyImpl1 (Impl1_ElimReachabilityPerm x rp args off p)
-  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
-  implPopM y p >>>
-  greturn y
+implElimReachabilityPermM _ npn (PExprs_Cons _
+                                 (PExpr_ValPerm
+                                  (ValPerm_Eq (PExpr_Var y)))) _
+  | NameReachConstr <- namedPermNameReachConstr npn =
+    greturn y
+implElimReachabilityPermM x npn (PExprs_Cons args (PExpr_ValPerm p)) off
+  | NameReachConstr <- namedPermNameReachConstr npn =
+    implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
+    implApplyImpl1 (Impl1_ElimReachabilityPerm x rp args off p)
+    (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
+    implPopM y p >>>
+    greturn y
 
 -- | Try to prove a proposition about bitvectors dynamically, failing as in
 -- 'implFailM' if the proposition does not hold
@@ -3748,6 +3785,9 @@ proveNamedArgs :: NuMatchingAny1 r => ExprVar a ->
                   PermOffset a -> Mb vars (PermExprs args) ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveNamedArgs x npn args off mb_args =
+  implTraceM (\i -> string "proveNamedArgs:" <> line <>
+                    ppImpl i x (ValPerm_Named npn args off)
+                    (fmap (\args' -> ValPerm_Named npn args' off) mb_args)) >>>
   getPSubst >>>= \psubst ->
   mapM_ (\case Some memb ->
                  proveNamedArg x npn args off memb psubst $
@@ -3818,6 +3858,7 @@ proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
 proveNamedArg x npn args off memb _ arg@[nuP| PExpr_RWModality Read |] =
   implSimplM Proxy (SImpl_NamedArgRead x npn args off memb)
 
+{-
 -- Prove x:P<args,p1> -o x:P<args,p2> when P is a reachability permission by
 -- eliminating the LHS into x:P<args,eq(y)> and y:p1, proving y:P<args,p2>, and
 -- applying transitivity of reachability permissions
@@ -3833,6 +3874,7 @@ proveNamedArg x npn (PExprs_Cons args
     partialSubstForceM mb_p
     "proveNamedArg: incomplete psubst: p_y" >>>= \p_y ->
     implSimplM Proxy (SImpl_ReachabilityTrans x rp args off y p_y)
+-}
 
 -- Fail in any other case
 proveNamedArg x npn args off memb _ mb_arg =
@@ -4176,14 +4218,15 @@ proveVarImplH x p@(ValPerm_Eq e@(PExpr_LLVMOffset y off)) mb_p =
 
 -- Prove x:(p1 \/ p2) by trying to prove x:p1 and x:p2 in two branches
 proveVarImplH x p [nuP| ValPerm_Or mb_p1 mb_p2 |] =
+  implPopM x p >>>
   implCatchM
-  (proveVarImplH x p mb_p1 >>>
+  (proveVarImpl x mb_p1 >>>
    partialSubstForceM mb_p1
    "proveVarImpl: incomplete psubst: introOrL" >>>= \p1 ->
     partialSubstForceM mb_p2
    "proveVarImpl: incomplete psubst: introOrL"  >>>= \p2 ->
     introOrLM x p1 p2)
-  (proveVarImplH x p mb_p2 >>>
+  (proveVarImpl x mb_p2 >>>
    partialSubstForceM mb_p1
    "proveVarImpl: incomplete psubst: introOrR" >>>= \p1 ->
     partialSubstForceM mb_p2
@@ -4197,8 +4240,35 @@ proveVarImplH x p [nuP| ValPerm_Exists mb_p |] =
   partialSubstForceM mb_p "proveVarImpl: incomplete psubst: introExists" >>>=
   introExistsM x e
 
--- If proving P<args1> |- P<args2> for the same named permission, we just need
--- to equalize the arguments and the offsets using proveNamedArgs. Note that we
+-- If proving P<args1,p1> |- P<args2,p2> for the same reachability permission,
+-- first eliminate the LHS to get P<args1,eq(y)> for some y, then try to prove
+-- the RHS by either reflexivity, meaning x:p2, or transitivity, meaning
+-- y:P<args2,p2>
+proveVarImplH x p@(ValPerm_Named npn args off) mb_p@[nuP| ValPerm_Named
+                                                        mb_npn mb_args mb_off |]
+  | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn)
+  , mbLift (fmap (offsetsEq off) mb_off)
+  , RecursiveSortRepr _ TrueRepr <- namedPermNameSort npn
+  , NameReachConstr <- namedPermNameReachConstr npn
+  , [nuP| PExprs_Cons mb_args' (PExpr_ValPerm mb_p') |] <- mb_args =
+    implCatchM
+    (implTraceM (\i -> string "Blah") >>>
+     implPopM x p >>> proveVarImpl x mb_p' >>>
+     partialSubstForceM mb_args
+     "proveVarImpl: incomplete psubst: reachability perm" >>>= \args' ->
+      implReachabilityReflM x npn args' off)
+    ((if permIsCopyable p then implCopyM x p >>> implPopM x p
+      else greturn ()) >>>
+     implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
+     implElimReachabilityPermM x npn args off >>>= \y ->
+     proveVarImpl y mb_p >>>
+     partialSubstForceM mb_args
+     "proveNamedArg: incomplete psubst: mb_args" >>>= \args' ->
+     implReachabilityTransM x npn args' off y)
+
+
+-- If proving P<args1> |- P<args2> for the same named permission, try to
+-- equalize the arguments and the offsets using proveNamedArgs. Note that we
 -- currently are *not* solving for offsets on the right, meaning that
 -- proveVarImpl will fail for offsets with existential variables in them.
 proveVarImplH x p@(ValPerm_Named npn args off) [nuP| ValPerm_Named
