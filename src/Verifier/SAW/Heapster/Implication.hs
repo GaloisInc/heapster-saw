@@ -129,8 +129,8 @@ data EqProof ps a where
   EqProofTrans :: EqProof ps1 a -> EqProof ps2 a ->
                   EqProof (ps1 :++: ps2) a
 
--- | Construct a transitive 'EqProof', checking that the RHS of the first proof
--- equals the LHS of the second
+-- | Construct an 'EqProof' by transitivity, checking that the RHS of the first
+-- proof equals the LHS of the second
 eqProofTrans :: (Eq a, Substable PermSubst a Identity) =>
                 EqProof ps1 a -> EqProof ps2 a -> EqProof (ps1 :++: ps2) a
 eqProofTrans eqp1 eqp2
@@ -168,7 +168,7 @@ data SomeEqProof a = forall ps. SomeEqProof (EqProof ps a)
 instance Functor SomeEqProof where
   fmap f (SomeEqProof eqp) = SomeEqProof $ fmap f eqp
 
--- | Lift 'liftA2' for 'SomeEqProof', but requires a 'Substable' instance
+-- | Like 'liftA2' for 'SomeEqProof', but requires a 'Substable' instance
 mapEqProof2 :: (Substable PermSubst a Identity,
                 Substable PermSubst b Identity,
                 Substable PermSubst c Identity, Eq c) =>
@@ -177,6 +177,18 @@ mapEqProof2 f (SomeEqProof eqp1) (SomeEqProof eqp2) =
   SomeEqProof $
   eqProofTrans (fmap (flip f $ eqProofLHS eqp2) eqp1)
   (fmap (f (eqProofRHS eqp1)) eqp2)
+
+-- | Construct a 'SomeEqProof' for @x=e@ or @e=x@ using an @x:eq(e)@ permission,
+-- where the 'Bool' flag is 'True' for @x=e@ and 'False' for @e=x@ like 'EqPerm'
+someEqProofPerm :: ExprVar a -> PermExpr a -> Bool -> SomeEqProof (PermExpr a)
+someEqProofPerm x e flag =
+  SomeEqProof $ EqProofPerm (EqPerm x e flag) $ nu PExpr_Var
+
+-- | Construct a 'SomeEqProof' by transitivity
+someEqProofTrans :: (Eq a, Substable PermSubst a Identity) =>
+                    SomeEqProof a -> SomeEqProof a -> SomeEqProof a
+someEqProofTrans (SomeEqProof eqp1) (SomeEqProof eqp2) =
+  SomeEqProof $ eqProofTrans eqp1 eqp2
 
 
 ----------------------------------------------------------------------
@@ -3404,6 +3416,30 @@ proveEqH psubst e mb_e
   | Just e' <- partialSubst psubst mb_e
   , e == e' = greturn (SomeEqProof $ EqProofRefl e)
 
+-- To prove x=y, try to see if either side has an eq permission, if necessary by
+-- eliminating compound permissions, and proceed by transitivity if possible
+proveEqH psubst e@(PExpr_Var x) mb_e@[nuP| PExpr_Var mb_y |]
+  | Right y <- mbNameBoundP mb_y =
+    getPerm x >>>= \x_p ->
+    getPerm y >>>= \y_p ->
+    case (x_p, y_p) of
+      (ValPerm_Eq e', _) ->
+        -- If we have x:eq(e'), prove e' = y and apply transitivity
+        proveEq e' mb_e >>>= \some_eqp ->
+        greturn $ someEqProofTrans (someEqProofPerm x e' True) some_eqp
+      (_, ValPerm_Eq e') ->
+        -- If we have y:eq(e'), prove x = e' and apply transitivity
+        proveEq e (fmap (const e') mb_e) >>>= \some_eqp ->
+        greturn $ someEqProofTrans some_eqp (someEqProofPerm y e' False)
+      (_, _) ->
+        -- If we have no equality perms, eliminate perms on x and y to see if we
+        -- can get one; if so, recurse, and otherwise, raise an error
+        getSimpleVarPerm x >>>= \case
+        ValPerm_Eq _ -> proveEqH psubst e mb_e
+        _ -> getSimpleVarPerm y >>>= \case
+          ValPerm_Eq _ -> proveEqH psubst e mb_e
+          _ -> proveEqFail e mb_e
+
 -- To prove x=e, try to see if x:eq(e') and proceed by transitivity
 proveEqH psubst e@(PExpr_Var x) mb_e =
   getSimpleVarPerm x >>>= \p ->
@@ -3420,10 +3456,8 @@ proveEqH psubst e mb_e@[nuP| PExpr_Var z |]
     getSimpleVarPerm x >>>= \p ->
     case p of
       ValPerm_Eq e' ->
-        mbVarsM e' >>>= \mb_e' ->
-        proveEq e mb_e' >>>= \(SomeEqProof eqp1) ->
-        greturn (SomeEqProof (eqProofTrans eqp1 $
-                              EqProofPerm (EqPerm x e' False) $ nu PExpr_Var))
+        proveEq e (fmap (const e') mb_e) >>>= \eqp ->
+        greturn (someEqProofTrans eqp (someEqProofPerm x e' False))
       _ -> proveEqFail e mb_e
 
 -- FIXME: if proving word(e1)=word(e2) for ground e2, we could add an assertion
@@ -4482,8 +4516,7 @@ proveVarImplH x p@(ValPerm_Named npn args off) mb_p@[nuP| ValPerm_Named
   , NameReachConstr <- namedPermNameReachConstr npn
   , [nuP| PExprs_Cons mb_args' (PExpr_ValPerm mb_p') |] <- mb_args =
     implCatchM
-    (implTraceM (\i -> string "Blah") >>>
-     implPopM x p >>> proveVarImpl x mb_p' >>>
+    (implPopM x p >>> proveVarImpl x mb_p' >>>
      partialSubstForceM mb_args
      "proveVarImpl: incomplete psubst: reachability perm" >>>= \args' ->
       implReachabilityReflM x npn args' off)
