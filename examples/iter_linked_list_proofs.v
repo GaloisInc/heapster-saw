@@ -13,8 +13,8 @@ Import iter_linked_list.
 
 Import SAWCorePrelude.
 
-(* Print incr_list__tuple_fun. *)
-
-(*
 Lemma no_errors_incr_list : refinesFun incr_list (fun _ => noErrorsSpec).
-*)
+Proof.
+  unfold incr_list, incr_list__tuple_fun.
+  (* prove_refinement_match_letRecM_l. *)
+Admitted.
