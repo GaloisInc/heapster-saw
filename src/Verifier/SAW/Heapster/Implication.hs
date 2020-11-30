@@ -89,6 +89,97 @@ instance (MonadStrongBind m) => MonadStrongBind (StateT (Closed s) m) where
 
 
 ----------------------------------------------------------------------
+-- * Equality Proofs
+----------------------------------------------------------------------
+
+-- | An equality permission @x:eq(e)@ read as an an equality @x=e@ or @e=x@,
+-- where the 'Bool' flag is 'True' for the former and 'False' for the latter
+data EqPerm a = EqPerm (ExprVar a) (PermExpr a) Bool
+
+-- | Get the LHS of the equation represented by an 'EqPerm'
+eqPermLHS :: EqPerm a -> PermExpr a
+eqPermLHS (EqPerm x _ True) = PExpr_Var x
+eqPermLHS (EqPerm _ e False) = e
+
+-- | Get the RHS of the equation represented by an 'EqPerm'
+eqPermRHS :: EqPerm a -> PermExpr a
+eqPermRHS (EqPerm _ e True) = e
+eqPermRHS (EqPerm x _ False) = PExpr_Var x
+
+-- | Get the variable out of an 'EqPerm'
+eqPermVar :: EqPerm a -> ExprVar a
+eqPermVar (EqPerm x _ _) = x
+
+-- | Get the permission @eq(e)@ out of an 'EqPerm'
+eqPermPerm :: EqPerm a -> ValuePerm a
+eqPermPerm (EqPerm _ e _) = ValPerm_Eq e
+
+
+-- | A proof that @o1=o2@ for some objects @o1@ and @o2@ of type @a@. This proof
+-- requires some (possibly empty) set of equality permissions, whose types are
+-- given by the @ps@ type argument. These proofs are given as sequences of 0 or
+-- more steps, represented as a tree, where each step is an 'EqPerm' that proves
+-- that either @x=e@ or @e=x@ for some @x@ and @e@ of type @a@, along with a
+-- name-binding @mb_b@ for building a @b@ from an @a@, resulting in a proof that
+-- the substitution of @x@ into @mb_b@ equals the substitution of @e@ into
+-- @mb_b@.
+data EqProof ps a where
+  EqProofRefl :: a -> EqProof RNil a
+  EqProofPerm :: EqPerm a -> Binding a b -> EqProof (RNil :> a) b
+  EqProofTrans :: EqProof ps1 a -> EqProof ps2 a ->
+                  EqProof (ps1 :++: ps2) a
+
+-- | Construct a transitive 'EqProof', checking that the RHS of the first proof
+-- equals the LHS of the second
+eqProofTrans :: (Eq a, Substable PermSubst a Identity) =>
+                EqProof ps1 a -> EqProof ps2 a -> EqProof (ps1 :++: ps2) a
+eqProofTrans eqp1 eqp2
+  | eqProofRHS eqp1 == eqProofLHS eqp2
+  = EqProofTrans eqp1 eqp2
+eqProofTrans _ _ = error "eqProofTrans"
+
+-- | Get the LHS of an 'EqProof'
+eqProofLHS :: Substable PermSubst a Identity => EqProof ps a -> a
+eqProofLHS (EqProofRefl a) = a
+eqProofLHS (EqProofPerm eqp mb_e) = subst (singletonSubst (eqPermLHS eqp)) mb_e
+eqProofLHS (EqProofTrans eqp1 _) = eqProofLHS eqp1
+
+-- | Get the RHS of an 'EqProof'
+eqProofRHS :: Substable PermSubst a Identity => EqProof ps a -> a
+eqProofRHS (EqProofRefl a) = a
+eqProofRHS (EqProofPerm eqp mb_e) = subst (singletonSubst (eqPermRHS eqp)) mb_e
+eqProofRHS (EqProofTrans _ eqp2) = eqProofRHS eqp2
+
+-- | Get the permissions needed by an 'EqProof'
+eqProofPerms :: EqProof ps a -> DistPerms ps
+eqProofPerms (EqProofRefl _) = DistPermsNil
+eqProofPerms (EqProofPerm eqp _) = distPerms1 (eqPermVar eqp) (eqPermPerm eqp)
+eqProofPerms (EqProofTrans eqp1 eqp2) =
+  appendDistPerms (eqProofPerms eqp1) (eqProofPerms eqp2)
+
+instance Functor (EqProof ps) where
+  fmap f (EqProofRefl a) = EqProofRefl $ f a
+  fmap f (EqProofPerm eqp mb_b) = EqProofPerm eqp $ fmap f mb_b
+  fmap f (EqProofTrans eqp1 eqp2) = EqProofTrans (fmap f eqp1) (fmap f eqp2)
+
+-- | An 'EqProofStep' where the permissions are existentially quantified
+data SomeEqProof a = forall ps. SomeEqProof (EqProof ps a)
+
+instance Functor SomeEqProof where
+  fmap f (SomeEqProof eqp) = SomeEqProof $ fmap f eqp
+
+-- | Lift 'liftA2' for 'SomeEqProof', but requires a 'Substable' instance
+mapEqProof2 :: (Substable PermSubst a Identity,
+                Substable PermSubst b Identity,
+                Substable PermSubst c Identity, Eq c) =>
+               (a -> b -> c) -> SomeEqProof a -> SomeEqProof b -> SomeEqProof c
+mapEqProof2 f (SomeEqProof eqp1) (SomeEqProof eqp2) =
+  SomeEqProof $
+  eqProofTrans (fmap (flip f $ eqProofLHS eqp2) eqp1)
+  (fmap (f (eqProofRHS eqp1)) eqp2)
+
+
+----------------------------------------------------------------------
 -- * Permission Implications
 ----------------------------------------------------------------------
 
@@ -150,6 +241,13 @@ data SimplImpl ps_in ps_out where
   -- > x:eq(y) * y:p -o x:p
   SImpl_Cast :: ExprVar a -> ExprVar a -> ValuePerm a ->
                 SimplImpl (RNil :> a :> a) (RNil :> a)
+
+  -- | Cast a proof of @x:p@ to one of @x:p'@ using a proof that @p=p'@ along
+  -- with the equality permissions needed by that proof:
+  --
+  -- > x1:eq(e1), ..., xn:eq(en), x:p -o x:p'
+  SImpl_CastPerm :: ExprVar a -> EqProof ps (ValuePerm a) ->
+                    SimplImpl (RNil :> a :++: ps) (RNil :> a)
 
   -- | Introduce a proof that @x:eq(x)@:
   --
@@ -748,10 +846,15 @@ data MbPermImpls r bs_pss where
 
 -- type IsLLVMPointerTypeList w ps = RAssign ((:~:) (LLVMPointerType w)) ps
 
+$(mkNuMatching [t| forall a. EqPerm a |])
+$(mkNuMatching [t| forall ps a. NuMatching a => EqProof ps a |])
 $(mkNuMatching [t| forall ps_in ps_out. SimplImpl ps_in ps_out |])
 $(mkNuMatching [t| forall ps_in ps_outs. PermImpl1 ps_in ps_outs |])
 $(mkNuMatching [t| forall r bs_pss. NuMatchingAny1 r => MbPermImpls r bs_pss |])
 $(mkNuMatching [t| forall r ps. NuMatchingAny1 r => PermImpl r ps |])
+
+instance NuMatchingAny1 EqPerm where
+  nuMatchingAny1Proof = nuMatchingProof
 
 
 -- | Compile-time flag for whether to prune failure branches in 'implCatchM'
@@ -965,6 +1068,8 @@ simplImplIn (SImpl_IntroOrR x p1 p2) = distPerms1 x p2
 simplImplIn (SImpl_IntroExists x e p) =
   distPerms1 x (subst (singletonSubst e) p)
 simplImplIn (SImpl_Cast x y p) = distPerms2 x (ValPerm_Eq $ PExpr_Var y) y p
+simplImplIn (SImpl_CastPerm x eqp) =
+  appendDistPerms (distPerms1 x (eqProofLHS eqp)) (eqProofPerms eqp)
 simplImplIn (SImpl_IntroEqRefl x) = DistPermsNil
 simplImplIn (SImpl_InvertEq x y) = distPerms1 x (ValPerm_Eq $ PExpr_Var y)
 simplImplIn (SImpl_InvTransEq x y e) =
@@ -1052,7 +1157,7 @@ simplImplIn (SImpl_LLVMArrayRearrange x ap1 ap2) =
      all (flip elem (llvmArrayBorrows ap1)) (llvmArrayBorrows ap2) then
     distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap1)
   else
-    error "simplImplOut: SImpl_LLVMArrayRearrange: arrays not equivalent"
+    error "simplImplIn: SImpl_LLVMArrayRearrange: arrays not equivalent"
 
 simplImplIn (SImpl_LLVMArrayEmpty x ap) =
   if bvEq (llvmArrayLen ap) (bvInt 0) && llvmArrayBorrows ap == [] then
@@ -1149,6 +1254,7 @@ simplImplOut (SImpl_IntroOrL x p1 p2) = distPerms1 x (ValPerm_Or p1 p2)
 simplImplOut (SImpl_IntroOrR x p1 p2) = distPerms1 x (ValPerm_Or p1 p2)
 simplImplOut (SImpl_IntroExists x _ p) = distPerms1 x (ValPerm_Exists p)
 simplImplOut (SImpl_Cast x _ p) = distPerms1 x p
+simplImplOut (SImpl_CastPerm x eqp) = distPerms1 x (eqProofRHS eqp)
 simplImplOut (SImpl_IntroEqRefl x) = distPerms1 x (ValPerm_Eq $ PExpr_Var x)
 simplImplOut (SImpl_InvertEq x y) = distPerms1 y (ValPerm_Eq $ PExpr_Var x)
 simplImplOut (SImpl_InvTransEq x y e) = distPerms1 x (ValPerm_Eq $ PExpr_Var y)
@@ -1440,6 +1546,20 @@ applyImpl1 _ (Impl1_TryProveBVProp x prop _) ps =
 
 
 instance SubstVar PermVarSubst m =>
+         Substable PermVarSubst (EqPerm a) m where
+  genSubst s [nuP| EqPerm x e b |] =
+    EqPerm <$> genSubst s x <*> genSubst s e <*> return (mbLift b)
+
+instance (NuMatching a, Substable PermVarSubst a m) =>
+         Substable PermVarSubst (EqProof ps a) m where
+  genSubst s [nuP| EqProofRefl a |] =
+    EqProofRefl <$> genSubst s a
+  genSubst s [nuP| EqProofPerm eqp mb_a |] =
+    EqProofPerm <$> genSubst s eqp <*> genSubst s mb_a
+  genSubst s [nuP| EqProofTrans eqp1 eqp2 |] =
+    EqProofTrans <$> genSubst s eqp1 <*> genSubst s eqp2
+
+instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (SimplImpl ps_in ps_out) m where
   genSubst s [nuP| SImpl_Drop x p |] =
     SImpl_Drop <$> genSubst s x <*> genSubst s p
@@ -1458,6 +1578,8 @@ instance SubstVar PermVarSubst m =>
     SImpl_IntroExists <$> genSubst s x <*> genSubst s e <*> genSubst s p
   genSubst s [nuP| SImpl_Cast x y p |] =
     SImpl_Cast <$> genSubst s x <*> genSubst s y <*> genSubst s p
+  genSubst s [nuP| SImpl_CastPerm x eqp |] =
+    SImpl_CastPerm <$> genSubst s x <*> genSubst s eqp
   genSubst s [nuP| SImpl_IntroEqRefl x |] =
     SImpl_IntroEqRefl <$> genSubst s x
   genSubst s [nuP| SImpl_InvertEq x y |] =
@@ -2056,10 +2178,12 @@ modifyPSubst f = gmodify (over implStatePSubst f)
 -- | Set the value for an existential variable in the current substitution,
 -- raising an error if it is already set
 setVarM :: Member vars a -> PermExpr a -> ImplM vars s r ps ps ()
-setVarM x e =
-  implTraceM (\i -> string "Setting" <+> permPretty i x <+> string "="
-                    permPretty i e) >>>
-  modifyPSubst (psubstSet x e)
+setVarM memb e =
+  (cruCtxProxies <$> view implStateVars <$> gget) >>>= \vars ->
+  implTraceM (\i -> string "Setting" <+>
+                    permPretty i (nuMulti vars $ \ns -> RL.get memb ns) <+>
+                    string "=" <+> permPretty i e) >>>
+  modifyPSubst (psubstSet memb e)
 
 -- | Run an implication computation with one more existential variable,
 -- returning the optional expression it was bound to in the current partial
@@ -2621,6 +2745,26 @@ llvmWordEqM x y e = implSimplM Proxy (SImpl_LLVMWordEq x y e)
 introCastM :: NuMatchingAny1 r => ExprVar a -> ExprVar a -> ValuePerm a ->
               ImplM vars s r (ps :> a) (ps :> a :> a) ()
 introCastM x y p = implSimplM Proxy (SImpl_Cast x y p)
+
+-- | Copy a sequence of equality permissions @x1:eq(e1),...,xn:eq(en)@ from the
+-- current permission set and push them to the top of the stack, on top of but
+-- associated with the top permission already on the stack. It is an error if
+-- any of the supplied perms are not equality perms, or if any @xi@ does not
+-- have permission @eq(ei)@ in the current permission set.
+implPushEqPermsMulti :: NuMatchingAny1 r => DistPerms ps' ->
+                        ImplM vars s r (ps :++: (RNil :> a :++: ps')) (ps :> a) ()
+implPushEqPermsMulti DistPermsNil = greturn ()
+implPushEqPermsMulti (DistPermsCons ps' x p@(ValPerm_Eq e)) =
+  implPushEqPermsMulti ps' >>>
+  implPushM x p >>> implCopyM x p >>> implPopM x p
+implPushEqPermsMulti _ = error "implPushEqPermsMulti: non-equality permission"
+
+-- | Cast a proof of @x:p@ to one of @x:p'@ using a proof that @p=p'@
+implCastPermM :: NuMatchingAny1 r => ExprVar a -> SomeEqProof (ValuePerm a) ->
+                 ImplM vars s r (ps :> a) (ps :> a) ()
+implCastPermM x (SomeEqProof eqp) =
+  implPushEqPermsMulti (eqProofPerms eqp) >>>
+  implSimplM Proxy (SImpl_CastPerm x eqp)
 
 -- | Introduce a proof of @x:true@ onto the top of the stack, which is the same
 -- as an empty conjunction
@@ -3206,9 +3350,119 @@ recombineLifetimeCurrentPerms (CurrentTransPerms cur_perms l) =
 
 
 ----------------------------------------------------------------------
--- * Proving Equality Permissions
+-- * Proving Equalities
 ----------------------------------------------------------------------
 
+-- | Fail when trying to prove an equality
+proveEqFail :: (NuMatchingAny1 r, PermPretty (f a)) => f a -> Mb vars (f a) ->
+               ImplM vars s r ps ps any
+proveEqFail e mb_e =
+  implTraceM (\i ->
+               sep [string "proveEq" <> colon <+> string "Could not prove",
+                    sep [permPretty i e <+>
+                         string "=" <+> permPretty i mb_e]]) >>>=
+  implFailM
+
+-- | Typeclass for the generic function that tries to extend the current partial
+-- substitution to unify an expression with an expression pattern and returns a
+-- proof of the equality on success
+class ProveEq a where
+  proveEq :: NuMatchingAny1 r => a -> Mb vars a ->
+             ImplM vars s r ps ps (SomeEqProof a)
+
+instance ProveEq (PermExpr a) where
+  proveEq e mb_e = getPSubst >>>= \psubst -> proveEqH psubst e mb_e
+
+instance ProveEq (LLVMFramePerm w) where
+  proveEq [] [nuP| [] |] = greturn $ SomeEqProof $ EqProofRefl []
+  proveEq ((e,i):fperms) [nuP| ((mb_e,mb_i)):mb_fperms |]
+    | mbLift mb_i == i =
+      proveEq e mb_e >>>= \eqp1 ->
+      proveEq fperms mb_fperms >>>= \eqp2 ->
+      greturn (mapEqProof2 (\x y -> (x,i):y) eqp1 eqp2)
+
+
+-- | The main work horse for 'proveEq' on expressions
+proveEqH :: NuMatchingAny1 r => PartialSubst vars -> PermExpr a ->
+            Mb vars (PermExpr a) ->
+            ImplM vars s r ps ps (SomeEqProof (PermExpr a))
+
+-- If the RHS is an unset variable z, set z=e
+proveEqH psubst e [nuP| PExpr_Var z |]
+  | Left memb <- mbNameBoundP z
+  , Nothing <- psubstLookup psubst memb =
+    setVarM memb e >>> greturn (SomeEqProof $ EqProofRefl e)
+
+-- If the RHS is a set variable, substitute for it and recurse
+proveEqH psubst e [nuP| PExpr_Var z |]
+  | Left memb <- mbNameBoundP z
+  , Just e' <- psubstLookup psubst memb =
+    proveEqH psubst e (fmap (const e') z)
+
+-- If the RHS = LHS, do a proof by reflexivity
+proveEqH psubst e mb_e
+  | Just e' <- partialSubst psubst mb_e
+  , e == e' = greturn (SomeEqProof $ EqProofRefl e)
+
+-- To prove x=e, try to see if x:eq(e') and proceed by transitivity
+proveEqH psubst e@(PExpr_Var x) mb_e =
+  getSimpleVarPerm x >>>= \p ->
+  case p of
+    ValPerm_Eq e' ->
+      proveEq e' mb_e >>>= \(SomeEqProof eqp2) ->
+      greturn (SomeEqProof (eqProofTrans (EqProofPerm (EqPerm x e' True) $
+                                          nu PExpr_Var) eqp2))
+    _ -> proveEqFail e mb_e
+
+-- To prove e=x, try to see if x:eq(e') and proceed by transitivity
+proveEqH psubst e mb_e@[nuP| PExpr_Var z |]
+  | Right x <- mbNameBoundP z =
+    getSimpleVarPerm x >>>= \p ->
+    case p of
+      ValPerm_Eq e' ->
+        mbVarsM e' >>>= \mb_e' ->
+        proveEq e mb_e' >>>= \(SomeEqProof eqp1) ->
+        greturn (SomeEqProof (eqProofTrans eqp1 $
+                              EqProofPerm (EqPerm x e' False) $ nu PExpr_Var))
+      _ -> proveEqFail e mb_e
+
+-- FIXME: if proving word(e1)=word(e2) for ground e2, we could add an assertion
+-- that e1=e2 using a BVProp_Eq
+
+-- Prove word(e1) = word(e2) by proving e1=e2
+proveEqH psubst (PExpr_LLVMWord e) [nuP| PExpr_LLVMWord mb_e |] =
+  fmap PExpr_LLVMWord <$> proveEqH psubst e mb_e
+
+-- Prove e = N*z + M where e - M is a multiple of N by setting z = (e-M)/N
+proveEqH psubst e [nuP| PExpr_BV [BVFactor (BV.BV mb_n) z] (BV.BV mb_m) |]
+  | Left memb <- mbNameBoundP z
+  , Nothing <- psubstLookup psubst memb
+  , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) =
+    setVarM memb (bvDiv (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) >>>
+    greturn (SomeEqProof (EqProofRefl e))
+
+-- Otherwise give up!
+proveEqH _ e mb_e = proveEqFail e mb_e
+
+
+-- | Build a proof on the top of the stack that @x:eq(e)@. Assume that all @x@
+-- permissions are on the top of the stack and given by argument @p@, and pop
+-- them back to the primary permission for @x@ at the end of the proof.
+proveVarEq :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+              Mb vars (PermExpr a) -> ImplM vars s r (ps :> a) (ps :> a) ()
+proveVarEq x p mb_e =
+  implPopM x p >>> proveEq (PExpr_Var x) mb_e >>>= \some_eqp ->
+  introEqReflM x >>> implCastPermM x (fmap ValPerm_Eq some_eqp)
+
+-- | Prove that @e1=e2@ using 'proveEq' and then cast permission @x:(f e1)@,
+-- which is on top of the stack, to @x:(f e2)@
+proveEqCast :: NuMatchingAny1 r => ExprVar b -> (PermExpr a -> ValuePerm b) ->
+               PermExpr a -> Mb vars (PermExpr a) ->
+               ImplM vars s r (ps :> b) (ps :> b) ()
+proveEqCast x f e mb_e =
+  proveEq e mb_e >>>= \some_eqp -> implCastPermM x (fmap f some_eqp)
+
+{-
 -- | Build a proof on the top of the stack that @x:eq(e)@. Assume that all @x@
 -- permissions are on the top of the stack and given by argument @p@, and pop
 -- them back to the primary permission for @x@ at the end of the proof.
@@ -3312,6 +3566,7 @@ proveVarEqH x e psubst [nuP| PExpr_Var mb_y |]
 -- Otherwise give up!
 proveVarEqH x e _ mb_e =
   implFailVarM "proveVarEqH" x (ValPerm_Eq e) (fmap ValPerm_Eq mb_e)
+-}
 
 
 ----------------------------------------------------------------------
@@ -3366,17 +3621,14 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
      greturn (fp' { llvmFieldOffset = off' })) >>>= \fp'' ->
 
   -- Step 3: change the lifetime if needed
+  --
+  -- FIXME: can we maybe incorporate the proof steps below into a more general
+  -- form of proveEq?
+  --
+  -- FIXME: break this out into its own function so we can do multiple steps of
+  -- LCurrent perms if needed
   getPSubst >>>= \psubst ->
   (case (llvmFieldLifetime fp'', fmap llvmFieldLifetime mb_fp) of
-      (l1, mb_l2) | mbLift (fmap (== l1) mb_l2) -> greturn fp''
-      (l1, [nuP| PExpr_Var z |])
-        | Left memb <- mbNameBoundP z
-        , Nothing <- psubstLookup psubst memb ->
-          setVarM memb l1 >>> greturn fp''
-      (l1, [nuP| PExpr_Var z |])
-        | Left memb <- mbNameBoundP z
-        , Just l2 <- psubstLookup psubst memb
-        , l1 == l2 -> greturn fp''
       (PExpr_Always, [nuP| PExpr_Var z |])
         | Left memb <- mbNameBoundP z
         , Just l2 <- psubstLookup psubst memb ->
@@ -3388,15 +3640,18 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
                             PExpr_Var l2) >>>
           greturn (fp'' { llvmFieldLifetime = PExpr_Var l2 })
       (PExpr_Var l1, [nuP| PExpr_Var z |])
-        | Right l2_var <- mbNameBoundP z ->
+        | Right l2_var <- mbNameBoundP z
+        , l2_var /= l1 ->
           let l2 = PExpr_Var l2_var in
           let lcur_perm = ValPerm_Conj [Perm_LCurrent l2] in
           proveVarImpl l1 (fmap (const $ lcur_perm) mb_fp) >>>
           implSimplM Proxy (SImpl_LLVMFieldLifetimeCurrent x fp'' l1 l2) >>>
           greturn (fp'' { llvmFieldLifetime = l2 })
-      _ ->
-        implFailVarM "proveVarLLVMFieldFromField" x (ValPerm_Conj1 $ Perm_LLVMField fp'')
-        (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)) >>>= \fp''' ->
+      (l1, mb_l2) ->
+        proveEqCast x (\l -> ValPerm_Conj1 $ Perm_LLVMField $
+                             fp'' { llvmFieldLifetime = l }) l1 mb_l2 >>>
+        partialSubstForceM mb_l2 "proveVarLLVMFieldFromField: lifetime" >>>= \l2 ->
+        greturn (fp'' { llvmFieldLifetime = l2 })) >>>= \fp''' ->
 
   -- Step 4: prove the contents
   proveVarImpl y (fmap llvmFieldContents mb_fp) >>>
@@ -3805,45 +4060,25 @@ proveNamedArg :: NuMatchingAny1 r => ExprVar a ->
                  Mb vars (PermExpr b) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
 
--- If the current and required args are equal, do nothing and return
-proveNamedArg x _ args _ memb _ mb_arg
-  | mbLift (fmap (== nthPermExpr args memb) mb_arg) =
-    greturn ()
-
--- If the RHS is an unassigned existential variable then set it and return
---
--- FIXME: eventually we might want to generate some sort of constraints...?
-proveNamedArg x _ args _ memb psubst [nuP| PExpr_Var z |]
-  | Left memb_z <- mbNameBoundP z
-  , Nothing <- psubstLookup psubst memb_z =
-    setVarM memb_z (nthPermExpr args memb)
-
--- If the RHS is an already-assigned existential variable, subst and recurse
-proveNamedArg x npn args off memb psubst arg@[nuP| PExpr_Var z |]
-  | Left memb_z <- mbNameBoundP z
-  , Just e <- psubstLookup psubst memb_z =
-    proveNamedArg x npn args off memb psubst $ fmap (const e) arg
-
--- Special case: if the LHS is eq(e) and the RHS is eq(z) for some unassigned
--- variable z, then just set z=e
-proveNamedArg x npn args off memb psubst arg@[nuP| PExpr_ValPerm
-                                                 (ValPerm_Eq (PExpr_Var z)) |]
-  | Left memb_z <- mbNameBoundP z
-  , Nothing <- psubstLookup psubst memb_z
-  , PExpr_ValPerm (ValPerm_Eq e) <- nthPermExpr args memb =
-    setVarM memb_z e
-
--- Prove P<args1,always,args2> -o P<args1,l,args2>
+-- Prove P<args1,always,args2> -o P<args1,l,args2> for free variable l
 proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
-  | Right l <- mbNameBoundP z
-  , PExpr_Always <- nthPermExpr args memb =
+  | PExpr_Always <- nthPermExpr args memb
+  , Right l <- mbNameBoundP z =
     implSimplM Proxy (SImpl_NamedArgAlways x npn args off memb (PExpr_Var l))
 
--- Prove P<args1,l1,args2> -o P<args1,l2,args2> using l1:[l2]lcurrent
+-- Prove P<args1,always,args2> -o P<args1,l,args2> for assigned variable l
+proveNamedArg x npn args off memb psubst arg@[nuP| PExpr_Var z |]
+  | PExpr_Always <- nthPermExpr args memb
+  , Left memb_z <- mbNameBoundP z
+  , Just e <- psubstLookup psubst memb_z =
+    implSimplM Proxy (SImpl_NamedArgAlways x npn args off memb e)
+
+-- Prove P<args1,l1,args2> -o P<args1,l2,args2> for l1/=l2 using l1:[l2]lcurrent
 proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
   | Right l1 <- mbNameBoundP z
   , LifetimeRepr <- cruCtxLookup (namedPermNameArgs npn) memb
-  , PExpr_Var l2 <- nthPermExpr args memb =
+  , PExpr_Var l2 <- nthPermExpr args memb
+  , l1 /= l2 =
     proveVarImpl l1 (fmap (const $ ValPerm_Conj1 $
                            Perm_LCurrent $ PExpr_Var l2) arg) >>>
     implSimplM Proxy (SImpl_NamedArgCurrent x npn args off memb (PExpr_Var l2))
@@ -3857,6 +4092,12 @@ proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
 -- Prove P<args1,rw,args2> -o P<args1,R,args2> for any rw
 proveNamedArg x npn args off memb _ arg@[nuP| PExpr_RWModality Read |] =
   implSimplM Proxy (SImpl_NamedArgRead x npn args off memb)
+
+-- Otherwise, prove P<args1,e1,args2> -o P<args1,e2,args2> by proving e1=e2
+proveNamedArg x npn args off memb _ mb_arg =
+  proveEqCast x (\e -> ValPerm_Named npn (setNthPermExpr args memb e) off)
+  (nthPermExpr args memb) mb_arg
+
 
 {-
 -- Prove x:P<args,p1> -o x:P<args,p2> when P is a reachability permission by
@@ -4042,23 +4283,12 @@ proveVarAtomicImpl x ps [nuP| Perm_NamedConj mb_n mb_args mb_off |] =
 
 proveVarAtomicImpl x aps@[Perm_LLVMFrame
                           fperms] mb_ap@[nuP| Perm_LLVMFrame mb_fperms |] =
-  getPSubst >>>= \psubst ->
-  case matchFramePerms psubst fperms mb_fperms of
-    Just psubst' -> modifyPSubst (const psubst') >>> greturn ()
-    Nothing -> proveVarAtomicImplUnfoldOrFail x aps mb_ap
-
-proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned (PExpr_Var z) |]
-  | Left memb <- mbNameBoundP z
-  = getPSubst >>>= \psubst ->
-    case psubstLookup psubst memb of
-      Just ps' | ps == ps' -> greturn ()
-      Just _ -> proveVarAtomicImplUnfoldOrFail x aps mb_ap
-      Nothing -> setVarM memb ps
+  proveEq fperms mb_fperms >>>= \eqp ->
+  implCastPermM x (fmap (ValPerm_Conj1 . Perm_LLVMFrame) eqp)
 
 proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned mb_ps |] =
-  partialSubstForceM mb_ps
-  "proveVarAtomicImpl: incomplete lowned perms" >>>= \ps' ->
-  if ps == ps' then greturn () else proveVarAtomicImplUnfoldOrFail x aps mb_ap
+  proveEq ps mb_ps >>>= \eqp ->
+  implCastPermM x (fmap (ValPerm_Conj1 . Perm_LOwned) eqp)
 
 proveVarAtomicImpl x ps p@[nuP| Perm_LCurrent mb_l' |] =
   partialSubstForceM mb_l'

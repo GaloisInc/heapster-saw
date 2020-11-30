@@ -2019,6 +2019,19 @@ translateSimplImpl _ [nuP| SImpl_Cast _ _ p |] m =
   (\(pctx :>: _ :>: ptrans) -> pctx :>: ptrans)
   m
 
+translateSimplImpl prx simpl@[nuP| SImpl_CastPerm (x::ExprVar a) eqp |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     let prxs_a = MNil :>: (Proxy :: Proxy a)
+     let prxs1 = mbLift $ fmap (distPermsToProxies . eqProofPerms) eqp
+     let prxs = RL.append prxs_a prxs1
+     withPermStackM
+       (\vars -> fst (RL.split prx prxs vars) :>: translateVar x)
+       (\pctx ->
+         let (pctx1, pctx2) = RL.split prx prxs pctx
+             (_ :>: ptrans, _) = RL.split prxs_a prxs1 pctx2 in
+         pctx1 :>: typeTransF ttrans (transTerms ptrans))
+       m
+
 translateSimplImpl _ [nuP| SImpl_IntroEqRefl x |] m =
   withPermStackM (:>: translateVar x) (:>: PTrans_Eq (fmap PExpr_Var x)) m
 

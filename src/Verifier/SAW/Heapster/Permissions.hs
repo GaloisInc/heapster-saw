@@ -2836,22 +2836,6 @@ llvmFrameDeletionPerms ((asLLVMOffset -> Just (x,off), sz):fperm')
 llvmFrameDeletionPerms _ =
   error "llvmFrameDeletionPerms: unexpected LLVM word allocated in frame"
 
--- | Extend a 'PartialSubst' to make two 'LLVMFramePerm's equal, returning
--- 'Nothing' if that is not possible
-matchFramePerms :: PartialSubst vars -> LLVMFramePerm w ->
-                   Mb vars (LLVMFramePerm w) -> Maybe (PartialSubst vars)
-matchFramePerms psubst [] [nuP| [] |] = return psubst
-matchFramePerms psubst ((e,i):fperms) [nuP| ((mb_e,mb_i)):mb_fperms |]
-  | mbLift mb_i == i
-  , Just e' <- partialSubst psubst mb_e
-  , e == e'
-  = matchFramePerms psubst fperms mb_fperms
-matchFramePerms psubst ((e,i):fperms) [nuP| ((PExpr_Var mb_x,mb_i)):mb_fperms |]
-  | mbLift mb_i == i
-  , Left memb <- mbNameBoundP mb_x
-  = matchFramePerms (psubstSet memb e psubst) fperms mb_fperms
-matchFramePerms _ _ _ = Nothing
-
 -- | Build a 'DistPerms' with just one permission
 distPerms1 :: ExprVar a -> ValuePerm a -> DistPerms (RNil :> a)
 distPerms1 x p = DistPermsCons DistPermsNil x p
@@ -3712,6 +3696,11 @@ instance (Substable s a m, NuMatching a) => Substable s (Mb ctx a) m where
 instance SubstVar s m => Substable s (Member ctx a) m where
   genSubst _ mb_memb = return $ mbLift mb_memb
 
+instance (NuMatchingAny1 f, Substable1 s f m) =>
+         Substable s (RAssign f ctx) m where
+  genSubst _ [nuP| MNil |] = return MNil
+  genSubst s [nuP| xs :>: x |] = (:>:) <$> genSubst s xs <*> genSubst1 s x
+
 -- | Helper function to substitute into 'BVFactor's
 substBVFactor :: SubstVar s m => s ctx -> Mb ctx (BVFactor w) ->
                  m (PermExpr (BVType w))
@@ -3835,10 +3824,15 @@ instance SubstVar s m => Substable s (ValuePerm a) m where
   genSubst s [nuP| ValPerm_Conj aps |] =
     ValPerm_Conj <$> mapM (genSubst s) (mbList aps)
 
+instance SubstVar s m => Substable1 s ValuePerm m where
+  genSubst1 = genSubst
+
+{-
 instance SubstVar s m => Substable s (ValuePerms as) m where
   genSubst s [nuP| ValPerms_Nil |] = return ValPerms_Nil
   genSubst s [nuP| ValPerms_Cons ps p |] =
     ValPerms_Cons <$> genSubst s ps <*> genSubst s p
+-}
 
 instance SubstVar s m => Substable s RWModality m where
   genSubst s [nuP| Write |] = return Write
@@ -3969,6 +3963,10 @@ permVarSubstOfNames :: RAssign Name ctx -> PermVarSubst ctx
 permVarSubstOfNames MNil = PermVarSubst_Nil
 permVarSubstOfNames (ns :>: n) = PermVarSubst_Cons (permVarSubstOfNames ns) n
 
+permVarSubstToNames :: PermVarSubst ctx -> RAssign Name ctx
+permVarSubstToNames PermVarSubst_Nil = MNil
+permVarSubstToNames (PermVarSubst_Cons s n) = permVarSubstToNames s :>: n
+
 varSubstLookup :: PermVarSubst ctx -> Member ctx a -> ExprVar a
 varSubstLookup (PermVarSubst_Cons _ x) Member_Base = x
 varSubstLookup (PermVarSubst_Cons s _) (Member_Step memb) =
@@ -3979,6 +3977,10 @@ appendVarSubsts :: PermVarSubst ctx1 -> PermVarSubst ctx2 ->
 appendVarSubsts es1 PermVarSubst_Nil = es1
 appendVarSubsts es1 (PermVarSubst_Cons es2 x) =
   PermVarSubst_Cons (appendVarSubsts es1 es2) x
+
+-- | Convert a 'PermVarSubst' to a 'PermSubst'
+permVarSubstToSubst :: PermVarSubst ctx -> PermSubst ctx
+permVarSubstToSubst s = PermSubst $ RL.map PExpr_Var $ permVarSubstToNames s
 
 varSubstVar :: PermVarSubst ctx -> Mb ctx (ExprVar a) -> ExprVar a
 varSubstVar s mb_x =
