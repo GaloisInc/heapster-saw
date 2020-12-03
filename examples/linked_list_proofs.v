@@ -195,6 +195,31 @@ Proof.
     + time "any_fun_ref" prove_refinement.
 Qed.
 
+Lemma no_errors_any : refinesFun any (fun pred _ => assumingM
+                                                   (forall x, refinesM (pred x) noErrorsSpec)
+                                                   noErrorsSpec).
+Proof.
+  unfold any, any__tuple_fun, noErrorsSpec.
+  apply refinesFun_multiFixM_fst. intros pred l.
+  unfold refinesFun, Datatypes.fst.
+  apply refinesM_assumingM_r.
+  intros Hpred.
+  apply refinesM_letRecM_Nil_l.
+  apply refinesM_either_l; intros.
+  - eapply refinesM_existsM_r. reflexivity.
+  - pose proof (Hpred (existT (fun _ : bitvector 64 => unit) (projT1 (fst b)) tt)) as Hpred'.
+    red in Hpred'. unfold existsM in Hpred'.
+    repeat intro. destruct H0.
+    specialize (Hpred' _ H0). destruct Hpred'.
+    destruct x.
+    2: { inversion H1. inversion H2. }
+    destruct (bvEq 1
+              (if not (bvEq 64 (projT1 s) (intToBv 64 0)) then intToBv 1 (-1) else intToBv 1 0)
+              (intToBv 1 0)); simpl in *.
+    2: { eexists. apply H1. }
+    inversion H1. destruct x. 2: { specialize (H3 Hpred). inversion H3. inversion H5. }
+      eexists. apply H4.
+Qed.
 
 (*
 Arguments sorted_insert__tuple_fun /.
@@ -202,8 +227,20 @@ Eval simpl in sorted_insert__tuple_fun.
 Print sorted_insert__tuple_fun.
 *)
 
+Lemma no_errors_find_elem : refinesFun find_elem (fun _ _ => noErrorsSpec).
+Proof.
+  unfold find_elem, find_elem__tuple_fun, noErrorsSpec.
+  time "no_errors_sorted_insert" prove_refinement.
+Qed.
+
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.
   unfold sorted_insert, sorted_insert__tuple_fun, mallocSpec, noErrorsSpec.
+  time "no_errors_sorted_insert" prove_refinement.
+Qed.
+
+Lemma no_errors_sorted_insert_no_malloc : refinesFun sorted_insert_no_malloc (fun _ _ => noErrorsSpec).
+Proof.
+  unfold sorted_insert_no_malloc, sorted_insert_no_malloc__tuple_fun, mallocSpec, noErrorsSpec.
   time "no_errors_sorted_insert" prove_refinement.
 Qed.
