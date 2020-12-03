@@ -206,7 +206,7 @@ Proof.
   intros Hpred.
   apply refinesM_letRecM_Nil_l.
   apply refinesM_either_l; intros.
-  - eapply refinesM_existsM_r. reflexivity.
+  - eapply refinesM_existsM_r. reflexivity. (* TODO needs an exists elimination rule? *)
   - pose proof (Hpred (existT (fun _ : bitvector 64 => unit) (projT1 (fst b)) tt)) as Hpred'.
     red in Hpred'. unfold existsM in Hpred'.
     repeat intro. destruct H0.
@@ -230,7 +230,26 @@ Print sorted_insert__tuple_fun.
 Lemma no_errors_find_elem : refinesFun find_elem (fun _ _ => noErrorsSpec).
 Proof.
   unfold find_elem, find_elem__tuple_fun, noErrorsSpec.
-  time "no_errors_sorted_insert" prove_refinement.
+  time "no_errors_find_elem" prove_refinement.
+Qed.
+
+Definition find_elem_fun (x: {_: bitvector 64 & unit}) :
+  list {_:bitvector 64 & unit} -> CompM (list {_:bitvector 64 & unit}) :=
+  list_rect (fun _ => CompM (list {_:bitvector 64 & unit}))
+            (returnM List.nil)
+            (fun y l' rec =>
+               if bvEq 64 (projT1 y) (projT1 x)
+               then returnM (y :: l')
+               else rec).
+
+Lemma find_elem_fun_ref : refinesFun find_elem find_elem_fun.
+Proof.
+  unfold find_elem, find_elem__tuple_fun, find_elem_fun.
+  time "find_elem_fun_ref" prove_refinement.
+  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
+  - reflexivity.
+  - rewrite (proj2 (bvEq_eq _ _ _)); simpl; auto. reflexivity.
+  - rewrite (proj2 (bvEq_neq _ _ _)); simpl; auto. reflexivity.
 Qed.
 
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
@@ -242,5 +261,5 @@ Qed.
 Lemma no_errors_sorted_insert_no_malloc : refinesFun sorted_insert_no_malloc (fun _ _ => noErrorsSpec).
 Proof.
   unfold sorted_insert_no_malloc, sorted_insert_no_malloc__tuple_fun, mallocSpec, noErrorsSpec.
-  time "no_errors_sorted_insert" prove_refinement.
+  time "no_errors_sorted_insert_no_malloc" prove_refinement.
 Qed.
