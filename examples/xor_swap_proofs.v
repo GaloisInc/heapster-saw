@@ -18,6 +18,12 @@ Definition xor_swap_spec x1 x2 :
   returnM (existT _ x2 tt, ((existT _ x1 tt), tt)).
 Arguments xor_swap_spec /.
 
+Lemma no_errors_xor_swap : refinesFun xor_swap (fun _ _ => noErrorsSpec).
+Proof.
+  unfold xor_swap, xor_swap__tuple_fun, noErrorsSpec.
+  time "no_errors_xor_swap" prove_refinement.
+Qed.
+
 (* FIXME: move lemma to SAWCorePrelude...? *)
 Lemma bvXor_twice_r n x y :
   SAWCorePrelude.bvXor n (SAWCorePrelude.bvXor n x y) y = x.
