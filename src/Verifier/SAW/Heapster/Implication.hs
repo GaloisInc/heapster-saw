@@ -54,8 +54,10 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..))
 import qualified Data.Binding.Hobbits.NameSet as NameSet
 
-import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
-import qualified Text.PrettyPrint.ANSI.Leijen as PP
+-- import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
+-- import qualified Text.PrettyPrint.ANSI.Leijen as PP
+-- import Prettyprinter ((<$>))
+import Prettyprinter as PP
 
 import Data.Parameterized.BoolRepr
 
@@ -1462,9 +1464,9 @@ applySimplImpl pp_info prx simpl =
     appendDistPerms ps (simplImplOut simpl)
   else
     error $ renderDoc $
-    vsep [string "applySimplImpl: incorrect input permissions",
-          string "expected: " <> permPretty pp_info (simplImplIn simpl),
-          string "actual: " <> permPretty pp_info ps_in]
+    vsep [pretty "applySimplImpl: incorrect input permissions",
+          pretty "expected: " <> permPretty pp_info (simplImplIn simpl),
+          pretty "actual: " <> permPretty pp_info ps_in]
 
 -- | A sequence of permission sets inside name-bindings
 data MbPermSets bs_pss where
@@ -1493,10 +1495,10 @@ applyImpl1 pp_info (Impl1_Push x p) ps =
   if ps ^. varPerm x == p then
     mbPermSets1 $ emptyMb $ pushPerm x p $ set (varPerm x) ValPerm_True ps
   else
-    error $ renderDoc (string "applyImpl1: Impl1_Push" <+>
-                       permPretty pp_info x <+> colon </>
-                       string "expected:" <+> permPretty pp_info p </>
-                       string "found:" <+>
+    error $ renderDoc (pretty "applyImpl1: Impl1_Push" <+>
+                       permPretty pp_info x <+> colon <> line <>
+                       pretty "expected:" <+> permPretty pp_info p <> line <>
+                       pretty "found:" <+>
                        permPretty pp_info (ps ^. varPerm x))
 applyImpl1 pp_info (Impl1_Pop x p) ps =
   if ps ^. topDistPerm x == p && ps ^. varPerm x == ValPerm_True then
@@ -1504,13 +1506,13 @@ applyImpl1 pp_info (Impl1_Pop x p) ps =
   else
     if ps ^. varPerm x == ValPerm_True then
       error $ renderDoc $
-      vsep [string "applyImpl1: Impl1_Pop: unexpected permissions on top of the stack",
-            string "expected: " <> permPretty pp_info p,
-            string "actual: " <> permPretty pp_info (ps ^. topDistPerm x)]
+      vsep [pretty "applyImpl1: Impl1_Pop: unexpected permissions on top of the stack",
+            pretty "expected: " <> permPretty pp_info p,
+            pretty "actual: " <> permPretty pp_info (ps ^. topDistPerm x)]
     else
       error $ renderDoc $
-      vsep [string "applyImpl1: Impl1_Pop: non-empty permissions for variable"
-            <+> permPretty pp_info x <> string ":",
+      vsep [pretty "applyImpl1: Impl1_Pop: non-empty permissions for variable"
+            <+> permPretty pp_info x <> pretty ":",
             permPretty pp_info (ps ^. varPerm x)]
 applyImpl1 _ (Impl1_ElimOr x p1 p2) ps =
   if ps ^. topDistPerm x == ValPerm_Or p1 p2 then
@@ -2192,9 +2194,9 @@ modifyPSubst f = gmodify (over implStatePSubst f)
 setVarM :: Member vars a -> PermExpr a -> ImplM vars s r ps ps ()
 setVarM memb e =
   (cruCtxProxies <$> view implStateVars <$> gget) >>>= \vars ->
-  implTraceM (\i -> string "Setting" <+>
+  implTraceM (\i -> pretty "Setting" <+>
                     permPretty i (nuMulti vars $ \ns -> RL.get memb ns) <+>
-                    string "=" <+> permPretty i e) >>>
+                    pretty "=" <+> permPretty i e) >>>
   modifyPSubst (psubstSet memb e)
 
 -- | Run an implication computation with one more existential variable,
@@ -2346,7 +2348,7 @@ implGetVarType n =
   case NameMap.lookup n varTypes of
     Just tp -> greturn tp
     Nothing ->
-      implTraceM (\i -> string "Could not find type for variable:" <+>
+      implTraceM (\i -> pretty "Could not find type for variable:" <+>
                         permPretty i n) >>>
       error "implGetVarType"
 
@@ -2407,7 +2409,7 @@ implApplyImpl1 impl1 mb_ms =
         f ns)
 
 -- | Emit debugging output using the current 'PPInfo'
-implTraceM :: (PPInfo -> Doc) -> ImplM vars s r ps ps String
+implTraceM :: (PPInfo -> PP.Doc ann) -> ImplM vars s r ps ps String
 implTraceM f =
   (view implStateDoTrace <$> gget) >>>= \do_trace ->
   (f <$> view implStatePPInfo <$> gget) >>>= \doc ->
@@ -2419,28 +2421,28 @@ implTraceM f =
 implFailM :: NuMatchingAny1 r => String -> ImplM vars s r ps_any ps a
 implFailM str =
   (view implStateFailPrefix <$> gget) >>>= \prefix ->
-  implTraceM (const $ string (prefix ++ "Implication failed")) >>>
+  implTraceM (const $ pretty (prefix ++ "Implication failed")) >>>
   implApplyImpl1 (Impl1_Fail (prefix ++ str)) MNil
 
 -- | Call 'implFailM' and also output a debugging message
 implFailMsgM :: NuMatchingAny1 r => String -> ImplM vars s r ps_any ps a
 implFailMsgM msg =
-  implTraceM (const $ string msg) >>>= implFailM
+  implTraceM (const $ pretty msg) >>>= implFailM
 
 -- | Pretty print an implication @x:p -o (vars).p'@
 ppImpl :: PPInfo -> ExprVar tp -> ValuePerm tp ->
-          Mb (vars :: RList CrucibleType) (ValuePerm tp) -> Doc
+          Mb (vars :: RList CrucibleType) (ValuePerm tp) -> PP.Doc ann
 ppImpl i x p mb_p =
-  sep [permPretty i x <> colon <> align (permPretty i p),
-       string "-o",
-       align (permPretty i mb_p)]
+  sep [permPretty i x <> PP.colon <> PP.align (permPretty i p),
+       PP.pretty "-o",
+       PP.align (permPretty i mb_p)]
 
 -- | Terminate the current proof branch with a failure proving @x:p -o mb_p@
 implFailVarM :: NuMatchingAny1 r => String -> ExprVar tp -> ValuePerm tp ->
                 Mb vars (ValuePerm tp) -> ImplM vars s r ps_any ps a
 implFailVarM f x p mb_p =
   implTraceM (\i ->
-               sep [string f <> colon <+> string "Could not prove",
+               sep [pretty f <> colon <+> pretty "Could not prove",
                     ppImpl i x p mb_p]) >>>=
   implFailM
 
@@ -2491,7 +2493,7 @@ implPopM x p =
 implElimOrM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a -> ValuePerm a ->
                ImplM vars s r (ps :> a) (ps :> a) ()
 implElimOrM x p1 p2 =
-  implTraceM (\pp_info -> string "Eliminating or:" <+>
+  implTraceM (\pp_info -> pretty "Eliminating or:" <+>
                           permPretty pp_info (ValPerm_Or p1 p2)) >>>
   implApplyImpl1 (Impl1_ElimOr x p1 p2)
   (MNil :>: Impl1Cont (const $ greturn ()) :>: Impl1Cont (const $ greturn ()))
@@ -3098,7 +3100,7 @@ getLifetimeCurrentPerms (PExpr_Var l) =
       case some_cur_perms of
         Some cur_perms -> greturn $ Some $ CurrentTransPerms cur_perms l
     _ ->
-      implTraceM (\i -> string "Could not prove lifetime is current:" <+>
+      implTraceM (\i -> pretty "Could not prove lifetime is current:" <+>
                         permPretty i l) >>>=
       implFailM
 
@@ -3248,9 +3250,9 @@ recombinePerm' x p p'@(ValPerm_Eq _) =
   -- functions or typed instructions to return equality permissions unless it is
   -- for a new, fresh variable, in which case the above cases will handle it
   implTraceM (\i ->
-               string "recombinePerm: unexpected equality permission being recombined" </>
+               pretty "recombinePerm: unexpected equality permission being recombined" <> line <>
                permPretty i x <+> colon <+> permPretty i p <+>
-               string "<-" <+> permPretty i p') >>>
+               pretty "<-" <+> permPretty i p') >>>
   error "recombinePerm: unexpected equality permission being recombined"
 recombinePerm' x x_p (ValPerm_Or _ _) =
   elimOrsExistsM x >>>= \p' -> recombinePermExpl x x_p p'
@@ -3370,9 +3372,9 @@ proveEqFail :: (NuMatchingAny1 r, PermPretty (f a)) => f a -> Mb vars (f a) ->
                ImplM vars s r ps ps any
 proveEqFail e mb_e =
   implTraceM (\i ->
-               sep [string "proveEq" <> colon <+> string "Could not prove",
+               sep [pretty "proveEq" <> colon <+> pretty "Could not prove",
                     sep [permPretty i e <+>
-                         string "=" <+> permPretty i mb_e]]) >>>=
+                         pretty "=" <+> permPretty i mb_e]]) >>>=
   implFailM
 
 -- | Typeclass for the generic function that tries to extend the current partial
@@ -3782,11 +3784,11 @@ extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' _ mb_fp
                 greturn (fp { llvmFieldLifetime = l2 })
               l_p ->
                 implTraceM (\i ->
-                             sep [ string "No lowned perm for" <+> permPretty i l2
+                             sep [ pretty "No lowned perm for" <+> permPretty i l2
                                    <> comma
-                                 , string "instead found" <+> permPretty i l_p
+                                 , pretty "instead found" <+> permPretty i l_p
                                    <> comma
-                                 , string "so we must demote the RW on"
+                                 , pretty "so we must demote the RW on"
                                    <> permPretty i x]) >>>
                 greturn fp)
         _ -> greturn fp) >>>= \fp' ->
@@ -3855,9 +3857,9 @@ proveVarLLVMArray ::
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
 proveVarLLVMArray x first_p ps ap =
-  implTraceM (\i -> string "proveVarLLVMArray:" <+>
+  implTraceM (\i -> pretty "proveVarLLVMArray:" <+>
                     permPretty i x <> colon <>
-                    permPretty i (ValPerm_Conj ps) <+> string "-o" <+>
+                    permPretty i (ValPerm_Conj ps) <+> pretty "-o" <+>
                     permPretty i (ValPerm_Conj1 $ Perm_LLVMArray ap)) >>>
   proveVarLLVMArrayH x first_p ps ap
 
@@ -4074,7 +4076,7 @@ proveNamedArgs :: NuMatchingAny1 r => ExprVar a ->
                   PermOffset a -> Mb vars (PermExprs args) ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveNamedArgs x npn args off mb_args =
-  implTraceM (\i -> string "proveNamedArgs:" <> line <>
+  implTraceM (\i -> pretty "proveNamedArgs:" <> line <>
                     ppImpl i x (ValPerm_Named npn args off)
                     (fmap (\args' -> ValPerm_Named npn args' off) mb_args)) >>>
   getPSubst >>>= \psubst ->
@@ -4426,7 +4428,7 @@ proveVarImpl :: NuMatchingAny1 r => ExprVar a -> Mb vars (ValuePerm a) ->
 proveVarImpl x mb_p =
   getPerm x >>>= \ !p ->
   implPushM x p >>>
-  implTraceM (\i -> string "proveVarImpl:" <> line <> ppImpl i x p mb_p) >>>
+  implTraceM (\i -> pretty "proveVarImpl:" <> line <> ppImpl i x p mb_p) >>>
   proveVarImplH x p mb_p >>>
 
   -- Check that the top of the stack == mb_p
@@ -4434,9 +4436,9 @@ proveVarImpl x mb_p =
   getTopDistPerm x >>>= \p_actual ->
   if p_req == p_actual then greturn () else
     implTraceM (\i ->
-                 string "proveVarImpl: incorrect permission on top of the stack" </>
-                 string "expected:" <+> permPretty i p_req </>
-                 string "actual:" <+> permPretty i p_actual) >>>= error
+                 pretty "proveVarImpl: incorrect permission on top of the stack" <> line <>
+                 pretty "expected:" <+> permPretty i p_req <> line <>
+                 pretty "actual:" <+> permPretty i p_actual) >>>= error
 
 -- | Prove @x:p'@ assuming that the primary permissions for @x@ have all been
 -- pushed to the top of the stack and are equal to @p@. Pop the remaining
@@ -4666,11 +4668,11 @@ proveVarImplH x p mb_p@[nuP| ValPerm_Var z mb_off |]
     case (partialSubst psubst mb_off, psubstLookup psubst memb) of
       (Just off, Just (PExpr_ValPerm p')) ->
         let mb_p' = fmap (const $ offsetPerm off p') z in
-        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        implTraceM (\i -> pretty "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
         proveVarImplH x p mb_p'
       (Just off, Just (PExpr_Var z')) ->
         let mb_p' = fmap (const $ ValPerm_Var z' off) z in
-        implTraceM (\i -> string "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        implTraceM (\i -> pretty "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
         proveVarImplH x p mb_p'
       (Just off, Nothing) ->
         setVarM memb (PExpr_ValPerm $ offsetPerm (negatePermOffset off) p) >>>
@@ -4731,9 +4733,9 @@ proveExVarImpl _ mb_x mb_p@[nuP| ValPerm_Conj [Perm_LLVMFrame mb_fperms] |]
 
 -- Otherwise we fail
 proveExVarImpl _ mb_x mb_p =
-  implTraceM (\i -> string "proveExVarImpl: existential variable" <+>
+  implTraceM (\i -> pretty "proveExVarImpl: existential variable" <+>
                     permPretty i mb_x <+>
-                    string "not resolved when trying to prove:" </>
+                    pretty "not resolved when trying to prove:" <> line <>
                     permPretty i mb_p) >>>=
   implFailM
 
@@ -4859,9 +4861,9 @@ proveVarsImplAppend ps =
     Nothing ->
       implTraceM
       (\i ->
-        sep [string
-             "Could not determine enough variables to prove permissions:" </>
-             permPretty i ps]) >>>=
+        sep [PP.fillSep [PP.pretty
+             "Could not determine enough variables to prove permissions:",
+             permPretty i ps]]) >>>=
       implFailM
 
 

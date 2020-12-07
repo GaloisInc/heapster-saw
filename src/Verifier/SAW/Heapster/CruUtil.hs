@@ -40,7 +40,8 @@ import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
 import Data.Parameterized.BoolRepr
 
-import qualified Text.PrettyPrint.ANSI.Leijen as PP
+-- import qualified Text.PrettyPrint.ANSI.Leijen as PP
+import qualified Prettyprinter as PP
 
 import qualified Text.LLVM.AST as L
 import Lang.Crucible.Types
@@ -50,13 +51,14 @@ import Lang.Crucible.CFG.Core hiding (App)
 import qualified Lang.Crucible.CFG.Core as Core
 import Lang.Crucible.CFG.Extension
 import Lang.Crucible.LLVM.Bytes
+import Lang.Crucible.LLVM.Errors
+import Lang.Crucible.LLVM.Errors.MemoryError
 import Lang.Crucible.LLVM.Extension
-import Lang.Crucible.LLVM.Extension.Safety
 import Lang.Crucible.LLVM.MemModel
 import Lang.Crucible.LLVM.Arch.X86
 import Lang.Crucible.LLVM.DataLayout
-import qualified Lang.Crucible.LLVM.Extension.Safety.Poison as Poison
-import qualified Lang.Crucible.LLVM.Extension.Safety.UndefinedBehavior as UB
+import qualified Lang.Crucible.LLVM.Errors.Poison as Poison
+import qualified Lang.Crucible.LLVM.Errors.UndefinedBehavior as UB
 import Verifier.SAW.Term.Functor
 import Verifier.SAW.OpenTerm
 
@@ -188,21 +190,24 @@ instance Liftable ProgramLoc where
   mbLift = unClosed . mbLift . fmap toClosed
 
 -- | Pretty-print a 'Position' with a "short" filename, without the path
-ppShortFileName :: Position -> PP.Doc
+ppShortFileName :: Position -> PP.Doc ann
 ppShortFileName (SourcePos path l c) =
-  PP.text (takeFileName $ Text.unpack path)
-    PP.<> PP.colon PP.<> PP.int l
-    PP.<> PP.colon PP.<> PP.int c
+  PP.pretty (takeFileName $ Text.unpack path)
+    PP.<> PP.colon PP.<> PP.pretty l
+    PP.<> PP.colon PP.<> PP.pretty c
 ppShortFileName (BinaryPos path addr) =
-  PP.text (takeFileName $ Text.unpack path) PP.<> PP.colon PP.<>
-    PP.text "0x" PP.<> PP.text (showHex addr "")
-ppShortFileName (OtherPos txt) = PP.text (Text.unpack txt)
-ppShortFileName InternalPos = PP.text "internal"
+  PP.pretty (takeFileName $ Text.unpack path) PP.<> PP.colon PP.<>
+    PP.pretty "0x" PP.<> PP.pretty (showHex addr "")
+ppShortFileName (OtherPos txt) = PP.pretty (Text.unpack txt)
+ppShortFileName InternalPos = PP.pretty "internal"
 
 instance NuMatching ByteString where
   nuMatchingProof = unsafeMbTypeRepr
 
-instance NuMatching MemoryLoadError where
+instance NuMatching (MemoryError sym) where
+  nuMatchingProof = unsafeMbTypeRepr
+
+instance NuMatching (MemoryErrorReason sym w) where
   nuMatchingProof = unsafeMbTypeRepr
 
 instance NuMatching (FnHandle args ret) where
@@ -276,8 +281,8 @@ $(mkNuMatching [t| StorageType |])
 
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => UB.UndefinedBehavior f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => Poison.Poison f |])
-$(mkNuMatching [t| forall f. NuMatchingAny1 f => BadBehavior f |])
-$(mkNuMatching [t| forall f. NuMatchingAny1 f => LLVMSafetyAssertion f |])
+-- $(mkNuMatching [t| forall f. NuMatchingAny1 f => BadBehavior f |])
+-- $(mkNuMatching [t| forall f. NuMatchingAny1 f => LLVMSafetyAssertion f |])
 $(mkNuMatching [t| forall f. NuMatchingAny1 f => LLVMSideCondition f |])
 
 $(mkNuMatching [t| forall blocks tp. BlockID blocks tp |])
@@ -325,8 +330,8 @@ instance Liftable (StringLiteral si) where
 instance Closable (BadBehavior e) where
   toClosed = unsafeClose
 
-instance NuMatchingAny1 e => Liftable (BadBehavior e) where
-  mbLift = unClosed . mbLift . fmap toClosed
+-- instance NuMatchingAny1 e => Liftable (BadBehavior e) where
+  -- mbLift = unClosed . mbLift . fmap toClosed
 
 -- NOTE: Crucible objects can never contain any Hobbits names, but "proving"
 -- that would require introspection of opaque types like 'Index' and 'Nonce',
@@ -430,7 +435,7 @@ instance TestEquality CruCtx where
 
 instance PP.Pretty (CruCtx ctx) where
   pretty ctx = PP.list $ helper ctx where
-    helper :: CruCtx ctx' -> [PP.Doc]
+    helper :: CruCtx ctx' -> [PP.Doc ann]
     helper CruCtxNil = []
     helper (CruCtxCons ctx tp) = helper ctx ++ [PP.pretty tp]
 
