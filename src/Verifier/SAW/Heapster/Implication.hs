@@ -54,9 +54,6 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..))
 import qualified Data.Binding.Hobbits.NameSet as NameSet
 
--- import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
--- import qualified Text.PrettyPrint.ANSI.Leijen as PP
--- import Prettyprinter ((<$>))
 import Prettyprinter as PP
 
 import Data.Parameterized.BoolRepr
@@ -1496,8 +1493,8 @@ applyImpl1 pp_info (Impl1_Push x p) ps =
     mbPermSets1 $ emptyMb $ pushPerm x p $ set (varPerm x) ValPerm_True ps
   else
     error $ renderDoc (pretty "applyImpl1: Impl1_Push" <+>
-                       permPretty pp_info x <+> colon <> line <>
-                       pretty "expected:" <+> permPretty pp_info p <> line <>
+                       permPretty pp_info x <+> colon <> softline <>
+                       pretty "expected:" <+> permPretty pp_info p <> softline <>
                        pretty "found:" <+>
                        permPretty pp_info (ps ^. varPerm x))
 applyImpl1 pp_info (Impl1_Pop x p) ps =
@@ -3250,7 +3247,7 @@ recombinePerm' x p p'@(ValPerm_Eq _) =
   -- functions or typed instructions to return equality permissions unless it is
   -- for a new, fresh variable, in which case the above cases will handle it
   implTraceM (\i ->
-               pretty "recombinePerm: unexpected equality permission being recombined" <> line <>
+               pretty "recombinePerm: unexpected equality permission being recombined" <> softline <>
                permPretty i x <+> colon <+> permPretty i p <+>
                pretty "<-" <+> permPretty i p') >>>
   error "recombinePerm: unexpected equality permission being recombined"
@@ -4076,7 +4073,7 @@ proveNamedArgs :: NuMatchingAny1 r => ExprVar a ->
                   PermOffset a -> Mb vars (PermExprs args) ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveNamedArgs x npn args off mb_args =
-  implTraceM (\i -> pretty "proveNamedArgs:" <> line <>
+  implTraceM (\i -> pretty "proveNamedArgs:" <> softline <>
                     ppImpl i x (ValPerm_Named npn args off)
                     (fmap (\args' -> ValPerm_Named npn args' off) mb_args)) >>>
   getPSubst >>>= \psubst ->
@@ -4428,7 +4425,7 @@ proveVarImpl :: NuMatchingAny1 r => ExprVar a -> Mb vars (ValuePerm a) ->
 proveVarImpl x mb_p =
   getPerm x >>>= \ !p ->
   implPushM x p >>>
-  implTraceM (\i -> pretty "proveVarImpl:" <> line <> ppImpl i x p mb_p) >>>
+  implTraceM (\i -> pretty "proveVarImpl:" <> softline <> ppImpl i x p mb_p) >>>
   proveVarImplH x p mb_p >>>
 
   -- Check that the top of the stack == mb_p
@@ -4436,8 +4433,8 @@ proveVarImpl x mb_p =
   getTopDistPerm x >>>= \p_actual ->
   if p_req == p_actual then greturn () else
     implTraceM (\i ->
-                 pretty "proveVarImpl: incorrect permission on top of the stack" <> line <>
-                 pretty "expected:" <+> permPretty i p_req <> line <>
+                 pretty "proveVarImpl: incorrect permission on top of the stack" <> softline <>
+                 pretty "expected:" <+> permPretty i p_req <> softline <>
                  pretty "actual:" <+> permPretty i p_actual) >>>= error
 
 -- | Prove @x:p'@ assuming that the primary permissions for @x@ have all been
@@ -4668,11 +4665,11 @@ proveVarImplH x p mb_p@[nuP| ValPerm_Var z mb_off |]
     case (partialSubst psubst mb_off, psubstLookup psubst memb) of
       (Just off, Just (PExpr_ValPerm p')) ->
         let mb_p' = fmap (const $ offsetPerm off p') z in
-        implTraceM (\i -> pretty "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        implTraceM (\i -> pretty "proveVarImplH:" <> softline <> ppImpl i x p mb_p') >>>
         proveVarImplH x p mb_p'
       (Just off, Just (PExpr_Var z')) ->
         let mb_p' = fmap (const $ ValPerm_Var z' off) z in
-        implTraceM (\i -> pretty "proveVarImplH:" <> line <> ppImpl i x p mb_p') >>>
+        implTraceM (\i -> pretty "proveVarImplH:" <> softline <> ppImpl i x p mb_p') >>>
         proveVarImplH x p mb_p'
       (Just off, Nothing) ->
         setVarM memb (PExpr_ValPerm $ offsetPerm (negatePermOffset off) p) >>>
@@ -4735,7 +4732,7 @@ proveExVarImpl _ mb_x mb_p@[nuP| ValPerm_Conj [Perm_LLVMFrame mb_fperms] |]
 proveExVarImpl _ mb_x mb_p =
   implTraceM (\i -> pretty "proveExVarImpl: existential variable" <+>
                     permPretty i mb_x <+>
-                    pretty "not resolved when trying to prove:" <> line <>
+                    pretty "not resolved when trying to prove:" <> softline <>
                     permPretty i mb_p) >>>=
   implFailM
 

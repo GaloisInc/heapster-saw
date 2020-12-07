@@ -66,8 +66,6 @@ import Data.Parameterized.BoolRepr
 import Data.Parameterized.NatRepr
 import Data.Parameterized.TraversableFC
 
--- import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
--- import qualified Text.PrettyPrint.ANSI.Leijen as PP
 import Prettyprinter ((<+>))
 import qualified Prettyprinter as PP
 import qualified Prettyprinter.Render.String as PP (renderString)
@@ -347,12 +345,12 @@ permPrettyPermMb f mb =
 instance PermPretty a => PermPretty (Mb (ctx :: RList CrucibleType) a) where
   permPrettyM =
     permPrettyExprMb $ \docs ppm ->
-    (\pp -> PP.hang 2 (PP.tupled (RL.toList docs) <> PP.dot <> PP.line <> pp)) <$> ppm
+    (\pp -> PP.hang 2 (PP.tupled (RL.toList docs) <> PP.dot <> PP.softline <> pp)) <$> ppm
 
 instance PermPretty a => PermPretty (Mb (ctx :: RList Type) a) where
   permPrettyM =
     permPrettyPermMb $ \docs ppm ->
-    (\pp -> PP.hang 2 (PP.tupled (RL.toList docs) <> PP.dot <> PP.line <> pp)) <$> ppm
+    (\pp -> PP.hang 2 (PP.tupled (RL.toList docs) <> PP.dot <> PP.softline <> pp)) <$> ppm
 
 
 ----------------------------------------------------------------------
@@ -1805,7 +1803,7 @@ instance PermPretty (ValuePerm a) where
   permPrettyM (ValPerm_Or p1 p2) =
     -- FIXME: If we ever fix the SAW lexer to handle "\/"...
     -- (\pp1 pp2 -> hang 2 (pp1 </> string "\\/" <> pp2))
-    (\pp1 pp2 -> PP.hang 2 (pp1 <> PP.line <> PP.pretty "or" <+> pp2))
+    (\pp1 pp2 -> PP.hang 2 (pp1 <> PP.softline <> PP.pretty "or" <+> pp2))
     <$> permPrettyM p1 <*> permPrettyM p2
   permPrettyM (ValPerm_Exists mb_p) =
     flip permPrettyExprMb mb_p $ \(_ :>: Constant pp_n) ppm ->
@@ -1853,7 +1851,7 @@ permPrettyLLVMField in_array (fld@(LLVMFieldPerm {..}) :: LLVMFieldPerm w sz) =
      return (pp_l <>
              (if in_array then id else (PP.pretty "ptr" <>) . PP.parens)
              (PP.hang 2
-              (pp_parens <+> PP.pretty "|->" <> PP.line <> pp_contents)))
+              (pp_parens <+> PP.pretty "|->" <> PP.softline <> pp_contents)))
 
 instance KnownNat w => PermPretty (LLVMArrayField w) where
   permPrettyM (LLVMArrayField fp) = permPrettyLLVMField True fp

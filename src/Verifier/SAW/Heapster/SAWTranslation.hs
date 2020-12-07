@@ -63,8 +63,8 @@ import Data.Binding.Hobbits.Mb (extMb, mbMap2)
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 
-import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), empty)
-import qualified Text.PrettyPrint.ANSI.Leijen as PP
+import Prettyprinter as PP
+import Prettyprinter.Render.String
 
 import Data.Parameterized.Context (Ctx(..), Assignment(..), AssignView(..),
                                    pattern Empty, viewAssign)
@@ -75,7 +75,7 @@ import Lang.Crucible.FunctionHandle
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.Bytes
 import Lang.Crucible.LLVM.Extension
-import Lang.Crucible.LLVM.Extension.Safety
+import Lang.Crucible.LLVM.Errors
 import Lang.Crucible.LLVM.MemModel
 import Lang.Crucible.LLVM.Arch.X86
 import Lang.Crucible.LLVM.DataLayout
@@ -3161,8 +3161,8 @@ instance (PermCheckExtC ext, TransInfo info) =>
   -- Everything else is an error
   translate mb_e =
     error ("Unhandled expression form: " ++
-           (flip displayS "" $ renderPretty 0.8 80 $
-            mbLift $ fmap (ppApp (const $ string "_")) mb_e))
+            (renderString (layoutSmart opts (mbLift $ fmap (ppApp (const $ pretty ("_" :: String))) mb_e))))
+      where opts = PP.LayoutOptions (PP.AvailablePerLine 80 0.8)
 
 
 -- translate for a TypedExpr yields an ExprTrans
