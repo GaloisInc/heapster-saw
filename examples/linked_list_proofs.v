@@ -246,7 +246,7 @@ Lemma find_elem_fun_ref : refinesFun find_elem find_elem_fun.
 Proof.
   unfold find_elem, find_elem__tuple_fun, find_elem_fun.
   time "find_elem_fun_ref" prove_refinement.
-  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
+  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst.
   - reflexivity.
   - rewrite (proj2 (bvEq_eq _ _ _)); simpl; auto. reflexivity.
   - rewrite (proj2 (bvEq_neq _ _ _)); simpl; auto. reflexivity.
@@ -258,8 +258,38 @@ Proof.
   time "no_errors_sorted_insert" prove_refinement.
 Qed.
 
+Definition sorted_insert_fun (x: bitvector 64) :
+  list {_:bitvector 64 & unit} -> CompM (list {_:bitvector 64 & unit}) :=
+  list_rect (fun _ => CompM (list {_:bitvector 64 & unit}))
+            (returnM (existT _ x tt :: List.nil))
+            (fun y l' rec =>
+               if bvsle 64 x (projT1 y)
+               then returnM ((existT _ x tt) :: y :: l')
+               else rec >>= (fun l => returnM (y :: l))).
+
+Lemma sorted_insert_fun_ref : refinesFun sorted_insert sorted_insert_fun.
+Proof.
+  unfold sorted_insert, sorted_insert__tuple_fun, sorted_insert_fun, mallocSpec.
+  time "sorted_insert_fun_ref" prove_refinement.
+  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
+  - reflexivity.
+  - apply isBvsle_def in e_if. rewrite e_if. reflexivity.
+  - apply isBvslt_def_opp in e_if. rewrite e_if. reflexivity.
+Qed.
+
 Lemma no_errors_sorted_insert_no_malloc : refinesFun sorted_insert_no_malloc (fun _ _ => noErrorsSpec).
 Proof.
   unfold sorted_insert_no_malloc, sorted_insert_no_malloc__tuple_fun, mallocSpec, noErrorsSpec.
   time "no_errors_sorted_insert_no_malloc" prove_refinement.
+Qed.
+
+(* Same spec as sorted_insert *)
+Lemma sorted_insert_no_malloc_fun_ref : refinesFun sorted_insert_no_malloc sorted_insert_fun.
+Proof.
+  unfold sorted_insert_no_malloc, sorted_insert_no_malloc__tuple_fun, sorted_insert_fun.
+  time "sorted_insert_no_malloc_fun_ref" prove_refinement.
+  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
+  - reflexivity.
+  - apply isBvsle_def in e_if. rewrite e_if. reflexivity.
+  - apply isBvslt_def_opp in e_if. rewrite e_if. reflexivity.
 Qed.
