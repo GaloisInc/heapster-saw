@@ -195,6 +195,31 @@ Proof.
     + time "any_fun_ref" prove_refinement.
 Qed.
 
+Lemma no_errors_any : refinesFun any (fun pred _ => assumingM
+                                                   (forall x, refinesM (pred x) noErrorsSpec)
+                                                   noErrorsSpec).
+Proof.
+  unfold any, any__tuple_fun, noErrorsSpec.
+  apply refinesFun_multiFixM_fst. intros pred l.
+  unfold refinesFun, Datatypes.fst.
+  apply refinesM_assumingM_r.
+  intros Hpred.
+  apply refinesM_letRecM_Nil_l.
+  apply refinesM_either_l; intros.
+  - eapply refinesM_existsM_r. reflexivity. (* TODO needs an exists elimination rule? *)
+  - pose proof (Hpred (existT (fun _ : bitvector 64 => unit) (projT1 (fst b)) tt)) as Hpred'.
+    red in Hpred'. unfold existsM in Hpred'.
+    repeat intro. destruct H0.
+    specialize (Hpred' _ H0). destruct Hpred'.
+    destruct x.
+    2: { inversion H1. inversion H2. }
+    destruct (bvEq 1
+              (if not (bvEq 64 (projT1 s) (intToBv 64 0)) then intToBv 1 (-1) else intToBv 1 0)
+              (intToBv 1 0)); simpl in *.
+    2: { eexists. apply H1. }
+    inversion H1. destruct x. 2: { specialize (H3 Hpred). inversion H3. inversion H5. }
+      eexists. apply H4.
+Qed.
 
 (*
 Arguments sorted_insert__tuple_fun /.
@@ -202,8 +227,69 @@ Eval simpl in sorted_insert__tuple_fun.
 Print sorted_insert__tuple_fun.
 *)
 
+Lemma no_errors_find_elem : refinesFun find_elem (fun _ _ => noErrorsSpec).
+Proof.
+  unfold find_elem, find_elem__tuple_fun, noErrorsSpec.
+  time "no_errors_find_elem" prove_refinement.
+Qed.
+
+Definition find_elem_fun (x: {_: bitvector 64 & unit}) :
+  list {_:bitvector 64 & unit} -> CompM (list {_:bitvector 64 & unit}) :=
+  list_rect (fun _ => CompM (list {_:bitvector 64 & unit}))
+            (returnM List.nil)
+            (fun y l' rec =>
+               if bvEq 64 (projT1 y) (projT1 x)
+               then returnM (y :: l')
+               else rec).
+
+Lemma find_elem_fun_ref : refinesFun find_elem find_elem_fun.
+Proof.
+  unfold find_elem, find_elem__tuple_fun, find_elem_fun.
+  time "find_elem_fun_ref" prove_refinement.
+  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst.
+  - reflexivity.
+  - rewrite (proj2 (bvEq_eq _ _ _)); simpl; auto. reflexivity.
+  - rewrite (proj2 (bvEq_neq _ _ _)); simpl; auto. reflexivity.
+Qed.
+
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
 Proof.
   unfold sorted_insert, sorted_insert__tuple_fun, mallocSpec, noErrorsSpec.
   time "no_errors_sorted_insert" prove_refinement.
+Qed.
+
+Definition sorted_insert_fun (x: bitvector 64) :
+  list {_:bitvector 64 & unit} -> CompM (list {_:bitvector 64 & unit}) :=
+  list_rect (fun _ => CompM (list {_:bitvector 64 & unit}))
+            (returnM (existT _ x tt :: List.nil))
+            (fun y l' rec =>
+               if bvsle 64 x (projT1 y)
+               then returnM ((existT _ x tt) :: y :: l')
+               else rec >>= (fun l => returnM (y :: l))).
+
+Lemma sorted_insert_fun_ref : refinesFun sorted_insert sorted_insert_fun.
+Proof.
+  unfold sorted_insert, sorted_insert__tuple_fun, sorted_insert_fun, mallocSpec.
+  time "sorted_insert_fun_ref" prove_refinement.
+  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
+  - reflexivity.
+  - apply isBvsle_def in e_if. rewrite e_if. reflexivity.
+  - apply isBvslt_def_opp in e_if. rewrite e_if. reflexivity.
+Qed.
+
+Lemma no_errors_sorted_insert_no_malloc : refinesFun sorted_insert_no_malloc (fun _ _ => noErrorsSpec).
+Proof.
+  unfold sorted_insert_no_malloc, sorted_insert_no_malloc__tuple_fun, mallocSpec, noErrorsSpec.
+  time "no_errors_sorted_insert_no_malloc" prove_refinement.
+Qed.
+
+(* Same spec as sorted_insert *)
+Lemma sorted_insert_no_malloc_fun_ref : refinesFun sorted_insert_no_malloc sorted_insert_fun.
+Proof.
+  unfold sorted_insert_no_malloc, sorted_insert_no_malloc__tuple_fun, sorted_insert_fun.
+  time "sorted_insert_no_malloc_fun_ref" prove_refinement.
+  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
+  - reflexivity.
+  - apply isBvsle_def in e_if. rewrite e_if. reflexivity.
+  - apply isBvslt_def_opp in e_if. rewrite e_if. reflexivity.
 Qed.
