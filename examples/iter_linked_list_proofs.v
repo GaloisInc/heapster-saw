@@ -13,12 +13,35 @@ Import iter_linked_list.
 
 Import SAWCorePrelude.
 
-Definition Bit__rec : forall (p : @Bit -> Type), p (@Bit1) -> p (@Bit0) -> forall (b : @Bit), p b :=
-  fun (p : @Bit -> Type) (f1 : p (@Bit1)) (f2 : p (@Bit0)) (b : @Bit) => SAWCorePrelude.Bit_rect p f1 f2 b.
+
+Lemma transListF_NilF_r a b l x : transListF a b l (NilF a b x) = putListF a unit b l x.
+Proof. induction l; eauto. Qed.
+
+Lemma putListF_unit a l u : putListF a unit unit l u = l.
+Proof. destruct u; induction l; [ destruct b | simpl; f_equal ]; eauto. Qed.
 
 
-Lemma no_errors_incr_list : refinesFun incr_list (fun _ => noErrorsSpec).
+Definition incr_list_invar :=
+  ListF__rec {_ : bitvector 64 & unit} unit (fun _ => Prop) (fun _ => True)
+           (fun x _ rec => isBvult 64 (projT1 x) (intToBv 64 0x7fffffffffffffff) /\ rec).
+
+Lemma no_errors_incr_list :
+  refinesFun incr_list (fun l => assumingM (incr_list_invar l) noErrorsSpec).
 Proof.
   unfold incr_list, incr_list__tuple_fun.
-  (* prove_refinement_match_letRecM_l. *)
-Admitted.
+  prove_refinement_match_letRecM_l.
+  - exact (fun _ l => assumingM (incr_list_invar l) noErrorsSpec).
+  unfold noErrorsSpec.
+  time "no_errors_incr_list" prove_refinement.
+  (* Simplify the `incr_list_precond` cases and take care of some easy cases *)
+  all: simpl; try rewrite transListF_NilF_r; repeat rewrite putListF_unit; try assumption.
+  (* Destruct `a1` (relevant to all the remaining cases) *)
+  all: destruct a1 as [[] | [? []] ?]; [ discriminate e_either | injection e_either as -> <- ].
+  (* Destruct `e_assuming0` and take care of the remaining `incr_list_precond` cases *)
+  all: destruct e_assuming0 as [e_assuming0 e_assuming1]; try assumption.
+  (* Now all we need to show is that our invariant implies this case is impossible: *)
+  unfold_projs in e_assuming0.
+  apply isBvult_to_isBvule_suc in e_assuming0.
+  apply bvule_msb_l in e_assuming0; try assumption.
+  compute_bv_funs in e_assuming0; inversion e_assuming0.
+Qed.
