@@ -560,6 +560,10 @@ exprType _ = knownRepr
 bindingType :: KnownRepr TypeRepr a => Binding a b -> TypeRepr a
 bindingType _ = knownRepr
 
+-- | Convenience function to get the width of an LLVM pointer type
+exprLLVMTypeWidth :: KnownNat w => f (LLVMPointerType w) -> NatRepr w
+exprLLVMTypeWidth _ = knownNat
+
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where
   -- | A variable of type @'BVType' w@ multiplied by a constant @i@, which
@@ -706,13 +710,11 @@ instance PermPretty (PermExpr a) where
 
 instance (1 <= w, KnownNat w) => PermPretty (LLVMFieldShape w) where
   permPrettyM fsh@(LLVMFieldShape p)
-    | LLVMPointerRepr sz <- exprType p
-    , Just Refl <- testEquality (natRepr fsh) sz =
+    | Just Refl <- testEquality (natRepr fsh) (exprLLVMTypeWidth p) =
       parens <$> permPrettyM p
-  permPrettyM (LLVMFieldShape p)
-    | LLVMPointerRepr sz <- exprType p =
-      do p_pp <- permPrettyM p
-         return $ tupled [pretty (intValue sz), p_pp]
+  permPrettyM (LLVMFieldShape p) =
+    do p_pp <- permPrettyM p
+       return $ tupled [pretty (intValue $ exprLLVMTypeWidth p), p_pp]
 
 prettyPermListH :: PermExpr PermListType -> PermPPM ([Doc ann], Maybe (Doc ann))
 prettyPermListH (PExpr_Var x) = (\pp -> ([], Just pp)) <$> permPrettyM x
@@ -2396,8 +2398,8 @@ llvmShapeLength :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
                    Maybe (PermExpr (BVType w))
 llvmShapeLength (PExpr_Var _) = Nothing
 llvmShapeLength PExpr_EmptyShape = Just $ bvInt 0
-llvmShapeLength (PExpr_FieldShape (LLVMFieldShape p))
-  | LLVMPointerRepr sz <- exprType p = Just $ bvInt $ intValue sz
+llvmShapeLength (PExpr_FieldShape (LLVMFieldShape p)) =
+  Just $ bvInt $ intValue $ exprLLVMTypeWidth p
 llvmShapeLength (PExpr_ArrayShape len _ _) = Just len
 llvmShapeLength (PExpr_SeqShape sh1 sh2) =
   liftA2 bvAdd (llvmShapeLength sh1) (llvmShapeLength sh2)
@@ -2445,8 +2447,7 @@ unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape = PExpr_EmptyShape }) =
 -- no greater than the field size
 unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape =
                                       PExpr_FieldShape (LLVMFieldShape p), ..})
-  | LLVMPointerRepr sz <- exprType p
-  , sz_expr <- bvInt (intValue sz)
+  | sz_expr <- bvInt (intValue $ exprLLVMTypeWidth p)
   , bvLeq sz_expr llvmBlockLen =
     ValPerm_Conj
     [Perm_LLVMField $ LLVMFieldPerm {
