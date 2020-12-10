@@ -633,6 +633,22 @@ data SimplImpl ps_in ps_out where
                          SimplImpl (RNil :> LifetimeType :> LifetimeType)
                          (RNil :> LifetimeType)
 
+  -- | Fold an llvmblock permission:
+  --
+  -- > x:(unfoldLLVMBlock bp) -o x:llvmblock bp
+  SImpl_FoldLLVMBlock :: (1 <= w, KnownNat w) =>
+                         ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+                         SimplImpl (RNil :> LLVMPointerType w)
+                         (RNil :> LLVMPointerType w)
+
+  -- | Unold an llvmblock permission:
+  --
+  -- > x:llvmblock bp -o x:(unfoldLLVMBlock bp)
+  SImpl_UnfoldLLVMBlock :: (1 <= w, KnownNat w) =>
+                           ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+                           SimplImpl (RNil :> LLVMPointerType w)
+                           (RNil :> LLVMPointerType w)
+
   -- | Fold a named permission (other than an opaque permission):
   --
   -- > x:(unfold P args) -o x:P<args>
@@ -1218,6 +1234,14 @@ simplImplIn (SImpl_LCurrentRefl _) = DistPermsNil
 simplImplIn (SImpl_LCurrentTrans l1 l2 l3) =
   distPerms2 l1 (ValPerm_Conj [Perm_LCurrent $ PExpr_Var l2])
   l2 (ValPerm_Conj [Perm_LCurrent l3])
+simplImplIn (SImpl_FoldLLVMBlock x bp) =
+  if unfoldLLVMBlock bp == ValPerm_Conj1 (Perm_LLVMBlock bp) then
+    error "simplImplIn: SImpl_FoldLLVMBlock: input == output"
+  else distPerms1 x (unfoldLLVMBlock bp)
+simplImplIn (SImpl_UnfoldLLVMBlock x bp) =
+  if unfoldLLVMBlock bp == ValPerm_Conj1 (Perm_LLVMBlock bp) then
+    error "simplImplIn: SImpl_UnfoldLLVMBlock: input == output"
+  else distPerms1 x (ValPerm_Conj1 (Perm_LLVMBlock bp))
 simplImplIn (SImpl_FoldNamed x np args off) =
   distPerms1 x (unfoldPerm np args off)
 simplImplIn (SImpl_UnfoldNamed x np args off) =
@@ -1424,6 +1448,14 @@ simplImplOut (SImpl_LCurrentRefl l) =
   distPerms1 l (ValPerm_Conj1 $ Perm_LCurrent $ PExpr_Var l)
 simplImplOut (SImpl_LCurrentTrans l1 _ l3) =
   distPerms1 l1 (ValPerm_Conj [Perm_LCurrent l3])
+simplImplOut (SImpl_FoldLLVMBlock x bp) =
+  if unfoldLLVMBlock bp == ValPerm_Conj1 (Perm_LLVMBlock bp) then
+    error "simplImplOut: SImpl_FoldLLVMBlock: input == output"
+  else distPerms1 x (ValPerm_Conj1 (Perm_LLVMBlock bp))
+simplImplOut (SImpl_UnfoldLLVMBlock x bp) =
+  if unfoldLLVMBlock bp == ValPerm_Conj1 (Perm_LLVMBlock bp) then
+    error "simplImplOut: SImpl_UnfoldLLVMBlock: input == output"
+  else distPerms1 x (unfoldLLVMBlock bp)
 simplImplOut (SImpl_FoldNamed x np args off) =
   distPerms1 x (ValPerm_Named (namedPermName np) args off)
 simplImplOut (SImpl_UnfoldNamed x np args off) =

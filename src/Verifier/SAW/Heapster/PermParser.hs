@@ -418,6 +418,17 @@ parseBVExprH w =
   (normalizeBVExpr <$> foldr1 bvAdd <$> many1 parseBVFactor)
   <?> ("expression of type bv " ++ show (natVal w))
 
+-- | Parse an 'LLVMFieldShape' of width @w@ of the form @(sz,p)@ or just @p@ if
+-- @sz=w@
+parseLLVMFieldShape :: (Stream s Identity Char, Liftable s, 1 <= w, KnownNat w) =>
+                       f w -> PermParseM s (LLVMFieldShape w)
+parseLLVMFieldShape w =
+  (LLVMFieldShape <$> parseValPerm (LLVMPointerRepr $ natRepr w)) <|>
+  parseInParens (do Some (Pair sz LeqProof) <- parseNatRepr
+                    withKnownNat sz
+                      (LLVMFieldShape <$> parseValPerm (LLVMPointerRepr sz))) <?>
+  "llvm field shape"
+
 -- | Parse an expression of a known type
 parseExpr :: (Stream s Identity Char, Liftable s) => TypeRepr a ->
              PermParseM s (PermExpr a)
@@ -479,6 +490,37 @@ parseExpr RWModalityRepr =
   (PExpr_Var <$> parseExprVarOfType knownRepr) <?>
   "rwmodality expression"
 parseExpr (ValuePermRepr tp) = PExpr_ValPerm <$> parseValPerm tp
+parseExpr tp@(LLVMShapeRepr w) =
+  withKnownNat w $
+  do spaces
+     sh1 <-
+       parseInParens (parseExpr tp) <|>
+       (try (string "emptysh") >> return (PExpr_EmptyShape)) <|>
+       (try (string "ptrsh") >> spaces >>
+        PExpr_FieldShape <$> parseLLVMFieldShape w) <|>
+       (try (string "arraysh") >> spaces >> parseInParens
+        (do len <- parseExpr (BVRepr w)
+            spaces >> comma >> spaces
+            stride <- Bytes <$> integer
+            spaces >> comma >> spaces >> char '['
+            flds <- sepBy1 (parseLLVMFieldShape w) (spaces >> comma)
+            spaces >> char ']'
+            return $ PExpr_ArrayShape len stride flds)) <|>
+       (do try (string "exsh" >> spaces1)
+           var <- parseIdent
+           spaces >> char ':'
+           some_known_tp' <- parseTypeKnown
+           spaces >> char '.'
+           case some_known_tp' of
+             Some ktp'@KnownReprObj ->
+               fmap PExpr_ExShape $ mbM $ nu $ \z ->
+               withExprVar var (unKnownReprObj ktp') z $
+               parseExpr tp) <?>
+       "llvmshape expression"
+     spaces1
+     (try (string ";") >> spaces >> PExpr_SeqShape sh1 <$> parseExpr tp) <|>
+       (try (string "orsh") >> spaces >> PExpr_OrShape sh1 <$> parseExpr tp) <|>
+       return sh1
 parseExpr tp = PExpr_Var <$> parseExprVarOfType tp <?> ("expression of type "
                                                         ++ show tp)
 
@@ -566,6 +608,19 @@ parseAtomicPerm tp@(LLVMPointerRepr w)
     withKnownNat w
     ((llvmArrayFieldToAtomicPerm <$> parseLLVMFieldPerm w False) <|>
      (Perm_LLVMArray <$> parseLLVMArrayPerm) <|>
+     (do llvmBlockLifetime <-
+           try (do l <- parseLifetimePrefix
+                   spaces >> string "memblock" >> spaces >> char '('
+                   return l)
+         llvmBlockRW <- parseExpr RWModalityRepr
+         spaces >> comma
+         llvmBlockOffset <- parseBVExpr
+         spaces >> comma
+         llvmBlockLen <- parseBVExpr
+         spaces >> comma
+         llvmBlockShape <- parseExpr (LLVMShapeRepr w)
+         spaces >> char ')'
+         return (Perm_LLVMBlock $ LLVMBlockPerm {..})) <|>
      (do try (string "free" >> spaces >> char '(')
          e <- parseBVExpr
          spaces >> char ')'
@@ -637,6 +692,16 @@ parseAtomicNamedPerm tp =
        Nothing ->
          fail ("Unknown permission name '" ++ n ++ "'")
 
+-- | Parse an optional prefix of the form @[l]@ where @l@ is a lifetime, or
+-- otherwise return @always@ if this prefix is missing
+parseLifetimePrefix :: (Stream s Identity Char, Liftable s) =>
+                       PermParseM s (PermExpr LifetimeType)
+parseLifetimePrefix =
+  (do try (spaces >> string "[")
+      l <- parseExpr knownRepr
+      spaces >> string "]"
+      return l) <|> return PExpr_Always
+
 -- | Parse a field permission @[l]ptr((rw,off) |-> p)@. If the 'Bool' flag is
 -- 'True', the field permission is being parsed as part of an array permission,
 -- so that @ptr@ and outer parentheses should be omitted. If the 'Bool' flag is
@@ -647,10 +712,7 @@ parseLLVMFieldPerm :: (Stream s Identity Char, Liftable s,
                        KnownNat w, 1 <= w) =>
                       NatRepr w -> Bool -> PermParseM s (LLVMArrayField w)
 parseLLVMFieldPerm w in_array =
-  do llvmFieldLifetime <- (do try (spaces >> string "[")
-                              l <- parseExpr knownRepr
-                              spaces >> string "]"
-                              return l) <|> return PExpr_Always
+  do llvmFieldLifetime <- parseLifetimePrefix
      if in_array then try (spaces >> char '(' >> return ())
        else try (spaces >> string "ptr" >> spaces >> char '(' >>
                  spaces >> char '(' >> return ())
