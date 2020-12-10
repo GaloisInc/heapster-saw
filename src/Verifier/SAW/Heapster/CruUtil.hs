@@ -25,6 +25,7 @@ import Numeric
 import Numeric.Natural
 import qualified Data.BitVector.Sized as BV
 import System.FilePath
+import GHC.TypeNats
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.NuMatching
@@ -61,6 +62,46 @@ import qualified Lang.Crucible.LLVM.Errors.Poison as Poison
 import qualified Lang.Crucible.LLVM.Errors.UndefinedBehavior as UB
 import Verifier.SAW.Term.Functor
 import Verifier.SAW.OpenTerm
+
+
+----------------------------------------------------------------------
+-- * Helper Functions for 'NatRepr' and 'KnownNat'
+----------------------------------------------------------------------
+
+-- | A version of 'natVal' that takes a phantom argument with 2 applied type
+-- functors instead of 1
+natVal2 :: KnownNat w => f (g w) -> Natural
+natVal2 (_ :: f (g w)) = natVal (Proxy :: Proxy w)
+
+-- | A version of 'natVal' that takes a phantom argument with 3 applied type
+-- functors instead of 1
+natVal3 :: KnownNat w => f (g (h w)) -> Natural
+natVal3 (_ :: f (g (h w))) = natVal (Proxy :: Proxy w)
+
+-- | A version of 'natVal' that takes a phantom argument with 4 applied type
+-- functors instead of 1
+natVal4 :: KnownNat w => f (g (h (i w))) -> Natural
+natVal4 (_ :: f (g (h (i w)))) = natVal (Proxy :: Proxy w)
+
+-- | A version of 'knownNat' that take a phantom argument
+natRepr :: KnownNat w => f w -> NatRepr w
+natRepr _ = knownNat
+
+-- | A version of 'natRepr' that take a phantom argument with 2 applied type
+-- functors instead of 1
+natRepr2 :: KnownNat w => f (g w) -> NatRepr w
+natRepr2 _ = knownNat
+
+-- | A version of 'natRepr' that take a phantom argument with 3 applied type
+-- functors instead of 1
+natRepr3 :: KnownNat w => f (g (h w)) -> NatRepr w
+natRepr3 _ = knownNat
+
+-- | A version of 'natRepr' that take a phantom argument with 4 applied type
+-- functors instead of 1
+natRepr4 :: KnownNat w => f (g (h (i w))) -> NatRepr w
+natRepr4 _ = knownNat
+
 
 ----------------------------------------------------------------------
 -- * Building 'NuMatching' and 'Closable' Instances for Crucible Types

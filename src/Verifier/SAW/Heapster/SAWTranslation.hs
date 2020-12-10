@@ -683,40 +683,6 @@ translateVar :: Mb ctx (ExprVar a) -> Member ctx a
 translateVar mb_x | Left memb <- mbNameBoundP mb_x = memb
 translateVar _ = error "translateVar: unbound variable!"
 
--- | A version of 'natVal' that takes a phantom argument with 2 applied type
--- functors instead of 1
-natVal2 :: KnownNat w => f (g w) -> Natural
-natVal2 (_ :: f (g w)) = fromInteger $ natVal (Proxy :: Proxy w)
-
--- | A version of 'natVal' that takes a phantom argument with 3 applied type
--- functors instead of 1
-natVal3 :: KnownNat w => f (g (h w)) -> Natural
-natVal3 (_ :: f (g (h w))) = fromInteger $ natVal (Proxy :: Proxy w)
-
--- | A version of 'natVal' that takes a phantom argument with 4 applied type
--- functors instead of 1
-natVal4 :: KnownNat w => f (g (h (i w))) -> Natural
-natVal4 (_ :: f (g (h (i w)))) = fromInteger $ natVal (Proxy :: Proxy w)
-
--- | A version of 'knownNat' that take a phantom argument
-natRepr :: KnownNat w => f w -> NatRepr w
-natRepr _ = knownNat
-
--- | A version of 'natRepr' that take a phantom argument with 2 applied type
--- functors instead of 1
-natRepr2 :: KnownNat w => f (g w) -> NatRepr w
-natRepr2 _ = knownNat
-
--- | A version of 'natRepr' that take a phantom argument with 3 applied type
--- functors instead of 1
-natRepr3 :: KnownNat w => f (g (h w)) -> NatRepr w
-natRepr3 _ = knownNat
-
--- | A version of 'natRepr' that take a phantom argument with 4 applied type
--- functors instead of 1
-natRepr4 :: KnownNat w => f (g (h (i w))) -> NatRepr w
-natRepr4 _ = knownNat
-
 -- | Get the 'TypeRepr' of an expression
 mbExprType :: KnownRepr TypeRepr a => Mb ctx (PermExpr a) -> TypeRepr a
 mbExprType _ = knownRepr
