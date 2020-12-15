@@ -715,8 +715,7 @@ data SimplImpl ps_in ps_out where
     PermExpr RWModalityType -> PermExpr LifetimeType ->
     PermExpr (BVType w) -> PermExpr (BVType w) ->
     PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w) ->
-    SimplImpl (RNil :> LLVMPointerType w)
-    (RNil :> LLVMPointerType w :> LLVMPointerType w)
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Prove a block of shape @sh1 orsh sh2@ from a disjunction:
   --
@@ -1627,9 +1626,13 @@ simplImplOut (SImpl_IntroLLVMBlockSeq x rw l off len1 len2 sh1 sh2) =
 simplImplOut (SImpl_ElimLLVMBlockSeq x rw l off len sh1 sh2) =
   case llvmShapeLength sh1 of
     Just len1 ->
-      distPerms2
-      x (mkLLVMBlockPerm rw l off len1 sh1)
-      x (mkLLVMBlockPerm rw l (bvAdd off len1) (bvSub len len1) sh2)
+      distPerms1
+      x (ValPerm_Conj
+         [Perm_LLVMBlock $ LLVMBlockPerm rw l off len1 sh1,
+          Perm_LLVMBlock $
+          LLVMBlockPerm rw l (bvAdd off len1) (bvSub len len1) sh2])
+    Nothing ->
+      error "simplImplOut: SImpl_ElimLLVMBlockSeq"
 simplImplOut (SImpl_IntroLLVMBlockOr x rw l off len sh1 sh2) =
   distPerms1 x (mkLLVMBlockPerm rw l off len (PExpr_OrShape sh1 sh2))
 simplImplOut (SImpl_ElimLLVMBlockOr x rw l off len sh1 sh2) =
@@ -3067,6 +3070,18 @@ implCopyConjM :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] -> Int ->
                  ImplM vars s r (ps :> a :> a) (ps :> a) ()
 implCopyConjM x ps i = implSimplM Proxy (SImpl_CopyConj x ps i)
 
+-- | Either extract or copy the @i@th atomic permission in the conjunct on the
+-- top of the stack, popping the remaining permissions
+implGetPopConjM :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] -> Int ->
+                   ImplM vars s r (ps :> a) (ps :> a) ()
+implGetPopConjM x ps i =
+  if atomicPermIsCopyable (ps!!i) then
+    implCopyConjM x ps i >>>
+    implPopM x (ValPerm_Conj ps)
+  else
+    implExtractConjM x ps i >>>
+    implPopM x (ValPerm_Conj $ deleteNth i ps)
+
 -- | Insert an atomic permission below the top of the stack at the @i@th
 -- position in the conjunct on the top of the stack, where @i@ must be between
 implInsertConjM :: NuMatchingAny1 r => ExprVar a ->
@@ -3335,6 +3350,47 @@ implLLVMArrayOneCell :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                         (ps :> LLVMPointerType w) ()
 implLLVMArrayOneCell x ap =
   implSimplM Proxy (SImpl_LLVMArrayOneCell x ap)
+
+
+-- | Eliminate a @memblock@ permission on the top of the stack, if possible,
+-- otherwise fail
+implElimLLVMBlock :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                     ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+                     ImplM vars s r (ps :> LLVMPointerType w)
+                     (ps :> LLVMPointerType w) ()
+implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape = PExpr_EmptyShape, ..}) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockEmpty x llvmBlockRW llvmBlockLifetime
+                    llvmBlockOffset llvmBlockLen)
+implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
+                                       PExpr_FieldShape (LLVMFieldShape p)
+                                   , ..}) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockField x llvmBlockRW llvmBlockLifetime
+                    llvmBlockOffset p)
+implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
+                                       PExpr_SeqShape sh1 sh2, ..})
+  | len1 <- llvmShapeLength sh1 =
+    implSimplM Proxy (SImpl_ElimLLVMBlockSeq x llvmBlockRW llvmBlockLifetime
+                      llvmBlockOffset llvmBlockLen sh1 sh2)
+implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
+                                       PExpr_OrShape sh1 sh2, ..}) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockOr x llvmBlockRW llvmBlockLifetime
+                    llvmBlockOffset llvmBlockLen sh1 sh2)
+implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
+                                       PExpr_ExShape mb_sh, ..}) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockEx x llvmBlockRW llvmBlockLifetime
+                    llvmBlockOffset llvmBlockLen mb_sh)
+implElimLLVMBlock x bp =
+  implTraceM (\i -> pretty "Could not eliminate permission" <+>
+                    permPretty i (Perm_LLVMBlock bp)) >>>=
+  implFailM
+
+-- | Eliminate a @memblock@ permission on the top of the stack and recombine it,
+-- if this is possible; otherwise fail
+implElimPopLLVMBlock :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                        ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+                        ImplM vars s r ps (ps :> LLVMPointerType w) ()
+implElimPopLLVMBlock x bp =
+  implElimLLVMBlock x bp >>> getTopDistPerm x >>>= \p' -> recombinePerm x p'
 
 
 ----------------------------------------------------------------------
@@ -3873,6 +3929,14 @@ proveVarLLVMField ::
   ExprVar (LLVMPointerType w) -> [AtomicPerm (LLVMPointerType w)] -> Int ->
   PermExpr (BVType w) -> Mb vars (LLVMFieldPerm w sz) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
+
+-- Special case: if the LHS is a memblock perm, unfold it and prove again
+proveVarLLVMField x ps i _ mb_fp
+  | Perm_LLVMBlock bp <- ps!!i =
+    implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
+    implElimPopLLVMBlock x bp >>>
+    proveVarImpl x (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)
+
 proveVarLLVMField x ps i off mb_fp =
   (if i < length ps then greturn () else
      error "proveVarLLVMField: index too large") >>>= \() ->
@@ -4240,12 +4304,7 @@ proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
   , bvEq (llvmArrayLen ap_lhs) (llvmArrayLen ap)
   , llvmArrayStride ap_lhs == llvmArrayStride ap
   , llvmArrayFields ap_lhs == llvmArrayFields ap =
-    (if atomicPermIsCopyable (Perm_LLVMArray ap) then
-       implCopyConjM x ps i >>>
-       implPopM x (ValPerm_Conj ps)
-     else
-       implExtractConjM x ps i >>>
-       implPopM x (ValPerm_Conj $ deleteNth i ps)) >>>
+    implGetPopConjM x ps i >>>
     implLLVMArrayRearrange x ap_lhs ap
 
 -- If ap is contained inside ap_lhs at a cell boundary then copy or borrow ap
@@ -4420,6 +4479,9 @@ proveNamedArg x npn args off memb _ mb_arg =
 -- * Proving LLVM Block Permissions
 ----------------------------------------------------------------------
 
+-- | Prove a @memblock@ permission where all components except possibly the
+-- shape are known, from the conjunction of the supplied atomic permissions
+-- which are on the top of the stack
 proveVarLLVMBlock ::
   (1 <= w, KnownNat w, NuMatchingAny1 r) => ExprVar (LLVMPointerType w) ->
   [AtomicPerm (LLVMPointerType w)] ->
@@ -4428,11 +4490,32 @@ proveVarLLVMBlock ::
   Mb vars (PermExpr (LLVMShapeType w)) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
+-- If we already have the required block permission, use it!
+proveVarLLVMBlock x ps rw l off len mb_sh
+  | Just i <- findIndex (\p -> mbLift $
+                               fmap ((== p) . Perm_LLVMBlock
+                                     . LLVMBlockPerm rw l off len) mb_sh) ps =
+    implGetPopConjM x ps i
+
+-- If we have a block that contains the required offset, eliminate it and
+-- recurse
+proveVarLLVMBlock x ps rw l off len mb_sh
+  | Just i <- findIndex (\p ->
+                          case llvmPermContainsOffset off p of
+                            Just props | all bvPropHolds props -> True
+                            _ -> False) ps
+  , Perm_LLVMBlock bp <- ps!!i =
+    implGetPopConjM x ps i >>>
+    implElimPopLLVMBlock x bp >>>
+    proveVarImpl x (fmap (mkLLVMBlockPerm rw l off len) mb_sh)
+
+-- If proving the empty shape, prove the required array permission
 proveVarLLVMBlock x ps rw l off len mb_sh@[nuP| PExpr_EmptyShape |] =
   implPopM x (ValPerm_Conj ps) >>>
   proveVarImpl x (fmap (const $ llvmByteArrayPerm off len rw l) mb_sh) >>>
   implSimplM Proxy (SImpl_IntroLLVMBlockEmpty x rw l off len)
 
+-- If proving a field shape, prove the required field permission
 proveVarLLVMBlock x ps rw l off len [nuP| PExpr_FieldShape
                                         (LLVMFieldShape mb_p) |]
   | sz <- bvInt $ intValue $ mbLift $ fmap exprLLVMTypeWidth mb_p
@@ -4446,6 +4529,7 @@ proveVarLLVMBlock x ps rw l off len [nuP| PExpr_FieldShape
     "proveVarLLVMBlock: PExpr_FieldShape: incomplete subst" >>>= \p ->
     implSimplM Proxy (SImpl_IntroLLVMBlockField x rw l off p)
 
+-- If proving a sequence shape, prove the two shapes and combine them
 proveVarLLVMBlock x ps rw l off len [nuP| PExpr_SeqShape mb_sh1 mb_sh2 |]
   | [nuP| Just mb_len1 |] <- fmap llvmShapeLength mb_sh1 =
     partialSubstForceM mb_len1
@@ -4460,6 +4544,8 @@ proveVarLLVMBlock x ps rw l off len [nuP| PExpr_SeqShape mb_sh1 mb_sh2 |]
     "proveVarLLVMBlock: PExpr_SeqShape: incomplete subst" >>>= \(sh1,sh2) ->
     implSimplM Proxy (SImpl_IntroLLVMBlockSeq
                       x rw l off len1 (bvSub len len1) sh1 sh2)
+
+-- If proving a disjunctive shape, prove the disjunction
 proveVarLLVMBlock x ps rw l off len [nuP| PExpr_OrShape mb_sh1 mb_sh2 |] =
   implPopM x (ValPerm_Conj ps) >>>
   proveVarImpl x (mbMap2 (\sh1 sh2 ->
@@ -4471,6 +4557,7 @@ proveVarLLVMBlock x ps rw l off len [nuP| PExpr_OrShape mb_sh1 mb_sh2 |] =
     "proveVarLLVMBlock: PExpr_SeqShape: incomplete subst" >>>= \(sh1,sh2) ->
     implSimplM Proxy (SImpl_IntroLLVMBlockOr x rw l off len sh1 sh2)
 
+-- If proving an existential shape, prove the existential
 proveVarLLVMBlock x ps rw l off len [nuP| PExpr_ExShape mb_mb_sh |] =
   implPopM x (ValPerm_Conj ps) >>>
   proveVarImpl x (flip fmap mb_mb_sh $ \mb_sh ->
@@ -4480,6 +4567,7 @@ proveVarLLVMBlock x ps rw l off len [nuP| PExpr_ExShape mb_mb_sh |] =
     "proveVarLLVMBlock: PExpr_ExShape: incomplete subst" >>>= \mb_sh ->
   implSimplM Proxy (SImpl_IntroLLVMBlockEx x rw l off len mb_sh)
 
+-- If proving an evar permission, try to solve for the evar
 proveVarLLVMBlock x ps rw l off len [nuP| PExpr_Var mb_z |] =
   getPSubst >>>= \psubst ->
   case mbNameBoundP mb_z of
@@ -4494,6 +4582,7 @@ proveVarLLVMBlock x ps rw l off len [nuP| PExpr_Var mb_z |] =
       , bvIsZero len ->
         implPopM x (ValPerm_Conj ps) >>>
         implLLVMArrayEmpty x (llvmByteArrayArrayPerm off len rw l) >>>
+        setVarM memb PExpr_EmptyShape >>>
         implSimplM Proxy (SImpl_IntroLLVMBlockEmpty x rw l off len)
 
     -- If z is unset and there is a field with offset off, prove a field shape
@@ -4523,6 +4612,9 @@ proveVarLLVMBlock x ps rw l off len [nuP| PExpr_Var mb_z |] =
                        (bvAdd off sz_expr) (bvSub len sz_expr)
                        (PExpr_Var z_sh)) >>>= \(_,sh2) ->
 
+        -- Set z = sh1;sh2
+        setVarM memb (PExpr_SeqShape sh1 sh2) >>>
+
         -- Then, finally, we combine these into a proof of
         -- x:[l]memblock(rw,off,len,ptrsh(eq(y));sh')
         implSimplM Proxy (SImpl_IntroLLVMBlockSeq x rw l off sz_expr
@@ -4545,11 +4637,7 @@ proveVarLLVMBlock x ps rw l off len [nuP| PExpr_Var mb_z |] =
       , sz_expr <- llvmBlockLen bp
       , bvLeq sz_expr len ->
         -- First we save the memblock perm we found to the stack
-        (if atomicPermIsCopyable p then
-           implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps)
-         else
-           implExtractConjM x ps i >>>
-           implPopM x (ValPerm_Conj $ deleteNth i ps)) >>>
+        implGetPopConjM x ps i >>>
 
         -- Next we prove x:[l]memblock(rw,off+sz,len-sz,sh') for some sh2
         withExtVarsM (proveVarImpl x $
@@ -5045,11 +5133,7 @@ proveVarImplH x (ValPerm_Conj ps) mb_p@[nuP| ValPerm_Named
                              , mbLift (fmap (offsetsEq off) mb_off) ->
                                Just (args, off)
                            _ -> Nothing) ps =
-    (if atomicPermIsCopyable (Perm_NamedConj npn args off) then
-       implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps)
-     else
-       implExtractConjM x ps i >>>
-       implPopM x (ValPerm_Conj $ deleteNth i ps)) >>>
+    implGetPopConjM x ps i >>>
     implNamedFromConjM x npn args off >>>
     proveNamedArgs x npn args off mb_args
 
