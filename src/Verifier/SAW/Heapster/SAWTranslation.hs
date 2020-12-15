@@ -136,13 +136,18 @@ typeTransType1 (TypeTrans [] _) = unitTypeOpenTerm
 typeTransType1 (TypeTrans [tp] _) = tp
 typeTransType1 _ = error "typeTransType1"
 
+-- | Build the tuple of @N@ types, with the special case that a single type is
+-- just converted to itself
+tupleOfTypes :: [OpenTerm] -> OpenTerm
+tupleOfTypes [] = unitTypeOpenTerm
+tupleOfTypes [tp] = tp
+tupleOfTypes tps = tupleTypeOpenTerm tps
+
 -- | Map the 'typeTransTypes' field of a 'TypeTrans' to a single type, where a
 -- single type is mapped to itself, an empty list of types is mapped to @unit@,
 -- and a list of 2 or more types is mapped to a tuple of the types
 typeTransTupleType :: TypeTrans tr -> OpenTerm
-typeTransTupleType (TypeTrans [] _) = unitTypeOpenTerm
-typeTransTupleType (TypeTrans [tp] _) = tp
-typeTransTupleType (TypeTrans tps _) = tupleTypeOpenTerm tps
+typeTransTupleType = tupleOfTypes . typeTransTypes
 
 -- | Convert a 'TypeTrans' over 0 or more types to one over 1 type, where 2
 -- or more types are converted to a single tuple type
@@ -583,8 +588,14 @@ instance TransInfo info =>
     return $ mkTypeTrans0 ETrans_PermList
   translate [nuP| RWModalityRepr |] =
     return $ mkTypeTrans0 ETrans_RWModality
+
+  -- Permissions and LLVM shapes translate to types
   translate [nuP| ValuePermRepr _ |] =
     returnType1 (sortOpenTerm $ mkSort 0)
+  translate [nuP| LLVMShapeRepr _ |] =
+    returnType1 (sortOpenTerm $ mkSort 0)
+
+  -- We can't handle any other special-purpose types
   translate [nuP| IntrinsicRepr _ _ |] =
     return $ error "translate: IntrinsicRepr"
 
@@ -728,8 +739,40 @@ instance TransInfo info =>
   translate [nuP| PExpr_PermListNil |] = return ETrans_PermList
   translate [nuP| PExpr_PermListCons _ _ _ |] = return ETrans_PermList
   translate [nuP| PExpr_RWModality _ |] = return ETrans_RWModality
+
+  -- LLVM shapes are translated to types
+  translate [nuP| PExpr_EmptyShape |] = return $ ETrans_Term unitTypeOpenTerm
+  translate [nuP| PExpr_FieldShape fsh |] =
+    ETrans_Term <$> tupleOfTypes <$> translate fsh
+  translate [nuP| PExpr_ArrayShape mb_len _ mb_fshs |] =
+    do let w = natVal4 mb_len
+       let w_term = natOpenTerm w
+       len_term <- translate1 mb_len
+       elem_tp <- tupleOfTypes <$> concat <$> mapM translate (mbList mb_fshs)
+       return $ ETrans_Term $
+         applyOpenTermMulti (globalOpenTerm "Prelude.BVVec")
+         [w_term, len_term, elem_tp]
+  translate [nuP| PExpr_SeqShape sh1 sh2 |] =
+    ETrans_Term <$> (pairTypeOpenTerm <$> translate1 sh1 <*> translate1 sh2)
+  translate [nuP| PExpr_OrShape sh1 sh2 |] =
+    ETrans_Term <$>
+    ((\t1 t2 -> dataTypeOpenTerm "Prelude.Either" [t1,t2])
+     <$> translate1 sh1 <*> translate1 sh2)
+  translate [nuP| PExpr_ExShape mb_sh |] =
+    do tp_trans <- translate $ fmap bindingType mb_sh
+       tp_f_trm <- lambdaTupleTransM "x_exsh" tp_trans $ \e ->
+         transTupleTerm <$> inExtTransM e (translate $ mbCombine mb_sh)
+       return $ ETrans_Term (dataTypeOpenTerm "Prelude.Sigma"
+                             [typeTransTupleType tp_trans, tp_f_trm])
+
   translate [nuP| PExpr_ValPerm p |] =
     ETrans_Term <$> typeTransTupleType <$> translate p
+
+-- LLVM field shapes translate to the types that the permission they contain
+-- translates to
+instance TransInfo info =>
+         Translate info ctx (LLVMFieldShape w) [OpenTerm] where
+  translate [nuP| LLVMFieldShape p |] = typeTransTypes <$> translate p
 
 instance TransInfo info =>
          Translate info ctx (PermExprs as) (ExprTransCtx as) where
@@ -790,6 +833,12 @@ data AtomicPermTrans ctx a where
   -- | LLVM array permisions are translated to an 'LLVMArrayPermTrans'
   APTrans_LLVMArray :: (1 <= w, KnownNat w) =>
                        LLVMArrayPermTrans ctx w ->
+                       AtomicPermTrans ctx (LLVMPointerType w)
+
+  -- | The translation of an LLVM block permission is an element of the
+  -- translation of its shape to a type
+  APTrans_LLVMBlock :: (1 <= w, KnownNat w) =>
+                       Mb ctx (LLVMBlockPerm w) -> OpenTerm ->
                        AtomicPermTrans ctx (LLVMPointerType w)
 
   -- | LLVM free permissions have no computational content
@@ -966,6 +1015,7 @@ instance IsTermTrans (PermTransCtx ctx ps) where
 instance IsTermTrans (AtomicPermTrans ctx a) where
   transTerms (APTrans_LLVMField _ ptrans) = transTerms ptrans
   transTerms (APTrans_LLVMArray arr_trans) = transTerms arr_trans
+  transTerms (APTrans_LLVMBlock _ t) = [t]
   transTerms (APTrans_LLVMFree _) = []
   transTerms (APTrans_LLVMFunPtr _ trans) = transTerms trans
   transTerms APTrans_IsLLVMPtr = []
@@ -1009,19 +1059,20 @@ permTransPerm _ (PTrans_Term p _) = p
 -- | Extract out the atomic permission of an atomic permission translation result
 atomicPermTransPerm :: RAssign Proxy ctx -> AtomicPermTrans ctx a ->
                        Mb ctx (AtomicPerm a)
-atomicPermTransPerm prxs (APTrans_LLVMField fld _) = fmap Perm_LLVMField fld
-atomicPermTransPerm prxs (APTrans_LLVMArray arr_trans) =
+atomicPermTransPerm _ (APTrans_LLVMField fld _) = fmap Perm_LLVMField fld
+atomicPermTransPerm _ (APTrans_LLVMArray arr_trans) =
   fmap Perm_LLVMArray $ llvmArrayTransPerm arr_trans
-atomicPermTransPerm prxs (APTrans_LLVMFree e) = fmap Perm_LLVMFree e
+atomicPermTransPerm _ (APTrans_LLVMBlock mb_bp _) = fmap Perm_LLVMBlock mb_bp
+atomicPermTransPerm _ (APTrans_LLVMFree e) = fmap Perm_LLVMFree e
 atomicPermTransPerm prxs (APTrans_LLVMFunPtr tp ptrans) =
   fmap (Perm_LLVMFunPtr tp) (permTransPerm prxs ptrans)
 atomicPermTransPerm prxs APTrans_IsLLVMPtr = nuMulti prxs $ const Perm_IsLLVMPtr
-atomicPermTransPerm prxs (APTrans_NamedConj npn args off _) =
+atomicPermTransPerm _ (APTrans_NamedConj npn args off _) =
   mbMap2 (Perm_NamedConj npn) args off
-atomicPermTransPerm prxs (APTrans_LLVMFrame fp) = fmap Perm_LLVMFrame fp
-atomicPermTransPerm prxs (APTrans_LifetimePerm p) = p
-atomicPermTransPerm prxs (APTrans_Fun fp _) = fmap Perm_Fun fp
-atomicPermTransPerm prxs (APTrans_BVProp (BVPropTrans prop _)) =
+atomicPermTransPerm _ (APTrans_LLVMFrame fp) = fmap Perm_LLVMFrame fp
+atomicPermTransPerm _ (APTrans_LifetimePerm p) = p
+atomicPermTransPerm _ (APTrans_Fun fp _) = fmap Perm_Fun fp
+atomicPermTransPerm _ (APTrans_BVProp (BVPropTrans prop _)) =
   fmap Perm_BVProp prop
 
 -- | Extract out the permissions from a context of permission translations
@@ -1062,6 +1113,7 @@ instance ExtPermTrans AtomicPermTrans where
     APTrans_LLVMField (extMb fld) (extPermTrans ptrans)
   extPermTrans (APTrans_LLVMArray arr_trans) =
     APTrans_LLVMArray $ extPermTrans arr_trans
+  extPermTrans (APTrans_LLVMBlock mb_bp t) = APTrans_LLVMBlock (extMb mb_bp) t
   extPermTrans (APTrans_LLVMFree e) = APTrans_LLVMFree $ extMb e
   extPermTrans (APTrans_LLVMFunPtr tp ptrans) =
     APTrans_LLVMFunPtr tp (extPermTrans ptrans)
@@ -1113,6 +1165,12 @@ offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMArray
                                   (LLVMArrayPermTrans ap len flds {- bs -} t)) =
   Just $ APTrans_LLVMArray $
   LLVMArrayPermTrans (mbMap2 offsetLLVMArrayPerm mb_off ap) len flds {- bs -} t
+offsetLLVMAtomicPermTrans mb_off (APTrans_LLVMBlock mb_bp t) =
+  Just $ APTrans_LLVMBlock
+  (mbMap2 (\off bp ->
+            bp { llvmBlockOffset =
+                   bvAdd (llvmBlockOffset bp) off } ) mb_off mb_bp)
+  t
 offsetLLVMAtomicPermTrans _ (APTrans_LLVMFree _) = Nothing
 offsetLLVMAtomicPermTrans _ (APTrans_LLVMFunPtr _ _) = Nothing
 offsetLLVMAtomicPermTrans _ p@APTrans_IsLLVMPtr = Just p
@@ -1351,6 +1409,8 @@ atomicPermTransInLifetime l (APTrans_LLVMArray
   (fmap (map (atomicPermTransInLifetime l)) flds)
   {- bs -}
   t
+atomicPermTransInLifetime mb_l (APTrans_LLVMBlock mb_bp t) =
+  APTrans_LLVMBlock (mbMap2 (\bp l -> bp {llvmBlockLifetime = l}) mb_bp mb_l) t
 atomicPermTransInLifetime _ p@(APTrans_LLVMFree _) = p
 atomicPermTransInLifetime l (APTrans_LLVMFunPtr tp p) =
   APTrans_LLVMFunPtr tp $ permTransInLifetime l p
@@ -1397,6 +1457,8 @@ atomicPermTransEndLifetime (APTrans_LLVMArray
           (mbList $
            fmap (map llvmArrayFieldToAtomicPerm . llvmArrayFields) ap)) flds)
   {- bs -} t
+atomicPermTransEndLifetime (APTrans_LLVMBlock _ t) [nuP| Perm_LLVMBlock bp |] =
+  APTrans_LLVMBlock bp t
 atomicPermTransEndLifetime p@(APTrans_LLVMFree _) _ = p
 atomicPermTransEndLifetime p@(APTrans_LLVMFunPtr _ _) _ =
   -- FIXME: is this correct?
@@ -1526,6 +1588,10 @@ instance TransInfo info =>
 
   translate ([nuP| Perm_LLVMArray ap |]) =
     fmap APTrans_LLVMArray <$> translate ap
+
+  translate ([nuP| Perm_LLVMBlock bp |]) =
+    do tp <- translate1 (fmap llvmBlockShape bp)
+       return $ mkTypeTrans1 tp (APTrans_LLVMBlock bp)
 
   translate [nuP| Perm_LLVMFree e |] =
     return $ mkTypeTrans0 $ APTrans_LLVMFree e
@@ -2401,6 +2467,80 @@ translateSimplImpl _ [nuP| SImpl_LCurrentTrans l1 l2 l3 |] m =
   ((:>: PTrans_Conj [APTrans_LifetimePerm $ fmap Perm_LCurrent l3]) .
    RL.tail . RL.tail)
   m
+
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockEmpty _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: _) -> pctx :>: typeTransF ttrans [])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockEmpty _ _ _ _ len |] m =
+  do let w = natVal4 len
+     let w_term = natOpenTerm w
+     len_term <- translate1 len
+     ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: _) ->
+         let arr_term =
+               applyOpenTermMulti (globalOpenTerm "Prelude.repeatBVVec")
+               [w_term, len_term, unitTypeOpenTerm, unitOpenTerm] in
+         pctx :>: typeTransF ttrans [arr_term])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockField _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF ttrans [transTupleTerm ptrans])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockField _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF (tupleTypeTrans ttrans) [transTerm1 ptrans])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockSeq _ _ _ _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM RL.tail
+       (\(pctx :>: ptrans1 :>: ptrans2) ->
+         let pair_term =
+               pairOpenTerm (transTerm1 ptrans1) (transTerm1 ptrans2) in
+         pctx :>: typeTransF ttrans [pair_term])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockSeq _ _ _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF ttrans [pairLeftOpenTerm (transTerm1 ptrans),
+                                     pairRightOpenTerm (transTerm1 ptrans)])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockOr _ _ _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockOr _ _ _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockEx _ _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockEx _ _ _ _ _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
+       m
 
 translateSimplImpl _ simpl@[nuP| SImpl_FoldNamed x np args _ |] m
   | [nuP| NamedPerm_Rec rp |] <- np =
