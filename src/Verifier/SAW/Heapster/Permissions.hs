@@ -3477,6 +3477,9 @@ instance FreeVars (BVProp w) where
 instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMField fp) = freeVars fp
   freeVars (Perm_LLVMArray ap) = freeVars ap
+  freeVars (Perm_LLVMBlock (LLVMBlockPerm rw l off len sh)) =
+    NameSet.unions [freeVars rw, freeVars l, freeVars off,
+                    freeVars len, freeVars sh]
   freeVars (Perm_LLVMFree e) = freeVars e
   freeVars (Perm_LLVMFunPtr _ fun_perm) = freeVars fun_perm
   freeVars Perm_IsLLVMPtr = NameSet.empty
@@ -3634,6 +3637,7 @@ instance ContainsLifetime (ValuePerm a) where
 instance ContainsLifetime (AtomicPerm a) where
   containsLifetime l (Perm_LLVMField fp) = containsLifetime l fp
   containsLifetime l (Perm_LLVMArray ap) = containsLifetime l ap
+  containsLifetime l (Perm_LLVMBlock bp) = containsLifetime l bp
   containsLifetime _ (Perm_LLVMFree _) = False
   containsLifetime _ (Perm_LLVMFunPtr _ _) = False
   containsLifetime _ Perm_IsLLVMPtr = False
@@ -3661,6 +3665,13 @@ instance ContainsLifetime (LLVMArrayField w) where
 instance ContainsLifetime (LLVMArrayPerm w) where
   containsLifetime l ap = any (containsLifetime l) (llvmArrayFields ap)
 
+instance ContainsLifetime (LLVMBlockPerm w) where
+  containsLifetime l bp =
+    l == llvmBlockLifetime bp || containsLifetime l (llvmBlockShape bp)
+
+instance ContainsLifetime (LLVMFieldShape w) where
+  containsLifetime l (LLVMFieldShape p) = containsLifetime l p
+
 instance ContainsLifetime (PermOffset a) where
   containsLifetime _ NoPermOffset = False
   containsLifetime l (LLVMPermOffset e) = containsLifetime l e
@@ -3674,6 +3685,15 @@ instance ContainsLifetime (PermExpr a) where
   containsLifetime (PExpr_Var l) (PExpr_Var l')
     | Just Refl <- testEquality l l' = True
   containsLifetime PExpr_Always PExpr_Always = True
+  containsLifetime l (PExpr_FieldShape fsh) = containsLifetime l fsh
+  containsLifetime l (PExpr_ArrayShape _ _ fshs) =
+    any (containsLifetime l) fshs
+  containsLifetime l (PExpr_SeqShape sh1 sh2) =
+    containsLifetime l sh1 || containsLifetime l sh2
+  containsLifetime l (PExpr_OrShape sh1 sh2) =
+    containsLifetime l sh1 || containsLifetime l sh2
+  containsLifetime l (PExpr_ExShape mb_sh) =
+    mbLift $ fmap (containsLifetime l) mb_sh
   containsLifetime l (PExpr_ValPerm p) = containsLifetime l p
   containsLifetime _ _ = False
 
@@ -3702,6 +3722,8 @@ instance InLifetime (AtomicPerm a) where
     Perm_LLVMField $ inLifetime l fp
   inLifetime l (Perm_LLVMArray ap) =
     Perm_LLVMArray $ inLifetime l ap
+  inLifetime l (Perm_LLVMBlock bp) =
+    Perm_LLVMBlock $ bp { llvmBlockLifetime = l }
   inLifetime _ p@(Perm_LLVMFree _) = p
   inLifetime l (Perm_LLVMFunPtr tp p) = Perm_LLVMFunPtr tp $ inLifetime l p
   inLifetime _ p@Perm_IsLLVMPtr = p
@@ -3764,6 +3786,9 @@ instance MinLtEndPerms (AtomicPerm a) where
     Perm_LLVMField $ minLtEndPerms l fp
   minLtEndPerms l (Perm_LLVMArray ap) =
     Perm_LLVMArray $ minLtEndPerms l ap
+  minLtEndPerms l (Perm_LLVMBlock bp) =
+    Perm_LLVMBlock $ bp { llvmBlockRW = PExpr_Read,
+                          llvmBlockLifetime = l }
   minLtEndPerms _ p@(Perm_LLVMFree _) = p
   minLtEndPerms l (Perm_LLVMFunPtr tp p) = Perm_LLVMFunPtr tp $ minLtEndPerms l p
   minLtEndPerms _ p@Perm_IsLLVMPtr = Perm_IsLLVMPtr
@@ -4842,6 +4867,9 @@ instance AbstractVars (AtomicPerm a) where
   abstractPEVars ns1 ns2 (Perm_LLVMArray ap) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMArray |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 ap
+  abstractPEVars ns1 ns2 (Perm_LLVMBlock bp) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMBlock |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 bp
   abstractPEVars ns1 ns2 (Perm_LLVMFree e) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMFree |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 e
