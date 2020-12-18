@@ -2065,7 +2065,6 @@ instance PermPretty (AtomicPerm a) where
        pp_l <-
          if llvmBlockLifetime == PExpr_Always then return (pretty "")
          else brackets <$> permPrettyM llvmBlockLifetime
-       pp_l <- permPrettyM llvmBlockLifetime
        pp_off <- permPrettyM llvmBlockOffset
        pp_len <- permPrettyM llvmBlockLen
        pp_sh <- permPrettyM llvmBlockShape
