@@ -3608,21 +3608,20 @@ isDeterminingExpr e =
 
 -- | Generic function to compute the /needed/ variables of a permission, meaning
 -- those whose values must be determined before that permission can be
--- proved. This includes, e.g., all the free variables of the parts of llvm
--- array and field permissions other than their contents, i.e., of the offsets,
--- lengths, lifetimes, etc.
+-- proved. This includes, e.g., all the offsets and lengths of field and array
+-- permissions
 class NeededVars a where
   neededVars :: a -> NameSet CrucibleType
 
 instance NeededVars a => NeededVars [a] where
   neededVars as = NameSet.unions $ map neededVars as
 
+instance NeededVars (PermExpr a) where
+  -- FIXME: need a better explanation of why this is the right answer...
+  neededVars e = if isDeterminingExpr e then NameSet.empty else freeVars e
+
 instance NeededVars (ValuePerm a) where
-  -- For an equality permission, if a variable is determined by the permission
-  -- then it is not needed yet; FIXME: call the same function to determine the
-  -- needed vars as in determinedVars
-  neededVars (ValPerm_Eq e) =
-    if isDeterminingExpr e then NameSet.empty else freeVars e
+  neededVars (ValPerm_Eq e) = neededVars e
   neededVars (ValPerm_Or p1 p2) = NameSet.union (neededVars p1) (neededVars p2)
   neededVars (ValPerm_Exists mb_p) = NameSet.liftNameSet $ fmap neededVars mb_p
   neededVars p@(ValPerm_Named _ _ _) = freeVars p
@@ -3637,8 +3636,8 @@ instance NeededVars (AtomicPerm a) where
 
 instance NeededVars (LLVMFieldPerm w sz) where
   neededVars (LLVMFieldPerm {..}) =
-    NameSet.unions [freeVars llvmFieldOffset, freeVars llvmFieldRW,
-                    freeVars llvmFieldLifetime, neededVars llvmFieldContents]
+    NameSet.unions [freeVars llvmFieldOffset, neededVars llvmFieldRW,
+                    neededVars llvmFieldLifetime, neededVars llvmFieldContents]
 
 instance NeededVars (LLVMArrayField w) where
   neededVars (LLVMArrayField fp) = neededVars fp
@@ -3650,7 +3649,7 @@ instance NeededVars (LLVMArrayPerm w) where
 
 instance NeededVars (LLVMBlockPerm w) where
   neededVars (LLVMBlockPerm {..}) =
-    NameSet.unions [freeVars llvmBlockRW, freeVars llvmBlockLifetime,
+    NameSet.unions [neededVars llvmBlockRW, neededVars llvmBlockLifetime,
                     freeVars llvmBlockOffset, freeVars llvmBlockLen]
 
 instance NeededVars (ValuePerms as) where
@@ -5445,6 +5444,86 @@ detVarsClauseAddLHSVar :: ExprVar a -> DetVarsClause -> DetVarsClause
 detVarsClauseAddLHSVar n (DetVarsClause lhs rhs) =
   DetVarsClause (NameSet.insert n lhs) rhs
 
+-- | Generic function to compute the 'DetVarsClause's for a permission
+class GetDetVarsClauses a where
+  getDetVarsClauses ::
+    a -> ReaderT (PermSet ps) (State (NameSet CrucibleType)) [DetVarsClause]
+
+instance GetDetVarsClauses (ExprVar a) where
+  -- If x has not been visited yet, then return a clause stating that x is
+  -- determined and add all variables that are potentially determined by the
+  -- current permissions on x
+  getDetVarsClauses x =
+    do seen_vars <- get
+       perms <- ask
+       if NameSet.member x seen_vars then return [] else
+         do modify (NameSet.insert x)
+            perm_clauses <- getDetVarsClauses (perms ^. varPerm x)
+            return (DetVarsClause NameSet.empty (SomeName x) :
+                    map (detVarsClauseAddLHSVar x) perm_clauses)
+
+instance GetDetVarsClauses (PermExpr a) where
+  getDetVarsClauses e
+    | isDeterminingExpr e =
+      concat <$> mapM (\(SomeName n) ->
+                        getDetVarsClauses n) (NameSet.toList $ freeVars e)
+  getDetVarsClauses _ = return []
+
+
+instance GetDetVarsClauses (PermExprs as) where
+  getDetVarsClauses PExprs_Nil = return []
+  getDetVarsClauses (PExprs_Cons es e) =
+    (++) <$> getDetVarsClauses es <*> getDetVarsClauses e
+
+instance GetDetVarsClauses (ValuePerm a) where
+  getDetVarsClauses (ValPerm_Eq e) = getDetVarsClauses e
+  getDetVarsClauses (ValPerm_Conj ps) = concat <$> mapM getDetVarsClauses ps
+  -- FIXME: For named perms, we currently require the offset to have no free
+  -- vars, as a simplification, but this could maybe be loosened...?
+  getDetVarsClauses (ValPerm_Named _ args off)
+    | NameSet.null (freeVars off) = getDetVarsClauses args
+  getDetVarsClauses _ = return []
+
+instance GetDetVarsClauses (ValuePerms as) where
+  getDetVarsClauses ValPerms_Nil = return []
+  getDetVarsClauses (ValPerms_Cons ps p) =
+    (++) <$> getDetVarsClauses ps <*> getDetVarsClauses p
+
+instance GetDetVarsClauses (AtomicPerm a) where
+  getDetVarsClauses (Perm_LLVMField fp) = getDetVarsClauses fp
+  getDetVarsClauses (Perm_LLVMArray ap) = getDetVarsClauses ap
+  getDetVarsClauses (Perm_LLVMBlock bp) = getDetVarsClauses bp
+  getDetVarsClauses (Perm_LLVMBlockShape sh) = getDetVarsClauses sh
+  getDetVarsClauses (Perm_LLVMFrame frame_perm) =
+    concat <$> mapM (getDetVarsClauses . fst) frame_perm
+  getDetVarsClauses _ = return []
+
+instance (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+         GetDetVarsClauses (LLVMFieldPerm w sz) where
+  getDetVarsClauses (LLVMFieldPerm {..}) =
+    map (detVarsClauseAddLHS (freeVars llvmFieldOffset)) <$> concat <$>
+    sequence [getDetVarsClauses llvmFieldRW,
+              getDetVarsClauses llvmFieldLifetime,
+              getDetVarsClauses llvmFieldContents]
+
+instance (1 <= w, KnownNat w) => GetDetVarsClauses (LLVMArrayField w) where
+  getDetVarsClauses (LLVMArrayField fp) = getDetVarsClauses fp
+
+instance (1 <= w, KnownNat w) => GetDetVarsClauses (LLVMArrayPerm w) where
+  getDetVarsClauses (LLVMArrayPerm {..}) =
+    map (detVarsClauseAddLHS $
+         NameSet.unions [freeVars llvmArrayOffset, freeVars llvmArrayLen,
+                         freeVars llvmArrayBorrows]) <$>
+    concat <$> mapM getDetVarsClauses llvmArrayFields
+
+instance (1 <= w, KnownNat w) => GetDetVarsClauses (LLVMBlockPerm w) where
+  getDetVarsClauses (LLVMBlockPerm {..}) =
+    map (detVarsClauseAddLHS $
+         NameSet.unions [freeVars llvmBlockOffset, freeVars llvmBlockLen]) <$>
+    concat <$> sequence [getDetVarsClauses llvmBlockRW,
+                         getDetVarsClauses llvmBlockLifetime,
+                         getDetVarsClauses llvmBlockShape]
+
 -- | Compute all the variables whose values are /determined/ by the permissions
 -- on the given input variables, other than those variables themselves. The
 -- intuitive idea is that permission @x:p@ determines the value of @y@ iff there
@@ -5453,81 +5532,12 @@ determinedVars :: PermSet ps -> RAssign ExprVar ns -> [SomeName CrucibleType]
 determinedVars top_perms vars =
   let vars_set = NameSet.fromList $ mapToList SomeName vars
       multigraph =
-        evalState (runReaderT (clausesForPerms (distPermsToValuePerms $
-                                                varPermsMulti vars top_perms))
+        evalState (runReaderT (getDetVarsClauses (distPermsToValuePerms $
+                                                  varPermsMulti vars top_perms))
                    top_perms)
         vars_set in
   evalState (determinedVarsForGraph multigraph) vars_set
   where
-    -- If x has not been visited yet, then return a clause stating that x is
-    -- determined and add all variables that are potentially determined by the
-    -- current permissions on x
-    clausesForVar :: ExprVar a ->
-                     ReaderT (PermSet ps) (State (NameSet CrucibleType))
-                     [DetVarsClause]
-    clausesForVar x =
-      do seen_vars <- get
-         perms <- ask
-         if NameSet.member x seen_vars then return [] else
-           do modify (NameSet.insert x)
-              perm_clauses <- clausesForPerm (perms ^. varPerm x)
-              return (DetVarsClause NameSet.empty (SomeName x) :
-                      map (detVarsClauseAddLHSVar x) perm_clauses)
-
-    -- Find all variables that are determined if an expression is determined
-    clausesForExpr :: PermExpr a ->
-                      ReaderT (PermSet ps) (State (NameSet CrucibleType))
-                      [DetVarsClause]
-    clausesForExpr e
-      | isDeterminingExpr e =
-        concat <$> mapM (\(SomeName n) -> clausesForVar n) (NameSet.toList $
-                                                            freeVars e)
-    clausesForExpr _ = return []
-
-    -- Same as above for for a list of exprs
-    clausesForExprs :: PermExprs as ->
-                       ReaderT (PermSet ps) (State (NameSet CrucibleType))
-                       [DetVarsClause]
-    clausesForExprs PExprs_Nil = return []
-    clausesForExprs (PExprs_Cons es e) =
-      (++) <$> clausesForExprs es <*> clausesForExpr e
-
-    -- Find all variables that are potentially determined by the permission p
-    -- and return clauses stating what other variables must be determined in
-    -- order to determine each of them
-    clausesForPerm :: ValuePerm a ->
-                      ReaderT (PermSet ps) (State (NameSet CrucibleType))
-                      [DetVarsClause]
-    clausesForPerm (ValPerm_Eq e) = clausesForExpr e
-    clausesForPerm (ValPerm_Conj ps) = concat <$> mapM clausesForAtomicPerm ps
-    -- FIXME: For named perms, we currently require the offset to have no free
-    -- vars, as a simplification, but this could maybe be loosened...?
-    clausesForPerm (ValPerm_Named _ args off)
-      | NameSet.null (freeVars off) = clausesForExprs args
-    clausesForPerm _ = return []
-
-    -- Call clausesForPerm for each permission in a list of permissions
-    clausesForPerms :: ValuePerms as ->
-                       ReaderT (PermSet ps) (State (NameSet CrucibleType))
-                       [DetVarsClause]
-    clausesForPerms ValPerms_Nil = return []
-    clausesForPerms (ValPerms_Cons ps p) =
-      (++) <$> clausesForPerms ps <*> clausesForPerm p
-
-
-    -- Same as clauses for Perm but for atomic perms
-    clausesForAtomicPerm :: AtomicPerm a ->
-                            ReaderT (PermSet ps) (State (NameSet CrucibleType))
-                            [DetVarsClause]
-    clausesForAtomicPerm (Perm_LLVMField (LLVMFieldPerm {..})) =
-      map (detVarsClauseAddLHS
-           (NameSet.unions [freeVars llvmFieldRW, freeVars llvmFieldLifetime,
-                            freeVars llvmFieldOffset])) <$>
-      clausesForPerm llvmFieldContents
-    clausesForAtomicPerm (Perm_LLVMFrame frame_perm) =
-      concat <$> mapM (clausesForExpr . fst) frame_perm
-    clausesForAtomicPerm _ = return []
-
     -- Find all variables that are not already marked as determined in our
     -- NameSet state but that are determined given the current determined
     -- variables, mark these variables as determiend, and then repeat, returning
