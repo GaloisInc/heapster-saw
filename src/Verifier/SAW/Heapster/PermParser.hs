@@ -523,9 +523,10 @@ parseExpr tp@(LLVMShapeRepr w) =
              Some ktp'@KnownReprObj ->
                fmap PExpr_ExShape $ mbM $ nu $ \z ->
                withExprVar var (unKnownReprObj ktp') z $
-               parseExpr tp) <?>
+               parseExpr tp) <|>
+       (PExpr_Var <$> parseExprVarOfType tp) <?>
        "llvmshape expression"
-     spaces1
+     spaces
      (try (string ";") >> spaces >> PExpr_SeqShape sh1 <$> parseExpr tp) <|>
        (try (string "orsh") >> spaces >> PExpr_OrShape sh1 <$> parseExpr tp) <|>
        return sh1
