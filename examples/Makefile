@@ -33,3 +33,6 @@ arrays.v: arrays.bc arrays.saw arrays.sawcore
 
 iter_linked_list.v: iter_linked_list.bc iter_linked_list.saw iter_linked_list.sawcore
 	$(SAW) iter_linked_list.saw
+
+memcpy.v: memcpy.bc memcpy.saw memcpy.sawcore
+	$(SAW) memcpy.saw
