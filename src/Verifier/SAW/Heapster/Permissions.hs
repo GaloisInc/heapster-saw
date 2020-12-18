@@ -292,6 +292,8 @@ instance PermPretty (TypeRepr a) where
   permPrettyM RWModalityRepr = return $ pretty "rwmodality"
   permPrettyM (LLVMShapeRepr w) =
     return (pretty "llvmshape" <+> pretty (intValue w))
+  permPrettyM (LLVMBlockRepr w) =
+    return (pretty "llvmblock" <+> pretty (intValue w))
   permPrettyM PermListRepr = return $ pretty "permlist"
   permPrettyM (StructRepr flds) =
     (pretty "struct" <+>) <$> parens <$>
@@ -445,6 +447,19 @@ pattern LLVMShapeRepr w <-
   where
     LLVMShapeRepr w = IntrinsicRepr knownSymbol (Ctx.extend Empty (BVRepr w))
 
+-- | Crucible type for LLVM memory blocks
+type LLVMBlockType w = IntrinsicType "LLVMBlock" (EmptyCtx ::> BVType w)
+
+-- | Pattern for building/desctructing LLVM frame types
+pattern LLVMBlockRepr :: () => (1 <= w, ty ~ LLVMBlockType w) =>
+                         NatRepr w -> TypeRepr ty
+pattern LLVMBlockRepr w <-
+  IntrinsicRepr (testEquality (knownSymbol :: SymbolRepr "LLVMBlock") ->
+                 Just Refl)
+  (viewAssign -> AssignExtend Empty (BVRepr w))
+  where
+    LLVMBlockRepr w = IntrinsicRepr knownSymbol (Ctx.extend Empty (BVRepr w))
+
 
 -- | Expressions that are considered "pure" for use in permissions. Note that
 -- these are in a normal form, that makes them easier to analyze.
@@ -505,6 +520,9 @@ data PermExpr (a :: CrucibleType) where
 
   -- | The empty / vacuously true shape
   PExpr_EmptyShape :: PermExpr (LLVMShapeType w)
+
+  -- | The equality shape
+  PExpr_EqShape :: PermExpr (LLVMBlockType w) -> PermExpr (LLVMShapeType w)
 
   -- | A shape for a single field
   PExpr_FieldShape :: (1 <= w, KnownNat w) => LLVMFieldShape w ->
@@ -568,6 +586,14 @@ exprLLVMTypeWidth _ = knownNat
 exprLLVMTypeWidthExpr :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
                          f (LLVMPointerType sz) -> PermExpr (BVType w)
 exprLLVMTypeWidthExpr e = bvInt $ intValue $ exprLLVMTypeWidth e
+
+-- | Convenience function to get the width of an LLVM pointer type of an
+-- expression in a binding as an expression
+mbExprLLVMTypeWidthExpr :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                           Mb ctx (f (LLVMPointerType sz)) ->
+                           PermExpr (BVType w)
+mbExprLLVMTypeWidthExpr mb_e =
+  bvInt $ intValue $ mbLift $ fmap exprLLVMTypeWidth mb_e
 
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where
@@ -639,6 +665,9 @@ instance Eq (PermExpr a) where
   PExpr_EmptyShape == PExpr_EmptyShape = True
   PExpr_EmptyShape == _ = False
 
+  (PExpr_EqShape b1) == (PExpr_EqShape b2) = b1 == b2
+  (PExpr_EqShape _) == _ = False
+
   (PExpr_FieldShape p1) == (PExpr_FieldShape p2) = p1 == p2
   (PExpr_FieldShape _) == _ = False
 
@@ -692,6 +721,8 @@ instance PermPretty (PermExpr a) where
   permPrettyM e@(PExpr_PermListCons _ _ _) = prettyPermListM e
   permPrettyM (PExpr_RWModality rw) = permPrettyM rw
   permPrettyM PExpr_EmptyShape = return $ pretty "emptysh"
+  permPrettyM (PExpr_EqShape b) =
+    (pretty "eqsh" <>) <$> permPrettyM b
   permPrettyM (PExpr_FieldShape fld) =
     (pretty "ptrsh" <>) <$> permPrettyM fld
   permPrettyM (PExpr_ArrayShape len stride flds) =
@@ -1194,6 +1225,10 @@ data AtomicPerm (a :: CrucibleType) where
                      TypeRepr (FunctionHandleType cargs ret) ->
                      ValuePerm (FunctionHandleType cargs ret) ->
                      AtomicPerm (LLVMPointerType w)
+
+  -- | Says that a memory block has a given shape
+  Perm_LLVMBlockShape :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
+                         AtomicPerm (LLVMBlockType w)
 
   -- | Says we know an LLVM value is a pointer value, meaning that its block
   -- value is non-zero. Note that this does not say the pointer is allocated.
@@ -1899,6 +1934,8 @@ instance Eq (AtomicPerm a) where
   (Perm_LLVMFunPtr _ _) == _ = False
   Perm_IsLLVMPtr == Perm_IsLLVMPtr = True
   Perm_IsLLVMPtr == _ = False
+  (Perm_LLVMBlockShape sh1) == (Perm_LLVMBlockShape sh2) = sh1 == sh2
+  (Perm_LLVMBlockShape _) == _ = False
   (Perm_LLVMFrame frame1) == (Perm_LLVMFrame frame2) = frame1 == frame2
   (Perm_LLVMFrame _) == _ = False
   (Perm_LOwned e1) == (Perm_LOwned e2) = e1 == e2
@@ -2034,6 +2071,8 @@ instance PermPretty (AtomicPerm a) where
        pp_sh <- permPrettyM llvmBlockShape
        return (pp_l <> pretty "memblock" <>
                parens (ppCommaSep [pp_rw, pp_off, pp_len, pp_sh]))
+  permPrettyM (Perm_LLVMBlockShape sh) =
+    ((pretty "shape" <>) . parens) <$> permPrettyM sh
   permPrettyM (Perm_LLVMFree e) = (pretty "free" <+>) <$> permPrettyM e
   permPrettyM (Perm_LLVMFunPtr tp fp) =
     (\pp -> pretty "llvmfunptr" <+> parens pp) <$> permPrettyM fp
@@ -2428,6 +2467,7 @@ llvmShapeLength :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
                    Maybe (PermExpr (BVType w))
 llvmShapeLength (PExpr_Var _) = Nothing
 llvmShapeLength PExpr_EmptyShape = Just $ bvInt 0
+llvmShapeLength (PExpr_EqShape _) = Nothing
 llvmShapeLength (PExpr_FieldShape (LLVMFieldShape p)) =
   Just $ exprLLVMTypeWidthExpr p
 llvmShapeLength (PExpr_ArrayShape len _ _) = Just len
@@ -2475,6 +2515,9 @@ llvmArrayShapeToPerm rw l off len stride fshs =
               (bvAdd off sz, flds ++ [fld]))
       (bvInt 0, [])
       fshs }
+
+
+-- FIXME: don't still need unfoldLLVMBlock...?
 
 -- | Unfold an @llvmblock@ permission @bp@ to a sequence of atomic permissions
 -- as much as is possible; this may just be @bp@ itself if it is disjunctive or
@@ -3028,6 +3071,12 @@ llvmByteArrayPerm :: (1 <= w, KnownNat w) =>
 llvmByteArrayPerm off len rw l =
   ValPerm_Conj1 $ Perm_LLVMArray $ llvmByteArrayArrayPerm off len rw l
 
+-- | Map an 'LLVMBlockPerm' to a byte array perm with the same components
+llvmBlockPermToByteArrayPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
+                                ValuePerm (LLVMPointerType w)
+llvmBlockPermToByteArrayPerm (LLVMBlockPerm {..}) =
+  llvmByteArrayPerm llvmBlockOffset llvmBlockLen llvmBlockRW llvmBlockLifetime
+
 -- | Add an offset @off@ to an LLVM permission @p@, meaning change @p@ so that
 -- it indicates that @x+off@ has permission @p@.
 --
@@ -3348,6 +3397,7 @@ atomicPermIsCopyable (Perm_LLVMBlock (LLVMBlockPerm {..})) =
 atomicPermIsCopyable (Perm_LLVMFree _) = True
 atomicPermIsCopyable (Perm_LLVMFunPtr _ _) = True
 atomicPermIsCopyable Perm_IsLLVMPtr = True
+atomicPermIsCopyable (Perm_LLVMBlockShape sh) = shapeIsCopyable sh
 atomicPermIsCopyable (Perm_LLVMFrame _) = False
 atomicPermIsCopyable (Perm_LOwned _) = False
 atomicPermIsCopyable (Perm_LCurrent _) = True
@@ -3374,6 +3424,7 @@ namedPermArgsAreCopyable (CruCtxCons tps tp) (PExprs_Cons args arg) =
 shapeIsCopyable :: PermExpr (LLVMShapeType w) -> Bool
 shapeIsCopyable (PExpr_Var _) = False
 shapeIsCopyable PExpr_EmptyShape = True
+shapeIsCopyable (PExpr_EqShape _) = True
 shapeIsCopyable (PExpr_FieldShape (LLVMFieldShape p)) = permIsCopyable p
 shapeIsCopyable (PExpr_SeqShape sh1 sh2) =
   shapeIsCopyable sh1 && shapeIsCopyable sh2
@@ -3448,6 +3499,7 @@ instance FreeVars (PermExpr a) where
     NameSet.union (freeVars e) $ NameSet.union (freeVars p) (freeVars ps)
   freeVars (PExpr_RWModality _) = NameSet.empty
   freeVars PExpr_EmptyShape = NameSet.empty
+  freeVars (PExpr_EqShape b) = freeVars b
   freeVars (PExpr_FieldShape (LLVMFieldShape p)) = freeVars p
   freeVars (PExpr_SeqShape sh1 sh2) =
     NameSet.union (freeVars sh1) (freeVars sh2)
@@ -3483,6 +3535,7 @@ instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMFree e) = freeVars e
   freeVars (Perm_LLVMFunPtr _ fun_perm) = freeVars fun_perm
   freeVars Perm_IsLLVMPtr = NameSet.empty
+  freeVars (Perm_LLVMBlockShape sh) = freeVars sh
   freeVars (Perm_LLVMFrame fperms) = freeVars $ map fst fperms
   freeVars (Perm_LOwned ps) = freeVars ps
   freeVars (Perm_LCurrent l) = freeVars l
@@ -3641,6 +3694,7 @@ instance ContainsLifetime (AtomicPerm a) where
   containsLifetime _ (Perm_LLVMFree _) = False
   containsLifetime _ (Perm_LLVMFunPtr _ _) = False
   containsLifetime _ Perm_IsLLVMPtr = False
+  containsLifetime l (Perm_LLVMBlockShape sh) = containsLifetime l sh
   containsLifetime _ (Perm_LLVMFrame _) = False
   containsLifetime l (Perm_LOwned _) =
     -- NOTE: we could check the permissions in the lowned perm, but we are only
@@ -3727,6 +3781,7 @@ instance InLifetime (AtomicPerm a) where
   inLifetime _ p@(Perm_LLVMFree _) = p
   inLifetime l (Perm_LLVMFunPtr tp p) = Perm_LLVMFunPtr tp $ inLifetime l p
   inLifetime _ p@Perm_IsLLVMPtr = p
+  inLifetime _ p@(Perm_LLVMBlockShape _) = p
   inLifetime _ p@(Perm_LLVMFrame _) = p
   inLifetime l (Perm_LOwned _) = Perm_LCurrent l
   inLifetime _ p@(Perm_LCurrent _) = p
@@ -3792,6 +3847,7 @@ instance MinLtEndPerms (AtomicPerm a) where
   minLtEndPerms _ p@(Perm_LLVMFree _) = p
   minLtEndPerms l (Perm_LLVMFunPtr tp p) = Perm_LLVMFunPtr tp $ minLtEndPerms l p
   minLtEndPerms _ p@Perm_IsLLVMPtr = Perm_IsLLVMPtr
+  minLtEndPerms _ p@(Perm_LLVMBlockShape _) = p
   minLtEndPerms _ p@(Perm_LLVMFrame _) = p
   minLtEndPerms l (Perm_LOwned _) = Perm_LCurrent l
   minLtEndPerms _ p@(Perm_LCurrent _) = p
@@ -4147,6 +4203,8 @@ instance SubstVar s m => Substable s (PermExpr a) m where
   genSubst _ [nuP| PExpr_RWModality rw |] =
     return $ PExpr_RWModality $ mbLift rw
   genSubst _ [nuP| PExpr_EmptyShape |] = return PExpr_EmptyShape
+  genSubst s [nuP| PExpr_EqShape b |] =
+    PExpr_EqShape <$> genSubst s b
   genSubst s [nuP| PExpr_FieldShape sh |] =
     PExpr_FieldShape <$> genSubst s sh
   genSubst s [nuP| PExpr_SeqShape sh1 sh2 |] =
@@ -4187,6 +4245,8 @@ instance SubstVar s m => Substable s (AtomicPerm a) m where
   genSubst s [nuP| Perm_LLVMFunPtr tp p |] =
     Perm_LLVMFunPtr (mbLift tp) <$> genSubst s p
   genSubst _ [nuP| Perm_IsLLVMPtr |] = return Perm_IsLLVMPtr
+  genSubst s [nuP| Perm_LLVMBlockShape sh |] =
+    Perm_LLVMBlockShape <$> genSubst s sh
   genSubst s [nuP| Perm_LLVMFrame fp |] =
     Perm_LLVMFrame <$> genSubst s fp
   genSubst s [nuP| Perm_LOwned e |] =
@@ -4794,6 +4854,9 @@ instance AbstractVars (PermExpr a) where
                             `clApply` toClosed rw)
   abstractPEVars ns1 ns2 PExpr_EmptyShape =
     absVarsReturnH ns1 ns2 $(mkClosed [| PExpr_EmptyShape |])
+  abstractPEVars ns1 ns2 (PExpr_EqShape b) =
+    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_EqShape |]))
+    `clMbMbApplyM` abstractPEVars ns1 ns2 b
   abstractPEVars ns1 ns2 (PExpr_FieldShape fsh) =
     absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_FieldShape |]))
     `clMbMbApplyM` abstractPEVars ns1 ns2 fsh
@@ -4879,6 +4942,9 @@ instance AbstractVars (AtomicPerm a) where
     `clMbMbApplyM` abstractPEVars ns1 ns2 p
   abstractPEVars ns1 ns2 Perm_IsLLVMPtr =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_IsLLVMPtr |])
+  abstractPEVars ns1 ns2 (Perm_LLVMBlockShape sh) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMBlockShape |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 sh
   abstractPEVars ns1 ns2 (Perm_LLVMFrame fp) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMFrame |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 fp

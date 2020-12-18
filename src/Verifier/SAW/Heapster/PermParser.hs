@@ -11,6 +11,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Verifier.SAW.Heapster.PermParser where
 
@@ -273,6 +274,15 @@ parseNatRepr =
        Just _ -> unexpected "Zero bitvector width not allowed"
        Nothing -> error "parseNatRepr: unexpected negative bitvector width"
 
+-- | Parse an integer to a 'NatRepr' and ensure it is a 'KnownNat' that is at
+-- least one in the context of a call
+parseKnownNatRepr :: Stream s Identity Char =>
+                     (forall w. (1 <= w, KnownNat w) =>
+                      NatRepr w -> PermParseM s a) ->
+                     PermParseM s a
+parseKnownNatRepr k =
+  parseNatRepr >>= \case Some (Pair w LeqProof) -> withKnownNat w $ k w
+
 -- | Parse a Crucible type and build a @'KnownRepr' 'TypeRepr'@ instance for it
 --
 -- FIXME: we would not need to use a 'KnownReprObj' here if we changed
@@ -292,17 +302,13 @@ parseTypeKnown =
          Some (Pair w LeqProof) ->
            withKnownNat w $ return (Some $ mkKnownReprObj $ BVRepr w)) <|>
    (do try (string "llvmptr" >> spaces1)
-       w <- parseNatRepr
-       case w of
-         Some (Pair w LeqProof) ->
-           withKnownNat w $
-           return (Some $ mkKnownReprObj $ LLVMPointerRepr w)) <|>
+       parseKnownNatRepr (return . Some . mkKnownReprObj . LLVMPointerRepr)) <|>
    (do try (string "llvmframe" >> spaces1)
-       w <- parseNatRepr
-       case w of
-         Some (Pair w LeqProof) ->
-           withKnownNat w $
-           return (Some $ mkKnownReprObj $ LLVMFrameRepr w)) <|>
+       parseKnownNatRepr (return . Some . mkKnownReprObj . LLVMFrameRepr)) <|>
+   (do try (string "llvmshape" >> spaces1)
+       parseKnownNatRepr (return . Some . mkKnownReprObj . LLVMShapeRepr)) <|>
+   (do try (string "llvmblock" >> spaces1)
+       parseKnownNatRepr (return . Some . mkKnownReprObj . LLVMBlockRepr)) <|>
    (do try (string "lifetime")
        return (Some $ mkKnownReprObj LifetimeRepr)) <|>
    (do try (string "rwmodality")
@@ -496,6 +502,8 @@ parseExpr tp@(LLVMShapeRepr w) =
      sh1 <-
        parseInParens (parseExpr tp) <|>
        (try (string "emptysh") >> return (PExpr_EmptyShape)) <|>
+       (try (string "eqsh") >> spaces1 >>
+        PExpr_EqShape <$> parseExpr (LLVMBlockRepr w)) <|>
        (try (string "ptrsh") >> spaces >>
         PExpr_FieldShape <$> parseLLVMFieldShape w) <|>
        (try (string "arraysh") >> spaces >> parseInParens
@@ -652,6 +660,12 @@ parseAtomicPerm tp@(LLVMFrameRepr w)
          spaces >> char ']'
          return $ Perm_LLVMFrame fperm) <?>
      ("atomic permission of type " ++ show tp))
+
+parseAtomicPerm tp@(LLVMBlockRepr w) =
+  (do (try (string "shape") >> spaces1)
+      withKnownNat w (Perm_LLVMBlockShape <$>
+                      parseExpr (LLVMShapeRepr w))) <?>
+  ("atomic permission of type " ++ show tp)
 
 parseAtomicPerm tp =
   parseAtomicNamedPerm tp <?>
