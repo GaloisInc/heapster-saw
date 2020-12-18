@@ -726,10 +726,12 @@ parseLLVMFieldPerm :: (Stream s Identity Char, Liftable s,
                        KnownNat w, 1 <= w) =>
                       NatRepr w -> Bool -> PermParseM s (LLVMArrayField w)
 parseLLVMFieldPerm w in_array =
-  do llvmFieldLifetime <- parseLifetimePrefix
-     if in_array then try (spaces >> char '(' >> return ())
-       else try (spaces >> string "ptr" >> spaces >> char '(' >>
-                 spaces >> char '(' >> return ())
+  do llvmFieldLifetime <-
+       try (do l <- parseLifetimePrefix
+               if in_array then spaces >> char '(' >> return ()
+                 else spaces >> string "ptr" >> spaces >> char '(' >>
+                      spaces >> char '(' >> return ()
+               return l)
      llvmFieldRW <- parseExpr RWModalityRepr
      spaces >> comma
      llvmFieldOffset <- parseExpr (BVRepr w)
