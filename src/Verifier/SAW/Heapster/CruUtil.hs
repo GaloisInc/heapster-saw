@@ -26,6 +26,7 @@ import Numeric.Natural
 import qualified Data.BitVector.Sized as BV
 import System.FilePath
 import GHC.TypeNats
+import Data.Functor.Product
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.NuMatching
@@ -101,6 +102,17 @@ natRepr3 _ = knownNat
 -- functors instead of 1
 natRepr4 :: KnownNat w => f (g (h (i w))) -> NatRepr w
 natRepr4 _ = knownNat
+
+-- | A 'NatRepr' for @1@
+oneRepr :: NatRepr 1
+oneRepr = knownRepr
+
+-- | Convert an 'Integral' type to 'NatRepr' that is at least 1, if possible
+someNatGeq1 :: Integral a => a -> Maybe (Some (Product NatRepr (LeqProof 1)))
+someNatGeq1 i
+  | Just (Some w) <- someNat i
+  , Left leq <- decideLeq oneRepr w = Just (Some (Pair w leq))
+someNatGeq1 _ = Nothing
 
 
 ----------------------------------------------------------------------

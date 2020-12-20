@@ -251,10 +251,6 @@ parseInParensOpt m = parseInParens m <|> m
 -- * Parsing Types
 ----------------------------------------------------------------------
 
--- | A 'NatRepr' for @1@
-oneRepr :: NatRepr 1
-oneRepr = knownRepr
-
 -- | Parse a comma
 comma :: Stream s Identity Char => PermParseM s ()
 comma = char ',' >> return ()
@@ -268,11 +264,9 @@ parseNatRepr :: Stream s Identity Char =>
                 PermParseM s (Some (Product NatRepr (LeqProof 1)))
 parseNatRepr =
   do i <- integer
-     case someNat i of
-       Just (Some w)
-         | Left leq <- decideLeq oneRepr w -> return (Some (Pair w leq))
-       Just _ -> unexpected "Zero bitvector width not allowed"
-       Nothing -> error "parseNatRepr: unexpected negative bitvector width"
+     case someNatGeq1 i of
+       Just ret -> return ret
+       Nothing -> unexpected "Zero bitvector width not allowed"
 
 -- | Parse an integer to a 'NatRepr' and ensure it is a 'KnownNat' that is at
 -- least one in the context of a call
@@ -524,6 +518,17 @@ parseExpr tp@(LLVMShapeRepr w) =
                fmap PExpr_ExShape $ mbM $ nu $ \z ->
                withExprVar var (unKnownReprObj ktp') z $
                parseExpr tp) <|>
+       (do nm <- try (do nm <- parseIdent
+                         char '<' >> return nm)
+           env <- parserEnvPermEnv <$> getState
+           case lookupNamedShape env nm of
+             Just (SomeNamedShape _ arg_ctx mb_sh)
+               | Just Refl <- testEquality (mbLift $ fmap exprType mb_sh) tp ->
+                 do args <- parseExprs arg_ctx
+                    spaces >> char '>'
+                    return (subst (substOfExprs args) mb_sh)
+             Just _ -> unexpected ("Named shape " ++ nm ++ " is of incorrect type")
+             Nothing -> unexpected ("Unknown shape name: " ++ nm)) <|>
        (PExpr_Var <$> parseExprVarOfType tp) <?>
        "llvmshape expression"
      spaces
@@ -1051,3 +1056,9 @@ parseCtxString nm env str =
 parseTypeString :: MonadFail m => String -> PermEnv -> String ->
                    m (Some TypeRepr)
 parseTypeString nm env str = runPermParseM nm env parseType str
+
+-- | Parse an expression of a given type from a 'String'
+parseExprString :: MonadFail m => PermEnv -> TypeRepr a -> String ->
+                   m (PermExpr a)
+parseExprString env tp str =
+  runPermParseM (permPrettyString emptyPPInfo tp) env (parseExpr tp) str

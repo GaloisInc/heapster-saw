@@ -5092,9 +5092,15 @@ data PermEnvFunEntry where
                      FunPerm ghosts args ret -> Ident ->
                      PermEnvFunEntry
 
--- | An existentially quantified 'NamedPerm' (FIXME: is this needed?)
+-- | An existentially quantified 'NamedPerm'
 data SomeNamedPerm where
   SomeNamedPerm :: NamedPerm ns args a -> SomeNamedPerm
+
+-- | An existentially quantified LLVM shape with arguments
+data SomeNamedShape where
+  SomeNamedShape :: (1 <= w, KnownNat w) => String -> CruCtx args ->
+                    Mb args (PermExpr (LLVMShapeType w)) ->
+                    SomeNamedShape
 
 -- | An entry in a permission environment that associates a 'GlobalSymbol' with
 -- a permission and a translation of that permission
@@ -5138,6 +5144,7 @@ data Hint where
 data PermEnv = PermEnv {
   permEnvFunPerms :: [PermEnvFunEntry],
   permEnvNamedPerms :: [SomeNamedPerm],
+  permEnvNamedShapes :: [SomeNamedShape],
   permEnvGlobalSyms :: [PermEnvGlobalEntry],
   permEnvHints :: [Hint]
   }
@@ -5145,12 +5152,17 @@ data PermEnv = PermEnv {
 $(mkNuMatching [t| forall ctx. PermVarSubst ctx |])
 $(mkNuMatching [t| PermEnvFunEntry |])
 $(mkNuMatching [t| SomeNamedPerm |])
+$(mkNuMatching [t| SomeNamedShape |])
 $(mkNuMatching [t| PermEnvGlobalEntry |])
 $(mkNuMatching [t| forall args. BlockHintSort args |])
 $(mkNuMatching [t| forall blocks init ret args.
                 BlockHint blocks init ret args |])
 $(mkNuMatching [t| Hint |])
 $(mkNuMatching [t| PermEnv |])
+
+-- | The empty 'PermEnv'
+emptyPermEnv :: PermEnv
+emptyPermEnv = PermEnv [] [] [] [] []
 
 -- | Add a 'NamedPerm' to a permission environment
 permEnvAddNamedPerm :: PermEnv -> NamedPerm ns args a -> PermEnv
@@ -5230,6 +5242,14 @@ permEnvAddDefinedPerm env str args tp p =
           np = NamedPerm_Defined (DefinedPerm n p) in
       env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
 
+-- | Add a named LLVM shape to a permission environment
+permEnvAddNamedShape :: (1 <= w, KnownNat w) => PermEnv -> String ->
+                        CruCtx args -> Mb args (PermExpr (LLVMShapeType w)) ->
+                        PermEnv
+permEnvAddNamedShape env nm args mb_sh =
+  env { permEnvNamedShapes =
+          SomeNamedShape nm args mb_sh : permEnvNamedShapes env }
+
 -- | Add a global symbol with a function permission to a 'PermEnv'
 permEnvAddGlobalSymFun :: (1 <= w, KnownNat w) => PermEnv -> GlobalSymbol ->
                           f w -> FunPerm ghosts args ret -> OpenTerm -> PermEnv
@@ -5307,6 +5327,12 @@ lookupNamedPerm env = helper (permEnvNamedPerms env) where
     | Just (Refl, Refl, Refl) <- testNamedPermNameEq (namedPermName rp) rpn
     = Just rp
   helper (_:rps) rpn = helper rps rpn
+
+-- | Look up an LLVM shape by name in a 'PermEnv' and cast it to a given width
+lookupNamedShape :: PermEnv -> String -> Maybe SomeNamedShape
+lookupNamedShape env nm =
+  find (\case SomeNamedShape nm' _ _ -> nm == nm') (permEnvNamedShapes env)
+lookupNamedShape _ _ = Nothing
 
 -- | Look up the permissions and translation for a 'GlobalSymbol' at a
 -- particular machine word width
