@@ -1,0 +1,14 @@
+enable_experimental;
+env <- heapster_init_env_from_file "rust_data.sawcore" "rust_data.bc";
+
+heapster_define_perm env "int64" " " "llvmptr 64" "exists x:bv 64.eq(llvmword(x))";
+
+heapster_define_perm env "int1" " " "llvmptr 1" "exists x:bv 1.eq(llvmword(x))";
+
+heapster_define_llvmshape env "Result" 64 "X:llvmshape 64, Y:llvmshape 64" "(ptrsh(eq(llvmword(0)));X) orsh (ptrsh(eq(llvmword(1)));Y)";
+
+test_result_sym <- heapster_find_symbol env "11test_result";
+
+heapster_typecheck_fun_rename env test_result_sym "test_result" "(rw:rwmodality).arg0:memblock(rw,0,16,Result<ptrsh(int64<>),ptrsh(int64<>)>) -o ret:int1<>";
+
+heapster_export_coq env "rust_data.v";

@@ -17,7 +17,7 @@ xor_swap.v: xor_swap.bc xor_swap.saw
 	$(SAW) xor_swap.saw
 
 xor_swap_rust.bc: xor_swap_rust.rs
-	rustc --emit=llvm-bc xor_swap_rust.rs
+	rustc --crate-type=lib --emit=llvm-bc xor_swap_rust.rs
 
 xor_swap_rust.v: xor_swap_rust.bc xor_swap_rust.saw
 	$(SAW) xor_swap_rust.saw
@@ -36,3 +36,9 @@ iter_linked_list.v: iter_linked_list.bc iter_linked_list.saw iter_linked_list.sa
 
 memcpy.v: memcpy.bc memcpy.saw memcpy.sawcore
 	$(SAW) memcpy.saw
+
+rust_data.bc: rust_data.rs
+	rustc --crate-type=lib --emit=llvm-bc rust_data.rs
+
+rust_data.v: rust_data.bc rust_data.saw
+	$(SAW) rust_data.saw

@@ -1,0 +1,4 @@
+
+module rust_data where
+
+import Prelude;
