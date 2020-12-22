@@ -2527,7 +2527,7 @@ translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockFromEq _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM RL.tail
        (\(pctx :>: _ :>: ptrans) ->
-         pctx :>: typeTransF ttrans [transTupleTerm ptrans])
+         pctx :>: typeTransF ttrans [transTerm1 ptrans])
        m
 
 translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockField _ _ |] m =
@@ -2938,8 +2938,8 @@ translatePermImpl1 _ [nuP| Impl1_ElimLLVMBlockToEq
        translate $ extMb $ fmap (ValPerm_Conj1 . Perm_LLVMBlockShape) mb_sh
      withPermStackM (:>: Member_Base)
        (\(pctx :>: ptrans) ->
-         pctx :>: typeTransF tp_trans1 [] :>:
-         typeTransF tp_trans2 (transTerms ptrans))
+         pctx :>: typeTransF tp_trans1 [unitOpenTerm] :>:
+         typeTransF tp_trans2 [transTerm1 ptrans])
        m
 
 -- If e1 and e2 are already equal, short-circuit the proof construction and then
