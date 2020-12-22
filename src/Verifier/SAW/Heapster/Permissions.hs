@@ -727,7 +727,7 @@ instance PermPretty (PermExpr a) where
   permPrettyM (PExpr_EqShape b) =
     ((pretty "eqsh" <>) . parens) <$> permPrettyM b
   permPrettyM (PExpr_FieldShape fld) =
-    ((pretty "ptrsh" <>) . parens) <$> permPrettyM fld
+    (pretty "ptrsh" <>) <$> permPrettyM fld
   permPrettyM (PExpr_ArrayShape len stride flds) =
     do len_pp <- permPrettyM len
        flds_pp <- mapM permPrettyM flds
