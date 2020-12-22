@@ -12,3 +12,22 @@ Require Import Examples.memcpy.
 Import memcpy.
 
 Import SAWCorePrelude.
+
+
+Lemma no_errors_copy_int : refinesFun copy_int (fun _ => noErrorsSpec).
+Proof.
+  unfold copy_int, copy_int__tuple_fun, noErrorsSpec, llvm__x2ememcpy__x2ep0i8__x2ep0i8__x2ei64.
+  prove_refinement.
+Qed.
+
+Lemma no_errors_copy_ptr_contents : refinesFun copy_ptr_contents (fun _ => noErrorsSpec).
+Proof.
+  unfold copy_ptr_contents, copy_ptr_contents__tuple_fun, noErrorsSpec, llvm__x2ememcpy__x2ep0i8__x2ep0i8__x2ei64.
+  prove_refinement.
+Qed.
+
+Lemma no_errors_copy_ptr : refinesFun copy_ptr (fun _ => noErrorsSpec).
+Proof.
+  unfold copy_ptr, copy_ptr__tuple_fun, noErrorsSpec, llvm__x2ememcpy__x2ep0i8__x2ep0i8__x2ei64.
+  prove_refinement.
+Qed.
