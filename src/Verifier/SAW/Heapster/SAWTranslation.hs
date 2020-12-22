@@ -2490,16 +2490,22 @@ translateSimplImpl _ [nuP| SImpl_LCurrentTrans l1 l2 l3 |] m =
    RL.tail . RL.tail)
   m
 
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockEmpty _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockEmpty x _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
-     withPermStackM id
-       (\(pctx :>: _) -> pctx :>: typeTransF ttrans [])
+     withPermStackM (:>: translateVar x)
+       (\pctx -> pctx :>: typeTransF ttrans [unitOpenTerm])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockEmpty _ _ _ _ len |] m =
-  do let w = natVal4 len
+translateSimplImpl _ simpl@[nuP| SImpl_CoerceLLVMBlockEmpty _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: _) -> pctx :>: typeTransF ttrans [unitOpenTerm])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockToBytes _ mb_bp |] m =
+  do let w = natVal2 mb_bp
      let w_term = natOpenTerm w
-     len_term <- translate1 len
+     len_term <- translate1 $ fmap llvmBlockLen mb_bp
      ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: _) ->
@@ -2509,28 +2515,50 @@ translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockEmpty _ _ _ _ len |] m =
          pctx :>: typeTransF ttrans [arr_term])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockFromEq _ _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockSeqEmpty _ mb_bp |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF ttrans [pairOpenTerm
+                                     (transTerm1 ptrans) unitOpenTerm])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockFromEq _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM RL.tail
        (\(pctx :>: _ :>: ptrans) ->
          pctx :>: typeTransF ttrans [transTupleTerm ptrans])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockField _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockField _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
-       (\(pctx :>: PTrans_Conj [aptrans,_]) ->
-         pctx :>: typeTransF ttrans [transTupleTerm aptrans])
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF ttrans [transTupleTerm ptrans])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockField _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockField _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) ->
          pctx :>: typeTransF (tupleTypeTrans ttrans) [transTerm1 ptrans])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockSeq _ _ _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockArray _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF ttrans [transTerm1 ptrans])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockArray _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF ttrans [transTerm1 ptrans])
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockSeq _ _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM RL.tail
        (\(pctx :>: ptrans1 :>: ptrans2) ->
@@ -2539,7 +2567,7 @@ translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockSeq _ _ _ _ _ _ _ _ |] m =
          pctx :>: typeTransF ttrans [pair_term])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockSeq _ _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockSeq _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) ->
@@ -2547,13 +2575,13 @@ translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockSeq _ _ _ _ _ _ _ |] m =
                                      pairRightOpenTerm (transTerm1 ptrans)])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockOr _ _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockOr _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockOr _ _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockOr _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])

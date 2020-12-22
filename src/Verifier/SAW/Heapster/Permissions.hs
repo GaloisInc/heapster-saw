@@ -528,7 +528,8 @@ data PermExpr (a :: CrucibleType) where
   PExpr_FieldShape :: (1 <= w, KnownNat w) => LLVMFieldShape w ->
                       PermExpr (LLVMShapeType w)
 
-  -- | A shape for an array with the given stride, length, and fields
+  -- | A shape for an array with the given stride, length (in number of
+  -- elements = total length / stride), and fields
   PExpr_ArrayShape :: (1 <= w, KnownNat w) =>
                       PermExpr (BVType w) -> Bytes -> [LLVMFieldShape w] ->
                       PermExpr (LLVMShapeType w)
@@ -722,9 +723,9 @@ instance PermPretty (PermExpr a) where
   permPrettyM (PExpr_RWModality rw) = permPrettyM rw
   permPrettyM PExpr_EmptyShape = return $ pretty "emptysh"
   permPrettyM (PExpr_EqShape b) =
-    (pretty "eqsh" <>) <$> permPrettyM b
+    ((pretty "eqsh" <>) . parens) <$> permPrettyM b
   permPrettyM (PExpr_FieldShape fld) =
-    (pretty "ptrsh" <>) <$> permPrettyM fld
+    ((pretty "ptrsh" <>) . parens) <$> permPrettyM fld
   permPrettyM (PExpr_ArrayShape len stride flds) =
     do len_pp <- permPrettyM len
        flds_pp <- mapM permPrettyM flds
@@ -2263,14 +2264,14 @@ isLLVMFieldPermWithOffset _ _ = False
 -- | Test if an 'AtomicPerm' starts with the given offset
 isLLVMAtomicPermWithOffset :: PermExpr (BVType w) ->
                               AtomicPerm (LLVMPointerType w) -> Bool
-isLLVMAtomicPermWithOffset off (Perm_LLVMField fp) =
-  bvEq off (llvmFieldOffset fp)
-isLLVMAtomicPermWithOffset off (Perm_LLVMArray ap) =
-  bvEq off (llvmArrayOffset ap)
-isLLVMAtomicPermWithOffset off (Perm_LLVMBlock bp) =
-  bvEq off (llvmBlockOffset bp)
+isLLVMAtomicPermWithOffset off p
+  | Just off' <- llvmAtomicPermOffset p = bvEq off off'
 isLLVMAtomicPermWithOffset _ _ = False
 
+-- | Get the size of an 'LLVMFieldPerm' as an expression
+llvmFieldLen :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                LLVMFieldPerm w sz -> PermExpr (BVType w)
+llvmFieldLen fp = exprLLVMTypeWidthExpr $ llvmFieldContents fp
 
 -- | Test if an 'AtomicPerm' is an array permission
 isLLVMArrayPerm :: AtomicPerm a -> Bool
@@ -2456,6 +2457,46 @@ llvmReadExRWExLPerm (off :: PermExpr (BVType w)) =
                   llvmFieldLifetime = PExpr_Var l,
                   llvmFieldOffset = off,
                   llvmFieldContents = ValPerm_True }
+
+-- | Convert a field permission to a block permission
+llvmFieldPermToBlock :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                        LLVMFieldPerm w sz -> LLVMBlockPerm w
+llvmFieldPermToBlock fp =
+  LLVMBlockPerm
+  { llvmBlockRW = llvmFieldRW fp,
+    llvmBlockLifetime = llvmFieldLifetime fp,
+    llvmBlockOffset = llvmFieldOffset fp,
+    llvmBlockLen = llvmFieldLen fp,
+    llvmBlockShape = PExpr_FieldShape (LLVMFieldShape $ llvmFieldContents fp) }
+
+-- | Convert an atomic permisison to a @memblock@, if possible
+llvmAtomicPermToBlock :: AtomicPerm (LLVMPointerType w) ->
+                         Maybe (LLVMBlockPerm w)
+llvmAtomicPermToBlock (Perm_LLVMField fp) = Just $ llvmFieldPermToBlock fp
+llvmAtomicPermToBlock (Perm_LLVMArray ap)
+  | LLVMArrayField fp : _ <- llvmArrayFields ap
+  , Just shs <-
+      mapM (\case
+               LLVMArrayField fp'
+                 | llvmFieldRW fp == llvmFieldRW fp'
+                 , llvmFieldLifetime fp == llvmFieldLifetime fp' ->
+                     Just $ LLVMFieldShape (llvmFieldContents fp'))
+      (llvmArrayFields ap)
+  = Just $ LLVMBlockPerm
+      { llvmBlockRW = llvmFieldRW fp,
+        llvmBlockLifetime = llvmFieldLifetime fp,
+        llvmBlockOffset = llvmArrayOffset ap,
+        llvmBlockLen = llvmArrayLen ap,
+        llvmBlockShape =
+          PExpr_ArrayShape (llvmArrayLen ap) (llvmArrayStride ap) shs }
+llvmAtomicPermToBlock (Perm_LLVMBlock bp) = Just bp
+llvmAtomicPermToBlock _ = Nothing
+
+-- | Get the offset of an atomic permission, if it has one
+llvmAtomicPermOffset :: AtomicPerm (LLVMPointerType w) ->
+                        Maybe (PermExpr (BVType w))
+llvmAtomicPermOffset = fmap llvmBlockOffset . llvmAtomicPermToBlock
+
 
 -- | Get the range of offsets represented by an 'LLVMBlockPerm'
 llvmBlockRange :: (1 <= w, KnownNat w) => LLVMBlockPerm w -> BVRange w

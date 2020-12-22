@@ -652,24 +652,33 @@ data SimplImpl ps_in ps_out where
                            (RNil :> LLVMPointerType w)
 -}
 
-  -- | Prove an empty llvmblock permission from an array of bytes:
+  -- | Prove an empty memblock permission of length 0:
   --
-  -- > x:array(off,<len,*1,[[l](rw,0,8) |-> true])
-  -- >   -o x:memblock(rw,l,off,len,emptysh)
+  -- > -o x:memblock(rw,l,off,0,emptysh)
   SImpl_IntroLLVMBlockEmpty ::
-    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) ->
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    SimplImpl RNil (RNil :> LLVMPointerType w)
+
+  -- | Coerce an memblock permission to an empty memblock permission:
+  --
+  -- > x:memblock(rw,l,off,len,sh) -o x:memblock(rw,l,off,len,emptysh)
+  SImpl_CoerceLLVMBlockEmpty ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
-  -- | Eliminate an empty llvmblock permission to an array of bytes:
+  -- | Eliminate any @memblock@ permission to an array of bytes:
   --
   -- > x:memblock(rw,l,off,len,emptysh)
   -- >   -o x:array(off,<len,*1,[[l](rw,0,8) |-> true])
-  SImpl_ElimLLVMBlockEmpty ::
-    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) ->
+  SImpl_ElimLLVMBlockToBytes ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
+  -- | Convert a memblock permission of shape @sh;emptysh@ to one of shape @sh@:
+  --
+  -- > x:memblock(rw,l,off,len,sh;emptysh) -o x:memblock(rw,l,off,len,sh)
+  SImpl_ElimLLVMBlockSeqEmpty ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Prove an llvmblock permission of shape @sh@ from one of equality shape
@@ -679,80 +688,82 @@ data SimplImpl ps_in ps_out where
   -- >   -o x:memblock(rw,l,off,len,sh)
   SImpl_IntroLLVMBlockFromEq ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) ->
-    ExprVar (LLVMBlockType w) -> PermExpr (LLVMShapeType w) ->
+    LLVMBlockPerm w -> ExprVar (LLVMBlockType w) ->
     SimplImpl (RNil :> LLVMPointerType w :> LLVMBlockType w)
     (RNil :> LLVMPointerType w)
 
-  -- | Prove a block of field shape from the corresponding field permission and
-  -- an empty memory block for the rest:
+  -- | Prove a block of field shape from the corresponding field permission:
   --
-  -- > x:[l]ptr((rw,off,sz) |-> p) * [l]memblock(rw,off+sz,len,emptysh)
-  -- >   -o x:memblock(rw,l,off,len+sz,ptrsh(sz,p))
+  -- > x:[l]ptr((rw,off,sz) |-> p) -o x:memblock(rw,l,off,len+sz,ptrsh(sz,p))
   SImpl_IntroLLVMBlockField ::
-    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) ->
-    ValuePerm (LLVMPointerType sz) ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Eliminate a block of field shape to the corresponding field permission:
   --
   -- > x:memblock(rw,l,off,sz,ptrsh(sz,p)) -o x:[l]ptr((rw,off,sz) |-> p)
   SImpl_ElimLLVMBlockField ::
-    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> ValuePerm (LLVMPointerType sz) ->
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
-  -- FIXME HERE: intro and elim array shapes
+  -- | Prove a block of array shape from the corresponding array permission:
+  --
+  -- > x:array(...) -o x:memblock(...)
+  SImpl_IntroLLVMBlockArray ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMArrayPerm w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
-  -- | Prove a block of shape @sh1;sh2@ from blocks of shape @sh1@ and @sh2@:
+  -- | Eliminate a block of array shape to the corresponding array permission:
+  --
+  -- > x:memblock(...) -o x:array(...)
+  SImpl_ElimLLVMBlockArray ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMArrayPerm w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
+  -- | Prove a block of shape @sh1;sh2@ from blocks of shape @sh1@ and @sh2@,
+  -- where the supplied 'LLVMBlockPerm' gives @sh1@ and the supplied additional
+  -- arguments give @len2@ and @sh2@:
   --
   -- > x:memblock(rw,l,off,len1,sh1) * memblock(rw,l,off+len1,len2,sh2)
   -- >   -o x:memblock(rw,l,off,len1+len2,sh1;sh2)
   SImpl_IntroLLVMBlockSeq ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) -> PermExpr (BVType w) ->
-    PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w) ->
+    LLVMBlockPerm w -> PermExpr (BVType w) -> PermExpr (LLVMShapeType w) ->
     SimplImpl (RNil :> LLVMPointerType w :> LLVMPointerType w)
     (RNil :> LLVMPointerType w)
 
   -- | Eliminate a block of shape @sh1;sh2@ to blocks of shape @sh1@ and @sh2@,
-  -- as long as we can compute the length of @sh1@:
+  -- as long as we can compute the length of @sh1@, where the supplied
+  -- 'LLVMBlockPerm' gives @sh1@ and the additional argument gives @sh2@:
   --
   -- > x:memblock(rw,l,off,len,sh1;sh2)
   -- >   -o x:memblock(rw,l,off,len(sh1),sh1)
   -- >      * memblock(rw,l,off+len(sh1),len-len(sh1),sh2)
   SImpl_ElimLLVMBlockSeq ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) ->
-    PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w) ->
+    LLVMBlockPerm w -> PermExpr (LLVMShapeType w) ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
-  -- | Prove a block of shape @sh1 orsh sh2@ from a disjunction:
+  -- | Prove a block of shape @sh1 orsh sh2@ from a disjunction, where the
+  -- supplied 'LLVMBlockPerm' gives @sh1@ and the additional argument is @sh2@:
   --
   -- > x:memblock(rw,l,off,len,sh1) or memblock(rw,l,off,len,sh2)
   -- >   -o x:memblock(rw,l,off,len,sh1 orsh sh2)
   SImpl_IntroLLVMBlockOr ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) ->
-    PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w) ->
+    LLVMBlockPerm w -> PermExpr (LLVMShapeType w) ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
-  -- | Eliminate a block of shape @sh1 orsh sh2@ to a disjunction:
+  -- | Eliminate a block of shape @sh1 orsh sh2@ to a disjunction, where the
+  -- supplied 'LLVMBlockPerm' gives @sh1@ and the additional argument is @sh2@::
   --
   -- > x:memblock(rw,l,off,len,sh1 orsh sh2)
   -- >   -o x:memblock(rw,l,off,len,sh1) or memblock(rw,l,off,len,sh2)
   SImpl_ElimLLVMBlockOr ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
-    PermExpr RWModalityType -> PermExpr LifetimeType ->
-    PermExpr (BVType w) -> PermExpr (BVType w) ->
-    PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w) ->
+    LLVMBlockPerm w -> PermExpr (LLVMShapeType w) ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Prove a block of shape @exsh z:A.sh@ from an existential:
@@ -1386,40 +1397,47 @@ simplImplIn (SImpl_UnfoldLLVMBlock x bp) =
     error "simplImplIn: SImpl_UnfoldLLVMBlock: input == output"
   else distPerms1 x (ValPerm_Conj1 (Perm_LLVMBlock bp))
 -}
-simplImplIn (SImpl_IntroLLVMBlockEmpty x rw l off len) =
-  distPerms1 x (llvmByteArrayPerm off len rw l)
-simplImplIn (SImpl_ElimLLVMBlockEmpty x rw l off len) =
-  distPerms1 x (mkLLVMBlockPerm rw l off len PExpr_EmptyShape)
-simplImplIn (SImpl_IntroLLVMBlockFromEq x rw l off len y sh) =
-  distPerms2 x (mkLLVMBlockPerm rw l off len (PExpr_EqShape $ PExpr_Var y))
-  y (ValPerm_Conj1 $ Perm_LLVMBlockShape sh)
-simplImplIn (SImpl_IntroLLVMBlockField x rw l off len p) =
-  let sz = exprLLVMTypeWidthExpr p in
-  distPerms1 x (ValPerm_Conj
-                [Perm_LLVMField $ LLVMFieldPerm
-                 { llvmFieldRW = rw, llvmFieldLifetime = l,
-                   llvmFieldOffset = off, llvmFieldContents = p },
-                 Perm_LLVMBlock $ LLVMBlockPerm
-                 { llvmBlockRW = rw, llvmBlockLifetime = l,
-                   llvmBlockOffset = bvAdd off sz, llvmBlockLen = bvSub len sz,
-                   llvmBlockShape = PExpr_EmptyShape }])
-simplImplIn (SImpl_ElimLLVMBlockField x rw l off p) =
-  distPerms1 x (mkLLVMBlockPerm rw l off
-                (bvInt (intValue $ exprLLVMTypeWidth p))
-                (PExpr_FieldShape (LLVMFieldShape p)))
-simplImplIn (SImpl_IntroLLVMBlockSeq x rw l off len1 len2 sh1 sh2) =
+simplImplIn (SImpl_IntroLLVMBlockEmpty x bp) = DistPermsNil
+simplImplIn (SImpl_CoerceLLVMBlockEmpty x bp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+simplImplIn (SImpl_ElimLLVMBlockToBytes x bp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+simplImplIn (SImpl_ElimLLVMBlockSeqEmpty x bp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp { llvmBlockShape =
+                       PExpr_SeqShape (llvmBlockShape bp) PExpr_EmptyShape })
+simplImplIn (SImpl_IntroLLVMBlockFromEq x bp y) =
+  distPerms2 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp { llvmBlockShape = PExpr_EqShape $ PExpr_Var y })
+  y (ValPerm_Conj1 $ Perm_LLVMBlockShape $ llvmBlockShape bp)
+simplImplIn (SImpl_IntroLLVMBlockField x fp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMField fp)
+simplImplIn (SImpl_ElimLLVMBlockField x fp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $ llvmFieldPermToBlock fp)
+simplImplIn (SImpl_IntroLLVMBlockArray x ap) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap)
+simplImplIn (SImpl_ElimLLVMBlockArray x ap) =
+  case llvmAtomicPermToBlock (Perm_LLVMArray ap) of
+    Just bp -> distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+    Nothing ->
+      error "simplImplIn: SImpl_ElimLLVMBlockField: malformed array permission"
+simplImplIn (SImpl_IntroLLVMBlockSeq x bp1 len2 sh2) =
   distPerms2
-  x (mkLLVMBlockPerm rw l off len1 sh1)
-  x (mkLLVMBlockPerm rw l (bvAdd off len1) len2 sh2)
-simplImplIn (SImpl_ElimLLVMBlockSeq x rw l off len sh1 sh2) =
-  distPerms1 x (mkLLVMBlockPerm rw l off len (PExpr_SeqShape sh1 sh2))
-simplImplIn (SImpl_IntroLLVMBlockOr x rw l off len sh1 sh2) =
-  distPerms1 x $
-  ValPerm_Or
-  (mkLLVMBlockPerm rw l off len sh1)
-  (mkLLVMBlockPerm rw l off len sh2)
-simplImplIn (SImpl_ElimLLVMBlockOr x rw l off len sh1 sh2) =
-  distPerms1 x (mkLLVMBlockPerm rw l off len (PExpr_OrShape sh1 sh2))
+  x (ValPerm_Conj1 $ Perm_LLVMBlock bp1)
+  x (ValPerm_Conj1 $ Perm_LLVMBlock $
+     bp1 { llvmBlockOffset = bvAdd (llvmBlockOffset bp1) (llvmBlockLen bp1),
+           llvmBlockLen = len2, llvmBlockShape = sh2 })
+simplImplIn (SImpl_ElimLLVMBlockSeq x bp sh2) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp { llvmBlockShape = PExpr_SeqShape (llvmBlockShape bp) sh2 })
+simplImplIn (SImpl_IntroLLVMBlockOr x bp1 sh2) =
+  distPerms1 x (ValPerm_Or
+                (ValPerm_Conj1 $ Perm_LLVMBlock bp1)
+                (ValPerm_Conj1 $ Perm_LLVMBlock $ bp1 { llvmBlockShape = sh2 }))
+simplImplIn (SImpl_ElimLLVMBlockOr x bp1 sh2) =
+  let sh1 = llvmBlockShape bp1 in
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp1 { llvmBlockShape = PExpr_OrShape sh1 sh2 })
 simplImplIn (SImpl_IntroLLVMBlockEx x rw l off len mb_sh) =
   distPerms1 x (ValPerm_Exists $ flip fmap mb_sh $ \sh ->
                  mkLLVMBlockPerm rw l off len sh)
@@ -1642,42 +1660,55 @@ simplImplOut (SImpl_UnfoldLLVMBlock x bp) =
     error "simplImplOut: SImpl_UnfoldLLVMBlock: input == output"
   else distPerms1 x (unfoldLLVMBlock bp)
 -}
-simplImplOut (SImpl_IntroLLVMBlockEmpty x rw l off len) =
-  distPerms1 x (mkLLVMBlockPerm rw l off len PExpr_EmptyShape)
-simplImplOut (SImpl_ElimLLVMBlockEmpty x rw l off len) =
-  distPerms1 x (llvmByteArrayPerm off len rw l)
-simplImplOut (SImpl_IntroLLVMBlockFromEq x rw l off len _ sh) =
-  distPerms1 x (mkLLVMBlockPerm rw l off len sh)
-simplImplOut (SImpl_IntroLLVMBlockField x rw l off len p) =
-  distPerms1 x (mkLLVMBlockPerm rw l off
-                (bvAdd len (exprLLVMTypeWidthExpr p))
-                (PExpr_FieldShape (LLVMFieldShape p)))
-simplImplOut (SImpl_ElimLLVMBlockField x rw l off p) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMField $ LLVMFieldPerm
-                { llvmFieldRW = rw,
-                  llvmFieldLifetime = l,
-                  llvmFieldOffset = off,
-                  llvmFieldContents = p })
-simplImplOut (SImpl_IntroLLVMBlockSeq x rw l off len1 len2 sh1 sh2) =
-  distPerms1 x (mkLLVMBlockPerm rw l off (bvAdd len1 len2)
-                (PExpr_SeqShape sh1 sh2))
-simplImplOut (SImpl_ElimLLVMBlockSeq x rw l off len sh1 sh2) =
-  case llvmShapeLength sh1 of
+simplImplOut (SImpl_IntroLLVMBlockEmpty x bp) =
+  case llvmBlockShape bp of
+    PExpr_EmptyShape -> distPerms1 x $ ValPerm_Conj1 $ Perm_LLVMBlock bp
+    _ -> error "simplImplOut: SImpl_IntroLLVMBlockEmpty: malformed permission"
+simplImplOut (SImpl_CoerceLLVMBlockEmpty x bp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp { llvmBlockShape = PExpr_EmptyShape })
+simplImplOut (SImpl_ElimLLVMBlockToBytes x (LLVMBlockPerm {..})) =
+  distPerms1 x (llvmByteArrayPerm llvmBlockOffset llvmBlockLen
+                llvmBlockRW llvmBlockLifetime)
+simplImplOut (SImpl_ElimLLVMBlockSeqEmpty x bp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+simplImplOut (SImpl_IntroLLVMBlockFromEq x bp _) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+simplImplOut (SImpl_IntroLLVMBlockField x fp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $ llvmFieldPermToBlock fp)
+simplImplOut (SImpl_ElimLLVMBlockField x fp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMField fp)
+simplImplOut (SImpl_IntroLLVMBlockArray x ap) =
+  case llvmAtomicPermToBlock (Perm_LLVMArray ap) of
+    Just bp -> distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+    Nothing ->
+      error "simplImplOut: SImpl_IntroLLVMBlockField: malformed array permission"
+simplImplOut (SImpl_ElimLLVMBlockArray x ap) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap)
+simplImplOut (SImpl_IntroLLVMBlockSeq x bp1 len2 sh2) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp1 { llvmBlockLen = bvAdd (llvmBlockLen bp1) len2,
+                      llvmBlockShape = PExpr_SeqShape (llvmBlockShape bp1) sh2 })
+simplImplOut (SImpl_ElimLLVMBlockSeq x bp sh2) =
+  case llvmShapeLength (llvmBlockShape bp) of
     Just len1 ->
       distPerms1
       x (ValPerm_Conj
-         [Perm_LLVMBlock $ LLVMBlockPerm rw l off len1 sh1,
+         [Perm_LLVMBlock (bp { llvmBlockLen = len1 }),
           Perm_LLVMBlock $
-          LLVMBlockPerm rw l (bvAdd off len1) (bvSub len len1) sh2])
+          bp { llvmBlockOffset = bvAdd (llvmBlockOffset bp) len1,
+               llvmBlockLen = bvSub (llvmBlockLen bp) len1,
+               llvmBlockShape = sh2 }])
     Nothing ->
       error "simplImplOut: SImpl_ElimLLVMBlockSeq"
-simplImplOut (SImpl_IntroLLVMBlockOr x rw l off len sh1 sh2) =
-  distPerms1 x (mkLLVMBlockPerm rw l off len (PExpr_OrShape sh1 sh2))
-simplImplOut (SImpl_ElimLLVMBlockOr x rw l off len sh1 sh2) =
-  distPerms1 x $
-  ValPerm_Or
-  (mkLLVMBlockPerm rw l off len sh1)
-  (mkLLVMBlockPerm rw l off len sh2)
+simplImplOut (SImpl_IntroLLVMBlockOr x bp1 sh2) =
+  let sh1 = llvmBlockShape bp1 in
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp1 { llvmBlockShape = PExpr_OrShape sh1 sh2 })
+simplImplOut (SImpl_ElimLLVMBlockOr x bp1 sh2) =
+  distPerms1 x (ValPerm_Or
+                (ValPerm_Conj1 $ Perm_LLVMBlock bp1)
+                (ValPerm_Conj1 $ Perm_LLVMBlock $ bp1 { llvmBlockShape = sh2 }))
 simplImplOut (SImpl_IntroLLVMBlockEx x rw l off len mb_sh) =
   distPerms1 x (mkLLVMBlockPerm rw l off len (PExpr_ExShape mb_sh))
 simplImplOut (SImpl_ElimLLVMBlockEx x rw l off len mb_sh) =
@@ -1952,35 +1983,36 @@ instance SubstVar PermVarSubst m =>
   genSubst s [nuP| SImpl_UnfoldLLVMBlock x bp |] =
     SImpl_UnfoldLLVMBlock <$> genSubst s x <*> genSubst s bp
 -}
-  genSubst s [nuP| SImpl_IntroLLVMBlockEmpty x rw l off len |] =
-    SImpl_IntroLLVMBlockEmpty <$> genSubst s x <*> genSubst s rw
-    <*> genSubst s l <*> genSubst s off <*> genSubst s len
-  genSubst s [nuP| SImpl_ElimLLVMBlockEmpty x rw l off len |] =
-    SImpl_ElimLLVMBlockEmpty <$> genSubst s x <*> genSubst s rw
-    <*> genSubst s l <*> genSubst s off <*> genSubst s len
-  genSubst s [nuP| SImpl_IntroLLVMBlockFromEq x rw l off len y sh |] =
-    SImpl_IntroLLVMBlockFromEq <$> genSubst s x <*> genSubst s rw
-    <*> genSubst s l <*> genSubst s off <*> genSubst s len <*> genSubst s y
-    <*> genSubst s sh
-  genSubst s [nuP| SImpl_IntroLLVMBlockField x rw l off len p |] =
-    SImpl_IntroLLVMBlockField <$> genSubst s x <*> genSubst s rw
-    <*> genSubst s l <*> genSubst s off <*> genSubst s len <*> genSubst s p
-  genSubst s [nuP| SImpl_ElimLLVMBlockField x rw l off p |] =
-    SImpl_ElimLLVMBlockField <$> genSubst s x <*> genSubst s rw
-    <*> genSubst s l <*> genSubst s off <*> genSubst s p
-  genSubst s [nuP| SImpl_IntroLLVMBlockSeq x rw l off len1 len2 sh1 sh2 |] =
-    SImpl_IntroLLVMBlockSeq <$> genSubst s x <*> genSubst s rw
-    <*> genSubst s l <*> genSubst s off <*> genSubst s len1 <*> genSubst s len2
-    <*> genSubst s sh1 <*> genSubst s sh2
-  genSubst s [nuP| SImpl_ElimLLVMBlockSeq x rw l off len sh1 sh2 |] =
-    SImpl_ElimLLVMBlockSeq <$> genSubst s x <*> genSubst s rw <*> genSubst s l
-    <*> genSubst s off <*> genSubst s len <*> genSubst s sh1 <*> genSubst s sh2
-  genSubst s [nuP| SImpl_IntroLLVMBlockOr x rw l off len sh1 sh2 |] =
-    SImpl_IntroLLVMBlockOr <$> genSubst s x <*> genSubst s rw <*> genSubst s l
-    <*> genSubst s off <*> genSubst s len <*> genSubst s sh1 <*> genSubst s sh2
-  genSubst s [nuP| SImpl_ElimLLVMBlockSeq x rw l off len sh1 sh2 |] =
-    SImpl_ElimLLVMBlockSeq <$> genSubst s x <*> genSubst s rw <*> genSubst s l
-    <*> genSubst s off <*> genSubst s len <*> genSubst s sh1 <*> genSubst s sh2
+  genSubst s [nuP| SImpl_IntroLLVMBlockEmpty x bp |] =
+    SImpl_IntroLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
+  genSubst s [nuP| SImpl_CoerceLLVMBlockEmpty x bp |] =
+    SImpl_CoerceLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
+  genSubst s [nuP| SImpl_ElimLLVMBlockToBytes x bp |] =
+    SImpl_ElimLLVMBlockToBytes <$> genSubst s x <*> genSubst s bp
+  genSubst s [nuP| SImpl_ElimLLVMBlockSeqEmpty x bp |] =
+    SImpl_ElimLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
+  genSubst s [nuP| SImpl_IntroLLVMBlockFromEq x bp y |] =
+    SImpl_IntroLLVMBlockFromEq <$> genSubst s x <*> genSubst s bp
+    <*> genSubst s y
+  genSubst s [nuP| SImpl_IntroLLVMBlockField x fp |] =
+    SImpl_IntroLLVMBlockField <$> genSubst s x <*> genSubst s fp
+  genSubst s [nuP| SImpl_ElimLLVMBlockField x fp |] =
+    SImpl_ElimLLVMBlockField <$> genSubst s x <*> genSubst s fp
+  genSubst s [nuP| SImpl_IntroLLVMBlockArray x fp |] =
+    SImpl_IntroLLVMBlockArray <$> genSubst s x <*> genSubst s fp
+  genSubst s [nuP| SImpl_ElimLLVMBlockArray x fp |] =
+    SImpl_ElimLLVMBlockArray <$> genSubst s x <*> genSubst s fp
+  genSubst s [nuP| SImpl_IntroLLVMBlockSeq x bp1 len2 sh2 |] =
+    SImpl_IntroLLVMBlockSeq <$> genSubst s x <*> genSubst s bp1
+    <*> genSubst s len2 <*> genSubst s sh2
+  genSubst s [nuP| SImpl_ElimLLVMBlockSeq x bp1 sh2 |] =
+    SImpl_ElimLLVMBlockSeq <$> genSubst s x <*> genSubst s bp1
+    <*> genSubst s sh2
+  genSubst s [nuP| SImpl_IntroLLVMBlockOr x bp1 sh2 |] =
+    SImpl_IntroLLVMBlockOr <$> genSubst s x <*> genSubst s bp1
+    <*> genSubst s sh2
+  genSubst s [nuP| SImpl_ElimLLVMBlockOr x bp1 sh2 |] =
+    SImpl_ElimLLVMBlockOr <$> genSubst s x <*> genSubst s bp1 <*> genSubst s sh2
   genSubst s [nuP| SImpl_IntroLLVMBlockEx x rw l off len mb_sh |] =
     SImpl_IntroLLVMBlockEx <$> genSubst s x <*> genSubst s rw <*> genSubst s l
     <*> genSubst s off <*> genSubst s len <*> genSubst s mb_sh
@@ -3423,17 +3455,31 @@ implLLVMArrayOneCell x ap =
   implSimplM Proxy (SImpl_LLVMArrayOneCell x ap)
 
 
+-- | Prove the @memblock@ permission returned by @'llvmAtomicPermToBlock' p@
+-- from a proof of @p@ on top of the stack, assuming it returned one
+implIntroLLVMBlock :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                      ExprVar (LLVMPointerType w) ->
+                      AtomicPerm (LLVMPointerType w) ->
+                      ImplM vars s r (ps :> LLVMPointerType w)
+                      (ps :> LLVMPointerType w) ()
+implIntroLLVMBlock x (Perm_LLVMField fp) =
+  implSimplM Proxy (SImpl_IntroLLVMBlockField x fp)
+implIntroLLVMBlock x p@(Perm_LLVMArray ap)
+  | isJust (llvmAtomicPermToBlock p) =
+    implSimplM Proxy (SImpl_IntroLLVMBlockArray x ap)
+implIntroLLVMBlock x (Perm_LLVMBlock bp) = greturn ()
+implIntroLLVMBlock _ _ = error "implIntroLLVMBlock: malformed permission"
+
 -- | Eliminate a @memblock@ permission on the top of the stack, if possible,
 -- otherwise fail
 implElimLLVMBlock :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                      ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
                      ImplM vars s r (ps :> LLVMPointerType w)
                      (ps :> LLVMPointerType w) ()
-implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape = PExpr_EmptyShape, ..}) =
-  implSimplM Proxy (SImpl_ElimLLVMBlockEmpty x llvmBlockRW llvmBlockLifetime
-                    llvmBlockOffset llvmBlockLen)
+implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape = PExpr_EmptyShape }) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockToBytes x bp)
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
-                                          PExpr_EqShape (PExpr_Var y), ..}) =
+                                          PExpr_EqShape (PExpr_Var y) }) =
   -- For shape eqsh(y), prove y:block(sh) for some sh, apply
   -- SImpl_IntroLLVMBlockFromEq, and then recursively eliminate the resulting
   -- memblock permission
@@ -3441,23 +3487,25 @@ implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
   withExtVarsM (proveVarImpl y $ mbCombine $ flip fmap mb_unit $ const $
                 nu $ \sh -> ValPerm_Conj1 $ Perm_LLVMBlockShape $
                             PExpr_Var sh) >>>= \(_, sh) ->
-  implSimplM Proxy (SImpl_IntroLLVMBlockFromEq x llvmBlockRW llvmBlockLifetime
-                    llvmBlockOffset llvmBlockLen y sh) >>>
-  implElimLLVMBlock x (bp { llvmBlockShape = sh })
+  let bp' = bp { llvmBlockShape = sh } in
+  implSimplM Proxy (SImpl_IntroLLVMBlockFromEq x bp' y) >>>
+  implElimLLVMBlock x bp'
 implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
                                        PExpr_FieldShape (LLVMFieldShape p)
                                    , ..}) =
-  implSimplM Proxy (SImpl_ElimLLVMBlockField x llvmBlockRW llvmBlockLifetime
-                    llvmBlockOffset p)
-implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
-                                       PExpr_SeqShape sh1 sh2, ..})
+  implSimplM Proxy (SImpl_ElimLLVMBlockField x $ LLVMFieldPerm
+                    { llvmFieldRW = llvmBlockRW,
+                      llvmFieldLifetime = llvmBlockLifetime,
+                      llvmFieldOffset = llvmBlockOffset,
+                      llvmFieldContents = p })
+implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
+                                          PExpr_SeqShape sh1 sh2, ..})
   | len1 <- llvmShapeLength sh1 =
-    implSimplM Proxy (SImpl_ElimLLVMBlockSeq x llvmBlockRW llvmBlockLifetime
-                      llvmBlockOffset llvmBlockLen sh1 sh2)
-implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
-                                       PExpr_OrShape sh1 sh2, ..}) =
-  implSimplM Proxy (SImpl_ElimLLVMBlockOr x llvmBlockRW llvmBlockLifetime
-                    llvmBlockOffset llvmBlockLen sh1 sh2)
+    implSimplM Proxy (SImpl_ElimLLVMBlockSeq
+                      x (bp { llvmBlockShape = sh1 }) sh2)
+implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
+                                        PExpr_OrShape sh1 sh2, ..}) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockOr x (bp { llvmBlockShape = sh1 }) sh2)
 implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
                                        PExpr_ExShape mb_sh, ..}) =
   implSimplM Proxy (SImpl_ElimLLVMBlockEx x llvmBlockRW llvmBlockLifetime
@@ -3795,6 +3843,18 @@ instance ProveEq (LLVMFramePerm w) where
       proveEq e mb_e >>>= \eqp1 ->
       proveEq fperms mb_fperms >>>= \eqp2 ->
       greturn (mapEqProof2 (\x y -> (x,i):y) eqp1 eqp2)
+
+instance ProveEq (LLVMBlockPerm w) where
+  proveEq bp mb_bp =
+    let mkTuple bp = (llvmBlockRW bp,
+                      (llvmBlockLifetime bp,
+                       (llvmBlockOffset bp,
+                        (llvmBlockLen bp, llvmBlockShape bp))))
+        unTuple (llvmBlockRW,
+                 (llvmBlockLifetime,
+                  (llvmBlockOffset,
+                   (llvmBlockLen, llvmBlockShape)))) = LLVMBlockPerm {..} in
+    fmap (fmap unTuple) $ proveEq (mkTuple bp) (fmap mkTuple mb_bp)
 
 
 -- | The main work horse for 'proveEq' on expressions
@@ -4596,18 +4656,44 @@ proveVarLLVMBlock x ps off len mb_bp
     (llvmBlockRW bp, llvmBlockLifetime bp)
     (fmap (\bp -> (llvmBlockRW bp, llvmBlockLifetime bp)) mb_bp)
 
--- If proving the empty shape, prove the required array permission
+
+-- If proving the empty shape for length 0, instantiate the rwmodality and
+-- lifetime if necessary and use the empty introduction rule
+proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
+                                         PExpr_EmptyShape |]
+  | bvIsZero len =
+    implPopM x (ValPerm_Conj ps) >>> getPSubst >>>= \psubst ->
+    (case fmap llvmBlockRW mb_bp of
+        mb_rw | Just rw <- partialSubst psubst mb_rw -> greturn rw
+        [nuP| PExpr_Var mb_z |]
+          | Left memb' <- mbNameBoundP mb_z ->
+              setVarM memb' PExpr_Read >>> greturn PExpr_Read) >>>= \rw ->
+    (case fmap llvmBlockLifetime mb_bp of
+        mb_l | Just l <- partialSubst psubst mb_l -> greturn l
+        [nuP| PExpr_Var mb_z |]
+          | Left memb' <- mbNameBoundP mb_z ->
+              setVarM memb' PExpr_Always >>> greturn PExpr_Always) >>>= \l ->
+    implSimplM Proxy (SImpl_IntroLLVMBlockEmpty x $
+                      LLVMBlockPerm {
+                         llvmBlockRW = rw, llvmBlockLifetime = l,
+                         llvmBlockOffset = off, llvmBlockLen = len,
+                         llvmBlockShape = PExpr_EmptyShape })
+
+-- If proving the empty shape otherwise, prove an arbitrary memblock permission
+-- and coerce it to the empty shape
 proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                                          PExpr_EmptyShape |] =
   implPopM x (ValPerm_Conj ps) >>>
-  proveVarImpl x (fmap llvmBlockPermToByteArrayPerm mb_bp) >>>
+  withExtVarsM (proveVarImpl x $ mbCombine $ flip fmap mb_bp $
+                \bp -> nu $ \y ->
+                ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp { llvmBlockShape = PExpr_Var y }) >>>= \(_,sh) ->
   partialSubstForceM mb_bp
-  "proveVarLLVMBlock: PExpr_EmptyShape: incomplete subst"
-  >>>= \(LLVMBlockPerm {..}) ->
-  implSimplM Proxy (SImpl_IntroLLVMBlockEmpty x llvmBlockRW llvmBlockLifetime
-                    llvmBlockOffset llvmBlockLen)
+  "proveVarLLVMBlock: PExpr_EmptyShape: incomplete subst" >>>= \bp ->
+  implSimplM Proxy (SImpl_CoerceLLVMBlockEmpty x $
+                    bp { llvmBlockShape = sh })
 
--- If proving an equality shape, pattern match on the variable
+-- If proving an equality shape, pattern match on the block in the equality
 proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                                          (PExpr_EqShape (PExpr_Var mb_z)) |] =
   getPSubst >>>= \psubst ->
@@ -4655,27 +4741,78 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
       implFailVarM "proveVarLLVMBlock" x (ValPerm_Conj ps)
       (fmap (ValPerm_Conj1 . Perm_LLVMBlock) mb_bp)
 
--- If proving a field shape, prove the required field permission
+-- If proving a field shape, prove the required field permission and then pad it
+-- out to the required length with an empty memblock permission
 proveVarLLVMBlock x ps off len mb_bp
   | [nuP| PExpr_FieldShape
         (LLVMFieldShape mb_p) |] <- fmap llvmBlockShape mb_bp
   , sz <- mbExprLLVMTypeWidthExpr mb_p
   , bvLeq sz len =
+
+    -- First, prove the required field permission
     implPopM x (ValPerm_Conj ps) >>>
-    proveVarImpl x
-    (mbMap2 (\bp@(LLVMBlockPerm {..}) p ->
-              ValPerm_Conj
-              [Perm_LLVMField (LLVMFieldPerm llvmBlockRW llvmBlockLifetime
-                               llvmBlockOffset p),
-               Perm_LLVMBlock (LLVMBlockPerm llvmBlockRW llvmBlockLifetime
-                               (bvAdd llvmBlockOffset sz)
-                               (bvSub llvmBlockLen sz)
-                               PExpr_EmptyShape)]
-            ) mb_bp mb_p) >>>
-    partialSubstForceM (mbMap2 (,) mb_bp mb_p)
-    "proveVarLLVMBlock: PExpr_FieldShape: incomplete subst" >>>= \(bp,p) ->
-    implSimplM Proxy (SImpl_IntroLLVMBlockField x (llvmBlockRW bp)
-                      (llvmBlockLifetime bp) off (bvSub len sz) p)
+    let mb_fp =
+          mbMap2 (\bp@(LLVMBlockPerm {..}) p ->
+                   LLVMFieldPerm llvmBlockRW llvmBlockLifetime
+                   llvmBlockOffset p)
+          mb_bp mb_p in
+    proveVarImpl x (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp) >>>
+    partialSubstForceM mb_fp
+    "proveVarLLVMBlock: PExpr_FieldShape: incomplete subst" >>>= \fp ->
+    implSimplM Proxy (SImpl_IntroLLVMBlockField x fp) >>>
+    let (LLVMFieldPerm rw l _ p) = fp in
+    let sh1 = PExpr_FieldShape $ LLVMFieldShape p in
+
+    -- Next, prove an empty memblock permission of size len-sz
+    proveVarImpl x (flip fmap mb_bp $ const $
+                    mkLLVMBlockPerm rw l (bvAdd off sz) (bvSub len sz)
+                    PExpr_EmptyShape) >>>
+
+    -- Then, finally, sequence them and remove the empty shape
+    implSimplM Proxy (SImpl_IntroLLVMBlockSeq x (llvmFieldPermToBlock fp)
+                      (bvSub len sz) PExpr_EmptyShape) >>>
+    implSimplM Proxy (SImpl_ElimLLVMBlockSeqEmpty x
+                      LLVMBlockPerm {
+                         llvmBlockRW = rw, llvmBlockLifetime = l,
+                         llvmBlockOffset = off, llvmBlockLen = len,
+                         llvmBlockShape = sh1 })
+
+-- If proving an array shape, just like in the field case, prove the required
+-- array permission and then pad it out with an empty memblock permission
+proveVarLLVMBlock x ps off len mb_bp
+  | [nuP| PExpr_ArrayShape
+        mb_sz mb_stride mb_shs |] <- fmap llvmBlockShape mb_bp
+  , stride <- mbLift mb_stride
+  , mbLift $ fmap (flip bvLeq len) mb_sz =
+
+    -- First, prove the required array permission
+    implPopM x (ValPerm_Conj ps) >>>
+    let mb_ap =
+          mbMap3
+          (\bp sz shs ->
+            llvmArrayShapeToPerm (llvmBlockRW bp) (llvmBlockLifetime bp)
+            off sz stride shs)
+          mb_bp mb_sz mb_shs in
+    proveVarImpl x (fmap (ValPerm_Conj1 . Perm_LLVMArray) mb_ap) >>>
+
+    -- Substitute into mb_bp and mb_ap to get out their values, and prove a
+    -- memblock permission of array shape
+    partialSubstForceM (mbMap2 (,) mb_ap mb_bp)
+    "proveVarLLVMBlock: PExpr_ArrayShape: incomplete subst" >>>= \(ap,bp_out) ->
+    implSimplM Proxy (SImpl_IntroLLVMBlockArray x ap) >>>
+    let sz = llvmArrayLen ap in
+    let bp = bp_out { llvmBlockLen = sz } in
+
+    -- Next, prove an empty memblock permission of size len-sz
+    proveVarImpl x (flip fmap mb_bp $ const $ ValPerm_Conj1 $ Perm_LLVMBlock $
+                    bp { llvmBlockOffset = bvAdd off sz,
+                         llvmBlockLen = bvSub len sz,
+                         llvmBlockShape = PExpr_EmptyShape }) >>>
+
+    -- Then, finally, sequence them and remove the empty shape
+    implSimplM Proxy (SImpl_IntroLLVMBlockSeq x bp (bvSub len sz)
+                      PExpr_EmptyShape) >>>
+    implSimplM Proxy (SImpl_ElimLLVMBlockSeqEmpty x bp_out)
 
 -- If proving a sequence shape, prove the two shapes and combine them
 proveVarLLVMBlock x ps off len mb_bp
@@ -4697,9 +4834,9 @@ proveVarLLVMBlock x ps off len mb_bp
                     mb_bp mb_sh2) >>>
     partialSubstForceM (mbMap3 (,,) mb_bp mb_sh1 mb_sh2)
     "proveVarLLVMBlock: PExpr_SeqShape: incomplete subst" >>>= \(bp,sh1,sh2) ->
-    implSimplM Proxy (SImpl_IntroLLVMBlockSeq
-                      x (llvmBlockRW bp) (llvmBlockLifetime bp) off len1
-                      (bvSub len len1) sh1 sh2)
+    implSimplM Proxy (SImpl_IntroLLVMBlockSeq x
+                      (bp { llvmBlockLen = len1, llvmBlockShape = sh1 })
+                      (bvSub len len1) sh2)
 
 -- If proving a disjunctive shape, prove the disjunction
 proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
@@ -4714,8 +4851,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                   mb_bp mb_sh1 mb_sh2) >>>
   partialSubstForceM (mbMap3 (,,) mb_bp mb_sh1 mb_sh2)
   "proveVarLLVMBlock: PExpr_SeqShape: incomplete subst" >>>= \(bp,sh1,sh2) ->
-  implSimplM Proxy (SImpl_IntroLLVMBlockOr x (llvmBlockRW bp)
-                    (llvmBlockLifetime bp) off len sh1 sh2)
+  implSimplM Proxy (SImpl_IntroLLVMBlockOr x (bp { llvmBlockShape = sh1 }) sh2)
 
 -- If proving an existential shape, prove the existential
 proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
@@ -4742,25 +4878,16 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
         proveVarLLVMBlock x ps off len $
         fmap (\bp -> bp { llvmBlockShape = sh }) mb_bp
 
-    -- If z is unset and len == 0, just set z to the empty shape, possibly
-    -- setting the rw and lifetime if necessary
+    -- If z is unset and len == 0, just set z to the empty shape and recurse in
+    -- order to call the len == 0 empty shape case above
     Left memb
       | Nothing <- psubstLookup psubst memb
       , bvIsZero len ->
-        implPopM x (ValPerm_Conj ps) >>>
-        (case fmap llvmBlockRW mb_bp of
-            mb_rw | Just rw <- partialSubst psubst mb_rw -> greturn rw
-            [nuP| PExpr_Var mb_z |]
-              | Left memb' <- mbNameBoundP mb_z ->
-                setVarM memb' PExpr_Read >>> greturn PExpr_Read) >>>= \rw ->
-        (case fmap llvmBlockLifetime mb_bp of
-            mb_l | Just l <- partialSubst psubst mb_l -> greturn l
-            [nuP| PExpr_Var mb_z |]
-              | Left memb' <- mbNameBoundP mb_z ->
-                setVarM memb' PExpr_Always >>> greturn PExpr_Always) >>>= \l ->
-        implLLVMArrayEmpty x (llvmByteArrayArrayPerm off len rw l) >>>
         setVarM memb PExpr_EmptyShape >>>
-        implSimplM Proxy (SImpl_IntroLLVMBlockEmpty x rw l off len)
+        proveVarLLVMBlock x ps off len (fmap (\bp ->
+                                               bp { llvmBlockShape =
+                                                      PExpr_EmptyShape })
+                                        mb_bp)
 
     -- If z is unset and there is a field with offset off, prove a field shape
     -- permission with the same size and equal to some existential expression,
@@ -4799,8 +4926,8 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
         -- x:[l]memblock(rw,off,len,ptrsh(eq(y));sh')
         partialSubstForceM mb_bp
         "proveVarLLVMBlock: variable shape: incomplete subst" >>>= \bp ->
-        implSimplM Proxy (SImpl_IntroLLVMBlockSeq x (llvmBlockRW bp)
-                          (llvmBlockLifetime bp) off sz (bvSub len sz) sh1 sh2)
+        let bp1 = bp { llvmBlockLen = sz, llvmBlockShape = sh1 } in
+        implSimplM Proxy (SImpl_IntroLLVMBlockSeq x bp1 (bvSub len sz) sh2)
 
     -- If z is unset and there is an array with offset off, prove an array shape
     -- permission from it, recurse, and then sequence
@@ -4815,12 +4942,11 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
     Left memb
       | Nothing <- psubstLookup psubst memb
       , Just i <- findIndex (isLLVMAtomicPermWithOffset off) ps
-      , p@(Perm_LLVMBlock bp) <- ps!!i
-      , len1 <- llvmBlockLen bp
+      , p@(Perm_LLVMBlock bp1_orig) <- ps!!i
+      , len1 <- llvmBlockLen bp1_orig
       , bvLeq len1 len ->
         -- First we save the memblock perm we found to the stack
         implGetPopConjM x ps i >>>
-        let sh1 = llvmBlockShape bp in
 
         -- Next we prove the rw and lifetime of the memblock we found are equal
         -- to the ones we want, and cast what we have to what we want
@@ -4828,12 +4954,13 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                        (fmap llvmBlockLifetime mb_bp)) in
         proveEqCast x (\(rw,l) ->
                         ValPerm_Conj1 $ Perm_LLVMBlock $
-                        bp { llvmBlockRW = rw, llvmBlockLifetime = l })
-        (llvmBlockRW bp, llvmBlockLifetime bp) mb_rw_l >>>
+                        bp1_orig { llvmBlockRW = rw, llvmBlockLifetime = l })
+        (llvmBlockRW bp1_orig, llvmBlockLifetime bp1_orig) mb_rw_l >>>
         partialSubstForceM mb_rw_l
         "proveVarLLVMBlock: variable shape: incomplete subst" >>>= \(rw,l) ->
+        let bp1 = bp1_orig { llvmBlockRW = rw, llvmBlockLifetime = l } in
 
-        -- Next we prove x:[l]memblock(rw,off+sz,len-sz,sh') for some sh2
+        -- Next we prove x:[l]memblock(rw,off+sz,len-sz,sh2) for some sh2
         withExtVarsM (proveVarImpl x $
                       nuMulti (mbToProxy mb_z :>: Proxy) $ \(_ :>: z_sh) ->
                        mkLLVMBlockPerm rw l
@@ -4841,12 +4968,11 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                        (PExpr_Var z_sh)) >>>= \(_,sh2) ->
 
         -- Then we set z = sh1;sh2
-        setVarM memb (PExpr_SeqShape sh1 sh2) >>>
+        setVarM memb (PExpr_SeqShape (llvmBlockShape bp1) sh2) >>>
 
         -- Finally, we combine these into a proof of
         -- x:[l]memblock(rw,off,len,sh1;sh2)
-        implSimplM Proxy (SImpl_IntroLLVMBlockSeq x rw l off len1
-                          (bvSub len len1) sh1 sh2)
+        implSimplM Proxy (SImpl_IntroLLVMBlockSeq x bp1 (bvSub len len1) sh2)
 
     -- Otherwise fail
     _ ->
