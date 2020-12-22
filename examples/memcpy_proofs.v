@@ -12,5 +12,3 @@ Require Import Examples.memcpy.
 Import memcpy.
 
 Import SAWCorePrelude.
-
-Print memcpy.
