@@ -177,6 +177,10 @@ mapEqProof2 f (SomeEqProof eqp1) (SomeEqProof eqp2) =
   eqProofTrans (fmap (flip f $ eqProofLHS eqp2) eqp1)
   (fmap (f (eqProofRHS eqp1)) eqp2)
 
+-- | Construct a 'SomeEqProof' by reflexivity
+someEqProofRefl :: a -> SomeEqProof a
+someEqProofRefl = SomeEqProof . EqProofRefl
+
 -- | Construct a 'SomeEqProof' for @x=e@ or @e=x@ using an @x:eq(e)@ permission,
 -- where the 'Bool' flag is 'True' for @x=e@ and 'False' for @e=x@ like 'EqPerm'
 someEqProofPerm :: ExprVar a -> PermExpr a -> Bool -> SomeEqProof (PermExpr a)
@@ -188,6 +192,10 @@ someEqProofTrans :: (Eq a, Substable PermSubst a Identity) =>
                     SomeEqProof a -> SomeEqProof a -> SomeEqProof a
 someEqProofTrans (SomeEqProof eqp1) (SomeEqProof eqp2) =
   SomeEqProof $ eqProofTrans eqp1 eqp2
+
+-- | Get the RHS of a 'SomeEqProof'
+someEqProofRHS :: Substable PermSubst a Identity => SomeEqProof a -> a
+someEqProofRHS (SomeEqProof eqp) = eqProofRHS eqp
 
 
 ----------------------------------------------------------------------
@@ -3857,16 +3865,47 @@ instance ProveEq (LLVMBlockPerm w) where
     fmap (fmap unTuple) $ proveEq (mkTuple bp) (fmap mkTuple mb_bp)
 
 
+-- | Substitute any equality permissions for the variables in an expression,
+-- returning a proof that the input expression equals the output. Unlike
+-- 'getEqualsExpr', this does not eliminate any permissions, because it is used
+-- by 'proveEq' to instantiate existential variables, and we do not want to have
+-- to eliminate perms just to set @z=e@.
+--
+-- FIXME: maybe 'getEqualsExpr' should also not eliminate permissions?
+substEqsWithProof :: NuMatchingAny1 r => PermExpr a ->
+                     ImplM vars s r ps ps (SomeEqProof (PermExpr a))
+substEqsWithProof e@(PExpr_Var x) =
+  getPerm x >>>= \p ->
+  case p of
+    ValPerm_Eq e' ->
+      substEqsWithProof e' >>>= \eqp ->
+      greturn (someEqProofTrans (someEqProofPerm x e' True) eqp)
+    _ -> greturn (someEqProofRefl e)
+substEqsWithProof (PExpr_BV factors off) =
+  foldr (mapEqProof2 bvAdd) (someEqProofRefl $ PExpr_BV [] off) <$>
+  mapM (\(BVFactor (BV.BV i) x) ->
+         fmap (bvMult i) <$> substEqsWithProof (PExpr_Var x)) factors
+substEqsWithProof (PExpr_LLVMWord e) =
+  fmap PExpr_LLVMWord <$> substEqsWithProof e
+substEqsWithProof (PExpr_LLVMOffset x off) =
+  substEqsWithProof (PExpr_Var x) >>>= \eqp_x ->
+  substEqsWithProof off >>>= \eqp_off ->
+  greturn (mapEqProof2 addLLVMOffset eqp_x eqp_off)
+substEqsWithProof e = greturn $ someEqProofRefl e
+
+
 -- | The main work horse for 'proveEq' on expressions
 proveEqH :: NuMatchingAny1 r => PartialSubst vars -> PermExpr a ->
             Mb vars (PermExpr a) ->
             ImplM vars s r ps ps (SomeEqProof (PermExpr a))
 
--- If the RHS is an unset variable z, set z=e
+-- If the RHS is an unset variable z, simplify e using any available equality
+-- proofs to some e' and set z=e'
 proveEqH psubst e [nuP| PExpr_Var z |]
   | Left memb <- mbNameBoundP z
   , Nothing <- psubstLookup psubst memb =
-    setVarM memb e >>> greturn (SomeEqProof $ EqProofRefl e)
+    substEqsWithProof e >>>= \eqp ->
+    setVarM memb (someEqProofRHS eqp) >>> greturn eqp
 
 -- If the RHS is a set variable, substitute for it and recurse
 proveEqH psubst e [nuP| PExpr_Var z |]
