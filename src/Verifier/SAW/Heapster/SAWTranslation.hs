@@ -2519,8 +2519,7 @@ translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockSeqEmpty _ mb_bp |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) ->
-         pctx :>: typeTransF ttrans [pairOpenTerm
-                                     (transTerm1 ptrans) unitOpenTerm])
+         pctx :>: typeTransF ttrans [pairLeftOpenTerm (transTerm1 ptrans)])
        m
 
 translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockFromEq _ _ _ |] m =
