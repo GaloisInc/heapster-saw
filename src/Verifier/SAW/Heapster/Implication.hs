@@ -5258,6 +5258,14 @@ proveVarAtomicImpl x ps [nuP| Perm_IsLLVMPtr |]
 proveVarAtomicImpl x ps mb_p@[nuP| Perm_IsLLVMPtr |] =
   proveVarAtomicImplUnfoldOrFail x ps mb_p
 
+proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMBlockShape mb_sh |]
+  | Just i <- findIndex (\case
+                            Perm_LLVMBlockShape _ -> True
+                            _ -> False) ps
+  , Perm_LLVMBlockShape sh <- ps!!i =
+    implGetPopConjM x ps i >>>
+    proveEqCast x (ValPerm_Conj1 . Perm_LLVMBlockShape) sh mb_sh
+
 proveVarAtomicImpl x ps [nuP| Perm_NamedConj mb_n mb_args mb_off |] =
   let n = mbLift mb_n in
   proveVarImplH x (ValPerm_Conj ps) (mbMap2 (ValPerm_Named n)
