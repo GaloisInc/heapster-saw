@@ -416,7 +416,8 @@ parseBVExpr = parseBVExprH Proxy
 parseBVExprH :: (1 <= w, KnownNat w, Stream s Identity Char) =>
                 Proxy w -> PermParseM s (PermExpr (BVType w))
 parseBVExprH w =
-  (normalizeBVExpr <$> foldr1 bvAdd <$> many1 parseBVFactor)
+  (normalizeBVExpr <$> foldr1 bvAdd <$>
+   sepBy1 parseBVFactor (spaces >> char '+'))
   <?> ("expression of type bv " ++ show (natVal w))
 
 -- | Parse an 'LLVMFieldShape' of width @w@ of the form @(sz,p)@ or just @p@ if
