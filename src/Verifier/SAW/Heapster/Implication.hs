@@ -617,6 +617,15 @@ data SimplImpl ps_in ps_out where
     SimplImpl (RNil :> LLVMPointerType w)
     (RNil :> LLVMPointerType w :> LLVMPointerType w)
 
+  -- | Prove that @x@ is a pointer from a memblock permission:
+  --
+  -- > x:[l]memblock(...) -o x:is_llvmptr * x:[l]memblock(...)
+  SImpl_LLVMBlockIsPtr ::
+    (1 <= w, KnownNat w) =>
+    ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    SimplImpl (RNil :> LLVMPointerType w)
+    (RNil :> LLVMPointerType w :> LLVMPointerType w)
+
   -- | Save a permission for later by splitting it into part that is in the
   -- current lifetime and part that is saved in the lifetime for later:
   --
@@ -1388,6 +1397,8 @@ simplImplIn (SImpl_LLVMFieldIsPtr x fp) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMField fp])
 simplImplIn (SImpl_LLVMArrayIsPtr x ap) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMArray ap])
+simplImplIn (SImpl_LLVMBlockIsPtr x bp) =
+  distPerms1 x (ValPerm_Conj [Perm_LLVMBlock bp])
 simplImplIn (SImpl_SplitLifetime x p l ps) =
   distPerms2 x p l (ValPerm_Conj [Perm_LOwned ps])
 simplImplIn (SImpl_LCurrentRefl _) = DistPermsNil
@@ -1650,6 +1661,9 @@ simplImplOut (SImpl_LLVMFieldIsPtr x fp) =
 simplImplOut (SImpl_LLVMArrayIsPtr x ap) =
   distPerms2 x (ValPerm_Conj1 Perm_IsLLVMPtr)
   x (ValPerm_Conj [Perm_LLVMArray ap])
+simplImplOut (SImpl_LLVMBlockIsPtr x bp) =
+  distPerms2 x (ValPerm_Conj1 Perm_IsLLVMPtr)
+  x (ValPerm_Conj [Perm_LLVMBlock bp])
 simplImplOut (SImpl_SplitLifetime x p l ps) =
   distPerms2 x (inLifetime (PExpr_Var l) p)
   l (ValPerm_Conj [Perm_LOwned (PExpr_PermListCons (PExpr_Var x) p ps)])
@@ -1978,6 +1992,8 @@ instance SubstVar PermVarSubst m =>
     SImpl_LLVMFieldIsPtr <$> genSubst s x <*> genSubst s fp
   genSubst s [nuP| SImpl_LLVMArrayIsPtr x ap |] =
     SImpl_LLVMArrayIsPtr <$> genSubst s x <*> genSubst s ap
+  genSubst s [nuP| SImpl_LLVMBlockIsPtr x bp |] =
+    SImpl_LLVMBlockIsPtr <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_SplitLifetime x p l ps |] =
     SImpl_SplitLifetime <$> genSubst s x <*> genSubst s p <*> genSubst s l <*>
     genSubst s ps
@@ -5251,6 +5267,15 @@ proveVarAtomicImpl x ps [nuP| Perm_IsLLVMPtr |]
   , p@(Perm_LLVMArray ap) <- ps !! i =
     implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
     implSimplM Proxy (SImpl_LLVMArrayIsPtr x ap) >>>
+    implPushM x (ValPerm_Conj $ deleteNth i ps) >>>
+    implInsertConjM x p (deleteNth i ps) i >>>
+    implPopM x (ValPerm_Conj ps)
+
+proveVarAtomicImpl x ps [nuP| Perm_IsLLVMPtr |]
+  | Just i <- findIndex isLLVMBlockPerm ps
+  , p@(Perm_LLVMBlock bp) <- ps !! i =
+    implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
+    implSimplM Proxy (SImpl_LLVMBlockIsPtr x bp) >>>
     implPushM x (ValPerm_Conj $ deleteNth i ps) >>>
     implInsertConjM x p (deleteNth i ps) i >>>
     implPopM x (ValPerm_Conj ps)

@@ -2467,6 +2467,12 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayIsPtr x _ |] m =
     pctx :>: PTrans_Conj [APTrans_IsLLVMPtr] :>: ptrans_array)
   m
 
+translateSimplImpl _ [nuP| SImpl_LLVMBlockIsPtr x _ |] m =
+  withPermStackM (:>: translateVar x)
+  (\(pctx :>: ptrans) ->
+    pctx :>: PTrans_Conj [APTrans_IsLLVMPtr] :>: ptrans)
+  m
+
 translateSimplImpl _ [nuP| SImpl_SplitLifetime mb_x mb_p mb_l mb_ps |] m =
   withPermStackM id
   (\(pctx :>: ptrans_x :>: ptrans_l) ->
