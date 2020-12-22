@@ -579,22 +579,24 @@ exprType _ = knownRepr
 bindingType :: KnownRepr TypeRepr a => Binding a b -> TypeRepr a
 bindingType _ = knownRepr
 
--- | Convenience function to get the width of an LLVM pointer type
+-- | Convenience function to get the bit width of an LLVM pointer type
 exprLLVMTypeWidth :: KnownNat w => f (LLVMPointerType w) -> NatRepr w
 exprLLVMTypeWidth _ = knownNat
 
--- | Convenience function to get the width of an LLVM pointer type as an expr
-exprLLVMTypeWidthExpr :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+-- | Convenience function to get the number of bytes = the bit width divided by
+-- 8 of an LLVM pointer type as an expr. Note that this assumes the bit width is
+-- a multiple of 8, so does not worry about rounding.
+exprLLVMTypeBytesExpr :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
                          f (LLVMPointerType sz) -> PermExpr (BVType w)
-exprLLVMTypeWidthExpr e = bvInt $ intValue $ exprLLVMTypeWidth e
+exprLLVMTypeBytesExpr e = bvInt (intValue (exprLLVMTypeWidth e) `div` 8)
 
 -- | Convenience function to get the width of an LLVM pointer type of an
 -- expression in a binding as an expression
-mbExprLLVMTypeWidthExpr :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+mbExprLLVMTypeBytesExpr :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
                            Mb ctx (f (LLVMPointerType sz)) ->
                            PermExpr (BVType w)
-mbExprLLVMTypeWidthExpr mb_e =
-  bvInt $ intValue $ mbLift $ fmap exprLLVMTypeWidth mb_e
+mbExprLLVMTypeBytesExpr mb_e =
+  bvInt $ div (intValue $ mbLift $ fmap exprLLVMTypeWidth mb_e) 8
 
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where
@@ -2271,7 +2273,7 @@ isLLVMAtomicPermWithOffset _ _ = False
 -- | Get the size of an 'LLVMFieldPerm' as an expression
 llvmFieldLen :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
                 LLVMFieldPerm w sz -> PermExpr (BVType w)
-llvmFieldLen fp = exprLLVMTypeWidthExpr $ llvmFieldContents fp
+llvmFieldLen fp = exprLLVMTypeBytesExpr $ llvmFieldContents fp
 
 -- | Test if an 'AtomicPerm' is an array permission
 isLLVMArrayPerm :: AtomicPerm a -> Bool
@@ -2509,7 +2511,7 @@ llvmShapeLength (PExpr_Var _) = Nothing
 llvmShapeLength PExpr_EmptyShape = Just $ bvInt 0
 llvmShapeLength (PExpr_EqShape _) = Nothing
 llvmShapeLength (PExpr_FieldShape (LLVMFieldShape p)) =
-  Just $ exprLLVMTypeWidthExpr p
+  Just $ exprLLVMTypeBytesExpr p
 llvmShapeLength (PExpr_ArrayShape len _ _) = Just len
 llvmShapeLength (PExpr_SeqShape sh1 sh2) =
   liftA2 bvAdd (llvmShapeLength sh1) (llvmShapeLength sh2)
@@ -2536,7 +2538,7 @@ llvmFieldShapePermToArrayField :: (1 <= w, KnownNat w) => PermExpr RWModalityTyp
                                   LLVMFieldShape w ->
                                   (LLVMArrayField w, PermExpr (BVType w))
 llvmFieldShapePermToArrayField rw l off (LLVMFieldShape p) =
-  (LLVMArrayField (LLVMFieldPerm rw l off p), exprLLVMTypeWidthExpr p)
+  (LLVMArrayField (LLVMFieldPerm rw l off p), exprLLVMTypeBytesExpr p)
 
 -- | Convert an aray shape inside (i.e., with all the other components of) a
 -- @memblock@ permission to an array permission
@@ -2587,7 +2589,7 @@ unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape = PExpr_EmptyShape }) =
 -- no greater than the field size
 unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape =
                                       PExpr_FieldShape (LLVMFieldShape p), ..})
-  | sz_expr <- exprLLVMTypeWidthExpr p
+  | sz_expr <- exprLLVMTypeBytesExpr p
   , bvLeq sz_expr llvmBlockLen =
     ValPerm_Conj
     [Perm_LLVMField $ LLVMFieldPerm {

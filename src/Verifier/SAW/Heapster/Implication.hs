@@ -4677,6 +4677,14 @@ proveVarLLVMBlock ::
   Mb vars (LLVMBlockPerm w) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
+proveVarLLVMBlock x ps off len mb_bp
+  | tracePretty
+    (let i = emptyPPInfo in
+      pretty "proveVarLLVMBlock" <+> permPretty i x <+>
+      parens (permPretty i off) <+> parens (permPretty i len) <+>
+      parens (permPretty i $ fmap Perm_LLVMBlock mb_bp))
+    False = undefined
+
 -- If we already have a block permission with the required offset, length, and
 -- shape, prove it is equal to the required permission and then cast
 proveVarLLVMBlock x ps off len mb_bp
@@ -4785,7 +4793,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
 proveVarLLVMBlock x ps off len mb_bp
   | [nuP| PExpr_FieldShape
         (LLVMFieldShape mb_p) |] <- fmap llvmBlockShape mb_bp
-  , sz <- mbExprLLVMTypeWidthExpr mb_p
+  , sz <- mbExprLLVMTypeBytesExpr mb_p
   , bvLeq sz len =
 
     -- First, prove the required field permission
@@ -4935,7 +4943,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
       | Nothing <- psubstLookup psubst memb
       , Just i <- findIndex (isLLVMAtomicPermWithOffset off) ps
       , Perm_LLVMField (fp :: LLVMFieldPerm w sz) <- ps!!i
-      , sz <- bvInt $ intValue $ natRepr fp
+      , sz <- llvmFieldLen fp
       , bvLeq sz len ->
         implPopM x (ValPerm_Conj ps) >>>
 
@@ -5015,8 +5023,12 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
 
     -- Otherwise fail
     _ ->
-      implFailVarM "proveVarLLVMBlock" x (ValPerm_Conj ps)
+      implFailVarM "proveVarLLVMBlock (variable case)" x (ValPerm_Conj ps)
       (fmap (ValPerm_Conj1 . Perm_LLVMBlock) mb_bp)
+
+proveVarLLVMBlock x ps _ _ mb_bp =
+  implFailVarM "proveVarLLVMBlock" x (ValPerm_Conj ps)
+  (fmap (ValPerm_Conj1 . Perm_LLVMBlock) mb_bp)
 
 
 -- FIXME HERE NOW: is this still needed?
