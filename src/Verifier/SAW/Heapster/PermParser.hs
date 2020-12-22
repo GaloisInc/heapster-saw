@@ -34,6 +34,7 @@ import Data.Binding.Hobbits.MonadBind
 import Text.Parsec
 import Text.Parsec.Error
 -- import Text.ParserCombinators.Parsec
+import Prettyprinter hiding (comma, space)
 
 import Data.Parameterized.Context hiding ((:>), empty, take, zipWith, Empty)
 import qualified Data.Parameterized.Context as Ctx
@@ -527,7 +528,13 @@ parseExpr tp@(LLVMShapeRepr w) =
                  do args <- parseExprs arg_ctx
                     spaces >> char '>'
                     return (subst (substOfExprs args) mb_sh)
-             Just _ -> unexpected ("Named shape " ++ nm ++ " is of incorrect type")
+             Just (SomeNamedShape _ _ mb_sh) ->
+               fail $ renderDoc $ sep
+               [ pretty "Named shape" <+> pretty nm <+>
+                 pretty "is of incorrect type"
+               , pretty "Expected:" <+> permPretty emptyPPInfo tp
+               , pretty "Found:" <+>
+                 permPretty emptyPPInfo (mbLift $ fmap exprType mb_sh) ]
              Nothing -> unexpected ("Unknown shape name: " ++ nm)) <|>
        (PExpr_Var <$> parseExprVarOfType tp) <?>
        "llvmshape expression"
@@ -588,7 +595,12 @@ parseValPerm tp =
                     off <- parsePermOffset tp
                     return $ ValPerm_Named rpn args off
              Just (SomeNamedPermName rpn) ->
-               fail ("Named permission " ++ n ++ " has incorrect type")
+               fail $ renderDoc $ sep
+               [ pretty "Named permission" <+> pretty n <+>
+                 pretty "is of incorrect type"
+               , pretty "Expected:" <+> permPretty emptyPPInfo tp
+               , pretty "Found:" <+>
+                 permPretty emptyPPInfo (namedPermNameType rpn) ]
              Nothing ->
                fail ("Unknown named permission '" ++ n ++ "'")) <|>
        (ValPerm_Conj <$> parseAtomicPerms tp) <|>
@@ -1058,7 +1070,8 @@ parseTypeString :: MonadFail m => String -> PermEnv -> String ->
 parseTypeString nm env str = runPermParseM nm env parseType str
 
 -- | Parse an expression of a given type from a 'String'
-parseExprString :: MonadFail m => PermEnv -> TypeRepr a -> String ->
-                   m (PermExpr a)
-parseExprString env tp str =
-  runPermParseM (permPrettyString emptyPPInfo tp) env (parseExpr tp) str
+parseExprInCtxString :: MonadFail m => PermEnv -> TypeRepr a -> ParsedCtx ctx ->
+                        String -> m (Mb ctx (PermExpr a))
+parseExprInCtxString env tp ctx str =
+  runPermParseM (permPrettyString emptyPPInfo tp) env
+  (inParsedCtxM ctx $ const $ parseExpr tp) str
