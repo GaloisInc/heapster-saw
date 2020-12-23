@@ -2585,16 +2585,20 @@ mbVarsM a =
   (view implStateVars <$> gget) >>>= \vars ->
   greturn $ mbPure (cruCtxProxies vars) a
 
--- | Apply the current partial substitution to an expression, raising an error
--- with the given string if the partial substitution is not complete enough
---
--- FIXME: this should fail instead of calling 'error', and should also have more
--- regular and meaningful messages about existential variables being unresolved
-partialSubstForceM :: Substable PartialSubst a Maybe => Mb vars a -> String ->
-                      ImplM vars s r ps ps a
-partialSubstForceM mb_e msg =
+-- | Apply the current partial substitution to an expression, failing if the
+-- partial substitution is not complete enough. The supplied 'String' is the
+-- calling function, used for error reporting in the failure.
+partialSubstForceM :: (NuMatchingAny1 r, PermPretty a,
+                       Substable PartialSubst a Maybe) =>
+                      Mb vars a -> String -> ImplM vars s r ps ps a
+partialSubstForceM mb_e caller =
   getPSubst >>>= \psubst ->
-  greturn (partialSubstForce psubst mb_e msg)
+  case partialSubst psubst mb_e of
+    Just e -> greturn e
+    Nothing ->
+      implTraceM (\i -> sep [pretty ("Incomplete susbtitution in " ++ caller
+                                     ++ " for:"),
+                             permPretty i mb_e]) >>>= implFailM
 
 -- | Modify the current partial substitution
 modifyPSubst :: (PartialSubst vars -> PartialSubst vars) ->
@@ -4261,13 +4265,13 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
       (l1, mb_l2) ->
         proveEqCast x (\l -> ValPerm_Conj1 $ Perm_LLVMField $
                              fp'' { llvmFieldLifetime = l }) l1 mb_l2 >>>
-        partialSubstForceM mb_l2 "proveVarLLVMFieldFromField: lifetime" >>>= \l2 ->
+        partialSubstForceM mb_l2 "proveVarLLVMFieldFromField" >>>= \l2 ->
         greturn (fp'' { llvmFieldLifetime = l2 })) >>>= \fp''' ->
 
   -- Step 4: prove the contents
   proveVarImpl y (fmap llvmFieldContents mb_fp) >>>
   partialSubstForceM (fmap llvmFieldContents mb_fp)
-  "proveVarLLVMFieldFromField: incomplete field contents" >>>= \p_y ->
+  "proveVarLLVMFieldFromField" >>>= \p_y ->
   introLLVMFieldContentsM x y (fp''' { llvmFieldContents = p_y })
 
 
@@ -4342,7 +4346,7 @@ extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' _ mb_fp
   , PExpr_Read /= llvmFieldRW fp
   , [nuP| PExpr_Read |] <- fmap llvmFieldRW mb_fp
   = partialSubstForceM (fmap llvmFieldLifetime mb_fp)
-    "extractNeededLLVMFieldPerm: incomplete RHS lifetime" >>>= \l2 ->
+    "extractNeededLLVMFieldPerm" >>>= \l2 ->
     -- NOTE: we could allow existential lifetimes on the RHS by just adding some
     -- more cases here
     (case l2 of
@@ -4827,8 +4831,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                 \bp -> nu $ \y ->
                 ValPerm_Conj1 $ Perm_LLVMBlock $
                 bp { llvmBlockShape = PExpr_Var y }) >>>= \(_,sh) ->
-  partialSubstForceM mb_bp
-  "proveVarLLVMBlock: PExpr_EmptyShape: incomplete subst" >>>= \bp ->
+  partialSubstForceM mb_bp "proveVarLLVMBlock" >>>= \bp ->
   implSimplM Proxy (SImpl_CoerceLLVMBlockEmpty x $
                     bp { llvmBlockShape = sh })
 
@@ -4857,8 +4860,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
         >>>= \(_,sh) ->
         partialSubstForceM (fmap (\bp -> (llvmBlockRW bp,
                                           llvmBlockLifetime bp)) mb_bp)
-        "proveVarLLVMBlock: PExpr_EqShape: incomplete subst"
-        >>>= \(rw,l) ->
+        "proveVarLLVMBlock" >>>= \(rw,l) ->
         implElimLLVMBlockToEq x rw l off len sh >>>= \y ->
         setVarM memb (PExpr_Var y)
 
@@ -4896,8 +4898,7 @@ proveVarLLVMBlock x ps off len mb_bp
                    llvmBlockOffset p)
           mb_bp mb_p in
     proveVarImpl x (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp) >>>
-    partialSubstForceM mb_fp
-    "proveVarLLVMBlock: PExpr_FieldShape: incomplete subst" >>>= \fp ->
+    partialSubstForceM mb_fp "proveVarLLVMBlock" >>>= \fp ->
     implSimplM Proxy (SImpl_IntroLLVMBlockField x fp) >>>
     let (LLVMFieldPerm rw l _ p) = fp in
     let sh1 = PExpr_FieldShape $ LLVMFieldShape p in
@@ -4936,8 +4937,8 @@ proveVarLLVMBlock x ps off len mb_bp
 
     -- Substitute into mb_bp and mb_ap to get out their values, and prove a
     -- memblock permission of array shape
-    partialSubstForceM (mbMap2 (,) mb_ap mb_bp)
-    "proveVarLLVMBlock: PExpr_ArrayShape: incomplete subst" >>>= \(ap,bp_out) ->
+    partialSubstForceM (mbMap2 (,)
+                        mb_ap mb_bp) "proveVarLLVMBlock" >>>= \(ap,bp_out) ->
     implSimplM Proxy (SImpl_IntroLLVMBlockArray x ap) >>>
     let sz = llvmArrayLen ap in
     let bp = bp_out { llvmBlockLen = sz } in
@@ -4957,8 +4958,7 @@ proveVarLLVMBlock x ps off len mb_bp
 proveVarLLVMBlock x ps off len mb_bp
   | [nuP| PExpr_SeqShape mb_sh1 mb_sh2 |] <- fmap llvmBlockShape mb_bp
   , [nuP| Just mb_len1 |] <- fmap llvmShapeLength mb_sh1 =
-    partialSubstForceM mb_len1
-    "proveVarLLVMBlock: PExpr_SeqShape: incomplete subst" >>>= \len1 ->
+    partialSubstForceM mb_len1 "proveVarLLVMBlock" >>>= \len1 ->
     implPopM x (ValPerm_Conj ps) >>>
     proveVarImpl x (mbMap2 (\bp sh1 ->
                              ValPerm_Conj1 $ Perm_LLVMBlock $
@@ -4972,7 +4972,7 @@ proveVarLLVMBlock x ps off len mb_bp
                            llvmBlockShape = sh2 })
                     mb_bp mb_sh2) >>>
     partialSubstForceM (mbMap3 (,,) mb_bp mb_sh1 mb_sh2)
-    "proveVarLLVMBlock: PExpr_SeqShape: incomplete subst" >>>= \(bp,sh1,sh2) ->
+    "proveVarLLVMBlock" >>>= \(bp,sh1,sh2) ->
     implSimplM Proxy (SImpl_IntroLLVMBlockSeq x
                       (bp { llvmBlockLen = len1, llvmBlockShape = sh1 })
                       (bvSub len len1) sh2)
@@ -4989,7 +4989,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                             bp { llvmBlockShape = sh2 }))
                   mb_bp mb_sh1 mb_sh2) >>>
   partialSubstForceM (mbMap3 (,,) mb_bp mb_sh1 mb_sh2)
-  "proveVarLLVMBlock: PExpr_SeqShape: incomplete subst" >>>= \(bp,sh1,sh2) ->
+  "proveVarLLVMBlock" >>>= \(bp,sh1,sh2) ->
   implSimplM Proxy (SImpl_IntroLLVMBlockOr x (bp { llvmBlockShape = sh1 }) sh2)
 
 -- If proving an existential shape, prove the existential
@@ -5001,8 +5001,8 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                     ValPerm_Exists $ flip fmap mb_sh $ \sh ->
                     ValPerm_Conj1 $ Perm_LLVMBlock $ bp { llvmBlockShape = sh })
                   mb_bp mb_mb_sh) >>>
-  partialSubstForceM (mbMap2 (,) mb_bp mb_mb_sh)
-  "proveVarLLVMBlock: PExpr_ExShape: incomplete subst" >>>= \(bp,mb_sh) ->
+  partialSubstForceM (mbMap2 (,)
+                      mb_bp mb_mb_sh) "proveVarLLVMBlock" >>>= \(bp,mb_sh) ->
   implSimplM Proxy (SImpl_IntroLLVMBlockEx x (llvmBlockRW bp)
                     (llvmBlockLifetime bp) off len mb_sh)
 
@@ -5063,8 +5063,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
 
         -- Then, finally, we combine these into a proof of
         -- x:[l]memblock(rw,off,len,ptrsh(eq(y));sh')
-        partialSubstForceM mb_bp
-        "proveVarLLVMBlock: variable shape: incomplete subst" >>>= \bp ->
+        partialSubstForceM mb_bp "proveVarLLVMBlock" >>>= \bp ->
         let bp1 = bp { llvmBlockLen = sz, llvmBlockShape = sh1 } in
         implSimplM Proxy (SImpl_IntroLLVMBlockSeq x bp1 (bvSub len sz) sh2)
 
@@ -5095,8 +5094,7 @@ proveVarLLVMBlock x ps off len mb_bp@[nuP| LLVMBlockPerm _ _ _ _
                         ValPerm_Conj1 $ Perm_LLVMBlock $
                         bp1_orig { llvmBlockRW = rw, llvmBlockLifetime = l })
         (llvmBlockRW bp1_orig, llvmBlockLifetime bp1_orig) mb_rw_l >>>
-        partialSubstForceM mb_rw_l
-        "proveVarLLVMBlock: variable shape: incomplete subst" >>>= \(rw,l) ->
+        partialSubstForceM mb_rw_l "proveVarLLVMBlock" >>>= \(rw,l) ->
         let bp1 = bp1_orig { llvmBlockRW = rw, llvmBlockLifetime = l } in
 
         -- Next we prove x:[l]memblock(rw,off+sz,len-sz,sh2) for some sh2
@@ -5250,7 +5248,7 @@ proveVarImplFoldRight x p [nuP| ValPerm_Named mb_npn mb_args mb_off |]
     implPopM x p >>>
     proveVarImpl x (mbMap2 (unfoldPerm np) mb_args mb_off) >>>
     partialSubstForceM (mbMap2 (,) mb_args mb_off)
-    "proveVarImplFoldRight: incomplete psubst: implFold" >>>= \(args,off) ->
+    "proveVarImplFoldRight" >>>= \(args,off) ->
     implFoldNamedM x npn args off
 
 proveVarImplFoldRight _ _ _ =
@@ -5289,27 +5287,24 @@ proveVarAtomicImpl :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] ->
                       ImplM vars s r (ps :> a) (ps :> a) ()
 
 proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMField mb_fp |] =
-  partialSubstForceM (fmap llvmFieldOffset mb_fp)
-  "proveVarPtrPerms: incomplete psubst: LLVM field offset" >>>= \off ->
+  partialSubstForceM (fmap llvmFieldOffset mb_fp) "proveVarPtrPerms" >>>= \off ->
   foldMapWithDefault implCatchM
   (proveVarAtomicImplUnfoldOrFail x ps mb_p)
   (\(i,_) -> proveVarLLVMField x ps i off mb_fp)
   (findMaybeIndices (llvmPermContainsOffset off) ps)
 
 proveVarAtomicImpl x ps mb_p@[nuP| Perm_LLVMArray mb_ap |] =
-  partialSubstForceM mb_ap
-  "proveVarPtrPerms: incomplete psubst: LLVM array" >>>= \ap ->
+  partialSubstForceM mb_ap "proveVarPtrPerms" >>>= \ap ->
   proveVarLLVMArray x True ps ap
 
 proveVarAtomicImpl x ps [nuP| Perm_LLVMBlock mb_bp |] =
   partialSubstForceM (flip fmap mb_bp $ \bp ->
                        (llvmBlockOffset bp, llvmBlockLen bp))
-  "proveVarAtomicImpl: incomlete psubst: LLVM block" >>>= \(off,len) ->
+  "proveVarAtomicImpl" >>>= \(off,len) ->
   proveVarLLVMBlock x ps off len mb_bp
 
 proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFree mb_e |] =
-  partialSubstForceM mb_e
-  "proveVarAtomicImpl: incomplete psubst: LLVM free size" >>>= \e ->
+  partialSubstForceM mb_e "proveVarAtomicImpl" >>>= \e ->
   case findMaybeIndices (\case
                             Perm_LLVMFree e' -> Just e'
                             _ -> Nothing) ps of
@@ -5319,8 +5314,7 @@ proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFree mb_e |] =
     _ -> proveVarAtomicImplUnfoldOrFail x ps ap
 
 proveVarAtomicImpl x ps ap@[nuP| Perm_LLVMFunPtr tp mb_p |] =
-  partialSubstForceM mb_p
-  "proveVarAtomicImpl: incomplete psubst: LLVM function pointer" >>>= \p ->
+  partialSubstForceM mb_p "proveVarAtomicImpl" >>>= \p ->
   case elemIndex (Perm_LLVMFunPtr (mbLift tp) p) ps of
     Just i -> implCopyConjM x ps i >>> implPopM x (ValPerm_Conj ps)
     _ -> proveVarAtomicImplUnfoldOrFail x ps ap
@@ -5371,8 +5365,8 @@ proveVarAtomicImpl x ps [nuP| Perm_NamedConj mb_n mb_args mb_off |] =
   let n = mbLift mb_n in
   proveVarImplH x (ValPerm_Conj ps) (mbMap2 (ValPerm_Named n)
                                      mb_args mb_off) >>>
-  partialSubstForceM (mbMap2 (,) mb_args mb_off)
-  "proveVarAtomicImpl: incomplete named permission" >>>= \(args,off) ->
+  partialSubstForceM (mbMap2 (,)
+                      mb_args mb_off) "proveVarAtomicImpl" >>>= \(args,off) ->
   implNamedToConjM x n args off
 
 proveVarAtomicImpl x aps@[Perm_LLVMFrame
@@ -5385,8 +5379,7 @@ proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned mb_ps |] =
   implCastPermM x (fmap (ValPerm_Conj1 . Perm_LOwned) eqp)
 
 proveVarAtomicImpl x ps p@[nuP| Perm_LCurrent mb_l' |] =
-  partialSubstForceM mb_l'
-  "proveVarAtomicImpl: incomplete lcurrent perms" >>>= \l' ->
+  partialSubstForceM mb_l' "proveVarAtomicImpl" >>>= \l' ->
   case ps of
     _ | l' == PExpr_Var x ->
         implPopM x (ValPerm_Conj ps) >>>
@@ -5410,8 +5403,7 @@ proveVarAtomicImpl x [Perm_Fun fun_perm] [nuP| Perm_Fun (PExpr_Var z) |]
 -}
 
 proveVarAtomicImpl x ps mb_p@[nuP| Perm_Fun mb_fun_perm |] =
-  partialSubstForceM mb_fun_perm
-  "proveVarAtomicImpl: incomplete function perm" >>>= \fun_perm' ->
+  partialSubstForceM mb_fun_perm "proveVarAtomicImpl" >>>= \fun_perm' ->
   foldr (\(i::Int,p) rest ->
           case p of
             Perm_Fun fun_perm
@@ -5423,8 +5415,7 @@ proveVarAtomicImpl x ps mb_p@[nuP| Perm_Fun mb_fun_perm |] =
 
 proveVarAtomicImpl x ps [nuP| Perm_BVProp mb_prop |] =
   implPopM x (ValPerm_Conj ps) >>>
-  partialSubstForceM mb_prop
-  "proveVarAtomicImpl: incomplete bitvector proposition" >>>= \prop ->
+  partialSubstForceM mb_prop "proveVarAtomicImpl" >>>= \prop ->
   implTryProveBVProp x prop
 
 proveVarAtomicImpl x aps mb_ap = proveVarAtomicImplUnfoldOrFail x aps mb_ap
@@ -5471,8 +5462,8 @@ proveVarConjImpl x ps mb_ps =
   proveVarAtomicImpl x ps mb_p >>>
   let mb_ps' = fmap (deleteNth i) mb_ps in
   proveVarImpl x (fmap ValPerm_Conj mb_ps') >>>
-  (partialSubstForceM (mbMap2 (,) mb_ps' mb_p)
-   "Incomplete psubst in proveVarConjImpl") >>>= \(ps',p) ->
+  (partialSubstForceM (mbMap2 (,)
+                       mb_ps' mb_p) "proveVarConjImpl") >>>= \(ps',p) ->
   implInsertConjM x p ps' i
 
 
@@ -5490,7 +5481,7 @@ proveVarImpl x mb_p =
   proveVarImplH x p mb_p >>>
 
   -- Check that the top of the stack == mb_p
-  partialSubstForceM mb_p "proveVarImpl: incomplete psubst" >>>= \p_req ->
+  partialSubstForceM mb_p "proveVarImpl" >>>= \p_req ->
   getTopDistPerm x >>>= \p_actual ->
   if p_req == p_actual then greturn () else
     implTraceM (\i ->
@@ -5528,16 +5519,14 @@ proveVarImplH x p@(ValPerm_Eq (PExpr_Var y)) mb_p =
   introEqCopyM x (PExpr_Var y) >>>
   implPopM x p >>>
   proveVarImpl y mb_p >>>
-  partialSubstForceM mb_p
-  "proveVarImpl: incomplete psubst: introCast" >>>= \p' ->
+  partialSubstForceM mb_p "proveVarImpl" >>>= \p' ->
   introCastM x y p'
 
 -- Prove x:eq(y &+ off) |- x:p by proving y:p@off and then casting
 proveVarImplH x p@(ValPerm_Eq e@(PExpr_LLVMOffset y off)) mb_p =
     introEqCopyM x e >>> implPopM x p >>>
     proveVarImpl y (fmap (offsetLLVMPerm off) mb_p) >>>
-    partialSubstForceM mb_p
-    "proveVarImpl: incomplete psubst: castLLVMPtr" >>>= \p_r ->
+    partialSubstForceM mb_p "proveVarImpl" >>>= \p_r ->
     castLLVMPtrM y (offsetLLVMPerm off p_r) off x
 
 -- Prove x:(p1 \/ p2) by trying to prove x:p1 and x:p2 in two branches
@@ -5545,22 +5534,18 @@ proveVarImplH x p [nuP| ValPerm_Or mb_p1 mb_p2 |] =
   implPopM x p >>>
   implCatchM
   (proveVarImpl x mb_p1 >>>
-   partialSubstForceM mb_p1
-   "proveVarImpl: incomplete psubst: introOrL" >>>= \p1 ->
-    partialSubstForceM mb_p2
-   "proveVarImpl: incomplete psubst: introOrL"  >>>= \p2 ->
+   partialSubstForceM mb_p1 "proveVarImpl" >>>= \p1 ->
+    partialSubstForceM mb_p2 "proveVarImpl"  >>>= \p2 ->
     introOrLM x p1 p2)
   (proveVarImpl x mb_p2 >>>
-   partialSubstForceM mb_p1
-   "proveVarImpl: incomplete psubst: introOrR" >>>= \p1 ->
-    partialSubstForceM mb_p2
-    "proveVarImpl: incomplete psubst: introOrR"  >>>= \p2 ->
+   partialSubstForceM mb_p1 "proveVarImpl" >>>= \p1 ->
+    partialSubstForceM mb_p2 "proveVarImpl"  >>>= \p2 ->
     introOrRM x p1 p2)
 
 -- Prove x:exists (z:tp).p by proving x:p in an extended vars context
 proveVarImplH x p [nuP| ValPerm_Exists mb_p |] =
   withExtVarsM (proveVarImplH x p $ mbCombine mb_p) >>>= \((), e) ->
-  partialSubstForceM mb_p "proveVarImpl: incomplete psubst: introExists" >>>=
+  partialSubstForceM mb_p "proveVarImpl" >>>=
   introExistsM x e
 
 -- If proving P<args1,p1> |- P<args2,p2> for the same reachability permission,
@@ -5576,16 +5561,14 @@ proveVarImplH x p@(ValPerm_Named npn args off) mb_p@[nuP| ValPerm_Named
   , [nuP| PExprs_Cons mb_args' (PExpr_ValPerm mb_p') |] <- mb_args =
     implCatchM
     (implPopM x p >>> proveVarImpl x mb_p' >>>
-     partialSubstForceM mb_args
-     "proveVarImpl: incomplete psubst: reachability perm" >>>= \args' ->
+     partialSubstForceM mb_args "proveVarImpl" >>>= \args' ->
       implReachabilityReflM x npn args' off)
     ((if permIsCopyable p then implCopyM x p >>> implPopM x p
       else greturn ()) >>>
      implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
      implElimReachabilityPermM x npn args off >>>= \y ->
      proveVarImpl y mb_p >>>
-     partialSubstForceM mb_args
-     "proveNamedArg: incomplete psubst: mb_args" >>>= \args' ->
+     partialSubstForceM mb_args "proveVarImpl" >>>= \args' ->
      implReachabilityTransM x npn args' off y)
 
 

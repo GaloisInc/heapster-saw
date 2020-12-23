@@ -248,6 +248,16 @@ permPrettyString info a = renderDoc $ permPretty info a
 tracePretty :: Doc ann -> a -> a
 tracePretty doc = trace (renderDoc doc)
 
+instance (PermPretty a, PermPretty b) => PermPretty (a,b) where
+  permPrettyM (a,b) = tupled <$> sequence [permPrettyM a, permPrettyM b]
+
+instance (PermPretty a, PermPretty b, PermPretty c) => PermPretty (a,b,c) where
+  permPrettyM (a,b,c) =
+    tupled <$> sequence [permPrettyM a, permPrettyM b, permPrettyM c]
+
+instance PermPretty a => PermPretty [a] where
+  permPrettyM as = list <$> mapM permPrettyM as
+
 instance PermPretty (ExprVar a) where
   permPrettyM x =
     do maybe_str <- NameMap.lookup x <$> ppExprNames <$> ask
@@ -2053,12 +2063,15 @@ permPrettyLLVMField in_array (fld@(LLVMFieldPerm {..}) :: LLVMFieldPerm w sz) =
              (hang 2
               (pp_parens <+> pretty "|->" <> softline <> pp_contents)))
 
+instance (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+         PermPretty (LLVMFieldPerm w sz) where
+  permPrettyM = permPrettyLLVMField False
+
 instance KnownNat w => PermPretty (LLVMArrayField w) where
   permPrettyM (LLVMArrayField fp) = permPrettyLLVMField True fp
 
-instance PermPretty (AtomicPerm a) where
-  permPrettyM (Perm_LLVMField fp) = permPrettyLLVMField False fp
-  permPrettyM (Perm_LLVMArray (LLVMArrayPerm {..})) =
+instance (1 <= w, KnownNat w) => PermPretty (LLVMArrayPerm w) where
+  permPrettyM (LLVMArrayPerm {..}) =
     do pp_off <- permPrettyM llvmArrayOffset
        pp_len <- permPrettyM llvmArrayLen
        let pp_stride = pretty (show llvmArrayStride)
@@ -2068,7 +2081,9 @@ instance PermPretty (AtomicPerm a) where
                parens (ppCommaSep [pp_off, pretty "<" <> pp_len,
                                       pretty "*" <> pp_stride,
                                       list pp_flds, list pp_bs]))
-  permPrettyM (Perm_LLVMBlock (LLVMBlockPerm {..})) =
+
+instance (1 <= w, KnownNat w) => PermPretty (LLVMBlockPerm w) where
+  permPrettyM (LLVMBlockPerm {..}) =
     do pp_rw <- permPrettyM llvmBlockRW
        pp_l <-
          if llvmBlockLifetime == PExpr_Always then return (pretty "")
@@ -2078,6 +2093,11 @@ instance PermPretty (AtomicPerm a) where
        pp_sh <- permPrettyM llvmBlockShape
        return (pp_l <> pretty "memblock" <>
                parens (ppCommaSep [pp_rw, pp_off, pp_len, pp_sh]))
+
+instance PermPretty (AtomicPerm a) where
+  permPrettyM (Perm_LLVMField fp) = permPrettyLLVMField False fp
+  permPrettyM (Perm_LLVMArray ap) = permPrettyM ap
+  permPrettyM (Perm_LLVMBlock bp) = permPrettyM bp
   permPrettyM (Perm_LLVMBlockShape sh) =
     ((pretty "shape" <>) . parens) <$> permPrettyM sh
   permPrettyM (Perm_LLVMFree e) = (pretty "free" <+>) <$> permPrettyM e
