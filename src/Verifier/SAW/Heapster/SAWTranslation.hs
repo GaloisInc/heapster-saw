@@ -2372,7 +2372,7 @@ translateSimplImpl _ [nuP| SImpl_LLVMArrayRearrange _ _ mb_ap2 |] m =
 translateSimplImpl _ simpl@[nuP| SImpl_LLVMArrayToField _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
-       (\(pctx :>: _) -> pctx :>: typeTransF ttrans [unitOpenTerm])
+       (\(pctx :>: _) -> pctx :>: typeTransF ttrans [])
        m
 
 translateSimplImpl _ [nuP| SImpl_LLVMArrayEmpty x mb_ap |] m =
