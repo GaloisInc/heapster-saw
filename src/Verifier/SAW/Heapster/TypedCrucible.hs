@@ -419,6 +419,13 @@ data TypedLLVMStmt w ret ps_in ps_out where
                             TypedLLVMStmt w (LLVMPointerType w)
                             RNil (RNil :> LLVMPointerType w)
 
+  -- | An if-then-else statement over LLVM values
+  TypedLLVMIte :: (1 <= w2, KnownNat w2) =>
+                  !(TypedReg BoolType) -> !(TypedReg (LLVMPointerType w2)) ->
+                  !(TypedReg (LLVMPointerType w2)) ->
+                  TypedLLVMStmt w (LLVMPointerType w2) RNil
+                  (RNil :> LLVMPointerType w2)
+
 
 -- | Return the input permissions for a 'TypedStmt'
 typedStmtIn :: TypedStmt ext rets ps_in ps_out -> DistPerms ps_in
@@ -482,6 +489,7 @@ typedLLVMStmtIn (TypedLLVMLoadHandle (TypedReg f) tp p) =
   distPerms1 f (ValPerm_Conj1 $ Perm_LLVMFunPtr tp p)
 typedLLVMStmtIn (TypedLLVMResolveGlobal _ _) =
   DistPermsNil
+typedLLVMStmtIn (TypedLLVMIte _ _ _) = DistPermsNil
 
 -- | Return the output permissions for a 'TypedStmt'
 typedStmtOut :: TypedStmt ext rets ps_in ps_out -> RAssign Name rets ->
@@ -543,6 +551,9 @@ typedLLVMStmtOut (TypedLLVMDeleteFrame _ _ _) _ = DistPermsNil
 typedLLVMStmtOut (TypedLLVMLoadHandle _ _ p) ret = distPerms1 ret p
 typedLLVMStmtOut (TypedLLVMResolveGlobal _ p) ret =
   distPerms1 ret p
+typedLLVMStmtOut (TypedLLVMIte _ (TypedReg x1) (TypedReg x2)) ret =
+  distPerms1 ret (ValPerm_Or (ValPerm_Eq $ PExpr_Var x1)
+                  (ValPerm_Eq $ PExpr_Var x2))
 
 
 -- | Check that the permission stack of the given permission set matches the
@@ -666,6 +677,8 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
           SubstVar PermVarSubst m, Substable1 PermVarSubst f m,
           Substable PermVarSubst (f BoolType) m) =>
          Substable PermVarSubst (App ext f a) m where
+  genSubst s [nuP| ExtensionApp _ |] =
+    error "genSubst: unexpected ExtensionApp"
   genSubst s [nuP| BaseIsEq tp e1 e2 |] =
     BaseIsEq (mbLift tp) <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| EmptyApp |] = return EmptyApp
@@ -798,6 +811,8 @@ instance SubstVar PermVarSubst m =>
     TypedLLVMLoadHandle <$> genSubst s r <*> return (mbLift tp) <*> genSubst s p
   genSubst s [nuP| TypedLLVMResolveGlobal gsym p |] =
     TypedLLVMResolveGlobal (mbLift gsym) <$> genSubst s p
+  genSubst s [nuP| TypedLLVMIte r1 r2 r3 |] =
+    TypedLLVMIte <$> genSubst s r1 <*> genSubst s r2 <*> genSubst s r3
 
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
@@ -2430,7 +2445,7 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerOffset w ptr_reg) =
 
 -- An if-then-else at pointer type is just preserved, though we propogate
 -- equality information when possible
-tcEmitLLVMSetExpr arch ctx loc e@(LLVM_PointerIte w cond_reg then_reg else_reg) =
+tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerIte w cond_reg then_reg else_reg) =
   withKnownNat w $
   let tcond_reg = tcReg ctx cond_reg
       tthen_reg = tcReg ctx then_reg
@@ -2448,10 +2463,8 @@ tcEmitLLVMSetExpr arch ctx loc e@(LLVM_PointerIte w cond_reg then_reg else_reg) 
       stmtRecombinePerms >>>
       greturn (addCtxName ctx ret)
     _ ->
-      traverseFC (tcRegWithVal ctx) e >>>= \e_with_vals ->
-      emitStmt knownRepr loc (TypedSetReg knownRepr $
-                              TypedExpr (ExtensionApp e_with_vals)
-                              Nothing) >>>= \(_ :>: ret) ->
+      emitLLVMStmt knownRepr loc (TypedLLVMIte
+                                  tcond_reg tthen_reg telse_reg) >>>= \ret ->
       stmtRecombinePerms >>>
       greturn (addCtxName ctx ret)
 

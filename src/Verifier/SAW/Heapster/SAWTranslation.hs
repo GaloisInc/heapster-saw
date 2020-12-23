@@ -3670,6 +3670,15 @@ translateLLVMStmt [nuP| TypedLLVMResolveGlobal gsym
        Just (_, ts) ->
          withPermStackM (:>: Member_Base) (:>: typeTransF ptrans ts) m
 
+translateLLVMStmt mb_stmt@[nuP| TypedLLVMIte mb_r1 _ _ |] m =
+  inExtTransM ETrans_LLVM $
+  do b <- translate1 $ extMb mb_r1
+     tptrans <-
+       translate $ mbCombine $ flip fmap mb_stmt $ \stmt -> nu $ \ret ->
+       distPermsHeadPerm $ typedLLVMStmtOut stmt ret
+     let t = applyOpenTerm (globalOpenTerm "Prelude.boolToEither") b
+     withPermStackM (:>: Member_Base) (:>: typeTransF tptrans [t]) m
+
 
 ----------------------------------------------------------------------
 -- * Translating Sequences of Typed Crucible Statements
