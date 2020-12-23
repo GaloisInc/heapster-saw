@@ -2007,7 +2007,8 @@ instance PermPretty (ValuePerm a) where
     do n_pp <- permPrettyM n
        args_pp <- permPrettyM args
        off_pp <- permPrettyM off
-       return (n_pp <> pretty '<' <> args_pp <> pretty '>' <> off_pp)
+       return (n_pp <> pretty '<' <>
+               align (args_pp <> pretty '>') <> off_pp)
   permPrettyM (ValPerm_Var n off) =
     do n_pp <- permPrettyM n
        off_pp <- permPrettyM off
