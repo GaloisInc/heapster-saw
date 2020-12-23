@@ -14,3 +14,7 @@ Import rust_data.
 Import SAWCorePrelude.
 
 Print test_result__tuple_fun.
+
+Print test_sum_impl__tuple_fun.
+
+Print list_is_empty__tuple_fun.
