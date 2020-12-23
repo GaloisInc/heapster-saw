@@ -4437,6 +4437,11 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' psubst mb_fp
                  Perm_LLVMArray sub_ap) x (ValPerm_Conj1 $
                                            Perm_LLVMArray ap') >>>
     implSimplM Proxy (SImpl_LLVMArrayToField x sub_ap sz) >>>
+    -- NOTE: extractNeededLLVMFieldPerm is responsible for setting the
+    -- rwmodality, so we include this proveEqCast for just it here
+    proveEqCast x (\rw -> ValPerm_Conj1 $ Perm_LLVMField $
+                          fp { llvmFieldRW = rw })
+    (llvmFieldRW fp) (fmap llvmFieldRW mb_fp) >>>
     implSwapM x (ValPerm_Conj1 $
                  Perm_LLVMArray ap') x (ValPerm_Conj1 $
                                         Perm_LLVMField fp) >>>
