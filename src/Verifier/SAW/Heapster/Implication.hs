@@ -691,6 +691,13 @@ data SimplImpl ps_in ps_out where
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
+  -- | Convert a memblock permission of shape @sh@ to one of shape @sh;emptysh@:
+  --
+  -- > x:memblock(rw,l,off,len,sh) -o x:memblock(rw,l,off,len,sh;emptysh)
+  SImpl_IntroLLVMBlockSeqEmpty ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
   -- | Convert a memblock permission of shape @sh;emptysh@ to one of shape @sh@:
   --
   -- > x:memblock(rw,l,off,len,sh;emptysh) -o x:memblock(rw,l,off,len,sh)
@@ -717,12 +724,14 @@ data SimplImpl ps_in ps_out where
     ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
-  -- | Eliminate a block of field shape to the corresponding field permission:
+  -- | Eliminate a block of field shape to the corresponding field permission
+  -- plus an empty memblock for the remaining @len@, which is the extra arg:
   --
-  -- > x:memblock(rw,l,off,sz,ptrsh(sz,p)) -o x:[l]ptr((rw,off,sz) |-> p)
+  -- > x:[l]memblock(rw,off,len,ptrsh(sz,p))
+  -- >   -o x:[l]ptr((rw,off,sz) |-> p) * [l]memblock(rw,off+sz,len-sz,emptysh)
   SImpl_ElimLLVMBlockField ::
     (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
-    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
+    ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz -> PermExpr (BVType w) ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Prove a block of array shape from the corresponding array permission:
@@ -1421,6 +1430,8 @@ simplImplIn (SImpl_CoerceLLVMBlockEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplIn (SImpl_ElimLLVMBlockToBytes x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+simplImplIn (SImpl_IntroLLVMBlockSeqEmpty x bp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplIn (SImpl_ElimLLVMBlockSeqEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
                 bp { llvmBlockShape =
@@ -1431,15 +1442,16 @@ simplImplIn (SImpl_IntroLLVMBlockFromEq x bp y) =
   y (ValPerm_Conj1 $ Perm_LLVMBlockShape $ llvmBlockShape bp)
 simplImplIn (SImpl_IntroLLVMBlockField x fp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMField fp)
-simplImplIn (SImpl_ElimLLVMBlockField x fp) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $ llvmFieldPermToBlock fp)
+simplImplIn (SImpl_ElimLLVMBlockField x fp len) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                (llvmFieldPermToBlock fp) { llvmBlockLen = len })
 simplImplIn (SImpl_IntroLLVMBlockArray x ap) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap)
 simplImplIn (SImpl_ElimLLVMBlockArray x ap) =
   case llvmAtomicPermToBlock (Perm_LLVMArray ap) of
     Just bp -> distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
     Nothing ->
-      error "simplImplIn: SImpl_ElimLLVMBlockField: malformed array permission"
+      error "simplImplIn: SImpl_ElimLLVMBlockArray: malformed array permission"
 simplImplIn (SImpl_IntroLLVMBlockSeq x bp1 len2 sh2) =
   distPerms2
   x (ValPerm_Conj1 $ Perm_LLVMBlock bp1)
@@ -1692,14 +1704,25 @@ simplImplOut (SImpl_CoerceLLVMBlockEmpty x bp) =
 simplImplOut (SImpl_ElimLLVMBlockToBytes x (LLVMBlockPerm {..})) =
   distPerms1 x (llvmByteArrayPerm llvmBlockOffset llvmBlockLen
                 llvmBlockRW llvmBlockLifetime)
+simplImplOut (SImpl_IntroLLVMBlockSeqEmpty x bp) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                bp { llvmBlockShape =
+                       PExpr_SeqShape (llvmBlockShape bp) PExpr_EmptyShape })
 simplImplOut (SImpl_ElimLLVMBlockSeqEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplOut (SImpl_IntroLLVMBlockFromEq x bp _) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplOut (SImpl_IntroLLVMBlockField x fp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $ llvmFieldPermToBlock fp)
-simplImplOut (SImpl_ElimLLVMBlockField x fp) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMField fp)
+simplImplOut (SImpl_ElimLLVMBlockField x fp len) =
+  let bp_fp = llvmFieldPermToBlock fp
+      sz = llvmFieldLen fp in
+  distPerms1 x (ValPerm_Conj
+                [Perm_LLVMField fp,
+                 Perm_LLVMBlock $
+                 bp_fp { llvmBlockOffset = bvAdd (llvmFieldOffset fp) sz,
+                         llvmBlockLen = bvSub len sz,
+                         llvmBlockShape = PExpr_EmptyShape }])
 simplImplOut (SImpl_IntroLLVMBlockArray x ap) =
   case llvmAtomicPermToBlock (Perm_LLVMArray ap) of
     Just bp -> distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
@@ -2013,6 +2036,8 @@ instance SubstVar PermVarSubst m =>
     SImpl_CoerceLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_ElimLLVMBlockToBytes x bp |] =
     SImpl_ElimLLVMBlockToBytes <$> genSubst s x <*> genSubst s bp
+  genSubst s [nuP| SImpl_IntroLLVMBlockSeqEmpty x bp |] =
+    SImpl_IntroLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_ElimLLVMBlockSeqEmpty x bp |] =
     SImpl_ElimLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_IntroLLVMBlockFromEq x bp y |] =
@@ -2020,8 +2045,9 @@ instance SubstVar PermVarSubst m =>
     <*> genSubst s y
   genSubst s [nuP| SImpl_IntroLLVMBlockField x fp |] =
     SImpl_IntroLLVMBlockField <$> genSubst s x <*> genSubst s fp
-  genSubst s [nuP| SImpl_ElimLLVMBlockField x fp |] =
+  genSubst s [nuP| SImpl_ElimLLVMBlockField x fp len |] =
     SImpl_ElimLLVMBlockField <$> genSubst s x <*> genSubst s fp
+    <*> genSubst s len
   genSubst s [nuP| SImpl_IntroLLVMBlockArray x fp |] =
     SImpl_IntroLLVMBlockArray <$> genSubst s x <*> genSubst s fp
   genSubst s [nuP| SImpl_ElimLLVMBlockArray x fp |] =
@@ -3514,14 +3540,15 @@ implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
   let bp' = bp { llvmBlockShape = sh } in
   implSimplM Proxy (SImpl_IntroLLVMBlockFromEq x bp' y) >>>
   implElimLLVMBlock x bp'
-implElimLLVMBlock x (LLVMBlockPerm { llvmBlockShape =
-                                       PExpr_FieldShape (LLVMFieldShape p)
-                                   , ..}) =
-  implSimplM Proxy (SImpl_ElimLLVMBlockField x $ LLVMFieldPerm
-                    { llvmFieldRW = llvmBlockRW,
-                      llvmFieldLifetime = llvmBlockLifetime,
-                      llvmFieldOffset = llvmBlockOffset,
-                      llvmFieldContents = p })
+implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
+                                        PExpr_FieldShape (LLVMFieldShape p)
+                                      , ..}) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockField x
+                    (LLVMFieldPerm { llvmFieldRW = llvmBlockRW,
+                                     llvmFieldLifetime = llvmBlockLifetime,
+                                     llvmFieldOffset = llvmBlockOffset,
+                                     llvmFieldContents = p })
+                    llvmBlockLen)
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
                                           PExpr_SeqShape sh1 sh2, ..})
   | len1 <- llvmShapeLength sh1 =
