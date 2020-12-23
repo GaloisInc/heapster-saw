@@ -523,6 +523,16 @@ data SimplImpl ps_in ps_out where
     ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
+  -- | Convert an array to a field of the same size with @true@ contents:
+  --
+  -- > x:array(off,<(sz/stride/8),*stride,fps,[]) -o x:[l]ptr((rw,off) |-> true)
+  --
+  -- where all @fps@ must have the same @rw@ and @l@
+  SImpl_LLVMArrayToField ::
+    (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+    ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> NatRepr sz ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
   -- | Prove an empty array with length 0:
   --
   -- > -o x:array(off,<0,*stride,fps,[])
@@ -1364,6 +1374,9 @@ simplImplIn (SImpl_LLVMArrayRearrange x ap1 ap2) =
   else
     error "simplImplIn: SImpl_LLVMArrayRearrange: arrays not equivalent"
 
+simplImplIn (SImpl_LLVMArrayToField x ap _) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap)
+
 simplImplIn (SImpl_LLVMArrayEmpty x ap) =
   if bvEq (llvmArrayLen ap) (bvInt 0) && llvmArrayBorrows ap == [] then
     DistPermsNil
@@ -1622,6 +1635,12 @@ simplImplOut (SImpl_LLVMArrayRearrange x ap1 ap2) =
     distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap2)
   else
     error "simplImplOut: SImpl_LLVMArrayRearrange: arrays not equivalent"
+
+simplImplOut (SImpl_LLVMArrayToField x ap sz) =
+  case llvmArrayToField sz ap of
+    Just fp -> distPerms1 x (ValPerm_Conj1 $ Perm_LLVMField fp)
+    Nothing ->
+      error "simplImplOut: SImpl_LLVMArrayToField: malformed array permission"
 
 simplImplOut (SImpl_LLVMArrayEmpty x ap) =
   if bvEq (llvmArrayLen ap) (bvInt 0) && llvmArrayBorrows ap == [] then
@@ -1996,6 +2015,9 @@ instance SubstVar PermVarSubst m =>
     SImpl_LLVMArrayAppend <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
   genSubst s [nuP| SImpl_LLVMArrayRearrange x ap1 ap2 |] =
     SImpl_LLVMArrayRearrange <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
+  genSubst s [nuP| SImpl_LLVMArrayToField x ap sz |] =
+    SImpl_LLVMArrayToField <$> genSubst s x <*> genSubst s ap
+    <*> return (mbLift sz)
   genSubst s [nuP| SImpl_LLVMArrayEmpty x ap |] =
     SImpl_LLVMArrayEmpty <$> genSubst s x <*> genSubst s ap
   genSubst s [nuP| SImpl_LLVMArrayOneCell x ap |] =
@@ -3400,7 +3422,9 @@ implLLVMArrayIndexReturn ::
 implLLVMArrayIndexReturn x ap ix =
   implSimplM Proxy (SImpl_LLVMArrayIndexReturn x ap ix)
 
--- | Borrow a sub-array from an array as per 'SImpl_LLVMArrayBorrow'
+-- | Borrow a sub-array from an array as per 'SImpl_LLVMArrayBorrow', leaving
+-- the remainder of the larger array on the top of the stack and the borrowed
+-- sub-array just beneath it
 implLLVMArrayBorrow ::
   (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
@@ -4357,8 +4381,9 @@ extractNeededLLVMFieldPerm x (Perm_LLVMField fp) off' _ mb_fp
   = introConjM x >>> greturn (fp, Nothing)
 
 -- If proving x:array(off,<len,*stride,fps,bs) |- x:ptr((R,off) |-> p) such that
--- off=i*stride+j and the jth field of the ith index of the array is a read
--- containing only copyable permissions, copy that field
+-- off=i*stride+j and the jth field of the ith index of the array is of the
+-- right size and is a read containing only copyable permissions, copy that
+-- field
 extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' _ mb_fp
   | Just ix <- matchLLVMArrayField ap off'
   , LLVMArrayField fp <- llvmArrayFieldWithOffset ap ix
@@ -4371,7 +4396,8 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' _ mb_fp
     greturn (fp, Just (Perm_LLVMArray ap))
 
 -- If proving x:array(off,<len,*stride,fps,bs) |- x:ptr((rw,off) |-> p) such
--- that off=i*stride+j in any other case, borrow that field
+-- that off=i*stride+j and the corresponding array field is of the right size in
+-- any other case, borrow that field
 extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' psubst mb_fp
   | Just ix <- matchLLVMArrayField ap off'
   , LLVMArrayField fp <- llvmArrayFieldWithOffset ap ix
@@ -4389,6 +4415,29 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' psubst mb_fp
     implSwapM x (ValPerm_Conj1 $
                  Perm_LLVMArray ap') x (ValPerm_Conj1 $ Perm_LLVMField fp) >>>
     greturn (fp', Just (Perm_LLVMArray ap'))
+
+-- If proving x:array(off,<len,*stride,fps,bs) |- x:ptr((rw,off) |-> p) such
+-- that off=i*stride+j but the corresponding array field is of a smaller size,
+-- borrow a sub-array for the correct size and cast it to a field permission
+extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' psubst mb_fp
+  | stride_bits <- llvmArrayStrideBits ap
+  , sz <- mbLift $ fmap llvmFieldSize mb_fp
+  , len <- bvInt (intValue sz `div` stride_bits)
+  , sub_ap <- ap { llvmArrayOffset = off', llvmArrayLen = len,
+                   llvmArrayBorrows = [] }
+  , isJust $ llvmArrayIsOffsetArray ap sub_ap
+  , Just fp <- llvmArrayToField sz sub_ap
+  , ap' <- llvmArrayAddBorrow (llvmSubArrayBorrow ap sub_ap) ap =
+    implLLVMArrayBorrow x ap sub_ap >>>
+    implSwapM x (ValPerm_Conj1 $
+                 Perm_LLVMArray sub_ap) x (ValPerm_Conj1 $
+                                           Perm_LLVMArray ap') >>>
+    implSimplM Proxy (SImpl_LLVMArrayToField x sub_ap sz) >>>
+    implSwapM x (ValPerm_Conj1 $
+                 Perm_LLVMArray ap') x (ValPerm_Conj1 $
+                                        Perm_LLVMField fp) >>>
+    greturn (fp, Just (Perm_LLVMArray ap'))
+
 
 -- All other cases fail
 extractNeededLLVMFieldPerm x ap _ _ mb_fp =

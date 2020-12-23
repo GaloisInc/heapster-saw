@@ -1085,12 +1085,12 @@ bvAdd (bvMatch -> (factors1, const1)) (bvMatch -> (factors2, const2)) =
   PExpr_BV (bvMergeFactors factors1 factors2) (BV.add knownNat const1 const2)
 
 -- | Multiply a bitvector expression by a constant
-bvMult :: (1 <= w, KnownNat w) => Integer -> PermExpr (BVType w) ->
+bvMult :: (1 <= w, KnownNat w, Integral a) => a -> PermExpr (BVType w) ->
           PermExpr (BVType w)
 bvMult i (PExpr_Var x) =
-  PExpr_BV [BVFactor (BV.mkBV knownNat i) x] $ BV.zero knownNat
+  PExpr_BV [BVFactor (BV.mkBV knownNat $ toInteger i) x] $ BV.zero knownNat
 bvMult i (PExpr_BV factors off) =
-  let i_bv = BV.mkBV knownNat i in
+  let i_bv = BV.mkBV knownNat $ toInteger i in
   PExpr_BV (map (\(BVFactor j x) -> BVFactor (BV.mul knownNat i_bv j) x) factors)
   (BV.mul knownNat i_bv off)
 
@@ -1421,6 +1421,10 @@ data LLVMArrayPerm w =
                   -- ^ Indices or index ranges that are missing from this array
                 }
   deriving Eq
+
+-- | Get the stride of an array in bits
+llvmArrayStrideBits :: LLVMArrayPerm w -> Integer
+llvmArrayStrideBits = toInteger . bytesToBits . llvmArrayStride
 
 -- | An index or range of indices that are missing from an array perm
 --
@@ -2759,6 +2763,24 @@ cellOffsetLLVMArrayBorrow off (FieldBorrow (LLVMArrayIndex ix fld_num)) =
   FieldBorrow (LLVMArrayIndex (bvAdd ix off) fld_num)
 cellOffsetLLVMArrayBorrow off (RangeBorrow rng) =
   RangeBorrow $ offsetBVRange off rng
+
+-- | Convert an array permission into a field permission of the same size with a
+-- @true@ permission, if possible
+llvmArrayToField :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                    NatRepr sz -> LLVMArrayPerm w -> Maybe (LLVMFieldPerm w sz)
+llvmArrayToField sz ap
+  | LLVMArrayField fp : _ <- llvmArrayFields ap
+  , (rw,l) <- (llvmFieldRW fp, llvmFieldLifetime fp)
+  , all (\(LLVMArrayField fp') -> rw == llvmFieldRW fp' &&
+                                  l == llvmFieldLifetime fp')
+    (llvmArrayFields ap)
+  , [] <- llvmArrayBorrows ap
+  , bvEq (bvMult (bytesToBits $
+                  llvmArrayStride ap) (llvmArrayLen ap)) (bvInt $ intValue sz) =
+    Just $ LLVMFieldPerm { llvmFieldRW = rw, llvmFieldLifetime = l,
+                           llvmFieldOffset = llvmArrayOffset ap,
+                           llvmFieldContents = ValPerm_True }
+llvmArrayToField _ _ = Nothing
 
 -- | Test if a byte offset @o@ statically aligns with a field in an array, i.e.,
 -- whether
