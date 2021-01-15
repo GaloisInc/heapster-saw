@@ -1707,9 +1707,9 @@ instance TransInfo info =>
          Translate info ctx (FunPerm ghosts args ret) OpenTerm where
   translate ([nuP| FunPerm ghosts args ret perms_in perms_out |]) =
     piExprCtx (appendCruCtx (mbLift ghosts) (mbLift args)) $
-    piPermCtx (mbCombine $ fmap mbCombine perms_in) $ \_ ->
+    piPermCtx (mbCombine perms_in) $ \_ ->
     applyTransM (return $ globalOpenTerm "Prelude.CompM") $
-    translateRetType (mbLift ret) $ mbCombine $ fmap mbCombine perms_out
+    translateRetType (mbLift ret) $ mbCombine perms_out
 
 -- | Lambda-abstraction over a permission
 lambdaPermTrans :: TransInfo info => String -> Mb ctx (ValuePerm a) ->
@@ -3493,7 +3493,7 @@ translateStmt _ [nuP| TypedSetRegPermExpr _ e |] m =
      inExtTransM etrans $
        withPermStackM (:>: Member_Base) (:>: PTrans_Eq (extMb e)) m
 
-translateStmt _ [nuP| stmt@(TypedCall freg fun_perm ghosts args) |] m =
+translateStmt _ [nuP| stmt@(TypedCall freg fun_perm _ gexprs args) |] m =
   do f_trans <- getTopPermM
      let f = case f_trans of
            PTrans_Conj [APTrans_Fun _ f_trm] -> f_trm
@@ -3502,13 +3502,15 @@ translateStmt _ [nuP| stmt@(TypedCall freg fun_perm ghosts args) |] m =
      let perms_out = mbCombine $ fmap (\stmt' -> nu $ \ret ->
                                         typedStmtOut stmt' (MNil :>: ret)) stmt
      ret_tp <- translate $ fmap funPermRet fun_perm
-     ectx_ghosts <- translate ghosts
+     ectx_gexprs <- translate gexprs
      ectx_args <- translate args
      pctx_in <- RL.tail <$> itiPermStack <$> ask
+     let (pctx_ghosts_args, _) =
+           RL.split (RL.append ectx_gexprs ectx_args) ectx_gexprs pctx_in
      let fret_trm =
-           applyOpenTermMulti f (exprCtxToTerms ectx_ghosts
+           applyOpenTermMulti f (exprCtxToTerms ectx_gexprs
                                  ++ exprCtxToTerms ectx_args
-                                 ++ permCtxToTerms pctx_in)
+                                 ++ permCtxToTerms pctx_ghosts_args)
      fret_tp <- sigmaTypeTransM "ret" ret_tp (flip inExtTransM
                                               (translate perms_out))
      applyMultiTransM (return $ globalOpenTerm "Prelude.bindM")
@@ -3519,7 +3521,8 @@ translateStmt _ [nuP| stmt@(TypedCall freg fun_perm ghosts args) |] m =
          (\ret_trans pctx ->
            inExtTransM ret_trans $
            withPermStackM
-           (\(args :>: _) -> (args :>: Member_Base))
+           (\(vars :>: _) ->
+             (fst (RL.split Proxy ectx_gexprs vars) :>: Member_Base))
            (const pctx)
            m)
          ret_val]
@@ -3877,8 +3880,7 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
 
   -- We translate retType before extending the expr context to contain another
   -- copy of inits, as it is easier to do it here
-  translateRetType retType (mbCombine $
-                            tpcfgOutputPerms cfg) >>= \retTypeTrans ->
+  translateRetType retType (tpcfgOutputPerms cfg) >>= \retTypeTrans ->
 
   -- Extend the expr context to contain another copy of the initial arguments
   -- inits, since the initial entrypoint for the entire function takes two
@@ -3887,11 +3889,11 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
   -- the same as those top-level arguments and so get eq perms to relate them
   inExtMultiTransCopyLastM ghosts (cruCtxProxies inits) $
 
-  -- Lambda-abstract over the permissions on the initial arguments; the ghost
-  -- arguments don't get any permissions, and the second copy (discussed above)
-  -- of the initial arguments get assigned their eq perms later
+  -- Lambda-abstract over the permissions on the ghosts plus normal arguments;
+  -- the second copy (discussed above) of the initial arguments get assigned
+  -- their eq perms later
   lambdaPermCtx (extMbMulti (cruCtxProxies inits) $
-                 mbCombine $ funPermIns fun_perm) $ \pctx ->
+                 funPermIns fun_perm) $ \pctx ->
 
   do -- retTypeTrans <-
      --   translateRetType retType (mbCombine $ tpcfgOutputPerms cfg)
@@ -3910,12 +3912,12 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
          -- The main body, that calls the first function with the input vars
        , lambdaBlockMap blkMap
          (\mapTrans ->
-           let ghosts_pctx = truePermTransCtx ghosts
-               all_membs = RL.members (cruCtxProxies $ appendCruCtx ctx inits)
+           let all_membs = RL.members (cruCtxProxies $ appendCruCtx ctx inits)
                inits_membs =
-                 snd $ RL.split ghosts pctx $ fst $ RL.split ctx pctx all_membs
+                 snd $ RL.split ghosts (cruCtxProxies inits) $
+                 fst $ RL.split ctx (cruCtxProxies inits) all_membs
                inits_eq_perms = eqPermTransCtx all_membs inits_membs
-               all_pctx = RL.append (RL.append ghosts_pctx pctx) inits_eq_perms in
+               all_pctx = RL.append pctx inits_eq_perms in
            impTransM all_membs all_pctx mapTrans retTypeTrans $
            translateCallEntryID "CFG" (tpcfgEntryBlockID cfg) Proxy
            (nuMulti all_pctx $ \_ -> PExprs_Nil)
@@ -3948,9 +3950,9 @@ someCFGAndPermLRT env (SomeCFGAndPerm _ _ _
   translateClosed (appendCruCtx ghosts args) >>= \ctx_trans ->
   lambdaLRTTransM "arg" ctx_trans $ \ectx ->
   inCtxTransM ectx $
-  translate (mbCombine perms_in) >>= \perms_trans ->
+  translate perms_in >>= \perms_trans ->
   lambdaLRTTransM "perm" perms_trans $ \_ ->
-  translateRetType ret (mbCombine perms_out) >>= \ret_tp ->
+  translateRetType ret perms_out >>= \ret_tp ->
   return $ ctorOpenTerm "Prelude.LRT_Ret" [ret_tp]
 
 

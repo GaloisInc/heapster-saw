@@ -566,6 +566,11 @@ data PermExprs (as :: RList CrucibleType) where
   PExprs_Nil :: PermExprs RNil
   PExprs_Cons :: PermExprs as -> PermExpr a -> PermExprs (as :> a)
 
+-- | Convert a 'PermExprs' to an 'RAssign'
+exprsToRAssign :: PermExprs as -> RAssign PermExpr as
+exprsToRAssign PExprs_Nil = MNil
+exprsToRAssign (PExprs_Cons es e) = exprsToRAssign es :>: e
+
 -- | Convert a list of names to a 'PermExprs' list
 namesToExprs :: RAssign Name as -> PermExprs as
 namesToExprs MNil = PExprs_Nil
@@ -1488,8 +1493,8 @@ instance Eq (LLVMFieldShape w) where
 -- return value in the latter case); ghost arguments do not get permissions.
 data FunPerm ghosts args ret where
   FunPerm :: CruCtx ghosts -> CruCtx args -> TypeRepr ret ->
-             Mb ghosts (MbValuePerms args) ->
-             Mb ghosts (MbValuePerms (args :> ret)) ->
+             MbValuePerms (ghosts :++: args) ->
+             MbValuePerms (ghosts :++: args :> ret) ->
              FunPerm ghosts args ret
 
 -- | Extract the @args@ context from a function permission
@@ -1505,12 +1510,12 @@ funPermRet :: FunPerm ghosts args ret -> TypeRepr ret
 funPermRet (FunPerm _ _ ret _ _) = ret
 
 -- | Extract the input permissions of a function permission
-funPermIns :: FunPerm ghosts args ret -> Mb ghosts (MbValuePerms args)
+funPermIns :: FunPerm ghosts args ret -> MbValuePerms (ghosts :++: args)
 funPermIns (FunPerm _ _ _ perms_in _) = perms_in
 
 -- | Extract the output permissions of a function permission
 funPermOuts :: FunPerm ghosts args ret ->
-               Mb ghosts (MbValuePerms (args :> ret))
+               MbValuePerms (ghosts :++: args :> ret)
 funPermOuts (FunPerm _ _ _ _ perms_out) = perms_out
 
 
@@ -1851,13 +1856,20 @@ valuePermsToDistPerms (ns :>: n) (ValPerms_Cons ps p) =
 mbValuePermsToDistPerms :: MbValuePerms ps -> MbDistPerms ps
 mbValuePermsToDistPerms = nuMultiWithElim1 valuePermsToDistPerms
 
+-- | Extract the permissions from a 'DistPerms'
 distPermsToValuePerms :: DistPerms ps -> ValuePerms ps
 distPermsToValuePerms DistPermsNil = ValPerms_Nil
 distPermsToValuePerms (DistPermsCons dperms _ p) =
   ValPerms_Cons (distPermsToValuePerms dperms) p
 
+-- | Extract the permissions-in-binding from a 'DistPerms' in a binding
 mbDistPermsToValuePerms :: Mb ctx (DistPerms ps) -> Mb ctx (ValuePerms ps)
 mbDistPermsToValuePerms = fmap distPermsToValuePerms
+
+-- | Create a sequence @x1:eq(e1), ..., xn:eq(en)@ of equality permissions
+eqDistPerms :: RAssign Name ps -> PermExprs ps -> DistPerms ps
+eqDistPerms ns exprs =
+  valuePermsToDistPerms ns $ RL.map ValPerm_Eq $ exprsToRAssign exprs
 
 -- | A special-purpose 'DistPerms' that specifies a list of permissions needed
 -- to prove that a lifetime is current
@@ -2124,27 +2136,23 @@ instance PermPretty (PermOffset a) where
        return (pretty '@' <> parens e_pp)
 
 instance PermPretty (FunPerm ghosts args ret) where
-  permPrettyM (FunPerm _ _ _ mb_ps_in mb_ps_out) =
-    -- this pretty prints the context of ghost variables
-    permPrettyM (fmap FunPermIns mb_ps_in `mbApply` mb_ps_out)
-
--- | The permissions of a 'FunPerm' inside its context of ghost variables
-data FunPermIns args ret where
-  FunPermIns :: MbValuePerms args -> MbValuePerms (args :> ret) ->
-                FunPermIns args ret
-
-instance PermPretty (FunPermIns args ret) where
-  permPrettyM (FunPermIns ps_in ps_out) =
-    let dps_in  = mbValuePermsToDistPerms ps_in
-        dps_out = mbValuePermsToDistPerms ps_out
-        mb = fmap (,) (mbCombine (fmap (nu . const) dps_in)) `mbApply` dps_out
-    in fmap mbLift $ strongMbM $
-       flip nuMultiWithElim1 mb $ \(arg_ns :>: ret_n) (ps_in, ps_out) ->
-       local (ppInfoAddExprName "ret" ret_n) $
-       local (ppInfoAddExprNames "arg" arg_ns) $
-       do pp_ps_in  <- permPrettyM ps_in
-          pp_ps_out <- permPrettyM ps_out
-          return $ pp_ps_in <+> pretty "-o" <+> pp_ps_out
+  permPrettyM (FunPerm ghosts args _ mb_ps_in mb_ps_out) =
+    let dps_in  = extMb $ mbValuePermsToDistPerms mb_ps_in
+        dps_out = mbValuePermsToDistPerms mb_ps_out
+        dps = mbMap2 (,) dps_in dps_out in
+    fmap mbLift $ strongMbM $
+    flip nuMultiWithElim1 dps $ \(ghosts_args_ns :>: ret_n) (ps_in, ps_out) ->
+    let (ghosts_ns, args_ns) =
+          RL.split Proxy (cruCtxProxies args) ghosts_args_ns in
+    local (ppInfoAddExprName "ret" ret_n) $
+    local (ppInfoAddExprNames "arg" args_ns) $
+    local (ppInfoAddExprNames "ghost" ghosts_ns) $
+    do pp_ps_in  <- permPrettyM ps_in
+       pp_ps_out <- permPrettyM ps_out
+       pp_ghosts <- permPrettyM (RL.map2 VarAndType ghosts_ns $
+                                 cruCtxToTypes ghosts)
+       return ((parens pp_ghosts) <> dot <>
+               pp_ps_in <+> pretty "-o" <+> pp_ps_out)
 
 instance PermPretty (BVRange w) where
   permPrettyM (BVRange e1 e2) =
@@ -3518,21 +3526,35 @@ shapeIsCopyable (PExpr_OrShape sh1 sh2) =
 shapeIsCopyable (PExpr_ExShape mb_sh) = mbLift $ fmap shapeIsCopyable mb_sh
 
 
--- | Substitute arguments, a lifetime, and ghost values into a function
--- permission to get the input permissions needed on the arguments
-funPermDistIns :: FunPerm ghosts args ret -> RAssign Name args ->
-                  PermExprs ghosts -> DistPerms args
-funPermDistIns fun_perm args ghosts =
-  varSubst (permVarSubstOfNames args) $ mbValuePermsToDistPerms $
-  subst (substOfExprs ghosts) $ funPermIns fun_perm
+-- | Substitute ghost and regular arguments into a function permission to get
+-- its input permissions for those arguments, where ghost arguments are given
+-- both as variables and expressions to which those variables are instantiated.
+-- For a 'FunPerm' of the form @(gctx). xs:ps -o xs:ps'@, return
+--
+-- > [gs/gctx]xs : [gexprs/gctx]ps, g1:eq(gexpr1), ..., gm:eq(gexprm)
+funPermDistIns :: FunPerm ghosts args ret -> RAssign Name ghosts ->
+                  PermExprs ghosts -> RAssign Name args ->
+                  DistPerms ((ghosts :++: args) :++: ghosts)
+funPermDistIns fun_perm ghosts gexprs args =
+  appendDistPerms
+  (valuePermsToDistPerms (RL.append ghosts args) $
+   subst (appendSubsts (substOfExprs gexprs) (substOfVars args)) $
+   funPermIns fun_perm)
+  (eqDistPerms ghosts gexprs)
 
--- | Substitute arguments, a lifetime, and ghost values into a function
--- permission to get the output permissions returned by the function
-funPermDistOuts :: FunPerm ghosts args ret -> RAssign Name (args :> ret) ->
-                   PermExprs ghosts -> DistPerms (args :> ret)
-funPermDistOuts fun_perm args ghosts =
-  varSubst (permVarSubstOfNames args) $ mbValuePermsToDistPerms $
-  subst (substOfExprs ghosts) $ funPermOuts fun_perm
+-- | Substitute ghost and regular arguments into a function permission to get
+-- its input permissions for those arguments, where ghost arguments are given
+-- both as variables and expressions to which those variables are instantiated.
+-- For a 'FunPerm' of the form @(gctx). xs:ps -o xs:ps'@, return
+--
+-- > [gs/gctx]xs : [gexprs/gctx]ps'
+funPermDistOuts :: FunPerm ghosts args ret -> RAssign Name ghosts ->
+                   PermExprs ghosts -> RAssign Name (args :> ret) ->
+                   DistPerms (ghosts :++: args :> ret)
+funPermDistOuts fun_perm ghosts gexprs args_and_ret =
+  valuePermsToDistPerms (RL.append ghosts args_and_ret) $
+  subst (appendSubsts (substOfExprs gexprs) (substOfVars args_and_ret)) $
+  funPermOuts fun_perm
 
 -- | Unfold a recursive permission given a 'RecPerm' for it
 unfoldRecPerm :: RecPerm b reach args a -> PermExprs args -> PermOffset a ->
@@ -3672,8 +3694,8 @@ instance FreeVars (PermOffset tp) where
 instance FreeVars (FunPerm ghosts args ret) where
   freeVars (FunPerm _ _ _ perms_in perms_out) =
     NameSet.union
-    (NameSet.liftNameSet $ fmap freeVars $ mbCombine perms_in)
-    (NameSet.liftNameSet $ fmap freeVars $ mbCombine perms_out)
+    (NameSet.liftNameSet $ fmap freeVars perms_in)
+    (NameSet.liftNameSet $ fmap freeVars perms_out)
 
 
 -- | Test if an expression @e@ is a /determining/ expression, meaning that
@@ -4469,6 +4491,12 @@ consSubst (PermSubst elems) e = PermSubst (elems :>: e)
 
 singletonSubst :: PermExpr a -> PermSubst (RNil :> a)
 singletonSubst e = PermSubst (RL.empty :>: e)
+
+appendSubsts :: PermSubst ctx1 -> PermSubst ctx2 -> PermSubst (ctx1 :++: ctx2)
+appendSubsts (PermSubst es1) (PermSubst es2) = PermSubst $ RL.append es1 es2
+
+substOfVars :: RAssign ExprVar ctx -> PermSubst ctx
+substOfVars = PermSubst . RL.map PExpr_Var
 
 substOfExprs :: PermExprs ctx -> PermSubst ctx
 substOfExprs PExprs_Nil = PermSubst MNil

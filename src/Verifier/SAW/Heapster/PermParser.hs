@@ -1004,14 +1004,13 @@ parseFunPermM args ret =
     Some ghosts_ctx@(ParsedCtx _ ghosts) ->
       do spaces >> char '.'
          let args_ctx = mkArgsParsedCtx args
-         perms_in <-
-           inParsedCtxM ghosts_ctx $ const $
-           parseSortedMbValuePerms args_ctx
+             ghosts_args_ctx = appendParsedCtx ghosts_ctx args_ctx
+         perms_in <- parseSortedMbValuePerms ghosts_args_ctx
          spaces >> string "-o"
          perms_out <-
-           inParsedCtxM ghosts_ctx $ const $
-           parseSortedMbValuePerms (consParsedCtx "ret" ret args_ctx)
+           parseSortedMbValuePerms (consParsedCtx "ret" ret ghosts_args_ctx)
          return $ SomeFunPerm $ FunPerm ghosts args ret perms_in perms_out
+
 
 ----------------------------------------------------------------------
 -- * Top-level Entrypoints for Parsing Things

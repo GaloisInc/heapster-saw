@@ -5810,10 +5810,10 @@ mbValuePermsToExDistPerms (xs :>: x) mb_ps =
 -- | Substitute arguments into a function permission to get the existentially
 -- quantified input permissions needed on the arguments
 funPermExDistIns :: FunPerm ghosts args ret -> RAssign Name args ->
-                    ExDistPerms ghosts args
+                    ExDistPerms ghosts (ghosts :++: args)
 funPermExDistIns fun_perm args =
-  mbValuePermsToExDistPerms args $ fmap (varSubst (permVarSubstOfNames args)) $
-  funPermIns fun_perm
+  fmap (varSubst (permVarSubstOfNames args)) $ mbSeparate args $
+  mbValuePermsToDistPerms $ funPermIns fun_perm
 
 -- | A splitting of an existential list of permissions into a prefix, a single
 -- variable plus permission, and then a suffix

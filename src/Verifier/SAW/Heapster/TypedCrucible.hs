@@ -106,6 +106,11 @@ typedRegsToVars :: TypedRegs ctx -> RAssign Name ctx
 typedRegsToVars TypedRegsNil = MNil
 typedRegsToVars (TypedRegsCons regs (TypedReg x)) = typedRegsToVars regs :>: x
 
+-- | Convert a sequence of variables to a 'TypedRegs'
+varsToTypedRegs :: RAssign Name ctx -> TypedRegs ctx
+varsToTypedRegs MNil = TypedRegsNil
+varsToTypedRegs (xs :>: x) = TypedRegsCons (varsToTypedRegs xs) (TypedReg x)
+
 -- | Turn a sequence of typed registers into a variable substitution
 typedRegsToVarSubst :: TypedRegs ctx -> PermVarSubst ctx
 typedRegsToVarSubst = permVarSubstOfNames . typedRegsToVars
@@ -247,14 +252,22 @@ data TypedStmt ext (rets :: RList CrucibleType) ps_in ps_out where
   TypedSetRegPermExpr :: !(TypeRepr tp) -> !(PermExpr tp) ->
                          TypedStmt ext (RNil :> tp) RNil (RNil :> tp)
 
-  -- | Function call (FIXME: document the type here)
+  -- | A function call to the function in register @f@, which must have function
+  -- permission @(ghosts). ps_in -o ps_out@, passing the supplied registers for
+  -- the @ghosts@ and @args@, where the former must be equal to the supplied
+  -- expressions @gexprs@. A call has permissions
+  --
+  -- > [gexprs/ghosts]ps_in, ghosts1:eq(gexprs1), ..., ghostsn:eq(gexprsn),
+  -- > f:((ghosts). ps_in -o ps_out)
+  -- > -o
+  -- > [gexprs/ghosts]ps_out
   TypedCall :: args ~ CtxToRList cargs =>
                !(TypedReg (FunctionHandleType cargs ret)) ->
                !(FunPerm ghosts args ret) ->
-               !(PermExprs ghosts) -> !(TypedRegs args) ->
+               !(TypedRegs ghosts) -> !(PermExprs ghosts) -> !(TypedRegs args) ->
                TypedStmt ext (RNil :> ret)
-               (args :> FunctionHandleType cargs ret)
-               (args :> ret)
+               ((ghosts :++: args) :++: ghosts :> FunctionHandleType cargs ret)
+               (ghosts :++: args :> ret)
 
   -- | Begin a new lifetime:
   --
@@ -431,9 +444,9 @@ data TypedLLVMStmt w ret ps_in ps_out where
 typedStmtIn :: TypedStmt ext rets ps_in ps_out -> DistPerms ps_in
 typedStmtIn (TypedSetReg _ _) = DistPermsNil
 typedStmtIn (TypedSetRegPermExpr _ _) = DistPermsNil
-typedStmtIn (TypedCall (TypedReg f) fun_perm ghosts args) =
+typedStmtIn (TypedCall (TypedReg f) fun_perm ghosts gexprs args) =
   DistPermsCons
-  (funPermDistIns fun_perm (typedRegsToVars args) ghosts)
+  (funPermDistIns fun_perm (typedRegsToVars ghosts) gexprs (typedRegsToVars args))
   f (ValPerm_Conj1 $ Perm_Fun fun_perm)
 typedStmtIn BeginLifetime = DistPermsNil
 typedStmtIn (EndLifetime l perms ps end_perms) =
@@ -500,8 +513,9 @@ typedStmtOut (TypedSetReg _ (TypedExpr _ Nothing)) (_ :>: ret) =
   distPerms1 ret ValPerm_True
 typedStmtOut (TypedSetRegPermExpr _ e) (_ :>: ret) =
   distPerms1 ret (ValPerm_Eq e)
-typedStmtOut (TypedCall _ fun_perm ghosts args) (_ :>: ret) =
-  funPermDistOuts fun_perm (typedRegsToVars args :>: ret) ghosts
+typedStmtOut (TypedCall _ fun_perm ghosts gexprs args) (_ :>: ret) =
+  funPermDistOuts fun_perm (typedRegsToVars
+                            ghosts) gexprs (typedRegsToVars args :>: ret)
 typedStmtOut BeginLifetime (_ :>: l) =
   distPerms1 l $ ValPerm_Conj [Perm_LOwned PExpr_PermListNil]
 typedStmtOut (EndLifetime l perms _ _) _ = perms
@@ -821,9 +835,9 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
     TypedSetReg (mbLift tp) <$> genSubst s expr
   genSubst s [nuP| TypedSetRegPermExpr tp expr |] =
     TypedSetRegPermExpr (mbLift tp) <$> genSubst s expr
-  genSubst s [nuP| TypedCall f fun_perm ghosts args |] =
+  genSubst s [nuP| TypedCall f fun_perm ghosts gexprs args |] =
     TypedCall <$> genSubst s f <*> genSubst s fun_perm <*>
-    genSubst s ghosts <*> genSubst s args
+    genSubst s ghosts <*> genSubst s gexprs <*> genSubst s args
   genSubst s [nuP| BeginLifetime |] = return BeginLifetime
   genSubst s [nuP| EndLifetime l perms ps end_perms |] =
     EndLifetime <$> genSubst s l <*> genSubst s perms <*> genSubst s ps <*>
@@ -1017,11 +1031,11 @@ data TypedCFG
 
 
 tpcfgInputPerms :: TypedCFG ext blocks ghosts inits ret ->
-                   Mb ghosts (MbValuePerms inits)
+                   MbValuePerms (ghosts :++: inits)
 tpcfgInputPerms = funPermIns . tpcfgFunPerm
 
 tpcfgOutputPerms :: TypedCFG ext blocks ghosts inits ret ->
-                    Mb ghosts (MbValuePerms (inits :> ret))
+                    MbValuePerms (ghosts :++: inits :> ret)
 tpcfgOutputPerms = funPermOuts . tpcfgFunPerm
 
 
@@ -1858,6 +1872,16 @@ stmtRecombinePerms =
   embedImplM TypedImplStmt emptyCruCtx (recombinePerms dist_perms) >>>
   greturn ()
 
+stmtProvePermsAppend :: PermCheckExtC ext =>
+                        CruCtx vars -> ExDistPerms vars ps ->
+                        StmtPermCheckM ext cblocks blocks tops ret
+                        (ps_in :++: ps) ps_in (PermSubst vars)
+stmtProvePermsAppend vars ps =
+  permGetPPInfo >>>= \ppInfo ->
+  let err = pretty "Could not prove" <+> permPretty ppInfo ps in
+  embedImplWithErrM TypedImplStmt vars err (proveVarsImplAppend ps) >>>= \(s,_) ->
+  greturn s
+
 stmtProvePerms' :: PermCheckExtC ext =>
                    CruCtx vars -> ExDistPerms vars ps ->
                    StmtPermCheckM ext cblocks blocks tops ret
@@ -2326,8 +2350,10 @@ tcEmitStmt' ctx loc (CallHandle ret freg_untyped args_ctx args_untyped) =
       ValPerm_Conj ps ->
         forM ps $ \p -> case p of
         Perm_Fun fun_perm ->
-          couldSatisfyPermsM argTypes args (fmap (varSubst args_subst) $
-                                            funPermIns fun_perm) >>>= \could ->
+          -- FIXME: rewrite couldSatisfyPermsM to fit ghosts having permissions
+          {- couldSatisfyPermsM argTypes args (fmap (varSubst args_subst) $
+                                            funPermIns fun_perm) >>>= \could -> -}
+          let could = True in
           greturn (if could then Just (SomeFunPerm fun_perm) else Nothing)
         _ -> greturn Nothing
       _ -> greturn []) >>>= \maybe_fun_perms ->
@@ -2336,11 +2362,20 @@ tcEmitStmt' ctx loc (CallHandle ret freg_untyped args_ctx args_untyped) =
    (mapMaybe (fmap greturn) maybe_fun_perms)) >>>= \some_fun_perm ->
   case some_fun_perm of
     SomeFunPerm fun_perm ->
-      (stmtProvePerms' (funPermGhosts fun_perm)
-       (funPermExDistIns fun_perm (typedRegsToVars args))) >>>= \ghosts ->
+      let ghosts = funPermGhosts fun_perm
+          args_ns = typedRegsToVars args in
+      (stmtProvePerms' ghosts (funPermExDistIns
+                               fun_perm args_ns)) >>>= \gsubst ->
+      let gexprs = exprsOfSubst gsubst in
+      (RL.split ghosts args_ns <$>
+       distPermsVars <$> view distPerms <$> stCurPerms <$> gget)
+      >>>= \(ghosts_ns,_) ->
+      stmtProvePermsAppend CruCtxNil (emptyMb $
+                                      eqDistPerms ghosts_ns gexprs) >>>= \_ ->
       stmtProvePerm freg (emptyMb $ ValPerm_Conj1 $ Perm_Fun fun_perm) >>>= \_ ->
       (emitStmt (singletonCruCtx ret) loc
-       (TypedCall freg fun_perm (exprsOfSubst ghosts) args)) >>>= \(_ :>: ret) ->
+       (TypedCall freg fun_perm (varsToTypedRegs
+                                 ghosts_ns) gexprs args)) >>>= \(_ :>: ret) ->
       stmtRecombinePerms >>>
       greturn (addCtxName ctx ret)
 
@@ -3243,14 +3278,6 @@ tcEmitBlock in_deg blk =
      !block_t <- tcBlock in_deg memb blk
      modifyBlockInfo (blockInfoMapSetBlock memb block_t)
 
--- | Extend permissions on the real arguments of a block to a 'DistPerms' for
--- all the arguments of the block
-argPermsToAllPerms :: CruCtx ghosts -> Mb ghosts (MbValuePerms args) ->
-                      MbValuePerms (ghosts :++: args)
-argPermsToAllPerms ghosts arg_perms =
-  fmap (appendValuePerms (trueValuePerms ghosts)) $
-  mbCombine arg_perms
-
 -- | Build the input permissions for the initial block of a CFG, where the
 -- top-level variables (which in this case are the ghosts plus the normal
 -- arguments of the function permission) get the function input permissions and
@@ -3259,14 +3286,12 @@ argPermsToAllPerms ghosts arg_perms =
 funPermToBlockInputs :: FunPerm ghosts args ret ->
                         MbValuePerms ((ghosts :++: args) :++: args)
 funPermToBlockInputs fun_perm =
-  let args_prxs = cruCtxProxies $ funPermArgs fun_perm
-      ghosts_prxs = cruCtxProxies $ funPermGhosts fun_perm in
-  extMbMulti args_prxs $ mbCombine $
-  flip nuMultiWithElim1 (funPermIns fun_perm) $ \ghosts_ns mb_perms_in ->
-  flip nuMultiWithElim1 mb_perms_in $ \args_ns perms_in ->
-  appendValuePerms (appendValuePerms
-                    (trueValuePerms $ funPermGhosts fun_perm) perms_in)
-  (eqValuePerms args_ns)
+  let args_prxs = cruCtxProxies $ funPermArgs fun_perm in
+  extMbMulti args_prxs $
+  flip nuMultiWithElim1 (funPermIns fun_perm) $ \ghosts_args_ns perms_in ->
+  let (_, args_ns) =
+        RL.split (funPermGhosts fun_perm) args_prxs ghosts_args_ns in
+  appendValuePerms perms_in (eqValuePerms args_ns)
 
 -- | Type-check a Crucible CFG
 tcCFG :: PermCheckExtC ext => PermEnv -> EndianForm ->
@@ -3279,7 +3304,7 @@ tcCFG env endianness fun_perm@(FunPerm ghosts
       cblocks_types = fmapFC blockInputs $ cfgBlockMap cfg
       inits = mkCruCtx $ handleArgTypes h
       tops = appendCruCtx ghosts inits
-      perms_out = argPermsToAllPerms ghosts (funPermOuts fun_perm) in
+      perms_out = funPermOuts fun_perm in
   flip evalState (emptyTopPermCheckState
                   h
                   tops
