@@ -1,7 +1,7 @@
 enable_experimental;
 env <- heapster_init_env_from_file "iter_linked_list.sawcore" "iter_linked_list.bc";
 
-heapster_define_reachability_perm env "ListF" "X:perm(llvmptr 64), l:lifetime, rw:rwmodality, p:perm (llvmptr 64)" "llvmptr 64" "[l]ptr((rw,0) |-> X) * ptr((rw,8) |-> ListF<X,l,rw,p>)" "ListF_def" "foldListF" "unfoldListF" "getListF" "putListF" "transListF";
+heapster_define_reachability_perm env "ListF" "X:perm(llvmptr 64), l:lifetime, rw:rwmodality, p:perm (llvmptr 64)" "llvmptr 64" "[l]ptr((rw,0) |-> X) * [l]ptr((rw,8) |-> ListF<X,l,rw,p>)" "ListF_def" "foldListF" "unfoldListF" "getListF" "putListF" "transListF";
 
 heapster_block_entry_hint env "incr_list" 3 "top1:llvmptr 64" "frm:llvmframe 64,ghost:llvmptr 64" "top1:ListF<(exists y:(bv 64).eq(llvmword(y))),always,W,eq(ghost)>, arg0:ptr((W,0) |-> eq(ghost)),ghost:ListF<(exists y:(bv 64).eq(llvmword(y))),always,W,eq(llvmword(0))>,frm:llvmframe [arg0:8]";
 
