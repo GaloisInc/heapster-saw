@@ -120,6 +120,11 @@ data RegWithVal a
   = RegWithVal (TypedReg a) (PermExpr a)
   | RegNoVal (TypedReg a)
 
+-- | Get the 'TypedReg' from a 'RegWithVal'
+regWithValReg :: RegWithVal a -> TypedReg a
+regWithValReg (RegWithVal r _) = r
+regWithValReg (RegNoVal r) = r
+
 -- | Get the expression for a 'RegWithVal', even if it is only the variable for
 -- its register value when it has no statically-known value
 regWithValExpr :: RegWithVal a -> PermExpr a
@@ -2211,11 +2216,6 @@ tcExpr (BoolXor (RegWithVal _ (PExpr_Bool True))
 
 tcExpr (NatLit i) = greturn $ Just $ PExpr_Nat i
 
--- String expressions --
-
-tcExpr (StringLit (UnicodeLiteral text)) =
-  greturn $ Just $ PExpr_String $ Text.unpack text
-
 -- Bitvector expressions --
 
 tcExpr (BVLit w (BV.BV i)) = withKnownNat w $ greturn $ Just $ bvInt i
@@ -2262,6 +2262,33 @@ tcExpr (BVNonzero w (RegWithVal _ bv))
   | bvEq bv (withKnownNat w $ bvInt 0) = greturn $ Just $ PExpr_Bool False
 tcExpr (BVNonzero w (RegWithVal _ bv))
   | not (bvZeroable bv) = greturn $ Just $ PExpr_Bool True
+
+-- String expressions --
+
+tcExpr (StringLit (UnicodeLiteral text)) =
+  greturn $ Just $ PExpr_String $ Text.unpack text
+
+-- Struct expressions --
+
+-- For a struct built from registers r1, ..., rn, return struct(r1,...,rn)
+tcExpr (MkStruct _ vars) =
+  greturn $ Just $ PExpr_Struct $ namesToExprs $
+  RL.map (typedRegVar . regWithValReg) $ assignToRList vars
+
+-- For GetStruct x ix, if x has a value it will have been eta-expanded to a
+-- struct expression, so simply get out the required field of that struct
+tcExpr (GetStruct (RegWithVal r (PExpr_Struct es)) ix tp) =
+  getVarType (typedRegVar r) >>>= \(StructRepr tps) ->
+  let memb = indexToMember (Ctx.size tps) ix in
+  greturn $ Just $ RL.get memb (exprsToRAssign es)
+
+-- For SetStruct x ix y, if x has a value it will have been eta-expanded to a
+-- struct expression, so simply replace required field of that struct with y
+tcExpr (SetStruct tps (RegWithVal r (PExpr_Struct es)) ix r') =
+  let memb = indexToMember (Ctx.size tps) ix in
+  greturn $ Just $ PExpr_Struct $ rassignToExprs $
+  RL.set memb (PExpr_Var $ typedRegVar $ regWithValReg r') $
+  exprsToRAssign es
 
 -- Misc expressions --
 

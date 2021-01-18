@@ -31,6 +31,7 @@ import Data.List
 import Data.String
 import Data.Proxy
 import Data.Functor.Constant
+import Data.Functor.Compose
 import qualified Data.BitVector.Sized as BV
 import Data.BitVector.Sized (BV)
 import Data.Reflection
@@ -86,6 +87,15 @@ import Debug.Trace
 ----------------------------------------------------------------------
 -- * Utility Functions
 ----------------------------------------------------------------------
+
+-- | Convert an 'RAssign' in a binding to an 'RAssign' of bindings
+--
+-- FIXME: this belongs in the Hobbits library, probably next to 'mbList' in
+-- @Data.Binding.Hobbits.Liftable@
+mbRAssign :: NuMatchingAny1 f => Mb ctx (RAssign f as) ->
+             RAssign (Compose (Mb ctx) f) as
+mbRAssign [nuP| MNil |] = MNil
+mbRAssign [nuP| mb_xs :>: mb_x |] = mbRAssign mb_xs :>: Compose mb_x
 
 -- | Build an 'RAssign' from a 'Foldable' data structure by mapping each element
 -- to 'Some' typed object
@@ -570,6 +580,11 @@ data PermExprs (as :: RList CrucibleType) where
 exprsToRAssign :: PermExprs as -> RAssign PermExpr as
 exprsToRAssign PExprs_Nil = MNil
 exprsToRAssign (PExprs_Cons es e) = exprsToRAssign es :>: e
+
+-- | Convert an 'RAssign' to a 'PermExprs'
+rassignToExprs :: RAssign PermExpr as -> PermExprs as
+rassignToExprs MNil = PExprs_Nil
+rassignToExprs (es :>: e) = PExprs_Cons (rassignToExprs es) e 
 
 -- | Convert a list of names to a 'PermExprs' list
 namesToExprs :: RAssign Name as -> PermExprs as
@@ -1272,6 +1287,10 @@ data AtomicPerm (a :: CrucibleType) where
   -- | Assertion that a lifetime is current during another lifetime
   Perm_LCurrent :: PermExpr LifetimeType -> AtomicPerm LifetimeType
 
+  -- | A struct permission = a sequence of permissions for each field
+  Perm_Struct :: RAssign ValuePerm (CtxToRList ctx) ->
+                 AtomicPerm (StructType ctx)
+
   -- | A function permission
   Perm_Fun :: FunPerm ghosts (CtxToRList cargs) ret ->
               AtomicPerm (FunctionHandleType cargs ret)
@@ -1871,6 +1890,11 @@ eqDistPerms :: RAssign Name ps -> PermExprs ps -> DistPerms ps
 eqDistPerms ns exprs =
   valuePermsToDistPerms ns $ RL.map ValPerm_Eq $ exprsToRAssign exprs
 
+-- | Create a sequence @x1:true, ..., xn:true@ of vacuous permissions
+trueDistPerms :: RAssign Name ps -> DistPerms ps
+trueDistPerms MNil = DistPermsNil
+trueDistPerms (ns :>: n) = DistPermsCons (trueDistPerms ns) n ValPerm_True
+
 -- | A special-purpose 'DistPerms' that specifies a list of permissions needed
 -- to prove that a lifetime is current
 data LifetimeCurrentPerms ps_l where
@@ -1971,6 +1995,8 @@ instance Eq (AtomicPerm a) where
   (Perm_LOwned _) == _ = False
   (Perm_LCurrent e1) == (Perm_LCurrent e2) = e1 == e2
   (Perm_LCurrent _) == _ = False
+  (Perm_Struct ps1) == (Perm_Struct ps2) = ps1 == ps2
+  (Perm_Struct _) == _ = False
   (Perm_Fun fperm1) == (Perm_Fun fperm2)
     | Just Refl <- funPermEq fperm1 fperm2 = True
   (Perm_Fun _) == _ = False
@@ -2043,12 +2069,8 @@ instance PermPretty (ValuePerm a) where
   permPrettyM (ValPerm_Conj ps) =
     (hang 2 . encloseSep mempty mempty (pretty "*")) <$> mapM permPrettyM ps
 
-instance PermPretty (ValuePerms ps) where
-  permPrettyM perms = list <$> helper perms where
-    helper :: ValuePerms ps' -> PermPPM [Doc ann]
-    helper ValPerms_Nil = return []
-    helper (ValPerms_Cons ps p) =
-      (++) <$> helper ps <*> ((: []) <$> permPrettyM p)
+instance PermPrettyF ValuePerm where
+  permPrettyMF = permPrettyM
 
 -- | Pretty-print an 'LLVMFieldPerm', either by itself as the form
 -- @[l]ptr((rw,off) |-> p)@ if the 'Bool' flag is 'False' or as part of an array
@@ -2121,6 +2143,8 @@ instance PermPretty (AtomicPerm a) where
        return (pretty "llvmframe" <+> list pps)
   permPrettyM (Perm_LOwned ps) = (pretty "lowned" <+>) <$> permPrettyM ps
   permPrettyM (Perm_LCurrent l) = (pretty "lcurrent" <+>) <$> permPrettyM l
+  permPrettyM (Perm_Struct ps) =
+    ((pretty "struct" <+>) . parens) <$> permPrettyM ps
   permPrettyM (Perm_Fun fun_perm) = permPrettyM fun_perm
   permPrettyM (Perm_BVProp prop) = permPrettyM prop
   permPrettyM (Perm_NamedConj n args off) =
@@ -2197,6 +2221,9 @@ $(mkNuMatching [t| forall w. BVProp w |])
 $(mkNuMatching [t| forall a . AtomicPerm a |])
 $(mkNuMatching [t| forall a . ValuePerm a |])
 -- $(mkNuMatching [t| forall as. ValuePerms as |])
+
+instance NuMatchingAny1 PermExpr where
+  nuMatchingAny1Proof = nuMatchingProof
 
 instance NuMatchingAny1 ValuePerm where
   nuMatchingAny1Proof = nuMatchingProof
@@ -2317,6 +2344,11 @@ isLLVMArrayPerm _ = False
 isLLVMBlockPerm :: AtomicPerm a -> Bool
 isLLVMBlockPerm (Perm_LLVMBlock _) = True
 isLLVMBlockPerm _ = False
+
+-- | Test if an 'AtomicPerm' is a struct permission
+isStructPerm :: AtomicPerm a -> Bool
+isStructPerm (Perm_Struct _) = True
+isStructPerm _ = False
 
 -- | Test if an 'AtomicPerm' is a function permission
 isFunPerm :: AtomicPerm a -> Bool
@@ -3359,10 +3391,9 @@ mapDistPerms f (DistPermsCons perms x p) =
 
 
 -- | Create a sequence of @true@ permissions
-trueValuePerms :: CruCtx ps -> ValuePerms ps
-trueValuePerms CruCtxNil = ValPerms_Nil
-trueValuePerms (CruCtxCons ctx _) =
-  ValPerms_Cons (trueValuePerms ctx) ValPerm_True
+trueValuePerms :: RAssign any ps -> ValuePerms ps
+trueValuePerms MNil = ValPerms_Nil
+trueValuePerms (ps :>: _) = ValPerms_Cons (trueValuePerms ps) ValPerm_True
 
 -- | Create a list of @eq(xi)@ permissions from a list of variables @x1,x2,...@
 eqValuePerms :: RAssign Name ps -> ValuePerms ps
@@ -3494,6 +3525,7 @@ atomicPermIsCopyable (Perm_LLVMBlockShape sh) = shapeIsCopyable sh
 atomicPermIsCopyable (Perm_LLVMFrame _) = False
 atomicPermIsCopyable (Perm_LOwned _) = False
 atomicPermIsCopyable (Perm_LCurrent _) = True
+atomicPermIsCopyable (Perm_Struct ps) = and $ RL.mapToList permIsCopyable ps
 atomicPermIsCopyable (Perm_Fun _) = True
 atomicPermIsCopyable (Perm_BVProp _) = True
 atomicPermIsCopyable (Perm_NamedConj n args _) =
@@ -3646,6 +3678,7 @@ instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMFrame fperms) = freeVars $ map fst fperms
   freeVars (Perm_LOwned ps) = freeVars ps
   freeVars (Perm_LCurrent l) = freeVars l
+  freeVars (Perm_Struct ps) = NameSet.unions $ RL.mapToList freeVars ps
   freeVars (Perm_Fun fun_perm) = freeVars fun_perm
   freeVars (Perm_BVProp prop) = freeVars prop
   freeVars (Perm_NamedConj _ args off) =
@@ -3810,6 +3843,8 @@ instance ContainsLifetime (AtomicPerm a) where
     -- prove the l:lowned perm we need to end the lifetime...
     False
   containsLifetime l (Perm_LCurrent l') = l == l'
+  containsLifetime l (Perm_Struct ps) =
+    or $ RL.mapToList (containsLifetime l) ps
   containsLifetime _ (Perm_Fun _) = False
   containsLifetime _ (Perm_BVProp _) = False
   containsLifetime l (Perm_NamedConj _ args off) =
@@ -3891,6 +3926,7 @@ instance InLifetime (AtomicPerm a) where
   inLifetime _ p@(Perm_LLVMFrame _) = p
   inLifetime l (Perm_LOwned _) = Perm_LCurrent l
   inLifetime _ p@(Perm_LCurrent _) = p
+  inLifetime l (Perm_Struct ps) = Perm_Struct $ RL.map (inLifetime l) ps
   inLifetime _ p@(Perm_Fun _) = p
   inLifetime _ p@(Perm_BVProp _) = p
   inLifetime l (Perm_NamedConj n args off) =
@@ -3957,6 +3993,7 @@ instance MinLtEndPerms (AtomicPerm a) where
   minLtEndPerms _ p@(Perm_LLVMFrame _) = p
   minLtEndPerms l (Perm_LOwned _) = Perm_LCurrent l
   minLtEndPerms _ p@(Perm_LCurrent _) = p
+  minLtEndPerms l (Perm_Struct ps) = Perm_Struct $ RL.map (minLtEndPerms l) ps
   minLtEndPerms _ p@(Perm_Fun _) = p
   minLtEndPerms _ p@(Perm_BVProp _) = p
   minLtEndPerms l (Perm_NamedConj n args off) =
@@ -4353,16 +4390,12 @@ instance SubstVar s m => Substable s (AtomicPerm a) m where
   genSubst _ [nuP| Perm_IsLLVMPtr |] = return Perm_IsLLVMPtr
   genSubst s [nuP| Perm_LLVMBlockShape sh |] =
     Perm_LLVMBlockShape <$> genSubst s sh
-  genSubst s [nuP| Perm_LLVMFrame fp |] =
-    Perm_LLVMFrame <$> genSubst s fp
-  genSubst s [nuP| Perm_LOwned e |] =
-    Perm_LOwned <$> genSubst s e
-  genSubst s [nuP| Perm_LCurrent e |] =
-    Perm_LCurrent <$> genSubst s e
-  genSubst s [nuP| Perm_Fun fperm |] =
-    Perm_Fun <$> genSubst s fperm
-  genSubst s [nuP| Perm_BVProp prop |] =
-    Perm_BVProp <$> genSubst s prop
+  genSubst s [nuP| Perm_LLVMFrame fp |] = Perm_LLVMFrame <$> genSubst s fp
+  genSubst s [nuP| Perm_LOwned e |] = Perm_LOwned <$> genSubst s e
+  genSubst s [nuP| Perm_LCurrent e |] = Perm_LCurrent <$> genSubst s e
+  genSubst s [nuP| Perm_Struct tps |] = Perm_Struct <$> genSubst s tps
+  genSubst s [nuP| Perm_Fun fperm |] = Perm_Fun <$> genSubst s fperm
+  genSubst s [nuP| Perm_BVProp prop |] = Perm_BVProp <$> genSubst s prop
   genSubst s [nuP| Perm_NamedConj n args off |] =
     Perm_NamedConj (mbLift n) <$> genSubst s args <*> genSubst s off
 
@@ -5066,6 +5099,9 @@ instance AbstractVars (AtomicPerm a) where
   abstractPEVars ns1 ns2 (Perm_LCurrent e) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LCurrent |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 e
+  abstractPEVars ns1 ns2 (Perm_Struct ps) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| Perm_Struct |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 ps
   abstractPEVars ns1 ns2 (Perm_Fun fperm) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_Fun |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 fperm

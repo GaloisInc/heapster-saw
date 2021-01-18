@@ -620,6 +620,17 @@ parseValPermInCtx :: (Stream s Identity Char, Liftable s) =>
                      PermParseM s (Mb ctx (ValuePerm a))
 parseValPermInCtx ctx tp = inParsedCtxM ctx $ const $ parseValPerm tp
 
+-- | Parse a comma-separated sequence of permissions of some given types
+parseValuePerms :: (Stream s Identity Char, Liftable s) =>
+                   RAssign TypeRepr tps -> PermParseM s (RAssign ValuePerm tps)
+parseValuePerms MNil = return MNil
+parseValuePerms (MNil :>: tp) = (MNil :>:) <$> parseValPerm tp
+parseValuePerms (tps :>: tp) =
+  do ps <- parseValuePerms tps
+     spaces >> comma
+     p <- parseValPerm tp
+     return (ps :>: p)
+
 -- | Parse a @*@-separated list of atomic permissions
 parseAtomicPerms :: (Stream s Identity Char, Liftable s) => TypeRepr a ->
                     PermParseM s [AtomicPerm a]
@@ -686,9 +697,17 @@ parseAtomicPerm tp@(LLVMBlockRepr w) =
                       parseExpr (LLVMShapeRepr w))) <?>
   ("atomic permission of type " ++ show tp)
 
+parseAtomicPerm tp@(StructRepr tps) =
+  (do try (string "struct")
+      spaces
+      ps <- parseInParens $ parseValuePerms $ assignToRList tps
+      return (Perm_Struct ps)) <|>
+  parseAtomicNamedPerm tp <?>
+  ("atomic permission of type " ++ show tp)
+
 parseAtomicPerm tp =
   parseAtomicNamedPerm tp <?>
-  ("Expecting atomic permission of type " ++ show tp)
+  ("atomic permission of type " ++ show tp)
 
 
 -- | Parse a @\@e@ string as a 'PermOffset'

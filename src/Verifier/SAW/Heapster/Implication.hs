@@ -343,6 +343,38 @@ data SimplImpl ps_in ps_out where
   SImpl_SplitConjs :: ExprVar a -> [AtomicPerm a] -> Int ->
                       SimplImpl (RNil :> a) (RNil :> a :> a)
 
+  -- | Prove a struct permission of @true@ permissions on any struct:
+  --
+  -- > -o x:struct(true, ..., true)
+  SImpl_IntroStructTrue ::
+    ExprVar (StructType ctx) -> RAssign Proxy (CtxToRList ctx) ->
+    SimplImpl RNil (RNil :> StructType ctx)
+
+  -- | Prove a struct permission of equality permissions from an equality
+  -- permission to a struct:
+  --
+  -- > x:eq(struct(e1, ..., en)) -o x:struct(eq(e1), ..., eq(en))
+  SImpl_StructEqToPerm ::
+    ExprVar (StructType ctx) -> PermExprs (CtxToRList ctx) ->
+    SimplImpl (RNil :> StructType ctx) (RNil :> StructType ctx)
+
+  -- | Prove an equality permission to a struct from a struct permission of
+  -- equality permissions:
+  --
+  -- > x:struct(eq(e1), ..., eq(en)) -o x:eq(struct(e1, ..., en))
+  SImpl_StructPermToEq ::
+    ExprVar (StructType ctx) -> PermExprs (CtxToRList ctx) ->
+    SimplImpl (RNil :> StructType ctx) (RNil :> StructType ctx)
+
+  -- | Prove a permission @p@ on a struct field that is known to equal some
+  -- variable @y@ using a proof of @y:p@:
+  --
+  -- > x:struct(ps, eq(y), ps'), y:p -o x:struct(ps,p,ps')
+  SImpl_IntroStructField ::
+    ExprVar (StructType ctx) -> RAssign ValuePerm (CtxToRList ctx) ->
+    Member (CtxToRList ctx) a -> ValuePerm a ->
+    SimplImpl (RNil :> StructType ctx :> a) (RNil :> StructType ctx)
+
   -- | Prove a function permission for a statically-known function (assuming
   -- that the given entry is in the current function environment):
   --
@@ -982,6 +1014,17 @@ data PermImpl1 ps_in ps_outs where
   Impl1_LetBind :: TypeRepr tp -> PermExpr tp ->
                    PermImpl1 ps (RNil :> '(RNil :> tp, ps :> tp))
 
+  -- | Project out a field of a struct @x@ by binding a fresh variable @y@ for
+  -- its contents, and assign the permissions for that field to @y@, replacing
+  -- them with a proof that the field equals @y@:
+  --
+  -- > x:struct(ps,p,ps') -o y. x:struct(ps, eq(y), ps'), y:p
+  Impl1_ElimStructField ::
+    ExprVar (StructType ctx) -> RAssign ValuePerm (CtxToRList ctx) ->
+    TypeRepr a -> Member (CtxToRList ctx) a ->
+    PermImpl1 (ps :> StructType ctx) (RNil :> '(RNil :> a,
+                                                ps :> StructType ctx :> a))
+
   -- | Eliminate the contents of an LLVM field permission, binding a new
   -- variable to hold those permissions and changing the contents of the field
   -- permission to an equals permision for that variable:
@@ -1113,6 +1156,8 @@ permImplStep impl1@(Impl1_Simpl _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_LetBind _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
+permImplStep impl1@(Impl1_ElimStructField _ _ _ _) mb_impls =
+  permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_ElimLLVMFieldContents _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_ElimReachabilityPerm _ _ _ _ _) mb_impls =
@@ -1235,6 +1280,9 @@ permImplSucceeds (PermImpl_Step (Impl1_Simpl _ _)
 permImplSucceeds (PermImpl_Step (Impl1_LetBind _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
+permImplSucceeds (PermImpl_Step (Impl1_ElimStructField _ _ _ _)
+                  (MbPermImpls_Cons _ mb_impl)) =
+  mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMFieldContents _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
@@ -1301,6 +1349,17 @@ simplImplIn (SImpl_AppendConjs x ps1 ps2) =
   distPerms2 x (ValPerm_Conj ps1) x (ValPerm_Conj ps2)
 simplImplIn (SImpl_SplitConjs x ps _) =
   distPerms1 x (ValPerm_Conj ps)
+simplImplIn (SImpl_IntroStructTrue _ _) = DistPermsNil
+simplImplIn (SImpl_StructEqToPerm x exprs) =
+  distPerms1 x (ValPerm_Eq $ PExpr_Struct exprs)
+simplImplIn (SImpl_StructPermToEq x exprs) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_Struct $
+                RL.map ValPerm_Eq $ exprsToRAssign exprs)
+simplImplIn (SImpl_IntroStructField x ps memb p) =
+  case RL.get memb ps of
+    ValPerm_Eq (PExpr_Var y) ->
+      distPerms2 x (ValPerm_Conj1 $ Perm_Struct ps) y p
+    _ -> error "simplImplIn: SImpl_IntroStructField: field does not have an equality permission to a variable"
 simplImplIn (SImpl_ConstFunPerm x h _ _) =
   distPerms1 x (ValPerm_Eq $ PExpr_Fun h)
 simplImplIn (SImpl_CastLLVMWord x e1 e2) =
@@ -1562,6 +1621,15 @@ simplImplOut (SImpl_AppendConjs x ps1 ps2) =
   distPerms1 x (ValPerm_Conj (ps1 ++ ps2))
 simplImplOut (SImpl_SplitConjs x ps i) =
   distPerms2 x (ValPerm_Conj (take i ps)) x (ValPerm_Conj (drop i ps))
+simplImplOut (SImpl_IntroStructTrue x fs) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_Struct $ trueValuePerms fs)
+simplImplOut (SImpl_StructEqToPerm x exprs) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_Struct $
+                RL.map ValPerm_Eq $ exprsToRAssign exprs)
+simplImplOut (SImpl_StructPermToEq x exprs) =
+  distPerms1 x (ValPerm_Eq $ PExpr_Struct exprs)
+simplImplOut (SImpl_IntroStructField x ps memb p) =
+  distPerms1 x (ValPerm_Conj1 $ Perm_Struct $ RL.set memb p ps)
 simplImplOut (SImpl_ConstFunPerm x _ fun_perm _) =
   distPerms1 x (ValPerm_Conj1 $ Perm_Fun fun_perm)
 simplImplOut (SImpl_CastLLVMWord x _ e2) =
@@ -1881,6 +1949,15 @@ applyImpl1 pp_info (Impl1_Simpl simpl prx) ps =
 applyImpl1 pp_info (Impl1_LetBind tp e) ps =
   MbPermSets_Cons MbPermSets_Nil (CruCtxCons CruCtxNil tp) $
   nu $ \x -> pushPerm x (ValPerm_Eq e) ps
+applyImpl1 _ (Impl1_ElimStructField x ps' tp memb) ps =
+  if ps ^. topDistPerm x == ValPerm_Conj [Perm_Struct ps'] then
+    (MbPermSets_Cons MbPermSets_Nil (singletonCruCtx tp) $ nu $ \y ->
+      pushPerm y (RL.get memb ps') $
+      set (topDistPerm x) (ValPerm_Conj1 $ Perm_Struct $
+                           RL.set memb (ValPerm_Eq $ PExpr_Var y) ps')
+      ps)
+  else
+    error "applyImpl1: Impl1_ElimStructField: unexpected permission"
 applyImpl1 _ (Impl1_ElimLLVMFieldContents x fp) ps =
   if ps ^. topDistPerm x == ValPerm_Conj [Perm_LLVMField fp] then
     (mbPermSets1 $ nu $ \y ->
@@ -1976,6 +2053,15 @@ instance SubstVar PermVarSubst m =>
     SImpl_AppendConjs <$> genSubst s x <*> genSubst s ps1 <*> genSubst s ps2
   genSubst s [nuP| SImpl_SplitConjs x ps i |] =
     SImpl_SplitConjs <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
+  genSubst s [nuP| SImpl_IntroStructTrue x fs |] =
+    SImpl_IntroStructTrue <$> genSubst s x <*> return (mbLift fs)
+  genSubst s [nuP| SImpl_StructEqToPerm x exprs |] =
+    SImpl_StructEqToPerm <$> genSubst s x <*> genSubst s exprs
+  genSubst s [nuP| SImpl_StructPermToEq x exprs |] =
+    SImpl_StructPermToEq <$> genSubst s x <*> genSubst s exprs
+  genSubst s [nuP| SImpl_IntroStructField x ps memb p |] =
+    SImpl_IntroStructField <$> genSubst s x <*> genSubst s ps
+    <*> genSubst s memb <*> genSubst s p
   genSubst s [nuP| SImpl_ConstFunPerm x h fun_perm ident |] =
     SImpl_ConstFunPerm <$> genSubst s x <*> return (mbLift h) <*>
     genSubst s fun_perm <*> return (mbLift ident)
@@ -2135,6 +2221,9 @@ instance SubstVar PermVarSubst m =>
     Impl1_Simpl <$> genSubst s simpl <*> return (mbLift prx)
   genSubst s [nuP| Impl1_LetBind tp e |] =
     Impl1_LetBind (mbLift tp) <$> genSubst s e
+  genSubst s [nuP| Impl1_ElimStructField x ps tp memb |] =
+    Impl1_ElimStructField <$> genSubst s x <*> genSubst s ps
+    <*> return (mbLift tp) <*> genSubst s memb
   genSubst s [nuP| Impl1_ElimLLVMFieldContents x fp |] =
     Impl1_ElimLLVMFieldContents <$> genSubst s x <*> genSubst s fp
   genSubst s [nuP| Impl1_ElimReachabilityPerm x rp args off p |] =
@@ -2941,6 +3030,77 @@ implLetBindVar tp e =
   implApplyImpl1 (Impl1_LetBind tp e)
   (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n))
 
+-- | Project out a field of a struct @x@ by binding a fresh variable @y@ for its
+-- contents, and assign the permissions for that field to @y@, replacing them
+-- with a proof that the field equals @y@, popping the permissions for @y@ and
+-- returning the variable @y@. If the given struct field already has permissions
+-- @eq(y)@ for some @y@, just return that @y@.
+implElimStructField ::
+  NuMatchingAny1 r => ExprVar (StructType ctx) ->
+  RAssign ValuePerm (CtxToRList ctx) -> Member (CtxToRList ctx) a ->
+  ImplM vars s r (ps :> StructType ctx) (ps :> StructType ctx) (ExprVar a)
+implElimStructField _ ps memb
+  | ValPerm_Eq (PExpr_Var y) <- RL.get memb ps = greturn y
+implElimStructField x ps memb =
+  implGetVarType x >>>= \(StructRepr tps) ->
+  let tp = RL.get memb (assignToRList tps) in
+  implApplyImpl1 (Impl1_ElimStructField x ps tp memb)
+  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
+  implPopM y (RL.get memb ps) >>>
+  greturn y
+
+-- | Apply 'implElimStructField' to a sequence of fields in a struct permission,
+-- to get out a sequence of variables for the corrsponding fields of that struct
+implElimStructFields ::
+  NuMatchingAny1 r => ExprVar (StructType ctx) ->
+  RAssign ValuePerm (CtxToRList ctx) -> RAssign (Member (CtxToRList ctx)) fs ->
+  ImplM vars s r (ps :> StructType ctx) (ps :> StructType ctx) (RAssign ExprVar fs)
+implElimStructFields _ _ MNil = greturn MNil
+implElimStructFields x ps (membs :>: memb) =
+  implElimStructField x ps memb >>>= \y ->
+  implElimStructFields x (RL.set memb (ValPerm_Eq $
+                                       PExpr_Var y) ps) membs >>>= \ys ->
+  greturn (ys :>: y)
+
+-- | Apply 'implElimStructField' to all fields in a struct permission, to get
+-- out a sequence of variables for the fields of that struct
+implElimStructAllFields ::
+  NuMatchingAny1 r => ExprVar (StructType ctx) ->
+  RAssign ValuePerm (CtxToRList ctx) ->
+  ImplM vars s r (ps :> StructType ctx) (ps :> StructType ctx)
+  (RAssign Name (CtxToRList ctx))
+implElimStructAllFields x ps = implElimStructFields x ps (RL.members ps)
+
+-- | Prove a struct permission @struct(p1,...,pn)@ from a struct permission
+-- (described by the second argument) where some subset of the field permissions
+-- are equality permissions to variables along with proofs that the variables
+-- have the required permissions
+implIntroStructFields ::
+  NuMatchingAny1 r => ExprVar (StructType ctx) ->
+  RAssign ValuePerm (CtxToRList ctx) -> RAssign (Member (CtxToRList ctx)) fs ->
+  ImplM vars s r (ps :> StructType ctx) (ps :++: fs :> StructType ctx) ()
+implIntroStructFields _ _ MNil = greturn ()
+implIntroStructFields x ps (membs :>: memb)
+  | ValPerm_Eq (PExpr_Var y) <- RL.get memb ps =
+    (distPermsHeadPerm <$> distPermsSnoc <$> getDistPerms) >>>= \y_p ->
+    implSwapM y y_p x (ValPerm_Conj1 $ Perm_Struct ps) >>>
+    implSimplM Proxy (SImpl_IntroStructField x ps memb y_p) >>>
+    implIntroStructFields x (RL.set memb y_p ps) membs
+implIntroStructFields _ _ _ =
+  error "implIntroStructFields: malformed input permission"
+
+-- | Prove a struct permission @struct(p1,...,pn)@ from a struct permission
+-- @struct(eq(y1),...,eq(yn))@ on top of the stack of equality permissions to
+-- variables along with proofs below it on the stack that each variable @yi@ has
+-- the corresponding permission @pi@
+implIntroStructAllFields ::
+  NuMatchingAny1 r => ExprVar (StructType ctx) ->
+  ImplM vars s r (ps :> StructType ctx) (ps :++: CtxToRList ctx
+                                         :> StructType ctx) ()
+implIntroStructAllFields x =
+  getTopDistPerm x >>>= \(ValPerm_Conj1 (Perm_Struct ps)) ->
+  implIntroStructFields x ps (RL.members ps)
+
 -- | Eliminate a permission @x:ptr((rw,off) |-> p)@ into permissions
 -- @x:ptr((rw,off) |-> eq(y))@ and @y:p@ for a fresh variable @y@, returning the
 -- fresh variable @y@ and popping the @y@ permissions off the stack. If @p@
@@ -3127,9 +3287,8 @@ elimOrsExistsNamesM x =
         implNamedToConjM x npn args off >>> getTopDistPerm x
     _ -> greturn p
 
--- | Eliminate any disjunctions, existentials, recursive permissions, or
--- defined permissions for a variable and then return the resulting "simple"
--- permission
+-- | Eliminate any disjunctions, existentials, recursive permissions, or defined
+-- permissions for a variable and then return the resulting "simple" permission
 getSimpleVarPerm :: NuMatchingAny1 r => ExprVar a ->
                     ImplM vars s r ps ps (ValuePerm a)
 getSimpleVarPerm x =
@@ -3138,16 +3297,31 @@ getSimpleVarPerm x =
   elimOrsExistsNamesM x >>>= \p ->
   implPopM x p >>> greturn p
 
--- | Eliminate any disjunctions, existentials, recursive permissions, or
--- defined permissions for any variables in the supplied expression and
--- substitute any equality permissions for those variables
+-- | Eliminate any disjunctions, existentials, recursive permissions, or defined
+-- permissions for a variable to try to get an equality permission
+-- @eq(e)@. Return @e@ if this is successful.
+getVarEqPerm :: NuMatchingAny1 r => ExprVar a ->
+                ImplM vars s r ps ps (Maybe (PermExpr a))
+getVarEqPerm x =
+  getPerm x >>>= \p_init -> implPushM x p_init >>> elimOrsExistsNamesM x >>>=
+  \case
+    p@(ValPerm_Eq e) -> implPopM x p >>> greturn (Just e)
+    ValPerm_Conj [Perm_Struct ps] ->
+      implElimStructAllFields x ps >>>= \ys ->
+      implSimplM Proxy (SImpl_StructPermToEq x $ namesToExprs ys) >>>
+      implPopM x (ValPerm_Eq $ PExpr_Struct $ namesToExprs ys) >>>
+      greturn (Just $ PExpr_Struct $ namesToExprs ys)
+    p -> implPopM x p >>> greturn Nothing
+
+-- | Eliminate any disjunctions, existentials, recursive permissions, or defined
+-- permissions for any variables in the supplied expression and substitute any
+-- equality permissions for those variables. Also eta-expand any struct
+-- variables to a struct of variables using 'implElimStructAllFields'.
 getEqualsExpr :: NuMatchingAny1 r => PermExpr a ->
                  ImplM vars s r ps ps (PermExpr a)
 getEqualsExpr e@(PExpr_Var x) =
-  getSimpleVarPerm x >>>= \p ->
-  case p of
-    ValPerm_Eq e' -> getEqualsExpr e'
-    _ -> greturn e
+  getVarEqPerm x >>>= \case Just e' -> getEqualsExpr e'
+                            Nothing -> greturn e
 getEqualsExpr (PExpr_BV factors off) =
   foldr bvAdd (PExpr_BV [] off) <$>
   mapM (\(BVFactor (BV.BV i) x) ->
@@ -4007,31 +4181,29 @@ proveEqH psubst e@(PExpr_Var x) mb_e@[nuP| PExpr_Var mb_y |]
       (_, _) ->
         -- If we have no equality perms, eliminate perms on x and y to see if we
         -- can get one; if so, recurse, and otherwise, raise an error
-        getSimpleVarPerm x >>>= \case
-        ValPerm_Eq _ -> proveEqH psubst e mb_e
-        _ -> getSimpleVarPerm y >>>= \case
-          ValPerm_Eq _ -> proveEqH psubst e mb_e
-          _ -> proveEqFail e mb_e
+        getVarEqPerm x >>>= \case
+        Just _ -> proveEqH psubst e mb_e
+        Nothing -> getVarEqPerm y >>>= \case
+          Just _ -> proveEqH psubst e mb_e
+          Nothing -> proveEqFail e mb_e
 
 -- To prove x=e, try to see if x:eq(e') and proceed by transitivity
 proveEqH psubst e@(PExpr_Var x) mb_e =
-  getSimpleVarPerm x >>>= \p ->
-  case p of
-    ValPerm_Eq e' ->
-      proveEq e' mb_e >>>= \(SomeEqProof eqp2) ->
-      greturn (SomeEqProof (eqProofTrans (EqProofPerm (EqPerm x e' True) $
-                                          nu PExpr_Var) eqp2))
-    _ -> proveEqFail e mb_e
+  getVarEqPerm x >>>= \case
+  Just e' ->
+    proveEq e' mb_e >>>= \(SomeEqProof eqp2) ->
+    greturn (SomeEqProof (eqProofTrans (EqProofPerm (EqPerm x e' True) $
+                                        nu PExpr_Var) eqp2))
+  Nothing -> proveEqFail e mb_e
 
 -- To prove e=x, try to see if x:eq(e') and proceed by transitivity
 proveEqH psubst e mb_e@[nuP| PExpr_Var z |]
   | Right x <- mbNameBoundP z =
-    getSimpleVarPerm x >>>= \p ->
-    case p of
-      ValPerm_Eq e' ->
+    getVarEqPerm x >>>= \case
+      Just e' ->
         proveEq e (fmap (const e') mb_e) >>>= \eqp ->
         greturn (someEqProofTrans eqp (someEqProofPerm x e' False))
-      _ -> proveEqFail e mb_e
+      Nothing -> proveEqFail e mb_e
 
 -- FIXME: if proving word(e1)=word(e2) for ground e2, we could add an assertion
 -- that e1=e2 using a BVProp_Eq
@@ -4047,6 +4219,8 @@ proveEqH psubst e [nuP| PExpr_BV [BVFactor (BV.BV mb_n) z] (BV.BV mb_m) |]
   , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) =
     setVarM memb (bvDiv (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) >>>
     greturn (SomeEqProof (EqProofRefl e))
+
+-- FIXME: add cases to prove struct(es1)=struct(es2) 
 
 -- Otherwise give up!
 proveEqH _ e mb_e = proveEqFail e mb_e
@@ -5394,6 +5568,26 @@ proveVarAtomicImpl x ps p@[nuP| Perm_LCurrent mb_l' |] =
       proveVarImpl l (fmap ValPerm_Conj1 p) >>>
       implSimplM Proxy (SImpl_LCurrentTrans x l l')
 
+-- If we have a struct permission on the left, eliminate it to a sequence of
+-- variables and prove the required permissions for each variable
+proveVarAtomicImpl x ps p@[nuP| Perm_Struct mb_str_ps |]
+  | Just i <- findIndex isStructPerm ps
+  , Perm_Struct str_ps <- ps!!i =
+    getDistPerms >>>= \perms ->
+    implGetPopConjM x ps i >>> implElimStructAllFields x str_ps >>>= \ys ->
+    proveVarsImplAppend (fmap (valuePermsToDistPerms ys) mb_str_ps) >>>
+    partialSubstForceM mb_str_ps "proveVarAtomicImpl" >>>= \str_ps' ->
+    implMoveUpM (distPermsSnoc perms) str_ps' x MNil >>>
+    implIntroStructAllFields x
+
+-- If we do not have a struct permission on the left, introduce a vacuous struct
+-- permission and fall back to the previous case
+proveVarAtomicImpl x ps mb_p@[nuP| Perm_Struct mb_str_ps |] =
+  let prxs = mbLift $ fmap (RL.map (const Proxy)) mb_str_ps in
+  implSimplM Proxy (SImpl_IntroStructTrue x prxs) >>>
+  implInsertConjM x (Perm_Struct $ trueValuePerms prxs) ps (length ps) >>>
+  proveVarAtomicImpl x (ps ++ [Perm_Struct $ trueValuePerms prxs]) mb_p
+
 -- NOTE: existential Perm_Fun vars don't seem to make sense, as they translate
 -- to a weird form of polymorphism...
 {-
@@ -5680,6 +5874,13 @@ proveVarImplH x (ValPerm_Mu p_body) [nuP| ValPerm_Mu mb_p'_body |] =
 -- If x:eq(LLVMword(e)) then we cannot prove any pointer permissions for it
 proveVarImplH x p@(ValPerm_Eq (PExpr_LLVMWord _)) mb_p@[nuP| ValPerm_Conj _ |] =
   implFailVarM "proveVarImplH" x p mb_p
+
+-- If x:eq(struct(e1,...,en)) then we eliminate to x:struct(eq(e1),...,eq(en))
+proveVarImplH x (ValPerm_Eq (PExpr_Struct exprs)) mb_p@[nuP| ValPerm_Conj _ |] =
+  implSimplM Proxy (SImpl_StructEqToPerm x exprs) >>>
+  implPopM x (ValPerm_Conj1 $ Perm_Struct $
+              RL.map ValPerm_Eq $ exprsToRAssign exprs) >>>
+  proveVarImpl x mb_p
 
 -- If proving a function permission for an x we know equals a constant function
 -- handle f, look up the function permission for f

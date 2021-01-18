@@ -448,6 +448,12 @@ rlistToAssign :: RAssign f ctx -> Assignment f (RListToCtx ctx)
 rlistToAssign MNil = Ctx.empty
 rlistToAssign (rlist :>: f) = extend (rlistToAssign rlist) f
 
+-- | Convert a Crucible 'Index' to a Hobbits 'Member'
+indexToMember :: Size ctx -> Index ctx tp -> Member (CtxToRList ctx) tp
+indexToMember sz ix = case viewIndex sz ix of
+  IndexViewLast _ -> Member_Base
+  IndexViewInit ix' -> Member_Step $ indexToMember (decSize sz) ix'
+
 -- | A data-level encapsulation of the 'KnownRepr' typeclass
 data KnownReprObj f a = KnownRepr f a => KnownReprObj
 
