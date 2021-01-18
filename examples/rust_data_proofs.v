@@ -20,3 +20,5 @@ Print test_sum_impl__tuple_fun.
 Print list_is_empty__tuple_fun.
 
 Print list_head__tuple_fun.
+
+Print list_head_impl__tuple_fun.

@@ -50,4 +50,8 @@ heapster_typecheck_fun_rename env list_is_empty_sym "list_is_empty" "(rw:rwmodal
 list_head_sym <- heapster_find_symbol env "9list_head";
 heapster_typecheck_fun_rename env list_head_sym "list_head" "(rw:rwmodality).arg0:ListPerm<ptrsh(int64<>),8,rw,always> -o ret:memblock(W,0,16,Result<ptrsh(int64<>),emptysh>)";
 
+// list_head_impl
+list_head_impl_sym <- heapster_find_symbol env "14list_head_impl";
+heapster_typecheck_fun_rename env list_head_impl_sym "list_head_impl" "(rw:rwmodality).arg0:ListPerm<ptrsh(int64<>),8,rw,always> -o ret:(struct(eq(llvmword(0)),exists z:bv 64. eq(llvmword(z)))) or (struct(eq(llvmword(1)),true))";
+
 heapster_export_coq env "rust_data.v";
