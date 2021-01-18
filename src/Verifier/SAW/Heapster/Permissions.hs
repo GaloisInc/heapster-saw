@@ -4307,6 +4307,14 @@ instance (NuMatchingAny1 f, Substable1 s f m) =>
   genSubst _ [nuP| MNil |] = return MNil
   genSubst s [nuP| xs :>: x |] = (:>:) <$> genSubst s xs <*> genSubst1 s x
 
+instance (NuMatchingAny1 f, Substable1 s f m) =>
+         Substable s (Assignment f ctx) m where
+  genSubst s mb_assign =
+    case fmap viewAssign mb_assign of
+      [nuP| AssignEmpty |] -> return $ Ctx.empty
+      [nuP| AssignExtend asgn' x |] ->
+        Ctx.extend <$> genSubst s asgn' <*> genSubst1 s x
+
 -- | Helper function to substitute into 'BVFactor's
 substBVFactor :: SubstVar s m => s ctx -> Mb ctx (BVFactor w) ->
                  m (PermExpr (BVType w))

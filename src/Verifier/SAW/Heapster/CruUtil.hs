@@ -224,6 +224,12 @@ instance Liftable (BaseTypeRepr tp) where
 instance NuMatching (Index ctx a) where
   nuMatchingProof = unsafeMbTypeRepr
 
+instance Closable (Index ctx a) where
+  toClosed = unsafeClose
+
+instance Liftable (Index ctx a) where
+  mbLift = unClosed . mbLift . fmap toClosed
+
 instance NuMatching Text where
   nuMatchingProof = unsafeMbTypeRepr
 

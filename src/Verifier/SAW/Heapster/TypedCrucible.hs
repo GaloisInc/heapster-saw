@@ -728,6 +728,8 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     NatMod <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| HandleLit h |] =
     return $ HandleLit $ mbLift h
+  genSubst s [nuP| BVUndef w |] =
+    BVUndef <$> genSubst s w
   genSubst s [nuP| BVLit w i |] =
     BVLit <$> genSubst s w <*> return (mbLift i)
   genSubst s [nuP| BVConcat w1 w2 e1 e2 |] =
@@ -789,6 +791,13 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     BVNonzero <$> genSubst s w <*> genSubst1 s e
   genSubst _ [nuP| StringLit str_lit |] =
     return $ StringLit $ mbLift str_lit
+  genSubst s [nuP| MkStruct tps flds |] =
+    MkStruct (mbLift tps) <$> genSubst s flds
+  genSubst s [nuP| GetStruct str ix tp |] =
+    GetStruct <$> genSubst1 s str <*> return (mbLift ix) <*> return (mbLift tp)
+  genSubst s [nuP| SetStruct tps str ix x |] =
+    SetStruct (mbLift tps) <$> genSubst1 s str <*> return (mbLift ix)
+    <*> genSubst1 s x
   genSubst _ mb_expr =
     error ("genSubst: unhandled Crucible expression construct: "
            ++ mbLift (fmap (show . ppApp (const (pretty "_"))) mb_expr))
@@ -2217,6 +2226,11 @@ tcExpr (BoolXor (RegWithVal _ (PExpr_Bool True))
 tcExpr (NatLit i) = greturn $ Just $ PExpr_Nat i
 
 -- Bitvector expressions --
+
+tcExpr (BVUndef w) =
+  -- "Undefined" bitvectors are translated to 0 as a stand-in but we don't
+  -- return any equality permissions about them
+  greturn Nothing
 
 tcExpr (BVLit w (BV.BV i)) = withKnownNat w $ greturn $ Just $ bvInt i
 
