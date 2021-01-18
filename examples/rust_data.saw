@@ -39,7 +39,7 @@ heapster_typecheck_fun_rename env test_result_sym "test_result" "().arg0:membloc
 
 // test_sum_impl
 test_sum_impl_sym <- heapster_find_symbol env "13test_sum_impl";
-heapster_typecheck_fun_rename env test_sum_impl_sym "test_sum_impl" "(rw:rwmodality).arg0:memblock(R,0,16,Sum<ptrsh(int64<>),ptrsh(int64<>)>) -o ret:int1<>";
+heapster_typecheck_fun_rename env test_sum_impl_sym "test_sum_impl" "().arg0:memblock(R,0,16,Sum<ptrsh(int64<>),ptrsh(int64<>)>) -o ret:int1<>";
 
 
 // list_is_empty
