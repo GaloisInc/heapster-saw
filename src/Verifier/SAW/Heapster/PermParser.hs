@@ -421,15 +421,22 @@ parseBVExprH w =
   <?> ("expression of type bv " ++ show (natVal w))
 
 -- | Parse an 'LLVMFieldShape' of width @w@ of the form @(sz,p)@ or just @p@ if
--- @sz=w@
+-- @sz=w@. Require parentheses around the permission in the second case if the
+-- supplied 'Bool' flag is 'True'.
 parseLLVMFieldShape :: (Stream s Identity Char, Liftable s, 1 <= w, KnownNat w) =>
-                       f w -> PermParseM s (LLVMFieldShape w)
-parseLLVMFieldShape w =
-  (LLVMFieldShape <$> parseValPerm (LLVMPointerRepr $ natRepr w)) <|>
-  parseInParens (do Some (Pair sz LeqProof) <- parseNatRepr
-                    withKnownNat sz
-                      (LLVMFieldShape <$> parseValPerm (LLVMPointerRepr sz))) <?>
-  "llvm field shape"
+                       Bool -> f w -> PermParseM s (LLVMFieldShape w)
+parseLLVMFieldShape req_parens w =
+  spaces >>
+  (parseInParens
+   ((do spaces
+        Some (Pair sz LeqProof) <- parseNatRepr
+        spaces >> comma
+        withKnownNat sz (LLVMFieldShape <$> parseValPerm (LLVMPointerRepr sz)))
+    <|> (LLVMFieldShape <$> parseValPerm (LLVMPointerRepr $ natRepr w)))
+   <|>
+   (if req_parens then fail "parens required" else
+      LLVMFieldShape <$> parseValPerm (LLVMPointerRepr $ natRepr w))
+   <?> "llvm field shape")
 
 -- | Parse an expression of a known type
 parseExpr :: (Stream s Identity Char, Liftable s) => TypeRepr a ->
@@ -501,13 +508,13 @@ parseExpr tp@(LLVMShapeRepr w) =
        (try (string "eqsh") >> spaces >> parseInParens
         (PExpr_EqShape <$> parseExpr (LLVMBlockRepr w))) <|>
        (try (string "ptrsh") >> spaces >>
-        PExpr_FieldShape <$> parseLLVMFieldShape w) <|>
+        PExpr_FieldShape <$> parseLLVMFieldShape True w) <|>
        (try (string "arraysh") >> spaces >> parseInParens
         (do len <- parseExpr (BVRepr w)
             spaces >> comma >> spaces
             stride <- Bytes <$> integer
             spaces >> comma >> spaces >> char '['
-            flds <- sepBy1 (parseLLVMFieldShape w) (spaces >> comma)
+            flds <- sepBy1 (parseLLVMFieldShape False w) (spaces >> comma)
             spaces >> char ']'
             return $ PExpr_ArrayShape len stride flds)) <|>
        (do try (string "exsh" >> spaces1)
