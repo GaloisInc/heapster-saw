@@ -47,7 +47,6 @@ Proof.
       rewrite e_assuming2, e_assuming0.
       reflexivity.
   - apply isBvslt_to_isBvsle_suc.
-    rewrite <- e_assuming3 in e_if.
     apply isBvult_to_isBvslt_pos; assumption.
   (* Proving that these branches are impossible, by virtue of our loop invariant: *)
   - rewrite <- e_assuming1 in e_if0.
@@ -85,7 +84,6 @@ Proof.
       rewrite e_assuming2, e_assuming0.
       reflexivity.
   - apply isBvslt_to_isBvsle_suc.
-    rewrite <- e_assuming3 in e_if.
     apply isBvult_to_isBvslt_pos; assumption.
   - rewrite <- e_assuming1 in e_if0.
     discriminate e_if0.
@@ -109,29 +107,24 @@ Lemma no_errors_sum_2d
   : refinesFun sum_2d (fun l1 l2 _ => assumingM (sum_2d_precond l1 l2) noErrorsSpec).
 Proof.
   unfold sum_2d, sum_2d__tuple_fun, sum_2d_precond.
-  (* FIXME Why does this take so long now? *)
   time "no_errors_sum_2d (1/2)" prove_refinement_match_letRecM_l.
   - exact (fun a' a0' _ _ i j => assumingM (sum_2d_invariant1 a a' a0 a0' i j) noErrorsSpec).
   - exact (fun a' a0' _ _ i => assumingM (sum_2d_invariant2 a a' a0 a0' i) noErrorsSpec).
   unfold sum_2d_invariant1, sum_2d_invariant2, noErrorsSpec.
   fold bvMem_lo; fold bvMem_hi.
   time "no_errors_sum_2d (2/2)" prove_refinement.
-  (* FIXME Why does `assumption` get stuck on one of the goals? *)
-  all: try timeout 1 assumption.
-  * rewrite <- isBvult_to_isBvslt_pos, e_assuming5 in e_assuming4; try assumption.
+  all: try assumption.
+  * rewrite <- isBvult_to_isBvslt_pos in e_assuming4; try assumption.
     rewrite e_assuming4 in e_maybe.
     discriminate e_maybe.
-  * rewrite e_assuming4, e_assuming5.
+  * rewrite e_assuming5.
+    apply isBvsle_suc_r, isBvslt_to_isBvsle.
+    rewrite e_assuming6, e_assuming2.
     reflexivity.
-  * rewrite e_assuming6.
-    apply isBvsle_suc_r.
-    rewrite e_assuming7, e_assuming2.
-    reflexivity.
-  * rewrite e_assuming8 in e_assuming1.
-    apply isBvslt_to_isBvsle_suc, isBvult_to_isBvslt_pos; assumption.
-  * rewrite <- e_assuming6 in e_if2.
+  * apply isBvslt_to_isBvsle_suc, isBvult_to_isBvslt_pos; assumption.
+  * rewrite <- e_assuming5 in e_if2.
     vm_compute in e_if2; inversion e_if2.
-  * rewrite e_assuming7, e_assuming2 in e_if2.
+  * rewrite e_assuming6, e_assuming2 in e_if2.
     apply isBvslt_antirefl in e_if2; inversion e_if2.
   * rewrite <- e_assuming3 in e_if0.
     vm_compute in e_if0; inversion e_if0.
@@ -141,10 +134,6 @@ Proof.
     apply isBvsle_suc_r, isBvslt_to_isBvsle.
     rewrite e_assuming4, e_assuming0.
     reflexivity.
-  * rewrite e_assuming5 in e_assuming4.
-    apply isBvslt_to_isBvsle_suc; assumption.
-  * rewrite e_assuming5 in e_assuming.
-    apply isBvult_to_isBvslt_pos; assumption.
-  * rewrite e_assuming6 in e_assuming1.
-    assumption.
+  * apply isBvslt_to_isBvsle_suc; assumption.
+  * apply isBvult_to_isBvslt_pos; assumption.
 Qed.
