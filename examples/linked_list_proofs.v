@@ -24,7 +24,7 @@ Lemma no_errors_is_elem_manual : refinesFun is_elem (fun _ _ => noErrorsSpec).
 Proof.
   unfold is_elem, is_elem__tuple_fun.
   unfold noErrorsSpec.
-  apply refinesFun_multiFixM_fst. intros x l. unfold refinesFun, Datatypes.fst.
+  apply refinesFun_multiFixM_fst; intros x l.
   apply refinesM_letRecM_Nil_l.
   apply refinesM_either_l; intros.
   - eapply refinesM_existsM_r. reflexivity.
@@ -57,22 +57,23 @@ Arguments is_elem_fun /.
 Lemma is_elem_fun_ref : refinesFun is_elem is_elem_fun.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_fun, List_def.
-  time "is_elem_fun_ref" prove_refinement.
+  time "is_elem_fun_ref" prove_refinement with NoRewrite.
 Qed.
 
 Lemma is_elem_fun_ref_manual : refinesFun is_elem is_elem_fun.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_fun.
-  apply refinesFun_multiFixM_fst.
-  apply refinesFunStep; intro x.
-  apply refinesFunStep; intro l.
-  destruct l; simpl; apply noDestructArg.
-  - apply refinesM_letRecM_Nil_l.
-    reflexivity.
-  - apply refinesM_letRecM_Nil_l.
-    apply refinesM_if_r; intro H; rewrite H; simpl.
+  apply refinesFun_multiFixM_fst; intros x l.
+  apply refinesM_letRecM_Nil_l.
+  apply refinesM_either_l; intros [] e_either.
+  all: destruct l; cbn [ unfoldList list_rect ] in *.
+  all: try (injection e_either; intros; subst); try discriminate e_either.
+  - reflexivity.
+  - apply refinesM_if_r; intro e_if; unfold_projs; rewrite e_if; simpl.
     + reflexivity.
-    + prove_refinement.
+    + rewrite_strat (outermost (terms existT_eta_unit)).
+      rewrite bindM_returnM_CompM.
+      reflexivity.
 Qed.
 
 (* The pure version of is_elem *)
@@ -101,7 +102,7 @@ Proof.
   unfold is_elem_fun, is_elem_pure.
   apply refinesFunStep; intro x.
   apply refinesFunStep; intro l.
-  induction l; simpl; apply noDestructArg.
+  induction l; simpl.
   - reflexivity.
   - apply refinesM_if_l; intro H; rewrite H.
     + reflexivity.
@@ -128,19 +129,11 @@ Lemma is_elem_spec_ref : refinesFun is_elem is_elem_spec.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_spec.
   time "is_elem_spec_ref" prove_refinement.
-  (* First, some manipulation of e_either which knocks out a few cases: *)
-  all: destruct a0; unfold unfoldList in e_either; simpl in e_either.
-  all: try discriminate e_either.
   (* The a0 = [] case. *)
   - continue_prove_refinement_right.
     easy.
-  (* Next, some destructing/simplification useful for the remaining cases: *)
-  all: injection e_either as e_either_fst e_either_snd.
-  all: rewrite e_either_fst, e_either_snd.
-  all: simpl List.In.
   (* The a0 = (s1 :: a1) case where a = s1. *)
   - continue_prove_refinement_left.
-    rewrite e_if.
     now left.
   (* The a0 = (s1 :: a1) case where a <> s1, and we inductively assume
      the left assertion of our specification *)
@@ -157,69 +150,58 @@ Proof.
 Qed.
 
 
-Lemma refinesM_bind_lr A B (x y : CompM A) (f g : A -> CompM B) :
-  refinesM x y -> @refinesFun (LRT_Fun A (fun _ => LRT_Ret B)) f g ->
-  refinesM (x >>= f) (y >>= g).
-Proof.
-  unfold refinesM, bindM, MonadBindOp_OptionT, bindM, MonadBindOp_SetM.
-  intros x_ref f_ref b H.
-  destruct H as [ a xa H ].
-  exists a.
-  - apply x_ref.
-    assumption.
-  - destruct a.
-    + apply f_ref.
+Section any.
+
+  Lemma refinesM_bind_lr A B (x y : CompM A) (f g : A -> CompM B) :
+    refinesM x y -> @refinesFun (LRT_Fun A (fun _ => LRT_Ret B)) f g ->
+    refinesM (x >>= f) (y >>= g).
+  Proof.
+    unfold refinesM, bindM, MonadBindOp_OptionT, bindM, MonadBindOp_SetM.
+    intros x_ref f_ref b H.
+    destruct H as [ a xa H ].
+    exists a.
+    - apply x_ref.
       assumption.
-    + assumption.
-Qed.
+    - destruct a.
+      + apply f_ref.
+        assumption.
+      + assumption.
+  Qed.
 
-Definition any_fun (f:{_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit}) :
-  list {_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit} :=
-  list_rect (fun _ => CompM {_:bitvector 64 & unit})
-            (returnM (existT _ (intToBv 64 0) tt))
-            (fun y l' rec =>
-               f y >>= fun call_ret_val =>
-                if not (bvEq 64 (projT1 call_ret_val) (intToBv 64 0))
-                then returnM (existT _ (intToBv 64 1) tt) else rec).
+  Hint Resolve refinesM_bind_lr | 0 : refinesM.
 
-Lemma any_fun_ref : refinesFun any any_fun.
-Proof.
-  unfold any, any__tuple_fun, any_fun.
-  apply refinesFun_multiFixM_fst. intros f l.
-  apply refinesM_letRecM_Nil_l.
-  induction l.
-  - reflexivity.
-  - apply refinesM_bind_lr.
-    + destruct a; destruct u; simpl.
-      reflexivity.
-    + time "any_fun_ref" prove_refinement.
-Qed.
+  Definition any_fun (f:{_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit}) :
+    list {_:bitvector 64 & unit} -> CompM {_:bitvector 64 & unit} :=
+    list_rect (fun _ => CompM {_:bitvector 64 & unit})
+              (returnM (existT _ (intToBv 64 0) tt))
+              (fun y l' rec =>
+                 f y >>= fun call_ret_val =>
+                  if not (bvEq 64 (projT1 call_ret_val) (intToBv 64 0))
+                  then returnM (existT _ (intToBv 64 1) tt) else rec).
 
-Lemma no_errors_any : refinesFun any (fun pred _ => assumingM
-                                                   (forall x, refinesM (pred x) noErrorsSpec)
-                                                   noErrorsSpec).
-Proof.
-  unfold any, any__tuple_fun, noErrorsSpec.
-  apply refinesFun_multiFixM_fst. intros pred l.
-  unfold refinesFun, Datatypes.fst.
-  apply refinesM_assumingM_r.
-  intros Hpred.
-  apply refinesM_letRecM_Nil_l.
-  apply refinesM_either_l; intros.
-  - eapply refinesM_existsM_r. reflexivity. (* TODO needs an exists elimination rule? *)
-  - pose proof (Hpred (existT (fun _ : bitvector 64 => unit) (projT1 (fst b)) tt)) as Hpred'.
-    red in Hpred'. unfold existsM in Hpred'.
-    repeat intro. destruct H0.
-    specialize (Hpred' _ H0). destruct Hpred'.
-    destruct x.
-    2: { inversion H1. inversion H2. }
-    destruct (bvEq 1
-              (if not (bvEq 64 (projT1 s) (intToBv 64 0)) then intToBv 1 (-1) else intToBv 1 0)
-              (intToBv 1 0)); simpl in *.
-    2: { eexists. apply H1. }
-    inversion H1. destruct x. 2: { specialize (H3 Hpred). inversion H3. inversion H5. }
-      eexists. apply H4.
-Qed.
+  Lemma any_fun_ref : refinesFun any any_fun.
+  Proof.
+    unfold any, any__tuple_fun, any_fun.
+    time "any_fun_ref" prove_refinement.
+  Qed.
+
+  Local Arguments noErrorsSpec : simpl never.
+
+  Lemma no_errors_any : refinesFun any (fun pred _ => assumingM
+                                                     (forall x, refinesM (pred x) noErrorsSpec)
+                                                     noErrorsSpec).
+  Proof.
+    unfold any, any__tuple_fun. (* unfold noErrorsSpec at 1. *)
+    time "no_errors_any (1/2)" prove_refinement with NoRewrite.
+    - unfold noErrorsSpec; prove_refinement.
+    - rewrite (e_assuming (existT (fun _ : bitvector 64 => unit) a1 tt)).
+      unfold noErrorsSpec at 1.
+      time "no_errors_any (2/2)" prove_refinement.
+      + unfold noErrorsSpec; prove_refinement.
+      + prove_refinement; assumption.
+  Qed.
+
+End any.
 
 (*
 Arguments sorted_insert__tuple_fun /.
@@ -246,10 +228,6 @@ Lemma find_elem_fun_ref : refinesFun find_elem find_elem_fun.
 Proof.
   unfold find_elem, find_elem__tuple_fun, find_elem_fun.
   time "find_elem_fun_ref" prove_refinement.
-  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst.
-  - reflexivity.
-  - rewrite (proj2 (bvEq_eq _ _ _)); simpl; auto. reflexivity.
-  - rewrite (proj2 (bvEq_neq _ _ _)); simpl; auto. reflexivity.
 Qed.
 
 Lemma no_errors_sorted_insert : refinesFun sorted_insert (fun _ _ => noErrorsSpec).
@@ -271,10 +249,6 @@ Lemma sorted_insert_fun_ref : refinesFun sorted_insert sorted_insert_fun.
 Proof.
   unfold sorted_insert, sorted_insert__tuple_fun, sorted_insert_fun, mallocSpec.
   time "sorted_insert_fun_ref" prove_refinement.
-  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
-  - reflexivity.
-  - apply isBvsle_def in e_if. rewrite e_if. reflexivity.
-  - apply isBvslt_def_opp in e_if. rewrite e_if. reflexivity.
 Qed.
 
 Lemma no_errors_sorted_insert_no_malloc : refinesFun sorted_insert_no_malloc (fun _ _ => noErrorsSpec).
@@ -288,8 +262,4 @@ Lemma sorted_insert_no_malloc_fun_ref : refinesFun sorted_insert_no_malloc sorte
 Proof.
   unfold sorted_insert_no_malloc, sorted_insert_no_malloc__tuple_fun, sorted_insert_fun.
   time "sorted_insert_no_malloc_fun_ref" prove_refinement.
-  all: destruct a0; unfold unfoldList in e_either; simpl in *; inversion e_either; subst; simpl.
-  - reflexivity.
-  - apply isBvsle_def in e_if. rewrite e_if. reflexivity.
-  - apply isBvslt_def_opp in e_if. rewrite e_if. reflexivity.
 Qed.
