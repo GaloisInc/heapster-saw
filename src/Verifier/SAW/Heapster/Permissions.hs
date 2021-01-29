@@ -892,6 +892,12 @@ zeroOfType _ = error "zeroOfType"
 varFactor :: (1 <= w, KnownNat w) => ExprVar (BVType w) -> BVFactor w
 varFactor = BVFactor $ BV.one knownNat
 
+-- | Normalize a bitvector expression @1*x + 0@ to just @x@
+bvNormVar :: PermExpr (BVType w) -> PermExpr (BVType w)
+bvNormVar (PExpr_BV [BVFactor i x] off)
+  | i == BV.one knownNat && off == BV.zero knownNat = PExpr_Var x
+bvNormVar e = e
+
 -- | Normalize a bitvector expression, so that every variable has at most one
 -- factor and the factors are sorted by variable name. NOTE: we shouldn't
 -- actually have to call this if we always construct our expressions with the
@@ -1168,15 +1174,15 @@ bvBV i = PExpr_BV [] i
 bvAdd :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> PermExpr (BVType w) ->
          PermExpr (BVType w)
 bvAdd (bvMatch -> (factors1, const1)) (bvMatch -> (factors2, const2)) =
+  bvNormVar $
   PExpr_BV (bvMergeFactors factors1 factors2) (BV.add knownNat const1 const2)
 
 -- | Multiply a bitvector expression by a constant
 bvMult :: (1 <= w, KnownNat w, Integral a) => a -> PermExpr (BVType w) ->
           PermExpr (BVType w)
-bvMult i (PExpr_Var x) =
-  PExpr_BV [BVFactor (BV.mkBV knownNat $ toInteger i) x] $ BV.zero knownNat
-bvMult i (PExpr_BV factors off) =
+bvMult i (bvMatch -> (factors, off)) =
   let i_bv = BV.mkBV knownNat $ toInteger i in
+  bvNormVar $
   PExpr_BV (map (\(BVFactor j x) -> BVFactor (BV.mul knownNat i_bv j) x) factors)
   (BV.mul knownNat i_bv off)
 
@@ -1198,6 +1204,7 @@ bvDiv :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> Integer ->
          PermExpr (BVType w)
 bvDiv (bvMatch -> (factors, off)) n =
   let n_bv = BV.mkBV knownNat n in
+  bvNormVar $
   PExpr_BV (mapMaybe (\(BVFactor i x) ->
                        if BV.urem i n_bv == BV.zero knownNat then
                          Just (BVFactor (BV.uquot i n_bv) x)
@@ -1210,6 +1217,7 @@ bvMod :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> Integer ->
          PermExpr (BVType w)
 bvMod (bvMatch -> (factors, off)) n =
   let n_bv = BV.mkBV knownNat n in
+  bvNormVar $
   PExpr_BV (mapMaybe (\f@(BVFactor i _) ->
                        if BV.urem i n_bv /= BV.zero knownNat
                        then Just f else Nothing) factors)
