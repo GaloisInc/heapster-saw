@@ -185,8 +185,8 @@ data ExprTrans (a :: CrucibleType) where
   -- | Read-write modalities also have no computational content
   ETrans_RWModality :: ExprTrans RWModalityType
 
-  -- | Permission lists also have no computational content
-  ETrans_PermList :: ExprTrans PermListType
+  -- | lowned permissions also have no computational content
+  ETrans_LOwnedPerm :: ExprTrans LOwnedPermType
 
   -- | Structs are translated as a sequence of translations of the fields
   ETrans_Struct :: ExprTransCtx (CtxToRList ctx) -> ExprTrans (StructType ctx)
@@ -239,7 +239,7 @@ instance IsTermTrans (ExprTrans tp) where
   transTerms ETrans_LLVMFrame = []
   transTerms ETrans_Lifetime = []
   transTerms ETrans_RWModality = []
-  transTerms ETrans_PermList = []
+  transTerms ETrans_LOwnedPerm = []
   transTerms (ETrans_Struct etranss) =
     concat $ RL.mapToList transTerms etranss
   transTerms ETrans_Fun = []
@@ -596,8 +596,8 @@ instance TransInfo info =>
     return $ mkTypeTrans0 ETrans_LLVMFrame
   translate [nuP| LifetimeRepr |] =
     return $ mkTypeTrans0 ETrans_Lifetime
-  translate [nuP| PermListRepr |] =
-    return $ mkTypeTrans0 ETrans_PermList
+  translate [nuP| LOwnedPermRepr |] =
+    return $ mkTypeTrans0 ETrans_LOwnedPerm
   translate [nuP| RWModalityRepr |] =
     return $ mkTypeTrans0 ETrans_RWModality
 
@@ -748,8 +748,9 @@ instance TransInfo info =>
   translate [nuP| PExpr_LLVMWord _ |] = return ETrans_LLVM
   translate [nuP| PExpr_LLVMOffset _ _ |] = return ETrans_LLVM
   translate [nuP| PExpr_Fun _ |] = return ETrans_Fun
-  translate [nuP| PExpr_PermListNil |] = return ETrans_PermList
-  translate [nuP| PExpr_PermListCons _ _ _ |] = return ETrans_PermList
+  translate [nuP| PExpr_LOwnedPermNil |] = return ETrans_LOwnedPerm
+  translate [nuP| PExpr_LOwnedPermConsP _ _ _ _ |] = return ETrans_LOwnedPerm
+  translate [nuP| PExpr_LOwnedPermConsL _ _ _ |] = return ETrans_LOwnedPerm
   translate [nuP| PExpr_RWModality _ |] = return ETrans_RWModality
 
   -- LLVM shapes are translated to types
@@ -1410,114 +1411,6 @@ setLLVMArrayTransSlice arr_trans sub_arr_trans off_tm =
       applyOpenTermMulti
       (globalOpenTerm "Prelude.updSliceBVVec")
       [natOpenTerm w, len_tm, elem_tp, arr_tm, off_tm, len'_tm, sub_arr_tm] }
-
-
--- | Put a 'PermTrans' into a lifetime. This is the same as applying
--- 'inLifetime' to the 'permTransPerm' of a 'PermTrans'.
-permTransInLifetime :: Mb ctx (PermExpr LifetimeType) ->
-                       PermTrans ctx a -> PermTrans ctx a
-permTransInLifetime _ p@(PTrans_Eq _) = p
-permTransInLifetime l (PTrans_Conj ps) =
-  PTrans_Conj $ map (atomicPermTransInLifetime l) ps
-permTransInLifetime mb_l (PTrans_Defined npn mb_args off ptrans) =
-  PTrans_Defined npn
-  (mbMap2 (\l args ->
-            inLifetimeArgs l (namedPermNameArgs npn) args) mb_l mb_args)
-  off ptrans
-permTransInLifetime l (PTrans_Term p t) =
-  PTrans_Term (mbMap2 inLifetime l p) t
-
--- | Like 'permTransInLifetime' but for atomic permission translations
-atomicPermTransInLifetime :: Mb ctx (PermExpr LifetimeType) ->
-                     AtomicPermTrans ctx a ->
-                     AtomicPermTrans ctx a
-atomicPermTransInLifetime l (APTrans_LLVMField fld ptrans) =
-  APTrans_LLVMField (mbMap2 inLifetime l fld) $
-  permTransInLifetime l ptrans
-atomicPermTransInLifetime l (APTrans_LLVMArray
-                             (LLVMArrayPermTrans ap len flds {- bs -} t)) =
-  APTrans_LLVMArray $
-  LLVMArrayPermTrans (mbMap2 inLifetime l ap) len
-  (fmap (map (atomicPermTransInLifetime l)) flds)
-  {- bs -}
-  t
-atomicPermTransInLifetime mb_l (APTrans_LLVMBlock mb_bp t) =
-  APTrans_LLVMBlock (mbMap2 (\bp l -> bp {llvmBlockLifetime = l}) mb_bp mb_l) t
-atomicPermTransInLifetime _ p@(APTrans_LLVMFree _) = p
-atomicPermTransInLifetime l (APTrans_LLVMFunPtr tp p) =
-  APTrans_LLVMFunPtr tp $ permTransInLifetime l p
-atomicPermTransInLifetime _ p@APTrans_IsLLVMPtr = p
-atomicPermTransInLifetime _ p@(APTrans_LLVMBlockShape _ _) = p
-atomicPermTransInLifetime _ p@(APTrans_LLVMFrame _) = p
-atomicPermTransInLifetime l (APTrans_LifetimePerm p) =
-  APTrans_LifetimePerm $ mbMap2 inLifetime l p
-atomicPermTransInLifetime l (APTrans_Struct pctx) =
-  APTrans_Struct $ RL.map (permTransInLifetime l) pctx
-atomicPermTransInLifetime _ p@(APTrans_Fun _ _) = p
-atomicPermTransInLifetime _ p@(APTrans_BVProp _) = p
-
--- | Map a 'PermTrans' to the permission it should have after a lifetime has
--- ended, undoing 'minLtEndPerms'. The first argument should have associated
--- permissions that equal 'minLtEndPerms' of the second. This operation does not
--- actually modify the translation itself, just changes the associated
--- permissions.
-permTransEndLifetime :: PermTrans ctx a -> Mb ctx (ValuePerm a) ->
-                        PermTrans ctx a
-permTransEndLifetime p@(PTrans_Eq _) _ = p
-permTransEndLifetime (PTrans_Conj ptranss) [nuP| ValPerm_Conj ps |] =
-  PTrans_Conj $ zipWith atomicPermTransEndLifetime ptranss (mbList ps)
-permTransEndLifetime (PTrans_Defined npn args off ptrans) _ =
-  -- FIXME: is this right?
-  PTrans_Defined npn args off ptrans
-permTransEndLifetime (PTrans_Term _ t) p2 = PTrans_Term p2 t
-permTransEndLifetime _ _ =
-  error "permTransEndLifetime: permissions don't agree!"
-
--- | Like 'permTransEndLifetime' but for atomic permission translations
-atomicPermTransEndLifetime :: AtomicPermTrans ctx a -> Mb ctx (AtomicPerm a) ->
-                              AtomicPermTrans ctx a
-atomicPermTransEndLifetime (APTrans_LLVMField
-                            mb_fld ptrans) [nuP| Perm_LLVMField fld |]
-  | Just Refl <-
-      testEquality (mbLift $ fmap llvmFieldSize mb_fld)
-      (mbLift $ fmap llvmFieldSize fld) =
-    APTrans_LLVMField fld $
-    permTransEndLifetime ptrans (fmap llvmFieldContents fld)
-atomicPermTransEndLifetime (APTrans_LLVMArray
-                            (LLVMArrayPermTrans _ len flds {- bs -} t))
-  [nuP| Perm_LLVMArray ap |] =
-  APTrans_LLVMArray $ LLVMArrayPermTrans ap len
-  (fmap (\aps ->
-          zipWith atomicPermTransEndLifetime aps
-          (mbList $
-           fmap (map llvmArrayFieldToAtomicPerm . llvmArrayFields) ap)) flds)
-  {- bs -} t
-atomicPermTransEndLifetime (APTrans_LLVMBlock _ t) [nuP| Perm_LLVMBlock bp |] =
-  APTrans_LLVMBlock bp t
-atomicPermTransEndLifetime p@(APTrans_LLVMFree _) _ = p
-atomicPermTransEndLifetime p@(APTrans_LLVMFunPtr _ _) _ =
-  -- FIXME: is this correct?
-  p
-atomicPermTransEndLifetime p@APTrans_IsLLVMPtr _ = p
-atomicPermTransEndLifetime p@(APTrans_LLVMBlockShape _ _) _ = p
-atomicPermTransEndLifetime p@(APTrans_LLVMFrame _) _ = p
-atomicPermTransEndLifetime p@(APTrans_LifetimePerm _) _ = p
-atomicPermTransEndLifetime (APTrans_Struct pctx) [nuP| Perm_Struct ps |] =
-  APTrans_Struct $ RL.map2 (\ptrans p ->
-                             permTransEndLifetime ptrans (getCompose p))
-  pctx (mbRAssign ps)
-atomicPermTransEndLifetime p@(APTrans_Fun _ _) _ = p
-atomicPermTransEndLifetime p@(APTrans_BVProp _) _ = p
-atomicPermTransEndLifetime _ _ =
-  error "atomicPermTransEndLifetime: permissions don't agree!"
-
-
--- | Apply 'permTransEndLifetime' to a 'PermTransCtx'
-permCtxEndLifetime :: PermTransCtx ctx ps -> Mb ctx (DistPerms ps) ->
-                      PermTransCtx ctx ps
-permCtxEndLifetime MNil _ = MNil
-permCtxEndLifetime (ptranss :>: ptrans) [nuP| DistPermsCons perms _ p |] =
-  permCtxEndLifetime ptranss perms :>: permTransEndLifetime ptrans p
 
 
 instance (1 <= w, KnownNat w, TransInfo info) =>
@@ -2528,17 +2421,37 @@ translateSimplImpl _ [nuP| SImpl_LLVMBlockIsPtr x _ |] m =
     pctx :>: PTrans_Conj [APTrans_IsLLVMPtr] :>: ptrans)
   m
 
-translateSimplImpl _ [nuP| SImpl_SplitLifetime mb_x mb_p mb_l mb_ps |] m =
-  withPermStackM id
-  (\(pctx :>: ptrans_x :>: ptrans_l) ->
-    pctx :>: permTransInLifetime (fmap PExpr_Var mb_l) ptrans_x :>:
-    PTrans_Conj
-    [APTrans_LifetimePerm
-     (fmap
-      (\x p ps ->
-        Perm_LOwned (PExpr_PermListCons (PExpr_Var x) p ps))
-      mb_x `mbApply` mb_p `mbApply` mb_ps)])
-  m
+translateSimplImpl _ simpl@[nuP| SImpl_SplitLifetime _ _ _ _ _ |] m =
+  do pctx_out_trans <- translate $ fmap simplImplOut simpl
+     withPermStackM
+       (\(ns :>: x :>: _ :>: l2) -> ns :>: x :>: l2)
+       (\(pctx :>: ptrans_x :>: _ :>: _) ->
+         -- NOTE: lifetime permissions have no term translations, so we can
+         -- construct the output PermTransCtx by just passing the terms in
+         -- ptrans_x to pctx_out_trans
+         RL.append pctx (typeTransF pctx_out_trans $ transTerms ptrans_x))
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_SubsumeLifetime _ _ _ _ |] m =
+  do pctx_out_trans <- translate $ fmap simplImplOut simpl
+     withPermStackM id
+       (\(pctx :>: _ :>: _) ->
+         -- NOTE: lifetime permissions have no term translations, and the output
+         -- permissions of SImplSubsumeLifetime are all lifetime permissions, so
+         -- we can just pass the empty list of terms
+         RL.append pctx (typeTransF pctx_out_trans []))
+       m
+
+translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime _ _ ps_in ps_out |] m =
+  do pctx_out_trans <- translate $ fmap simplImplOut simpl
+     withPermStackM RL.tail
+       (\pctx ->
+         let (pctx_ps, pctx_in :>: _) =
+               RL.split ps (mbDistPermsToProxies ps_in :>: Proxy) pctx in
+         -- NOTE: ltEndPermsIn and ltEndPermsOut have the same translation, so
+         -- we can get out the terms of pctx_in and use them to build pctx_out
+         RL.append pctx_ps (typeTransF pctx_out_trans $ transTerms pctx_in))
+       m
 
 translateSimplImpl _ [nuP| SImpl_LCurrentRefl l |] m =
   withPermStackM (:>: translateVar l)
@@ -3590,25 +3503,6 @@ translateStmt _ [nuP| stmt@(TypedCall freg fun_perm _ gexprs args) |] m =
            (const pctx)
            m)
          ret_val]
-
-translateStmt _ stmt@[nuP| BeginLifetime |] m =
-  inExtTransM ETrans_Lifetime $
-  withPermStackM (:>: Member_Base)
-  (:>: PTrans_Conj [APTrans_LifetimePerm $ nuMulti (mbToProxy stmt :>: Proxy) $
-                    const $ Perm_LOwned PExpr_PermListNil])
-  m
-
-translateStmt _ stmt@[nuP| EndLifetime _ ps _ end_perms |] m =
-  let end_prx = mbDistPermsToProxies end_perms
-      ps_l_prx = mbDistPermsToProxies ps :>: (Proxy :: Proxy LifetimeType) in
-  withPermStackM
-  (\pvars_all ->
-    let ((pvars :>: _), _) = RL.split ps_l_prx end_prx pvars_all in
-    pvars)
-  (\pctx_all ->
-    let ((pctx :>: _), _) = RL.split ps_l_prx end_prx pctx_all in
-    permCtxEndLifetime pctx ps)
-  m
 
 -- FIXME HERE: figure out why these asserts always translate to ite True
 translateStmt loc [nuP| TypedAssert e _ |] m =

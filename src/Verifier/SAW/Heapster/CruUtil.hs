@@ -537,6 +537,13 @@ cruCtxToTypes :: CruCtx ctx -> RAssign TypeRepr ctx
 cruCtxToTypes CruCtxNil = MNil
 cruCtxToTypes (CruCtxCons tps tp) = cruCtxToTypes tps :>: tp
 
+-- | Convert an assignment of 'TypeRepr's to a 'CruCtx'
+--
+-- FIXME: 'CruCtx' should just be defined as an assignment!
+cruCtxOfTypes :: RAssign TypeRepr ctx -> CruCtx ctx
+cruCtxOfTypes MNil = CruCtxNil
+cruCtxOfTypes (tps :>: tp) = CruCtxCons (cruCtxOfTypes tps) tp
+
 instance Show (CruCtx ctx) where
   show = show . cruCtxToRepr
 

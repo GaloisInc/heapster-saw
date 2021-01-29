@@ -32,6 +32,7 @@ import Data.String
 import Data.Proxy
 import Data.Functor.Constant
 import Data.Functor.Compose
+import Data.Functor.Product
 import qualified Data.BitVector.Sized as BV
 import Data.BitVector.Sized (BV)
 import Data.Reflection
@@ -65,6 +66,7 @@ import Data.Parameterized.Context (Ctx(..), Assignment(..), AssignView(..),
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.BoolRepr
 import Data.Parameterized.NatRepr
+import Data.Parameterized.TraversableF
 import Data.Parameterized.TraversableFC
 
 import Prettyprinter ((<+>))
@@ -314,7 +316,7 @@ instance PermPretty (TypeRepr a) where
     return (pretty "llvmshape" <+> pretty (intValue w))
   permPrettyM (LLVMBlockRepr w) =
     return (pretty "llvmblock" <+> pretty (intValue w))
-  permPrettyM PermListRepr = return $ pretty "permlist"
+  permPrettyM LOwnedPermRepr = return $ pretty "lowned_perm"
   permPrettyM (StructRepr flds) =
     (pretty "struct" <+>) <$> parens <$>
     foldrMFC (\tp rest ->
@@ -418,15 +420,15 @@ pattern RWModalityRepr <-
   where RWModalityRepr = IntrinsicRepr knownSymbol Empty
 
 -- | Crucible type for lists of expressions and permissions on them
-type PermListType = IntrinsicType "PermList" EmptyCtx
+type LOwnedPermType = IntrinsicType "LOwnedPerm" EmptyCtx
 
 -- | Pattern for building/desctructing permission list types
-pattern PermListRepr :: () => ty ~ PermListType => TypeRepr ty
-pattern PermListRepr <-
-  IntrinsicRepr (testEquality (knownSymbol :: SymbolRepr "PermList") ->
+pattern LOwnedPermRepr :: () => ty ~ LOwnedPermType => TypeRepr ty
+pattern LOwnedPermRepr <-
+  IntrinsicRepr (testEquality (knownSymbol :: SymbolRepr "LOwnedPerm") ->
                  Just Refl) Empty
   where
-    PermListRepr = IntrinsicRepr knownSymbol Empty
+    LOwnedPermRepr = IntrinsicRepr knownSymbol Empty
 
 -- | Crucible type for LLVM stack frame objects
 type LLVMFrameType w = IntrinsicType "LLVMFrame" (EmptyCtx ::> BVType w)
@@ -525,15 +527,27 @@ data PermExpr (a :: CrucibleType) where
   -- | A literal function pointer
   PExpr_Fun :: FnHandle args ret -> PermExpr (FunctionHandleType args ret)
 
-  -- | An empty list of expressions plus permissions
-  PExpr_PermListNil :: PermExpr PermListType
+  -- | An empty @lowned@ permission
+  PExpr_LOwnedPermNil :: PermExpr LOwnedPermType
 
-  -- | A cons of an expression and permission for that expression onto a
-  -- permission list
+  -- | A cons of a permission held in an @lowned@ permission. The permission is
+  -- of the form @e:F<l2>@, where @F@ is a "lifetime functor" that maps
+  -- lifetimes to permissions. This form indicates that we split the lifetime of
+  -- this permission to have @e:F<l>@ now, while lifetime @l@ (the lifetime for
+  -- which we hold the @lowned@ permission containing this construct) is
+  -- current, and to get back @e:F<l2>@ once @l@ is finished.
   --
   -- FIXME: turn the 'KnownRepr' constraint into a normal 'TypeRepr' argument
-  PExpr_PermListCons :: KnownRepr TypeRepr a => PermExpr a -> ValuePerm a ->
-                        PermExpr PermListType -> PermExpr PermListType
+  PExpr_LOwnedPermConsP :: KnownRepr TypeRepr a => PermExpr a ->
+                           Binding LifetimeType (ValuePerm a) ->
+                           PermExpr LifetimeType ->
+                           PermExpr LOwnedPermType -> PermExpr LOwnedPermType
+
+  -- | A cons of a @lowned@ permission for some lifetime @l2@ inside an @lowned@
+  -- permission for some inner lifetime @l@. This guarantees that @l2@ must
+  -- remain current for the duration of @l@, i.e., that @l2@ contains @l@.
+  PExpr_LOwnedPermConsL :: PermExpr LifetimeType -> PermExpr LOwnedPermType ->
+                           PermExpr LOwnedPermType -> PermExpr LOwnedPermType
 
   -- | A read/write modality 
   PExpr_RWModality :: RWModality -> PermExpr RWModalityType
@@ -642,6 +656,31 @@ data RWModality
   deriving Eq
 
 
+-- | An argument to a lifetime functor is always a read-write modality
+data LifetimeFunctorArg a where
+  LifetimeFunctorArg_RW :: PermExpr RWModalityType ->
+                           LifetimeFunctorArg RWModalityType
+
+-- | Get out a 'TypeRepr' for a 'LifetimeFunctorArg'
+lifetimeFunctorArgType :: LifetimeFunctorArg a -> TypeRepr a
+lifetimeFunctorArgType (LifetimeFunctorArg_RW _) = knownRepr
+
+-- | Build a 'CruCtx' for a list of 'LifetimeFunctorArg's
+lifetimeFunctorArgCtx :: RAssign LifetimeFunctorArg ctx -> CruCtx ctx
+lifetimeFunctorArgCtx = cruCtxOfTypes . RL.map lifetimeFunctorArgType
+
+-- | Get out a 'PermExpr' from a 'LifetimeFunctorArg'
+lifetimeFunctorArgExpr :: LifetimeFunctorArg a -> PermExpr a
+lifetimeFunctorArgExpr (LifetimeFunctorArg_RW e) = e
+
+-- | Build a 'PermExprs' list from a list of 'LifetimeFunctorArg's
+lifetimeFunctorArgExprs :: RAssign LifetimeFunctorArg a -> PermExprs a
+lifetimeFunctorArgExprs = rassignToExprs . RL.map lifetimeFunctorArgExpr
+
+-- | Map a 'LifetimeFunctorArg' to the minimal argument of the same type
+lifetimeFunctorArgMinExpr :: LifetimeFunctorArg a -> PermExpr a
+lifetimeFunctorArgMinExpr (LifetimeFunctorArg_RW _) = PExpr_Read
+
 instance Eq (PermExpr a) where
   (PExpr_Var x1) == (PExpr_Var x2) = x1 == x2
   (PExpr_Var _) == _ = False
@@ -684,13 +723,18 @@ instance Eq (PermExpr a) where
   (PExpr_Fun fh1) == (PExpr_Fun fh2) = fh1 == fh2
   (PExpr_Fun _) == _ = False
 
-  PExpr_PermListNil == PExpr_PermListNil = True
-  PExpr_PermListNil == _ = False
+  PExpr_LOwnedPermNil == PExpr_LOwnedPermNil = True
+  PExpr_LOwnedPermNil == _ = False
 
-  (PExpr_PermListCons e1 p1 l1) == (PExpr_PermListCons e2 p2 l2)
+  (PExpr_LOwnedPermConsP e1 mb_p1 l1 rest1) == (PExpr_LOwnedPermConsP
+                                                e2 mb_p2 l2 rest2)
     | Just Refl <- testEquality (exprType e1) (exprType e2)
-    = e1 == e2 && p1 == p2 && l1 == l2
-  (PExpr_PermListCons _ _ _) == _ = False
+    = e1 == e2 && mb_p1 == mb_p2 && l1 == l2 && rest1 == rest2
+  (PExpr_LOwnedPermConsP _ _ _ _) == _ = False
+
+  (PExpr_LOwnedPermConsL l1 p1 rest1) == (PExpr_LOwnedPermConsL l2 p2 rest2) =
+    l1 == l2 && p1 == p2 && rest1 == rest2
+  (PExpr_LOwnedPermConsL _ _ _) == _ = False
 
   (PExpr_RWModality rw1) == (PExpr_RWModality rw2) = rw1 == rw2
   (PExpr_RWModality _) == _ = False
@@ -750,8 +794,9 @@ instance PermPretty (PermExpr a) where
     (\ppx ppe -> ppx <+> pretty "&+" <+> ppe)
     <$> permPrettyM x <*> permPrettyM e
   permPrettyM (PExpr_Fun fh) = return $ angles $ pretty ("fun" ++ show fh)
-  permPrettyM PExpr_PermListNil = return $ pretty "[]"
-  permPrettyM e@(PExpr_PermListCons _ _ _) = prettyPermListM e
+  permPrettyM PExpr_LOwnedPermNil = return $ pretty "[]"
+  permPrettyM e@(PExpr_LOwnedPermConsP _ _ _ _) = prettyLOwnedPermM e
+  permPrettyM e@(PExpr_LOwnedPermConsL _ _ _) = prettyLOwnedPermM e
   permPrettyM (PExpr_RWModality rw) = permPrettyM rw
   permPrettyM PExpr_EmptyShape = return $ pretty "emptysh"
   permPrettyM (PExpr_EqShape b) =
@@ -785,15 +830,26 @@ instance (1 <= w, KnownNat w) => PermPretty (LLVMFieldShape w) where
     do p_pp <- permPrettyM p
        return $ tupled [pretty (intValue $ exprLLVMTypeWidth p), p_pp]
 
-prettyPermListH :: PermExpr PermListType -> PermPPM ([Doc ann], Maybe (Doc ann))
-prettyPermListH (PExpr_Var x) = (\pp -> ([], Just pp)) <$> permPrettyM x
-prettyPermListH PExpr_PermListNil = return ([], Nothing)
-prettyPermListH (PExpr_PermListCons e p l) =
-  (\ppe ppp (pps, maybe_doc) -> (ppe <> colon <> ppp : pps, maybe_doc))
-  <$> permPrettyM e <*> permPrettyM p <*> prettyPermListH l
+prettyLOwnedPermH :: PermExpr LOwnedPermType -> PermPPM ([Doc ann], Maybe (Doc ann))
+prettyLOwnedPermH (PExpr_Var x) = (\pp -> ([], Just pp)) <$> permPrettyM x
+prettyLOwnedPermH PExpr_LOwnedPermNil = return ([], Nothing)
+prettyLOwnedPermH (PExpr_LOwnedPermConsP e mb_p l rest) =
+  do pp_e <- permPrettyM e
+     pp_mb_p <- permPrettyM mb_p
+     pp_l <- permPrettyM l
+     (pps, maybe_doc) <- prettyLOwnedPermH rest
+     return (pp_e <> colon <> parens pp_mb_p
+             <> pretty '<' <> pp_l <> pretty '>'
+             : pps,
+             maybe_doc)
+prettyLOwnedPermH (PExpr_LOwnedPermConsL l p rest) =
+  do pp_l <- permPrettyM l
+     pp_p <- permPrettyM (Perm_LOwned p)
+     (pps, maybe_doc) <- prettyLOwnedPermH rest
+     return (pp_l <> colon <> pp_p: pps, maybe_doc)
 
-prettyPermListM :: PermExpr PermListType -> PermPPM (Doc ann)
-prettyPermListM e = prettyPermListH e >>= \(pps, maybe_doc) ->
+prettyLOwnedPermM :: PermExpr LOwnedPermType -> PermPPM (Doc ann)
+prettyLOwnedPermM e = prettyLOwnedPermH e >>= \(pps, maybe_doc) ->
   case maybe_doc of
     Just pp_x -> return $ encloseSep lparen rparen (pretty "::") (pps ++ [pp_x])
     Nothing -> return $ list pps
@@ -1282,7 +1338,7 @@ data AtomicPerm (a :: CrucibleType) where
   -- | Ownership permission for a lifetime, including an assertion that it is
   -- still current and permission to end that lifetime and get back the given
   -- permissions that are being held by the lifetime
-  Perm_LOwned :: PermExpr PermListType -> AtomicPerm LifetimeType
+  Perm_LOwned :: PermExpr LOwnedPermType -> AtomicPerm LifetimeType
 
   -- | Assertion that a lifetime is current during another lifetime
   Perm_LCurrent :: PermExpr LifetimeType -> AtomicPerm LifetimeType
@@ -1903,7 +1959,7 @@ data LifetimeCurrentPerms ps_l where
   -- | A variable @l@ that is @lowned@ is current, requiring perms
   --
   -- > l:lowned(ps)
-  LOwnedCurrentPerms :: ExprVar LifetimeType -> PermExpr PermListType ->
+  LOwnedCurrentPerms :: ExprVar LifetimeType -> PermExpr LOwnedPermType ->
                         LifetimeCurrentPerms (RNil :> LifetimeType)
 
   -- | A variable @l@ that is @lcurrent@ during another lifetime @l'@ is
@@ -2215,6 +2271,7 @@ instance PermPretty (DistPerms ps) where
 
 $(mkNuMatching [t| forall a . PermExpr a |])
 $(mkNuMatching [t| forall a . BVFactor a |])
+$(mkNuMatching [t| forall a . LifetimeFunctorArg a |])
 $(mkNuMatching [t| forall as . PermExprs as |])
 $(mkNuMatching [t| forall w. BVRange w |])
 $(mkNuMatching [t| forall w. BVProp w |])
@@ -2223,6 +2280,9 @@ $(mkNuMatching [t| forall a . ValuePerm a |])
 -- $(mkNuMatching [t| forall as. ValuePerms as |])
 
 instance NuMatchingAny1 PermExpr where
+  nuMatchingAny1Proof = nuMatchingProof
+
+instance NuMatchingAny1 LifetimeFunctorArg where
   nuMatchingAny1Proof = nuMatchingProof
 
 instance NuMatchingAny1 ValuePerm where
@@ -3374,6 +3434,11 @@ distPerms2 :: ExprVar a1 -> ValuePerm a1 ->
               ExprVar a2 -> ValuePerm a2 -> DistPerms (RNil :> a1 :> a2)
 distPerms2 x1 p1 x2 p2 = DistPermsCons (distPerms1 x1 p1) x2 p2
 
+-- | Build a 'DistPerms' with three permissions
+distPerms3 :: ExprVar a1 -> ValuePerm a1 -> ExprVar a2 -> ValuePerm a2 ->
+              ExprVar a3 -> ValuePerm a3 -> DistPerms (RNil :> a1 :> a2 :> a3)
+distPerms3 x1 p1 x2 p2 x3 p3 = DistPermsCons (distPerms2 x1 p1 x2 p2) x3 p3
+
 -- | Get the first permission in a 'DistPerms'
 distPermsHeadPerm :: DistPerms (ps :> a) -> ValuePerm a
 distPermsHeadPerm (DistPermsCons _ _ p) = p
@@ -3406,15 +3471,6 @@ appendValuePerms :: ValuePerms ps1 -> ValuePerms ps2 -> ValuePerms (ps1 :++: ps2
 appendValuePerms ps1 ValPerms_Nil = ps1
 appendValuePerms ps1 (ValPerms_Cons ps2 p) =
   ValPerms_Cons (appendValuePerms ps1 ps2) p
-
--- | Extract the non-variable portion of a permission list expression
-permListToDistPerms :: PermExpr PermListType -> Some DistPerms
-permListToDistPerms PExpr_PermListNil = Some DistPermsNil
-permListToDistPerms (PExpr_Var _) = Some DistPermsNil
-permListToDistPerms (PExpr_PermListCons (PExpr_Var x) p l) =
-  case permListToDistPerms l of
-    Some perms -> Some $ DistPermsCons perms x p
-permListToDistPerms (PExpr_PermListCons _ _ l) = permListToDistPerms l
 
 distPermsToProxies :: DistPerms ps -> RAssign Proxy ps
 distPermsToProxies (DistPermsNil) = MNil
@@ -3633,9 +3689,11 @@ instance FreeVars (PermExpr a) where
   freeVars (PExpr_LLVMOffset ptr off) =
     NameSet.insert ptr (freeVars off)
   freeVars (PExpr_Fun _) = NameSet.empty
-  freeVars PExpr_PermListNil = NameSet.empty
-  freeVars (PExpr_PermListCons e p ps) =
-    NameSet.union (freeVars e) $ NameSet.union (freeVars p) (freeVars ps)
+  freeVars PExpr_LOwnedPermNil = NameSet.empty
+  freeVars (PExpr_LOwnedPermConsP e mb_p l rest) =
+    NameSet.unions [freeVars e, freeVars mb_p, freeVars l, freeVars rest]
+  freeVars (PExpr_LOwnedPermConsL l p rest) =
+    NameSet.unions [freeVars l, freeVars p, freeVars rest]
   freeVars (PExpr_RWModality _) = NameSet.empty
   freeVars PExpr_EmptyShape = NameSet.empty
   freeVars (PExpr_EqShape b) = freeVars b
@@ -3653,6 +3711,9 @@ instance FreeVars (BVFactor w) where
 instance FreeVars (PermExprs as) where
   freeVars PExprs_Nil = NameSet.empty
   freeVars (PExprs_Cons es e) = NameSet.union (freeVars es) (freeVars e)
+
+instance FreeVars (LifetimeFunctorArg a) where
+  freeVars (LifetimeFunctorArg_RW e) = freeVars e
 
 instance FreeVars (BVRange w) where
   freeVars (BVRange off len) = NameSet.union (freeVars off) (freeVars len)
@@ -3803,223 +3864,180 @@ instance NeededVars (DistPerms as) where
     foldDistPerms (\vars _ p ->
                     NameSet.union vars (neededVars p)) NameSet.empty
 
--- | Generic function to test if a permission contains a lifetime
---
--- FIXME: this should be replaced by a function that tests if a lifetime
--- variable is in the freeVArs of an expression
-class ContainsLifetime a where
-  containsLifetime :: PermExpr LifetimeType -> a -> Bool
 
-instance ContainsLifetime (DistPerms ps) where
-  containsLifetime _ DistPermsNil = False
-  containsLifetime l (DistPermsCons ps _ p) =
-    containsLifetime l ps || containsLifetime l p
-
-instance ContainsLifetime (ValuePerm a) where
-  containsLifetime _ (ValPerm_Eq _) = False
-  containsLifetime l (ValPerm_Or p1 p2) =
-    containsLifetime l p1 || containsLifetime l p2
-  containsLifetime l (ValPerm_Exists mb_p) =
-    mbLift $ fmap (containsLifetime l) mb_p
-  containsLifetime l (ValPerm_Named _ args off) =
-    containsLifetime l args || containsLifetime l off
-  containsLifetime l (ValPerm_Var _ _) = False
-  containsLifetime l (ValPerm_Conj ps) = any (containsLifetime l) ps
-
-instance ContainsLifetime (AtomicPerm a) where
-  containsLifetime l (Perm_LLVMField fp) = containsLifetime l fp
-  containsLifetime l (Perm_LLVMArray ap) = containsLifetime l ap
-  containsLifetime l (Perm_LLVMBlock bp) = containsLifetime l bp
-  containsLifetime _ (Perm_LLVMFree _) = False
-  containsLifetime _ (Perm_LLVMFunPtr _ _) = False
-  containsLifetime _ Perm_IsLLVMPtr = False
-  containsLifetime l (Perm_LLVMBlockShape sh) = containsLifetime l sh
-  containsLifetime _ (Perm_LLVMFrame _) = False
-  containsLifetime l (Perm_LOwned _) =
-    -- NOTE: we could check the permissions in the lowned perm, but we are only
-    -- using containsLifetime to end lifetimes, and we should never have an
-    -- lowned perm containing a different lifetime that we own; also, we would
-    -- have to avoid the lowned perm for l itself, as that will not allow use to
-    -- prove the l:lowned perm we need to end the lifetime...
-    False
-  containsLifetime l (Perm_LCurrent l') = l == l'
-  containsLifetime l (Perm_Struct ps) =
-    or $ RL.mapToList (containsLifetime l) ps
-  containsLifetime _ (Perm_Fun _) = False
-  containsLifetime _ (Perm_BVProp _) = False
-  containsLifetime l (Perm_NamedConj _ args off) =
-    containsLifetime l args || containsLifetime l off
-
-instance ContainsLifetime (LLVMFieldPerm w sz) where
-  containsLifetime l fp =
-    l == llvmFieldLifetime fp || containsLifetime l (llvmFieldContents fp)
-
-instance ContainsLifetime (LLVMArrayField w) where
-  containsLifetime l (LLVMArrayField fp) = containsLifetime l fp
-
-instance ContainsLifetime (LLVMArrayPerm w) where
-  containsLifetime l ap = any (containsLifetime l) (llvmArrayFields ap)
-
-instance ContainsLifetime (LLVMBlockPerm w) where
-  containsLifetime l bp =
-    l == llvmBlockLifetime bp || containsLifetime l (llvmBlockShape bp)
-
-instance ContainsLifetime (LLVMFieldShape w) where
-  containsLifetime l (LLVMFieldShape p) = containsLifetime l p
-
-instance ContainsLifetime (PermOffset a) where
-  containsLifetime _ NoPermOffset = False
-  containsLifetime l (LLVMPermOffset e) = containsLifetime l e
-
-instance ContainsLifetime (PermExprs args) where
-  containsLifetime _ PExprs_Nil = False
-  containsLifetime l (PExprs_Cons args arg) =
-    containsLifetime l args || containsLifetime l arg
-
-instance ContainsLifetime (PermExpr a) where
-  containsLifetime (PExpr_Var l) (PExpr_Var l')
-    | Just Refl <- testEquality l l' = True
-  containsLifetime PExpr_Always PExpr_Always = True
-  containsLifetime l (PExpr_FieldShape fsh) = containsLifetime l fsh
-  containsLifetime l (PExpr_ArrayShape _ _ fshs) =
-    any (containsLifetime l) fshs
-  containsLifetime l (PExpr_SeqShape sh1 sh2) =
-    containsLifetime l sh1 || containsLifetime l sh2
-  containsLifetime l (PExpr_OrShape sh1 sh2) =
-    containsLifetime l sh1 || containsLifetime l sh2
-  containsLifetime l (PExpr_ExShape mb_sh) =
-    mbLift $ fmap (containsLifetime l) mb_sh
-  containsLifetime l (PExpr_ValPerm p) = containsLifetime l p
-  containsLifetime _ _ = False
+-- | Construct the permissions required to end a lifetime @l@ with the supplied
+-- @lowned@ permissions, as well as the permissions recovered when it is
+-- ended. Note that the input and output permissions here should use the same
+-- variables in the same order.
+ltEndPerms :: PermExpr LifetimeType -> PermExpr LOwnedPermType ->
+              Some (Product DistPerms DistPerms)
+ltEndPerms _ PExpr_LOwnedPermNil = Some (Pair DistPermsNil DistPermsNil)
+ltEndPerms _ (PExpr_Var _) =
+  -- NOTE: we don't get anything out of lowned X because we don't know anything
+  -- about the value X
+  Some (Pair DistPermsNil DistPermsNil)
+ltEndPerms l (PExpr_LOwnedPermConsP (PExpr_Var x) mb_p l2 rest) =
+  -- For l:lowned(x:F<l2>), the input permission required is the "minimal apply"
+  -- of F to l, and the output is F<l2>
+  case ltEndPerms l rest of
+    Some (Pair ps_in ps_out) ->
+      Some $ Pair
+      (DistPermsCons ps_in x (ltFuncMinApply l mb_p))
+      (DistPermsCons ps_out x (subst (singletonSubst l2) mb_p))
+ltEndPerms l (PExpr_LOwnedPermConsP _ _ _ rest) =
+  -- NOTE: we also don't get anything out of lowned (e:F<l>) when e is not a
+  -- variable, because we have no way of expressing permissions on a
+  -- non-variable expression
+  ltEndPerms l rest
+ltEndPerms l (PExpr_LOwnedPermConsL (PExpr_Var l2) p rest) =
+  -- For l:lowned(l2:lowned ps), we don't need any perms on input and we get
+  -- back l2:lowned ps on output
+  case ltEndPerms l rest of
+    Some (Pair ps_in ps_out) ->
+      Some $ Pair
+      (DistPermsCons ps_in l2 ValPerm_True)
+      (DistPermsCons ps_out l2 (ValPerm_Conj1 $ Perm_LOwned p))
+ltEndPerms l (PExpr_LOwnedPermConsL _ _ rest) =
+  -- Similar to the second LOwnedPermConsP above
+  ltEndPerms l rest
 
 
--- | Generic function to put a permission inside a lifetime
-class InLifetime a where
-  inLifetime :: PermExpr LifetimeType -> a -> a
+-- | Construct the permissions required to end a lifetime with @l:lowned
+-- ps@. This is just the first projection of 'ltEndPerms'.
+ltEndPermsIn :: PermExpr LifetimeType -> PermExpr LOwnedPermType ->
+                Some DistPerms
+ltEndPermsIn l ps_l = fmapF (\(Pair ps_in _) -> ps_in) $ ltEndPerms l ps_l
 
-instance InLifetime (DistPerms ps) where
-  inLifetime l = mapDistPerms (inLifetime l)
-
-instance InLifetime (ValuePerm a) where
-  inLifetime _ p@(ValPerm_Eq _) = p
-  inLifetime l (ValPerm_Or p1 p2) =
-    ValPerm_Or (inLifetime l p1) (inLifetime l p2)
-  inLifetime l (ValPerm_Exists mb_p) =
-    ValPerm_Exists $ fmap (inLifetime l) mb_p
-  inLifetime l (ValPerm_Named npn args off) =
-    ValPerm_Named npn (inLifetimeArgs l (namedPermNameArgs npn) args) off
-  inLifetime _ p@(ValPerm_Var _ _) = p
-  inLifetime l (ValPerm_Conj ps) =
-    ValPerm_Conj $ map (inLifetime l) ps
-
-instance InLifetime (AtomicPerm a) where
-  inLifetime l (Perm_LLVMField fp) =
-    Perm_LLVMField $ inLifetime l fp
-  inLifetime l (Perm_LLVMArray ap) =
-    Perm_LLVMArray $ inLifetime l ap
-  inLifetime l (Perm_LLVMBlock bp) =
-    Perm_LLVMBlock $ bp { llvmBlockLifetime = l }
-  inLifetime _ p@(Perm_LLVMFree _) = p
-  inLifetime l (Perm_LLVMFunPtr tp p) = Perm_LLVMFunPtr tp $ inLifetime l p
-  inLifetime _ p@Perm_IsLLVMPtr = p
-  inLifetime _ p@(Perm_LLVMBlockShape _) = p
-  inLifetime _ p@(Perm_LLVMFrame _) = p
-  inLifetime l (Perm_LOwned _) = Perm_LCurrent l
-  inLifetime _ p@(Perm_LCurrent _) = p
-  inLifetime l (Perm_Struct ps) = Perm_Struct $ RL.map (inLifetime l) ps
-  inLifetime _ p@(Perm_Fun _) = p
-  inLifetime _ p@(Perm_BVProp _) = p
-  inLifetime l (Perm_NamedConj n args off) =
-    Perm_NamedConj n (inLifetimeArgs l (namedPermNameArgs n) args) off
-
-instance InLifetime (LLVMFieldPerm w sz) where
-  inLifetime l fp = fp { llvmFieldLifetime = l }
-
-instance InLifetime (LLVMArrayField w) where
-  inLifetime l (LLVMArrayField fp) = LLVMArrayField $ inLifetime l fp
-
-instance InLifetime (LLVMArrayPerm w) where
-  inLifetime l ap =
-    ap { llvmArrayFields = map (inLifetime l) (llvmArrayFields ap) }
-
-inLifetimeArgs :: Lifetime -> CruCtx args -> PermExprs args -> PermExprs args
-inLifetimeArgs _ _ PExprs_Nil = PExprs_Nil
-inLifetimeArgs l (CruCtxCons tps tp) (PExprs_Cons args arg) =
-  PExprs_Cons (inLifetimeArgs l tps args) (inLifetimeArg l tp arg)
-
-inLifetimeArg :: Lifetime -> TypeRepr arg -> PermExpr arg -> PermExpr arg
-inLifetimeArg l LifetimeRepr _ = l
-inLifetimeArg l (ValuePermRepr _) (PExpr_ValPerm p) =
-  PExpr_ValPerm $ inLifetime l p
-inLifetimeArg _ _ arg = arg
+-- | Build the permissions recovered from ending a lifetime with @l:lowned ps@.
+-- This is just the second projection of 'ltEndPerms'.
+ltEndPermsOut :: PermExpr LifetimeType -> PermExpr LOwnedPermType ->
+                 Some DistPerms
+ltEndPermsOut l ps_l = fmapF (\(Pair _ ps_out) -> ps_out) $ ltEndPerms l ps_l
 
 
 -- | Compute the minimal permissions required to end a lifetime that contains
--- the given permissions in an @lowned@ permission. Right now, this just
--- replaces all writes with reads and adds the ending lifetime to the
--- permissions. An important property of this function is that the returned
--- permissions has the same translation as the input permissions, so the
--- translation of a mapping from @minLtEndPerms p@ to @p@ is just the identity.
-class MinLtEndPerms a where
-  minLtEndPerms :: PermExpr LifetimeType -> a -> a
+-- the given lifetime functor in an @lowned@ permission. That is, compute the
+-- permissions needed to end a lifetime @l:lowned (x:F<l2>)@. This finds all
+-- read/write modalities associated with the lifetime argument of @F@ and
+-- replaces them with @R@, and at the same time substitutes @l@ into @F@. We
+-- call this operation the "minimal apply" of functor @F@.
+--
+-- For example, if @F<l>=[l]ptr((rw,off) |-> p)@, the minimal apply of @F@ to
+-- @l2@ returns @[l2]ptr((R,off) |-> p')@, where @p'@ is recursively computed as
+-- a minimal apply, but if @F<l>=[l3]ptr((rw,off) |-> p)@ for some lifetime @l3@
+-- not equal to @l@, then @[l3]ptr((rw,off) |-> p')@ is returned, since @rw@ is
+-- associated with the different lifetime @l3@.
+--
+-- An important property of this function is that the returned lifetime functor
+-- has the same translation as the input permissions, so the translation of a
+-- mapping from @(ltFuncMinApplyt F)<l>@ to @F<l>@ is just the identity.
+class LtFuncMinApply a where
+  ltFuncMinApply :: PermExpr LifetimeType -> Binding LifetimeType a -> a
 
-instance MinLtEndPerms (DistPerms ps) where
-  minLtEndPerms l = mapDistPerms (minLtEndPerms l)
+instance LtFuncMinApply (ValuePerm a) where
+  ltFuncMinApply l p@[nuP| ValPerm_Eq _ |] = subst1 l p
+  ltFuncMinApply l [nuP| ValPerm_Or p1 p2 |] =
+    ValPerm_Or (ltFuncMinApply l p1) (ltFuncMinApply l p2)
+  ltFuncMinApply l [nuP| ValPerm_Exists mb_p |] =
+    ValPerm_Exists $ fmap (ltFuncMinApply l) $ mbSwap mb_p
+  ltFuncMinApply l p@[nuP| ValPerm_Named _npn _args _off |] =
+    -- FIXME HERE: change all rwmodality args associated with the bound lifetime
+    subst1 l p
+  ltFuncMinApply l p@[nuP| ValPerm_Var _ _ |] = subst1 l p
+  ltFuncMinApply l [nuP| ValPerm_Conj ps |] =
+    ValPerm_Conj $ map (ltFuncMinApply l) (mbList ps)
 
-instance MinLtEndPerms (ValuePerm a) where
-  minLtEndPerms _ p@(ValPerm_Eq _) = p
-  minLtEndPerms l (ValPerm_Or p1 p2) =
-    ValPerm_Or (minLtEndPerms l p1) (minLtEndPerms l p2)
-  minLtEndPerms l (ValPerm_Exists mb_p) =
-    ValPerm_Exists $ fmap (minLtEndPerms l) mb_p
-  minLtEndPerms l (ValPerm_Named npn args off) =
-    ValPerm_Named npn (minLtEndPermsArgs l (namedPermNameArgs npn) args) off
-  minLtEndPerms _ p@(ValPerm_Var _ _) = p
-  minLtEndPerms l (ValPerm_Conj ps) =
-    ValPerm_Conj $ map (minLtEndPerms l) ps
+instance LtFuncMinApply (AtomicPerm a) where
+  ltFuncMinApply l [nuP| Perm_LLVMField fp |] =
+    Perm_LLVMField $ ltFuncMinApply l fp
+  ltFuncMinApply l [nuP| Perm_LLVMArray ap |] =
+    Perm_LLVMArray $ ltFuncMinApply l ap
+  ltFuncMinApply l [nuP| Perm_LLVMBlock bp |] =
+    Perm_LLVMBlock $ ltFuncMinApply l bp
+  ltFuncMinApply l p@[nuP| Perm_LLVMFree _ |] = subst1 l p
+  ltFuncMinApply l p@[nuP| Perm_LLVMFunPtr _ _ |] = subst1 l p
+  ltFuncMinApply _ [nuP| Perm_IsLLVMPtr |] = Perm_IsLLVMPtr
+  ltFuncMinApply l [nuP| Perm_LLVMBlockShape sh |] =
+    Perm_LLVMBlockShape $ ltFuncMinApply l sh
+  ltFuncMinApply l p@[nuP| Perm_LLVMFrame _ |] = subst1 l p
+  ltFuncMinApply l p@[nuP| Perm_LOwned _ |] =
+    -- NOTE: this is a weird case semantically, but should never actually occur
+    subst1 l p
+  ltFuncMinApply l p@[nuP| Perm_LCurrent _ |] = subst1 l p
+  ltFuncMinApply l [nuP| Perm_Struct ps |] =
+    Perm_Struct $ RL.map (ltFuncMinApply l . getCompose) (mbRAssign ps)
+  ltFuncMinApply l p@[nuP| Perm_Fun _ |] = subst1 l p
+  ltFuncMinApply l p@[nuP| Perm_BVProp _ |] = subst1 l p
+  ltFuncMinApply l p@[nuP| Perm_NamedConj n args off |] =
+    -- FIXME HERE: change all rwmodality args associated with the bound lifetime
+    subst1 l p
 
-instance MinLtEndPerms (AtomicPerm a) where
-  minLtEndPerms l (Perm_LLVMField fp) =
-    Perm_LLVMField $ minLtEndPerms l fp
-  minLtEndPerms l (Perm_LLVMArray ap) =
-    Perm_LLVMArray $ minLtEndPerms l ap
-  minLtEndPerms l (Perm_LLVMBlock bp) =
-    Perm_LLVMBlock $ bp { llvmBlockRW = PExpr_Read,
-                          llvmBlockLifetime = l }
-  minLtEndPerms _ p@(Perm_LLVMFree _) = p
-  minLtEndPerms l (Perm_LLVMFunPtr tp p) = Perm_LLVMFunPtr tp $ minLtEndPerms l p
-  minLtEndPerms _ p@Perm_IsLLVMPtr = Perm_IsLLVMPtr
-  minLtEndPerms _ p@(Perm_LLVMBlockShape _) = p
-  minLtEndPerms _ p@(Perm_LLVMFrame _) = p
-  minLtEndPerms l (Perm_LOwned _) = Perm_LCurrent l
-  minLtEndPerms _ p@(Perm_LCurrent _) = p
-  minLtEndPerms l (Perm_Struct ps) = Perm_Struct $ RL.map (minLtEndPerms l) ps
-  minLtEndPerms _ p@(Perm_Fun _) = p
-  minLtEndPerms _ p@(Perm_BVProp _) = p
-  minLtEndPerms l (Perm_NamedConj n args off) =
-    Perm_NamedConj n (minLtEndPermsArgs l (namedPermNameArgs n) args) off
+instance LtFuncMinApply (LLVMFieldPerm w sz) where
+  ltFuncMinApply l mb_fp =
+    let rw = if fmap llvmFieldLifetime mb_fp == nu (\l' -> PExpr_Var l') then
+               PExpr_Read else subst1 l (fmap llvmFieldRW mb_fp) in
+    (subst1 l mb_fp) { llvmFieldRW = rw,
+                       llvmFieldContents =
+                         ltFuncMinApply l (fmap llvmFieldContents mb_fp) }
 
-instance MinLtEndPerms (LLVMFieldPerm w sz) where
-  minLtEndPerms l fp = fp { llvmFieldRW = PExpr_Read, llvmFieldLifetime = l }
+instance LtFuncMinApply (LLVMFieldShape w) where
+  ltFuncMinApply l [nuP| LLVMFieldShape p |] =
+    LLVMFieldShape $ ltFuncMinApply l p
 
-instance MinLtEndPerms (LLVMArrayField w) where
-  minLtEndPerms l (LLVMArrayField fp) =
-    LLVMArrayField $ minLtEndPerms l fp
+instance LtFuncMinApply (LLVMArrayField w) where
+  ltFuncMinApply l [nuP| LLVMArrayField fp |] =
+    LLVMArrayField $ ltFuncMinApply l fp
 
-instance MinLtEndPerms (LLVMArrayPerm w) where
-  minLtEndPerms l ap =
-    ap { llvmArrayFields = map (minLtEndPerms l) (llvmArrayFields ap) }
+instance LtFuncMinApply (LLVMArrayPerm w) where
+  ltFuncMinApply l mb_ap =
+    (subst1 l mb_ap) { llvmArrayFields =
+                         map (ltFuncMinApply l) (mbList $
+                                               fmap llvmArrayFields mb_ap) }
 
-minLtEndPermsArgs :: Lifetime -> CruCtx args -> PermExprs args -> PermExprs args
-minLtEndPermsArgs _ _ PExprs_Nil = PExprs_Nil
-minLtEndPermsArgs l (CruCtxCons tps tp) (PExprs_Cons args arg) =
-    PExprs_Cons (minLtEndPermsArgs l tps args) (minLtEndPermsArg l tp arg)
+instance LtFuncMinApply (LLVMBlockPerm w) where
+  ltFuncMinApply l mb_bp =
+    let rw = if fmap llvmBlockLifetime mb_bp == nu (\l' -> PExpr_Var l') then
+               PExpr_Read else subst1 l (fmap llvmBlockRW mb_bp) in
+    (subst1 l mb_bp) { llvmBlockRW = rw,
+                       llvmBlockShape =
+                         ltFuncMinApply l (fmap llvmBlockShape mb_bp) }
 
-minLtEndPermsArg :: Lifetime -> TypeRepr arg -> PermExpr arg -> PermExpr arg
-minLtEndPermsArg l LifetimeRepr _ = l
-minLtEndPermsArg l (ValuePermRepr _) (PExpr_ValPerm p) =
-  PExpr_ValPerm $ minLtEndPerms l p
-minLtEndPermsArg _ _ arg = arg
+-- This instance just applies ltFuncMinApply to all permissions in an expr
+instance LtFuncMinApply (PermExpr a) where
+  ltFuncMinApply l e@[nuP| PExpr_Var _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_Unit |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_Bool _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_Nat _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_String _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_BV _ _ |] = subst1 l e
+  ltFuncMinApply l [nuP| PExpr_Struct exprs |] =
+    PExpr_Struct $ ltFuncMinApply l exprs
+  ltFuncMinApply l e@[nuP| PExpr_Always |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_LLVMWord _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_LLVMOffset _ _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_Fun _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_LOwnedPermNil |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_LOwnedPermConsP _ _ _ _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_LOwnedPermConsL _ _ _ |] = subst1 l e
+  ltFuncMinApply l e@[nuP| PExpr_RWModality _ |] = subst1 l e
+  ltFuncMinApply l [nuP| PExpr_FieldShape fld |] =
+    PExpr_FieldShape $ ltFuncMinApply l fld
+  ltFuncMinApply l [nuP| PExpr_ArrayShape len stride flds |] =
+    PExpr_ArrayShape (subst1 l len) (mbLift stride) (map (ltFuncMinApply l)
+                                                     (mbList flds))
+  ltFuncMinApply l [nuP| PExpr_SeqShape sh1 sh2 |] =
+    PExpr_SeqShape (ltFuncMinApply l sh1) (ltFuncMinApply l sh2)
+  ltFuncMinApply l [nuP| PExpr_OrShape sh1 sh2 |] =
+    PExpr_OrShape (ltFuncMinApply l sh1) (ltFuncMinApply l sh2)
+  ltFuncMinApply l [nuP| PExpr_ExShape mb_sh |] =
+    PExpr_ExShape $ fmap (ltFuncMinApply l) $ mbSwap mb_sh
+  ltFuncMinApply l [nuP| PExpr_ValPerm p |] =
+    PExpr_ValPerm $ ltFuncMinApply l p
+
+instance LtFuncMinApply (PermExprs a) where
+  ltFuncMinApply _ [nuP| PExprs_Nil |] = PExprs_Nil
+  ltFuncMinApply l [nuP| PExprs_Cons es e |] =
+    PExprs_Cons (ltFuncMinApply l es) (ltFuncMinApply l e)
 
 
 ----------------------------------------------------------------------
@@ -4347,10 +4365,13 @@ instance SubstVar s m => Substable s (PermExpr a) m where
     addLLVMOffset <$> substExprVar s x <*> genSubst s off
   genSubst _ [nuP| PExpr_Fun fh |] =
     return $ PExpr_Fun $ mbLift fh
-  genSubst _ [nuP| PExpr_PermListNil |] =
-    return $ PExpr_PermListNil
-  genSubst s [nuP| PExpr_PermListCons e p l |] =
-    PExpr_PermListCons <$> genSubst s e <*> genSubst s p <*> genSubst s l
+  genSubst _ [nuP| PExpr_LOwnedPermNil |] =
+    return $ PExpr_LOwnedPermNil
+  genSubst s [nuP| PExpr_LOwnedPermConsP e mb_p l rest |] =
+    PExpr_LOwnedPermConsP <$> genSubst s e <*> genSubst s mb_p
+    <*> genSubst s l <*> genSubst s rest
+  genSubst s [nuP| PExpr_LOwnedPermConsL l p rest |] =
+    PExpr_LOwnedPermConsL <$> genSubst s l <*> genSubst s p <*> genSubst s rest
   genSubst _ [nuP| PExpr_RWModality rw |] =
     return $ PExpr_RWModality $ mbLift rw
   genSubst _ [nuP| PExpr_EmptyShape |] = return PExpr_EmptyShape
@@ -4371,6 +4392,13 @@ instance SubstVar s m => Substable s (PermExprs as) m where
   genSubst s [nuP| PExprs_Nil |] = return PExprs_Nil
   genSubst s [nuP| PExprs_Cons es e |] =
     PExprs_Cons <$> genSubst s es <*> genSubst s e
+
+instance SubstVar s m => Substable s (LifetimeFunctorArg a) m where
+  genSubst s [nuP| LifetimeFunctorArg_RW e |] =
+    LifetimeFunctorArg_RW <$> genSubst s e
+
+instance SubstVar s m => Substable1 s LifetimeFunctorArg m where
+  genSubst1 = genSubst
 
 instance SubstVar s m => Substable s (BVRange w) m where
   genSubst s [nuP| BVRange e1 e2 |] =
@@ -4569,9 +4597,13 @@ instance SubstVar PermSubst Identity where
       Left memb -> noTypesInExprCtx memb
       Right x -> return $ ValPerm_Var x -}
 
--- | Wrapper function to apply a substitution to an expression type
+-- | Apply a substitution to an object
 subst :: Substable PermSubst a Identity => PermSubst ctx -> Mb ctx a -> a
 subst s mb = runIdentity $ genSubst s mb
+
+-- | Substitute a single expression into an object
+subst1 :: Substable PermSubst a Identity => PermExpr b -> Binding b a -> a
+subst1 e = subst (singletonSubst e)
 
 
 ----------------------------------------------------------------------
@@ -4995,13 +5027,19 @@ instance AbstractVars (PermExpr a) where
     `clMbMbApplyM` abstractPEVars ns1 ns2 e
   abstractPEVars ns1 ns2 (PExpr_Fun fh) =
     absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_Fun |]) `clApply` toClosed fh)
-  abstractPEVars ns1 ns2 PExpr_PermListNil =
-    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_PermListNil |]))
-  abstractPEVars ns1 ns2 (PExpr_PermListCons e p l) =
-    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_PermListCons |]))
+  abstractPEVars ns1 ns2 PExpr_LOwnedPermNil =
+    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_LOwnedPermNil |]))
+  abstractPEVars ns1 ns2 (PExpr_LOwnedPermConsP e mb_p l rest) =
+    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_LOwnedPermConsP |]))
     `clMbMbApplyM` abstractPEVars ns1 ns2 e
-    `clMbMbApplyM` abstractPEVars ns1 ns2 p
+    `clMbMbApplyM` abstractPEVars ns1 ns2 mb_p
     `clMbMbApplyM` abstractPEVars ns1 ns2 l
+    `clMbMbApplyM` abstractPEVars ns1 ns2 rest
+  abstractPEVars ns1 ns2 (PExpr_LOwnedPermConsL l p rest) =
+    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_LOwnedPermConsL |]))
+    `clMbMbApplyM` abstractPEVars ns1 ns2 l
+    `clMbMbApplyM` abstractPEVars ns1 ns2 p
+    `clMbMbApplyM` abstractPEVars ns1 ns2 rest
   abstractPEVars ns1 ns2 (PExpr_RWModality rw) =
     absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_RWModality |])
                             `clApply` toClosed rw)
@@ -5046,6 +5084,18 @@ instance AbstractVars (BVFactor w) where
     absVarsReturnH ns1 ns2 $(mkClosed [| BVFactor |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 i
     `clMbMbApplyM` abstractPEVars ns1 ns2 x
+
+instance AbstractVars (LifetimeFunctorArg a) where
+  abstractPEVars ns1 ns2 (LifetimeFunctorArg_RW e) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| LifetimeFunctorArg_RW |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e
+
+instance AbstractVars (RAssign LifetimeFunctorArg ctx) where
+  abstractPEVars ns1 ns2 MNil = absVarsReturnH ns1 ns2 $(mkClosed [| MNil |])
+  abstractPEVars ns1 ns2 (args :>: arg) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| (:>:) |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 args
+    `clMbMbApplyM` abstractPEVars ns1 ns2 arg
 
 instance AbstractVars (BVRange w) where
   abstractPEVars ns1 ns2 (BVRange e1 e2) =

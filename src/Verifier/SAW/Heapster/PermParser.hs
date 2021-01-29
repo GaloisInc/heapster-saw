@@ -308,8 +308,8 @@ parseTypeKnown =
        return (Some $ mkKnownReprObj LifetimeRepr)) <|>
    (do try (string "rwmodality")
        return (Some $ mkKnownReprObj RWModalityRepr)) <|>
-   (do try (string "permlist")
-       return (Some $ mkKnownReprObj PermListRepr)) <|>
+   (do try (string "lowned_perm")
+       return (Some $ mkKnownReprObj LOwnedPermRepr)) <|>
    (do try (string "struct")
        spaces
        some_fld_tps <- parseInParens parseStructFieldTypesKnown
@@ -489,11 +489,11 @@ parseExpr tp@(FunctionHandleRepr _ _) =
                          show (handleType hn))
            Nothing ->
              unexpected ("unknown variable or function: " ++ str)
-parseExpr PermListRepr =
-  -- FIXME: parse non-empty perm lists
-  (string "[]" >> return PExpr_PermListNil) <|>
-  (PExpr_Var <$> parseExprVarOfType PermListRepr) <?>
-  "permission list expression"
+parseExpr LOwnedPermRepr =
+  -- FIXME: parse non-empty lowned permissions
+  (string "[]" >> return PExpr_LOwnedPermNil) <|>
+  (PExpr_Var <$> parseExprVarOfType LOwnedPermRepr) <?>
+  "lowned permission expression"
 parseExpr RWModalityRepr =
   (string "R" >> return PExpr_Read) <|> (string "W" >> return PExpr_Write) <|>
   (PExpr_Var <$> parseExprVarOfType knownRepr) <?>
