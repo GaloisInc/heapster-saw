@@ -402,7 +402,7 @@ pattern LifetimeRepr <-
   where LifetimeRepr = IntrinsicRepr knownSymbol Empty
 
 -- | A lifetime is an expression of type 'LifetimeType'
-type Lifetime = PermExpr LifetimeType
+--type Lifetime = PermExpr LifetimeType
 
 -- | Crucible type for read/write modalities; we give them a Crucible type so
 -- they can be used as variables in recursive permission definitions

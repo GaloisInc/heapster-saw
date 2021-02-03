@@ -420,6 +420,31 @@ closeAssign f (viewAssign -> AssignExtend asgn fa) =
 
 
 ----------------------------------------------------------------------
+-- * Objects Associated with Crucible Types
+----------------------------------------------------------------------
+
+-- FIXME HERE: replace all calls to show tp with our own type-printing function
+-- that prints in the same format that we are parsing
+
+-- | An element of some representation type functor @f a@ along with a
+-- 'TypeRepr' for @a@
+data Typed f a = Typed (TypeRepr a) (f a)
+
+$(mkNuMatching [t| forall f a. NuMatching (f a) => Typed f a |])
+
+-- | Cast an existential 'Typed' to a particular type or raise an error
+castTypedM :: MonadFail m => String -> TypeRepr a -> Some (Typed f) -> m (f a)
+castTypedM _ tp (Some (Typed tp' f))
+  | Just Refl <- testEquality tp tp' = return f
+castTypedM str tp (Some (Typed tp' _)) =
+  fail ("Expected " ++ str ++ " of type " ++ show tp
+        ++ ", found one of type " ++ show tp')
+
+-- | A expression variable of some existentially quantified type
+type TypedName = Some (Typed Name)
+
+
+----------------------------------------------------------------------
 -- * Contexts of Crucible Types
 ----------------------------------------------------------------------
 

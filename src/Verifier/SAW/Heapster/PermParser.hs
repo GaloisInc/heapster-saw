@@ -83,23 +83,9 @@ instance Liftable SourcePos where
 -- FIXME HERE: replace all calls to show tp with our own type-printing function
 -- that prints in the same format that we are parsing
 
-
--- | An element of some representation type functor @f a@ along with a
--- 'TypeRepr' for @a@
-data Typed f a = Typed (TypeRepr a) (f a)
-
--- | Try to cast an existential 'Typed' to a particular type
-castTypedMaybe :: TypeRepr a -> Some (Typed f) -> Maybe (f a)
-castTypedMaybe tp (Some (Typed tp' f))
-  | Just Refl <- testEquality tp tp' = Just f
-castTypedMaybe _ _ = Nothing
-
--- | A expression variable of some existentially quantified type
-type SomeName = Some (Typed Name)
-
 -- | A parsing environment, which includes variables and function names
 data ParserEnv = ParserEnv {
-  parserEnvExprVars :: [(String, SomeName)],
+  parserEnvExprVars :: [(String, TypedName)],
   parserEnvPermEnv :: PermEnv
 }
 
@@ -107,14 +93,13 @@ data ParserEnv = ParserEnv {
 mkParserEnv :: PermEnv -> ParserEnv
 mkParserEnv env = ParserEnv [] env
 
-$(mkNuMatching [t| forall f a. NuMatching (f a) => Typed f a |])
 $(mkNuMatching [t| ParserEnv |])
 
 instance NuMatchingAny1 f => NuMatchingAny1 (Typed f) where
   nuMatchingAny1Proof = nuMatchingProof
 
 -- | Look up an expression variable by name in a 'ParserEnv'
-lookupExprVar :: String -> ParserEnv -> Maybe SomeName
+lookupExprVar :: String -> ParserEnv -> Maybe TypedName
 lookupExprVar str = lookup str . parserEnvExprVars
 
 {-
@@ -218,16 +203,6 @@ withExprVars :: RAssign (Constant String) ctx -> CruCtx ctx ->
 withExprVars MNil CruCtxNil MNil m = m
 withExprVars (xs :>: Constant x) (CruCtxCons ctx tp) (ns :>: n) m =
   withExprVars xs ctx ns $ withExprVar x tp n m
-
--- | Cast an existential 'Typed' to a particular type or raise an error
-castTypedM :: Stream s Identity Char =>
-              String -> TypeRepr a -> Some (Typed f) ->
-              PermParseM s (f a)
-castTypedM _ tp (Some (Typed tp' f))
-  | Just Refl <- testEquality tp tp' = return f
-castTypedM str tp (Some (Typed tp' _)) =
-  unexpected (str ++ " of type " ++ show tp') <?>
-  (str ++ " of type " ++ show tp)
 
 -- | Parse and skip at least one space
 spaces1 :: Stream s Identity Char => PermParseM s ()
@@ -360,7 +335,7 @@ parseIdent =
       return (c:cs)) <?> "identifier"
 
 -- | Parse a valid identifier string as an expression variable
-parseExprVarAndStr :: Stream s Identity Char => PermParseM s (String, SomeName)
+parseExprVarAndStr :: Stream s Identity Char => PermParseM s (String, TypedName)
 parseExprVarAndStr =
   do str <- parseIdent
      env <- getState
@@ -369,7 +344,7 @@ parseExprVarAndStr =
        Nothing -> fail ("unknown variable: " ++ str)
 
 -- | Parse a valid identifier string as an expression variable
-parseExprVar :: Stream s Identity Char => PermParseM s SomeName
+parseExprVar :: Stream s Identity Char => PermParseM s TypedName
 parseExprVar = snd <$> parseExprVarAndStr
 
 -- | Parse an identifier as an expression variable of a specific type
