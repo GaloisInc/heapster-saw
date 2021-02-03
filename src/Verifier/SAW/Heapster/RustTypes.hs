@@ -141,7 +141,7 @@ inRustCtx ctx m =
 -- | Class for a generic "conversion from Rust" function, given the bit width of
 -- the pointer type
 class RsConvert w a b | w a -> b where
-  rsConvert :: (1 <= w, KnownNat w) => Proxy w -> a -> RustConvM b
+  rsConvert :: (1 <= w, KnownNat w) => prx w -> a -> RustConvM b
 
 instance RsConvert w Mutability (PermExpr RWModalityType) where
   rsConvert _ Mutable = return PExpr_Write
@@ -160,7 +160,7 @@ instance RsConvert w (Generics Span) (Some RustCtx) where
   rsConvert _ _ = error "FIXME HERE"
 
 -- | Convert an optional sequence of parameters to match their required types
-rsConvertMaybeParams :: (1 <= w, KnownNat w) => Proxy w -> CruCtx args ->
+rsConvertMaybeParams :: (1 <= w, KnownNat w) => prx w -> CruCtx args ->
                         Maybe (PathParameters Span) ->
                         RustConvM (PermExprs args)
 rsConvertMaybeParams _ _ _ = error "FIXME HERE"
@@ -182,8 +182,8 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
                   llvmBlockRW = rw, llvmBlockLifetime = l,
                   llvmBlockOffset = bvInt 0, llvmBlockLen = len,
                   llvmBlockShape = sh })
-  rsConvert (w :: Proxy w) (PathTy Nothing
-                            (Path _ (last -> PathSegment rid maybe_params _) _) _) =
+  rsConvert (w :: prx w) (PathTy Nothing
+                          (Path _ (last -> PathSegment rid maybe_params _) _) _) =
     do (SomeNamedShape _ args_ctx mb_sh) <- rsConvert w rid
        args <- rsConvertMaybeParams w args_ctx maybe_params
        let shape_tp = mbLift $ fmap exprType mb_sh
@@ -197,7 +197,7 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
 -- | Convert a Rust type to a shape and test if that shape has a single field,
 -- i.e., is of the form @ptrsh(p)@. If so, return @p@, and otherwise fail. The
 -- first argument is the width of pointer values on this architecture.
-rustTypeToPerm :: (1 <= w, KnownNat w) => Proxy w -> Ty Span ->
+rustTypeToPerm :: (1 <= w, KnownNat w) => prx w -> Ty Span ->
                   RustConvM SomeLLVMPerm
 rustTypeToPerm w tp =
   rsConvert w tp >>= \case
@@ -215,7 +215,7 @@ rustTypeToPerm w tp =
 --
 -- and convert it to a Heapster function permission
 parseFunPermFromRust :: (MonadFail m, 1 <= w, KnownNat w) =>
-                        PermEnv -> Proxy w -> CruCtx args -> TypeRepr ret ->
+                        PermEnv -> prx w -> CruCtx args -> TypeRepr ret ->
                         String -> m (SomeFunPerm args ret)
 parseFunPermFromRust env w args ret str =
   case execParser ((,) <$> parser <*> parser)
