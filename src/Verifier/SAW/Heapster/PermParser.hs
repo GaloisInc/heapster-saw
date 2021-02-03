@@ -1084,7 +1084,7 @@ parseExprInCtxString env tp ctx str =
 -- syntax, which begins with an angle bracket. The @w@ argument gives the bit
 -- width of pointers in the current architecture.
 parseFunPermStringMaybeRust :: (1 <= w, KnownNat w, MonadFail m) =>
-                               String -> Proxy w -> PermEnv -> CruCtx args ->
+                               String -> prx w -> PermEnv -> CruCtx args ->
                                TypeRepr ret -> String -> m (SomeFunPerm args ret)
 parseFunPermStringMaybeRust nm w env args ret str =
   case find (\c -> c == '<' || c == '(') str of
