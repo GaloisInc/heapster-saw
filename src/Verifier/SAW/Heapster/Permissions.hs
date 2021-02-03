@@ -90,6 +90,26 @@ import Debug.Trace
 -- * Utility Functions
 ----------------------------------------------------------------------
 
+-- | Prove that append on right-lists is associative
+--
+-- FIXME: move to Hobbits
+appendAssoc :: f1 ctx1 -> f2 ctx2 -> RAssign f3 ctx3 ->
+               ctx1 :++: (ctx2 :++: ctx3) :~: (ctx1 :++: ctx2) :++: ctx3
+appendAssoc _ _ MNil = Refl
+appendAssoc c1 c2 (c3 :>: _) =
+  case appendAssoc c1 c2 c3 of
+    Refl -> Refl
+
+-- | Prove that appending a right-list that starts with @a@ is the same as
+-- consing @a@ and then appending
+--
+-- FIXME: move to Hobbits
+appendRNilConsEq :: prx1 ps1 -> prx_a a -> RAssign f ps2 ->
+                    (ps1 :++: (RNil :> a :++: ps2)) :~: (ps1 :> a :++: ps2)
+appendRNilConsEq _ _ MNil = Refl
+appendRNilConsEq ps1 a (ps2 :>: _)
+  | Refl <- appendRNilConsEq ps1 a ps2 = Refl
+
 -- | Convert an 'RAssign' in a binding to an 'RAssign' of bindings
 --
 -- FIXME: this belongs in the Hobbits library, probably next to 'mbList' in
@@ -3621,6 +3641,20 @@ shapeIsCopyable (PExpr_OrShape sh1 sh2) =
   shapeIsCopyable sh1 && shapeIsCopyable sh2
 shapeIsCopyable (PExpr_ExShape mb_sh) = mbLift $ fmap shapeIsCopyable mb_sh
 
+
+-- | Convert a 'FunPerm' in a name-binding to a 'FunPerm' that takes those bound
+-- names as additional ghost arguments
+mbFunPerm :: CruCtx ctx -> Mb ctx (FunPerm ghosts args ret) ->
+             FunPerm (ctx :++: ghosts) args ret
+mbFunPerm ctx [nuP| FunPerm mb_ghosts mb_args mb_ret ps_in ps_out |] =
+  let ghosts = mbLift mb_ghosts
+      args = mbLift mb_args
+      ctx_perms = trueValuePerms $ cruCtxToTypes ctx in
+  case appendAssoc ctx ghosts (cruCtxToTypes args) of
+    Refl ->
+      FunPerm (appendCruCtx ctx ghosts) args (mbLift mb_ret)
+      (fmap (RL.append ctx_perms) $ mbCombine ps_in)
+      (fmap (RL.append ctx_perms) $ mbCombine ps_out)
 
 -- | Substitute ghost and regular arguments into a function permission to get
 -- its input permissions for those arguments, where ghost arguments are given

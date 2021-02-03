@@ -3285,13 +3285,6 @@ implSwapM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
              ImplM vars s r (ps :> b :> a) (ps :> a :> b) ()
 implSwapM x p1 y p2 = implSimplM Proxy (SImpl_Swap x p1 y p2)
 
--- FIXME: move to Hobbits
-appendRNilConsEq :: prx1 ps1 -> prx_a a -> RAssign f ps2 ->
-                    (ps1 :++: (RNil :> a :++: ps2)) :~: (ps1 :> a :++: ps2)
-appendRNilConsEq _ _ MNil = Refl
-appendRNilConsEq ps1 a (ps2 :>: _)
-  | Refl <- appendRNilConsEq ps1 a ps2 = Refl
-
 -- | Move permission @p@ that is on the stack below two lists @ps1@ and @ps2@
 -- towards the top of the stack by moving it between @ps1@ and @ps2@. That is,
 -- change the stack

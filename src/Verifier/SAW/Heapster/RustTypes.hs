@@ -28,9 +28,18 @@
 module Verifier.SAW.Heapster.RustTypes where
 
 import GHC.TypeLits
-import Data.Binding.Hobbits
+import Data.Functor.Constant
+import Data.Functor.Product
 import Control.Monad.Reader
 import Control.Monad.Except
+
+import Data.Parameterized.Some
+
+import Data.Binding.Hobbits
+import Data.Binding.Hobbits.MonadBind
+import Data.Type.RList (RList(..), RAssign(..), (:++:), append, memberElem,
+                        mapRAssign, mapToList)
+import qualified Data.Type.RList as RL
 
 import Language.Rust.Syntax
 import Language.Rust.Parser
@@ -50,6 +59,8 @@ import Verifier.SAW.Heapster.Permissions
 -- | A permission of some llvm pointer type
 data SomeLLVMPerm =
   forall w. (1 <= w, KnownNat w) => SomeLLVMPerm (ValuePerm (LLVMPointerType w))
+
+$(mkNuMatching [t| SomeLLVMPerm |])
 
 -- | Info used for converting Rust types to shapes
 data RustConvInfo =
@@ -72,6 +83,17 @@ newtype RustConvM a =
 
 instance MonadFail RustConvM where
   fail = RustConvM . throwError
+
+instance (MonadBind m, Liftable e) => MonadBind (ExceptT e m) where
+  mbM mb_m =
+    ExceptT $
+    do mb_eith <- mbM $ fmap runExceptT mb_m
+       case mb_eith of
+         [nuP| Right mb_a |] -> return $ Right mb_a
+         [nuP| Left mb_e |] -> return $ Left $ mbLift mb_e
+
+instance MonadBind RustConvM where
+  mbM mb_m = RustConvM $ mbM $ fmap unRustConvM mb_m
 
 -- | Prefix any error message with location information
 atSpan :: Span -> RustConvM a -> RustConvM a
@@ -98,6 +120,19 @@ lookupName :: String -> TypeRepr a -> RustConvM (Name a)
 lookupName str tp =
   lookupTypedName str >>= \n -> castTypedM "variable" tp n
 
+-- | A context of Rust type and lifetime variables
+type RustCtx = RAssign (Product (Constant String) TypeRepr)
+
+-- | Extract a 'CruCtx' from a 'RustCtx'
+rustCtxCtx :: RustCtx ctx -> CruCtx ctx
+rustCtxCtx = cruCtxOfTypes . RL.map (\(Pair _ tp) -> tp)
+
+-- | Run a 'RustConvM' computation in a context of bound type-level variables
+inRustCtx :: NuMatching a => RustCtx ctx -> RustConvM a ->
+             RustConvM (Mb ctx a)
+inRustCtx ctx m =
+  error "FIXME HERE"
+
 
 ----------------------------------------------------------------------
 -- * The Conversion Itself
@@ -120,6 +155,9 @@ instance RsConvert w (Lifetime Span) (PermExpr LifetimeType) where
 instance RsConvert w Ident SomeNamedShape where
   rsConvert _ _ =
     error "FIXME HERE"
+
+instance RsConvert w (Generics Span) (Some RustCtx) where
+  rsConvert _ _ = error "FIXME HERE"
 
 -- | Convert an optional sequence of parameters to match their required types
 rsConvertMaybeParams :: (1 <= w, KnownNat w) => Proxy w -> CruCtx args ->
@@ -171,20 +209,28 @@ rustTypeToPerm w tp =
 -- * Top-level Entrypoints
 ----------------------------------------------------------------------
 
--- | Parse a Rust function type and convert it to a function permission
+-- | Parse a polymorphic Rust function type of the form
+--
+-- > <generics> (T1,...,Tn) -> T
+--
+-- and convert it to a Heapster function permission
 parseFunPermFromRust :: (MonadFail m, 1 <= w, KnownNat w) =>
                         PermEnv -> Proxy w -> CruCtx args -> TypeRepr ret ->
                         String -> m (SomeFunPerm args ret)
 parseFunPermFromRust env w args ret str =
-  case execParser parser (inputStreamFromString str) initPos of
+  case execParser ((,) <$> parser <*> parser)
+       (inputStreamFromString str) initPos of
     Left err -> fail $ show err
-    Right rust_tp ->
-      runLiftRustConvM (mkRustConvInfo env) (rustTypeToPerm w rust_tp) >>= \case
-      SomeLLVMPerm (ValPerm_Conj1
-                    (Perm_LLVMFunPtr
-                     (FunctionHandleRepr args' ret')
-                     (ValPerm_Conj1 (Perm_Fun fun_perm))))
-        | Just Refl <- testEquality (mkCruCtx args') args
-        , Just Refl <- testEquality ret' ret ->
-          return (SomeFunPerm fun_perm)
-      _ -> fail "FIXME: better error message!"
+    Right (generics :: Generics Span, rust_tp) ->
+      runLiftRustConvM (mkRustConvInfo env) $
+      do Some rust_ctx <- rsConvert w generics
+         mb_some_perm <- inRustCtx rust_ctx $ rustTypeToPerm w rust_tp
+         case mb_some_perm of
+           [nuP| SomeLLVMPerm
+                  (ValPerm_Conj1
+                   (Perm_LLVMFunPtr (FunctionHandleRepr args' ret')
+                    (ValPerm_Conj1 (Perm_Fun fun_perm)))) |]
+             | Just Refl <- testEquality (mkCruCtx $ mbLift args') args
+             , Just Refl <- testEquality (mbLift ret') ret ->
+               return (SomeFunPerm $ mbFunPerm (rustCtxCtx rust_ctx) fun_perm)
+           _ -> fail "FIXME: better error message!"

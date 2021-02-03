@@ -50,6 +50,7 @@ import Lang.Crucible.FunctionHandle
 
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
+import Verifier.SAW.Heapster.RustTypes
 
 
 -- FIXME: maybe some of these should use unsafeMbTypeRepr for efficiency?
@@ -1076,3 +1077,16 @@ parseExprInCtxString :: MonadFail m => PermEnv -> TypeRepr a -> ParsedCtx ctx ->
 parseExprInCtxString env tp ctx str =
   runPermParseM (permPrettyString emptyPPInfo tp) env
   (inParsedCtxM ctx $ const $ parseExpr tp) str
+
+-- | Parse a 'FunPerm' named by the first 'String' from the second 'String'.
+-- The 'FunPerm' can either be standard Heapster syntax, which begins with an
+-- open parenthesis (after optional whitespace), or it could be given in Rust
+-- syntax, which begins with an angle bracket. The @w@ argument gives the bit
+-- width of pointers in the current architecture.
+parseFunPermStringMaybeRust :: (1 <= w, KnownNat w, MonadFail m) =>
+                               String -> Proxy w -> PermEnv -> CruCtx args ->
+                               TypeRepr ret -> String -> m (SomeFunPerm args ret)
+parseFunPermStringMaybeRust nm w env args ret str =
+  case find (\c -> c == '<' || c == '(') str of
+    Just '<' -> parseFunPermFromRust env w args ret str
+    _ -> parseFunPermString nm env args ret str
