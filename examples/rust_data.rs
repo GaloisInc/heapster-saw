@@ -1,5 +1,23 @@
 use std::collections::{HashMap, HashSet};
 
+/* The logical and operation as a function on bool */
+pub fn bool_and (x:bool, y:bool) -> bool {
+    x & y
+}
+
+/* The logical and operation as a function on bools in a pair */
+pub fn bool_and_pair (xy:(bool,bool)) -> bool {
+    xy.0 & xy.1
+}
+
+#[repr(C)]
+pub struct BoolStruct { fst_bool:bool,snd_bool:bool }
+
+/* The logical and operation as a function on bools in a struct */
+pub fn bool_and_struct (xy:BoolStruct) -> bool {
+    xy.fst_bool & xy.snd_bool
+}
+
 /* Test if a Result is Ok or Err */
 pub fn test_result (r:&Result<u64,u64>) -> bool {
     match r {
