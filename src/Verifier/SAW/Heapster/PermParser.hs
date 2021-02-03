@@ -483,7 +483,7 @@ parseExpr tp@(LLVMShapeRepr w) =
        (try (string "emptysh") >> return (PExpr_EmptyShape)) <|>
        (try (string "eqsh") >> spaces >> parseInParens
         (PExpr_EqShape <$> parseExpr (LLVMBlockRepr w))) <|>
-       (try (string "ptrsh") >> spaces >>
+       (try (string "fieldsh") >> spaces >>
         PExpr_FieldShape <$> parseLLVMFieldShape True w) <|>
        (try (string "arraysh") >> spaces >> parseInParens
         (do len <- parseExpr (BVRepr w)

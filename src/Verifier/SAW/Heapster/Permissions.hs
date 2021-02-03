@@ -578,7 +578,7 @@ data PermExpr (a :: CrucibleType) where
   -- | The equality shape
   PExpr_EqShape :: PermExpr (LLVMBlockType w) -> PermExpr (LLVMShapeType w)
 
-  -- | A shape for a single field
+  -- | A shape for a single field with a given permission
   PExpr_FieldShape :: (1 <= w, KnownNat w) => LLVMFieldShape w ->
                       PermExpr (LLVMShapeType w)
 
@@ -822,7 +822,7 @@ instance PermPretty (PermExpr a) where
   permPrettyM (PExpr_EqShape b) =
     ((pretty "eqsh" <>) . parens) <$> permPrettyM b
   permPrettyM (PExpr_FieldShape fld) =
-    (pretty "ptrsh" <>) <$> permPrettyM fld
+    (pretty "fieldsh" <>) <$> permPrettyM fld
   permPrettyM (PExpr_ArrayShape len stride flds) =
     do len_pp <- permPrettyM len
        flds_pp <- mapM permPrettyM flds
