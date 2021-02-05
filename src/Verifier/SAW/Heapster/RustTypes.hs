@@ -27,6 +27,7 @@
 
 module Verifier.SAW.Heapster.RustTypes where
 
+import Data.Maybe
 import GHC.TypeLits
 import Data.Functor.Constant
 import Data.Functor.Product
@@ -131,17 +132,88 @@ rustCtxCtx = cruCtxOfTypes . RL.map (\(Pair _ tp) -> tp)
 inRustCtx :: NuMatching a => RustCtx ctx -> RustConvM a ->
              RustConvM (Mb ctx a)
 inRustCtx ctx m =
-  error "FIXME HERE"
-
-
-----------------------------------------------------------------------
--- * The Conversion Itself
-----------------------------------------------------------------------
+  mbM $ nuMulti ctx $ \ns ->
+  let ns_ctx =
+        RL.toList $ RL.map2 (\n (Pair (Constant str) tp) ->
+                              Constant (str, Some (Typed tp n))) ns ctx in
+  local (\info -> info { rciCtx = ns_ctx ++ rciCtx info }) m
 
 -- | Class for a generic "conversion from Rust" function, given the bit width of
 -- the pointer type
 class RsConvert w a b | w a -> b where
   rsConvert :: (1 <= w, KnownNat w) => prx w -> a -> RustConvM b
+
+
+----------------------------------------------------------------------
+-- * Converting Named Rust Types
+----------------------------------------------------------------------
+
+-- | A shape function with existentially quantified arguments
+data SomeShapeFun w =
+  forall args. SomeShapeFun (CruCtx args) (Mb args (PermExpr (LLVMShapeType w)))
+
+-- | A sequence of 'PermExprs' along with their types
+data TypedPermExprs ctx = TypedPermExprs (CruCtx ctx) (PermExprs ctx)
+
+-- | Apply a 'SomeShapeFun', if possible
+tryApplySomeShapeFun :: SomeShapeFun w -> Some TypedPermExprs ->
+                        Maybe (PermExpr (LLVMShapeType w))
+tryApplySomeShapeFun (SomeShapeFun ctx mb_sh) (Some (TypedPermExprs ctx' args))
+  | Just Refl <- testEquality ctx ctx' =
+    Just $ subst (substOfExprs args) mb_sh
+tryApplySomeShapeFun _ _ = Nothing
+
+-- | Build the shape @fieldsh(exists z:bv sz.eq(llvmword(z))@
+sizedIntShapeFun :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                    prx1 w -> prx2 sz -> SomeShapeFun w
+sizedIntShapeFun _ (_ :: prx2 sz) =
+  SomeShapeFun CruCtxNil $ emptyMb $
+  PExpr_FieldShape (LLVMFieldShape $ ValPerm_Exists $ nu $
+                    \(z :: ExprVar (BVType sz)) ->
+                     ValPerm_Eq (PExpr_LLVMWord (PExpr_Var z)))
+
+-- | A table for converting Rust base types to shapes
+namedTypeTable :: (1 <= w, KnownNat w) => prx w -> [(String,SomeShapeFun w)]
+namedTypeTable w =
+  [("bool", sizedIntShapeFun @_ @1 w Proxy)]
+
+-- | A fully qualified Rust path without any of the parameters; e.g.,
+-- @Foo<X>::Bar<Y,Z>::Baz@ just becomes @[Foo,Bar,Baz]@
+newtype RustName = RustName [Ident]
+
+instance RsConvert w RustName (SomeShapeFun w) where
+  rsConvert w (RustName elems) =
+    -- FIXME: figure out how to actually resolve names; for now we just look at
+    -- the last string component...
+    let str = name $ last elems in
+    -- FIXME: write this in a nice monadic way...
+    case lookup str (namedTypeTable w) of
+      Just shf -> return shf
+      Nothing ->
+        do env <- rciPermEnv <$> ask
+           case lookupNamedShape env str of
+             Just (SomeNamedShape _ args mb_sh)
+               | LLVMShapeRepr w' <- mbLift $ fmap exprType mb_sh
+               , Just Refl <- testEquality (natRepr w) w' ->
+                 return $ SomeShapeFun args mb_sh
+             Just _ -> fail ("Named Rust type of wrong shape width: " ++ str)
+             Nothing ->
+               fail ("Could not find translation of Rust type name: " ++ str)
+
+-- | Get the "name" = sequence of identifiers out of a Rust path
+rsPathName :: Path a -> RustName
+rsPathName (Path _ segments _) =
+  RustName $ map (\(PathSegment rust_id _ _) -> rust_id) segments
+
+-- | Get all the parameters out of a Rust path
+rsPathParams :: Path a -> [PathParameters a]
+rsPathParams (Path _ segments _) =
+  mapMaybe (\(PathSegment _ maybe_params _) -> maybe_params) segments
+
+
+----------------------------------------------------------------------
+-- * Converting Rust Types
+----------------------------------------------------------------------
 
 instance RsConvert w Mutability (PermExpr RWModalityType) where
   rsConvert _ Mutable = return PExpr_Write
@@ -152,44 +224,43 @@ instance RsConvert w (Lifetime Span) (PermExpr LifetimeType) where
   rsConvert _ (Lifetime l span) =
     PExpr_Var <$> atSpan span (lookupName l knownRepr)
 
-instance RsConvert w Ident SomeNamedShape where
-  rsConvert _ _ =
-    error "FIXME HERE"
-
 instance RsConvert w (Generics Span) (Some RustCtx) where
   rsConvert _ _ = error "FIXME HERE"
 
--- | Convert an optional sequence of parameters to match their required types
-rsConvertMaybeParams :: (1 <= w, KnownNat w) => prx w -> CruCtx args ->
-                        Maybe (PathParameters Span) ->
-                        RustConvM (PermExprs args)
-rsConvertMaybeParams _ _ _ = error "FIXME HERE"
+typedExprsOfList :: TypeRepr a -> [PermExpr a] -> Some TypedPermExprs
+typedExprsOfList = error "FIXME HERE"
+
+appendTypedExprs :: Some TypedPermExprs -> Some TypedPermExprs ->
+                    Some TypedPermExprs
+appendTypedExprs = error "FIXME HERE"
+
+instance RsConvert w (PathParameters Span) (Some TypedPermExprs) where
+  rsConvert w (AngleBracketed rust_ls rust_tps [] _) =
+    do ls <- mapM (rsConvert w) rust_ls
+       shs <- mapM (rsConvert w) rust_tps
+       return $ appendTypedExprs
+         (typedExprsOfList knownRepr ls) (typedExprsOfList knownRepr shs)
+
+instance RsConvert w [PathParameters Span] (Some TypedPermExprs) where
+  rsConvert _ _ = error "FIXME HERE"
 
 instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
   rsConvert _ (Rptr _ _ (Slice _ _) _) =
     error "FIXME: pointers to slice types are not currently supported"
-  rsConvert w (Rptr (Just l) mut tp' _) =
-    do rw <- rsConvert w mut
-       l <- rsConvert w l
+  rsConvert w (Rptr (Just rust_l) Mutable tp' _) =
+    do l <- rsConvert w rust_l
        sh <- rsConvert w tp'
-       -- FIXME HERE: use an optional length here when blocks with optional
-       -- lengths are supported
-       len <- case llvmShapeLength sh of
-         Just len -> return len
-         Nothing -> fail ("Rust type is not sized: " ++ show tp')
-       return (PExpr_FieldShape $ LLVMFieldShape $ ValPerm_Conj1 $
-               Perm_LLVMBlock $ LLVMBlockPerm {
-                  llvmBlockRW = rw, llvmBlockLifetime = l,
-                  llvmBlockOffset = bvInt 0, llvmBlockLen = len,
-                  llvmBlockShape = sh })
-  rsConvert (w :: prx w) (PathTy Nothing
-                          (Path _ (last -> PathSegment rid maybe_params _) _) _) =
-    do (SomeNamedShape _ args_ctx mb_sh) <- rsConvert w rid
-       args <- rsConvertMaybeParams w args_ctx maybe_params
-       let shape_tp = mbLift $ fmap exprType mb_sh
-       case testEquality shape_tp (knownRepr :: TypeRepr (LLVMPointerType w)) of
-         Just Refl -> return (subst (substOfExprs args) mb_sh)
-         Nothing -> fail "Incorrect shape type"
+       return $ PExpr_PtrShape Nothing (Just l) sh
+  rsConvert w (Rptr (Just rust_l) Immutable tp' _) =
+    do l <- rsConvert w rust_l
+       sh <- rsConvert w tp'
+       return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
+  rsConvert w (PathTy Nothing path _) =
+    do sh_f <- rsConvert w (rsPathName path)
+       args <- rsConvert w (rsPathParams path)
+       case tryApplySomeShapeFun sh_f args of
+         Just sh -> return sh
+         Nothing -> fail "Argument types not as expected"
   rsConvert w (BareFn _ _ _ _ _) =
     error "FIXME HERE: translate function types!"
   rsConvert _ tp = fail ("Rust type not supported: " ++ show tp)
