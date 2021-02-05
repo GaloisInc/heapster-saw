@@ -483,6 +483,22 @@ parseExpr tp@(LLVMShapeRepr w) =
        (try (string "emptysh") >> return (PExpr_EmptyShape)) <|>
        (try (string "eqsh") >> spaces >> parseInParens
         (PExpr_EqShape <$> parseExpr (LLVMBlockRepr w))) <|>
+       (do try (char '[')
+           l <- parseExpr knownRepr
+           spaces >> char ']'
+           PExpr_LifetimeShape l <$> parseExpr tp) <|>
+       (do try (string "rwsh" >> spaces)
+           char '('
+           rw <- parseExpr knownRepr
+           spaces >> char ','
+           sh <- parseExpr tp
+           spaces >> char ')'
+           return $ PExpr_RWShape rw sh) <|>
+       (do try (string "ptrsh" >> spaces)
+           char '('
+           sh <- parseExpr tp
+           spaces >> char ')'
+           return $ PExpr_PtrShape sh) <|>
        (try (string "fieldsh") >> spaces >>
         PExpr_FieldShape <$> parseLLVMFieldShape True w) <|>
        (try (string "arraysh") >> spaces >> parseInParens
@@ -675,9 +691,15 @@ parseAtomicPerm tp@(LLVMFrameRepr w)
      ("atomic permission of type " ++ show tp))
 
 parseAtomicPerm tp@(LLVMBlockRepr w) =
-  (do (try (string "shape") >> spaces1)
-      withKnownNat w (Perm_LLVMBlockShape <$>
-                      parseExpr (LLVMShapeRepr w))) <?>
+  (withKnownNat w $
+   do l <- parseLifetimePrefix
+      (try (string "shape") >> spaces)
+      char '('
+      rw <- parseExpr knownRepr
+      spaces >> char ','
+      sh <- withKnownNat w $ parseExpr (LLVMShapeRepr w)
+      spaces >> char ')'
+      return (Perm_LLVMBlockShape rw l sh)) <?>
   ("atomic permission of type " ++ show tp)
 
 parseAtomicPerm tp@(StructRepr tps) =
