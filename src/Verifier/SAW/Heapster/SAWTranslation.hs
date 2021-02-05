@@ -756,6 +756,7 @@ instance TransInfo info =>
   -- LLVM shapes are translated to types
   translate [nuP| PExpr_EmptyShape |] = return $ ETrans_Term unitTypeOpenTerm
   translate [nuP| PExpr_EqShape _ |] = return $ ETrans_Term unitTypeOpenTerm
+  translate [nuP| PExpr_PtrShape _ _ sh |] = translate sh
   translate [nuP| PExpr_FieldShape fsh |] =
     ETrans_Term <$> tupleOfTypes <$> translate fsh
   translate [nuP| PExpr_ArrayShape mb_len _ mb_fshs |] =
@@ -874,8 +875,6 @@ data AtomicPermTrans ctx a where
   -- | The translation of an LLVMBlockShape permission is an element of the
   -- translation of its shape to a type
   APTrans_LLVMBlockShape :: (1 <= w, KnownNat w) =>
-                            Mb ctx (PermExpr RWModalityType) ->
-                            Mb ctx (PermExpr LifetimeType) ->
                             Mb ctx (PermExpr (LLVMShapeType w)) -> OpenTerm ->
                             AtomicPermTrans ctx (LLVMBlockType w)
 
@@ -1046,7 +1045,7 @@ instance IsTermTrans (AtomicPermTrans ctx a) where
   transTerms (APTrans_LLVMFree _) = []
   transTerms (APTrans_LLVMFunPtr _ trans) = transTerms trans
   transTerms APTrans_IsLLVMPtr = []
-  transTerms (APTrans_LLVMBlockShape _ _ _ t) = [t]
+  transTerms (APTrans_LLVMBlockShape _ t) = [t]
   transTerms (APTrans_NamedConj _ _ _ t) = [t]
   transTerms (APTrans_LLVMFrame _) = []
   transTerms (APTrans_LifetimePerm _) = []
@@ -1096,8 +1095,8 @@ atomicPermTransPerm _ (APTrans_LLVMFree e) = fmap Perm_LLVMFree e
 atomicPermTransPerm prxs (APTrans_LLVMFunPtr tp ptrans) =
   fmap (Perm_LLVMFunPtr tp) (permTransPerm prxs ptrans)
 atomicPermTransPerm prxs APTrans_IsLLVMPtr = nuMulti prxs $ const Perm_IsLLVMPtr
-atomicPermTransPerm _ (APTrans_LLVMBlockShape rw l sh _) =
-  mbMap3 Perm_LLVMBlockShape rw l sh
+atomicPermTransPerm _ (APTrans_LLVMBlockShape mb_sh _) =
+  fmap Perm_LLVMBlockShape mb_sh
 atomicPermTransPerm _ (APTrans_NamedConj npn args off _) =
   mbMap2 (Perm_NamedConj npn) args off
 atomicPermTransPerm _ (APTrans_LLVMFrame fp) = fmap Perm_LLVMFrame fp
@@ -1151,8 +1150,8 @@ instance ExtPermTrans AtomicPermTrans where
   extPermTrans (APTrans_LLVMFunPtr tp ptrans) =
     APTrans_LLVMFunPtr tp (extPermTrans ptrans)
   extPermTrans APTrans_IsLLVMPtr = APTrans_IsLLVMPtr
-  extPermTrans (APTrans_LLVMBlockShape mb_rw mb_l mb_sh t) =
-    APTrans_LLVMBlockShape (extMb mb_rw) (extMb mb_l) (extMb mb_sh) t
+  extPermTrans (APTrans_LLVMBlockShape mb_sh t) =
+    APTrans_LLVMBlockShape (extMb mb_sh) t
   extPermTrans (APTrans_NamedConj npn args off t) =
     APTrans_NamedConj npn (extMb args) (extMb off) t
   extPermTrans (APTrans_LLVMFrame fp) = APTrans_LLVMFrame $ extMb fp
@@ -1536,9 +1535,9 @@ instance TransInfo info =>
     return $ fmap (APTrans_LLVMFunPtr $ mbLift tp) tp_ptrans
   translate [nuP| Perm_IsLLVMPtr |] =
     return $ mkTypeTrans0 APTrans_IsLLVMPtr
-  translate [nuP| Perm_LLVMBlockShape rw l sh |] =
+  translate [nuP| Perm_LLVMBlockShape sh |] =
     do tp <- translate1 sh
-       return $ mkTypeTrans1 tp (APTrans_LLVMBlockShape rw l sh)
+       return $ mkTypeTrans1 tp (APTrans_LLVMBlockShape sh)
   translate p@[nuP| Perm_NamedConj npn args off |] =
     -- To translate P<args>@off as an atomic permission, we translate it as a
     -- normal permission and map the resulting PermTrans to an AtomicPermTrans
@@ -2514,42 +2513,14 @@ translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockFromEq _ _ _ |] m =
          pctx :>: typeTransF ttrans [transTerm1 ptrans])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockLifetime _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockPtr _ _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) ->
          pctx :>: typeTransF ttrans (transTerms ptrans))
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockLifetime _ _ _ |] m =
-  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
-     withPermStackM id
-       (\(pctx :>: ptrans) ->
-         pctx :>: typeTransF ttrans (transTerms ptrans))
-       m
-
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockRW _ _ _ |] m =
-  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
-     withPermStackM id
-       (\(pctx :>: ptrans) ->
-         pctx :>: typeTransF ttrans (transTerms ptrans))
-       m
-
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockRW _ _ _ |] m =
-  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
-     withPermStackM id
-       (\(pctx :>: ptrans) ->
-         pctx :>: typeTransF ttrans (transTerms ptrans))
-       m
-
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockPtr _ _ |] m =
-  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
-     withPermStackM id
-       (\(pctx :>: ptrans) ->
-         pctx :>: typeTransF ttrans (transTerms ptrans))
-       m
-
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockPtr _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockPtr _ _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) ->
@@ -2969,20 +2940,18 @@ translatePermImpl1 _ [nuP| Impl1_ElimReachabilityPerm x rp args off p |] mb_impl
                                               ++ [transTerm1 ptrans_x])])
        m
 
-translatePermImpl1 _ [nuP| Impl1_ElimLLVMBlockToEq
-                         _ mb_rw mb_l mb_off mb_len mb_sh |] mb_impls =
+translatePermImpl1 _ [nuP| Impl1_ElimLLVMBlockToEq _ mb_bp |] mb_impls =
   translatePermImplUnary mb_impls $ \m ->
   inExtTransM ETrans_LLVMBlock $
   do tp_trans1 <-
-       translate (mbMap3 (\rw l off len y ->
-                           mkLLVMBlockPerm rw l off len (PExpr_EqShape $
-                                                         PExpr_Var y))
-                  (extMb mb_rw) (extMb mb_l) (extMb mb_off) `mbApply`
-                  extMb mb_len `mbApply`
-                  nuMulti (mbToProxy mb_rw :>: Proxy) (\(_ :>: y) -> y))
+       translate (mbMap2 (\bp y ->
+                           ValPerm_Conj1 $ Perm_LLVMBlock $
+                           bp { llvmBlockShape = PExpr_EqShape $ PExpr_Var y })
+                  (extMb mb_bp) $
+                  nuMulti (mbToProxy mb_bp :>: Proxy) (\(_ :>: y) -> y))
      tp_trans2 <-
-       translate $ extMb $ fmap ValPerm_Conj1 $
-       mbMap3 Perm_LLVMBlockShape mb_rw mb_l mb_sh
+       translate $ fmap (ValPerm_Conj1 .
+                         Perm_LLVMBlockShape . modalizeBlockShape) (extMb mb_bp)
      withPermStackM (:>: Member_Base)
        (\(pctx :>: ptrans) ->
          pctx :>: typeTransF tp_trans1 [unitOpenTerm] :>:

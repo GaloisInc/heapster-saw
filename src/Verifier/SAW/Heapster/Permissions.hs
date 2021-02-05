@@ -197,10 +197,16 @@ foldr1WithDefault f def (a:as) = f a $ foldr1WithDefault f def as
 foldMapWithDefault :: (b -> b -> b) -> b -> (a -> b) -> [a] -> b
 foldMapWithDefault comb def f l = foldr1WithDefault comb def $ map f l
 
--- | Lift a binary function function to `Mb`s
+-- | Lift a trinary function function to `Mb`s
 -- FIXME: move to Hobbits
 mbMap3 :: (a -> b -> c -> d) -> Mb ctx a -> Mb ctx b -> Mb ctx c -> Mb ctx d
 mbMap3 f mb1 mb2 mb3 = mbMap2 f mb1 mb2 `mbApply` mb3
+
+-- | Lift a quaternary function function to `Mb`s
+-- FIXME: move to Hobbits
+mbMap4 :: (a -> b -> c -> d -> e) -> Mb ctx a -> Mb ctx b -> Mb ctx c ->
+          Mb ctx d -> Mb ctx e
+mbMap4 f mb1 mb2 mb3 mb4 = mbMap3 f mb1 mb2 mb3 `mbApply` mb4
 
 
 ----------------------------------------------------------------------
@@ -578,16 +584,11 @@ data PermExpr (a :: CrucibleType) where
   -- | The equality shape
   PExpr_EqShape :: PermExpr (LLVMBlockType w) -> PermExpr (LLVMShapeType w)
 
-  -- | A shape that locally uses a different lifetime
-  PExpr_LifetimeShape :: PermExpr LifetimeType -> PermExpr (LLVMShapeType w) ->
-                         PermExpr (LLVMShapeType w)
-
-  -- | A shape that locally uses a different read/write modality
-  PExpr_RWShape :: PermExpr RWModalityType -> PermExpr (LLVMShapeType w) ->
-                   PermExpr (LLVMShapeType w)
-
-  -- | A shape for a pointer to another shape
-  PExpr_PtrShape :: PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w)
+  -- | A shape for a pointer to another shape, with optional read/write and
+  -- lifetime modalities
+  PExpr_PtrShape :: Maybe (PermExpr RWModalityType) ->
+                    Maybe (PermExpr LifetimeType) ->
+                    PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w)
 
   -- | A shape for a single field with a given permission
   PExpr_FieldShape :: (1 <= w, KnownNat w) => LLVMFieldShape w ->
@@ -776,16 +777,9 @@ instance Eq (PermExpr a) where
   (PExpr_EqShape b1) == (PExpr_EqShape b2) = b1 == b2
   (PExpr_EqShape _) == _ = False
 
-  (PExpr_LifetimeShape l1 sh1) == (PExpr_LifetimeShape l2 sh2) =
-    l1 == l2 && sh1 == sh2
-  (PExpr_LifetimeShape _ _) == _ = False
-
-  (PExpr_RWShape rw1 sh1) == (PExpr_RWShape rw2 sh2) =
-    rw1 == rw2 && sh1 == sh2
-  (PExpr_RWShape _ _) == _ = False
-
-  (PExpr_PtrShape sh1) == (PExpr_PtrShape sh2) = sh1 == sh2
-  (PExpr_PtrShape _) == _ = False
+  (PExpr_PtrShape rw1 l1 sh1) == (PExpr_PtrShape rw2 l2 sh2) =
+    rw1 == rw2 && l1 == l2 && sh1 == sh2
+  (PExpr_PtrShape _ _ _) == _ = False
 
   (PExpr_FieldShape p1) == (PExpr_FieldShape p2) = p1 == p2
   (PExpr_FieldShape _) == _ = False
@@ -843,16 +837,13 @@ instance PermPretty (PermExpr a) where
   permPrettyM PExpr_EmptyShape = return $ pretty "emptysh"
   permPrettyM (PExpr_EqShape b) =
     ((pretty "eqsh" <>) . parens) <$> permPrettyM b
-  permPrettyM (PExpr_LifetimeShape l sh) =
-    do l_pp <- permPrettyLifetimePrefix l
+  permPrettyM (PExpr_PtrShape maybe_rw maybe_l sh) =
+    do l_pp <- maybe (return mempty) permPrettyLifetimePrefix maybe_l
+       rw_pp <- case maybe_rw of
+         Just rw -> (<> pretty ",") <$> permPrettyM rw
+         Nothing -> return mempty
        sh_pp <- permPrettyM sh
-       return (l_pp <> sh_pp)
-  permPrettyM (PExpr_RWShape rw sh) =
-    do rw_pp <- permPrettyM rw
-       sh_pp <- permPrettyM sh
-       return (pretty "rwsh" <> tupled [rw_pp, sh_pp])
-  permPrettyM (PExpr_PtrShape sh) =
-    ((pretty "ptrsh" <>) . parens) <$> permPrettyM sh
+       return (l_pp <> pretty "ptrsh" <> parens (rw_pp <> sh_pp))
   permPrettyM (PExpr_FieldShape fld) =
     (pretty "fieldsh" <>) <$> permPrettyM fld
   permPrettyM (PExpr_ArrayShape len stride flds) =
@@ -1375,10 +1366,8 @@ data AtomicPerm (a :: CrucibleType) where
                      ValuePerm (FunctionHandleType cargs ret) ->
                      AtomicPerm (LLVMPointerType w)
 
-  -- | Says that a memory block has a given shape, which requires a lifetime and
-  -- a read/write modality to define
-  Perm_LLVMBlockShape :: (1 <= w, KnownNat w) => PermExpr RWModalityType ->
-                         PermExpr LifetimeType -> PermExpr (LLVMShapeType w) ->
+  -- | Says that a memory block has a given shape
+  Perm_LLVMBlockShape :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
                          AtomicPerm (LLVMBlockType w)
 
   -- | Says we know an LLVM value is a pointer value, meaning that its block
@@ -2105,9 +2094,8 @@ instance Eq (AtomicPerm a) where
   (Perm_LLVMFunPtr _ _) == _ = False
   Perm_IsLLVMPtr == Perm_IsLLVMPtr = True
   Perm_IsLLVMPtr == _ = False
-  (Perm_LLVMBlockShape rw1 l1 sh1) == (Perm_LLVMBlockShape rw2 l2 sh2) =
-    rw1 == rw2 && l1 == l2 && sh1 == sh2
-  (Perm_LLVMBlockShape _ _ _) == _ = False
+  (Perm_LLVMBlockShape sh1) == (Perm_LLVMBlockShape sh2) = sh1 == sh2
+  (Perm_LLVMBlockShape _) == _ = False
   (Perm_LLVMFrame frame1) == (Perm_LLVMFrame frame2) = frame1 == frame2
   (Perm_LLVMFrame _) == _ = False
   (Perm_LOwned e1) == (Perm_LOwned e2) = e1 == e2
@@ -2253,11 +2241,8 @@ instance PermPretty (AtomicPerm a) where
   permPrettyM (Perm_LLVMField fp) = permPrettyLLVMField False fp
   permPrettyM (Perm_LLVMArray ap) = permPrettyM ap
   permPrettyM (Perm_LLVMBlock bp) = permPrettyM bp
-  permPrettyM (Perm_LLVMBlockShape rw l sh) =
-    do l_pp <- permPrettyLifetimePrefix l
-       rw_pp <- permPrettyM rw
-       sh_pp <- permPrettyM sh
-       return (l_pp <> pretty "shape" <> tupled [rw_pp,sh_pp])
+  permPrettyM (Perm_LLVMBlockShape sh) =
+    ((pretty "shape" <>) . parens) <$> permPrettyM sh
   permPrettyM (Perm_LLVMFree e) = (pretty "free" <+>) <$> permPrettyM e
   permPrettyM (Perm_LLVMFunPtr tp fp) =
     (\pp -> pretty "llvmfunptr" <+> parens pp) <$> permPrettyM fp
@@ -2703,9 +2688,7 @@ llvmShapeLength :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
 llvmShapeLength (PExpr_Var _) = Nothing
 llvmShapeLength PExpr_EmptyShape = Just $ bvInt 0
 llvmShapeLength (PExpr_EqShape _) = Nothing
-llvmShapeLength (PExpr_LifetimeShape _ sh) = llvmShapeLength sh
-llvmShapeLength (PExpr_RWShape _ sh) = llvmShapeLength sh
-llvmShapeLength (PExpr_PtrShape sh)
+llvmShapeLength (PExpr_PtrShape _ _ sh)
   | LLVMShapeRepr w <- exprType sh = Just $ bvInt (intValue w `div` 8)
 llvmShapeLength (PExpr_FieldShape (LLVMFieldShape p)) =
   Just $ exprLLVMTypeBytesExpr p
@@ -2755,6 +2738,33 @@ llvmArrayShapeToPerm rw l off len stride fshs =
       (bvInt 0, [])
       fshs }
 
+-- | Add the given read/write and lifetime modalities to all top-level pointer
+-- shapes in a shape. Top-level here means we do not recurse inside pointer
+-- shapes, as pointer shape modalities also apply recursively to the contained
+-- shapes. If there are any top-level variables in the shape, then this fails,
+-- since there is no way to modalize a variable shape.
+modalizeShape :: PermExpr RWModalityType -> PermExpr LifetimeType ->
+                 PermExpr (LLVMShapeType w) ->
+                 Maybe (PermExpr (LLVMShapeType w))
+modalizeShape _ _ (PExpr_Var _) = Nothing
+modalizeShape _ _ PExpr_EmptyShape = Just PExpr_EmptyShape
+modalizeShape _ _ sh@(PExpr_EqShape _) = Just sh
+modalizeShape rw l (PExpr_PtrShape _ _ sh) =
+  Just $ PExpr_PtrShape (Just rw) (Just l) sh
+modalizeShape _ _ sh@(PExpr_FieldShape _) = Just sh
+modalizeShape rw l (PExpr_SeqShape sh1 sh2) =
+  PExpr_SeqShape <$> modalizeShape rw l sh1 <*> modalizeShape rw l sh2
+modalizeShape rw l (PExpr_OrShape sh1 sh2) =
+  PExpr_OrShape <$> modalizeShape rw l sh1 <*> modalizeShape rw l sh2
+modalizeShape rw l (PExpr_ExShape mb_sh) =
+  PExpr_ExShape <$> mbM (fmap (modalizeShape rw l) mb_sh)
+
+-- | Apply 'modalizeShape' to the shape of a block permission, raising an error
+-- if 'modalizeShape' cannot be applied
+modalizeBlockShape :: LLVMBlockPerm w -> PermExpr (LLVMShapeType w)
+modalizeBlockShape bp@(LLVMBlockPerm {..}) =
+  maybe (error "modalizeBlockShape") id $
+  modalizeShape llvmBlockRW llvmBlockLifetime llvmBlockShape
 
 -- FIXME: don't still need unfoldLLVMBlock...?
 
@@ -3649,7 +3659,7 @@ atomicPermIsCopyable (Perm_LLVMBlock (LLVMBlockPerm {..})) =
 atomicPermIsCopyable (Perm_LLVMFree _) = True
 atomicPermIsCopyable (Perm_LLVMFunPtr _ _) = True
 atomicPermIsCopyable Perm_IsLLVMPtr = True
-atomicPermIsCopyable (Perm_LLVMBlockShape rw _ sh) = shapeIsCopyable rw sh
+atomicPermIsCopyable (Perm_LLVMBlockShape sh) = shapeIsCopyable PExpr_Write sh
 atomicPermIsCopyable (Perm_LLVMFrame _) = False
 atomicPermIsCopyable (Perm_LOwned _) = False
 atomicPermIsCopyable (Perm_LCurrent _) = True
@@ -3679,10 +3689,9 @@ shapeIsCopyable :: PermExpr RWModalityType -> PermExpr (LLVMShapeType w) -> Bool
 shapeIsCopyable _ (PExpr_Var _) = False
 shapeIsCopyable _ PExpr_EmptyShape = True
 shapeIsCopyable _ (PExpr_EqShape _) = True
-shapeIsCopyable rw (PExpr_LifetimeShape _ sh) = shapeIsCopyable rw sh
-shapeIsCopyable _ (PExpr_RWShape rw sh) = shapeIsCopyable rw sh
-shapeIsCopyable rw (PExpr_PtrShape sh) =
-  rw == PExpr_Read && shapeIsCopyable rw sh
+shapeIsCopyable rw (PExpr_PtrShape maybe_rw' _ sh) =
+  let rw' = maybe rw id maybe_rw' in
+  rw' == PExpr_Read && shapeIsCopyable rw' sh
 shapeIsCopyable _ (PExpr_FieldShape (LLVMFieldShape p)) = permIsCopyable p
 shapeIsCopyable rw (PExpr_SeqShape sh1 sh2) =
   shapeIsCopyable rw sh1 && shapeIsCopyable rw sh2
@@ -3759,6 +3768,9 @@ unfoldPerm (NamedPerm_Rec rp) = unfoldRecPerm rp
 class FreeVars a where
   freeVars :: a -> NameSet CrucibleType
 
+instance FreeVars a => FreeVars (Maybe a) where
+  freeVars = maybe NameSet.empty freeVars
+
 instance FreeVars a => FreeVars [a] where
   freeVars = foldr (NameSet.union . freeVars) NameSet.empty
 
@@ -3789,11 +3801,8 @@ instance FreeVars (PermExpr a) where
   freeVars (PExpr_RWModality _) = NameSet.empty
   freeVars PExpr_EmptyShape = NameSet.empty
   freeVars (PExpr_EqShape b) = freeVars b
-  freeVars (PExpr_LifetimeShape l sh) =
-    NameSet.union (freeVars l) (freeVars sh)
-  freeVars (PExpr_RWShape rw sh) =
-    NameSet.union (freeVars rw) (freeVars sh)
-  freeVars (PExpr_PtrShape sh) = freeVars sh
+  freeVars (PExpr_PtrShape maybe_rw maybe_l sh) =
+    NameSet.unions [freeVars maybe_rw, freeVars maybe_l, freeVars sh]
   freeVars (PExpr_FieldShape (LLVMFieldShape p)) = freeVars p
   freeVars (PExpr_SeqShape sh1 sh2) =
     NameSet.union (freeVars sh1) (freeVars sh2)
@@ -3832,8 +3841,7 @@ instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMFree e) = freeVars e
   freeVars (Perm_LLVMFunPtr _ fun_perm) = freeVars fun_perm
   freeVars Perm_IsLLVMPtr = NameSet.empty
-  freeVars (Perm_LLVMBlockShape rw l sh) =
-    NameSet.unions [freeVars rw, freeVars l, freeVars sh]
+  freeVars (Perm_LLVMBlockShape sh) = freeVars sh
   freeVars (Perm_LLVMFrame fperms) = freeVars $ map fst fperms
   freeVars (Perm_LOwned ps) = freeVars ps
   freeVars (Perm_LCurrent l) = freeVars l
@@ -4059,13 +4067,8 @@ instance LtFuncMinApply (AtomicPerm a) where
   ltFuncMinApply l p@[nuP| Perm_LLVMFree _ |] = subst1 l p
   ltFuncMinApply l p@[nuP| Perm_LLVMFunPtr _ _ |] = subst1 l p
   ltFuncMinApply _ [nuP| Perm_IsLLVMPtr |] = Perm_IsLLVMPtr
-  ltFuncMinApply l [nuP| Perm_LLVMBlockShape mb_rw mb_l mb_sh |] =
-    if mb_l == ltFuncId then
-      Perm_LLVMBlockShape PExpr_Read l $ ltFuncMinApply l $
-      fmap readOnlyShape mb_sh
-    else
-      Perm_LLVMBlockShape (subst1 l mb_rw) (subst1 l mb_l) $
-      ltFuncMinApply l mb_sh
+  ltFuncMinApply l [nuP| Perm_LLVMBlockShape mb_sh |] =
+    Perm_LLVMBlockShape $ ltFuncMinApply l mb_sh
   ltFuncMinApply l p@[nuP| Perm_LLVMFrame _ |] = subst1 l p
   ltFuncMinApply l p@[nuP| Perm_LOwned _ |] =
     -- NOTE: this is a weird case semantically, but should never actually occur
@@ -4127,14 +4130,11 @@ instance LtFuncMinApply (PermExpr a) where
   ltFuncMinApply l e@[nuP| PExpr_RWModality _ |] = subst1 l e
   ltFuncMinApply l e@[nuP| PExpr_EmptyShape |] = subst1 l e
   ltFuncMinApply l e@[nuP| PExpr_EqShape _ |] = subst1 l e
-  ltFuncMinApply l [nuP| PExpr_LifetimeShape mb_l mb_sh |] =
-    PExpr_LifetimeShape (subst1 l mb_l) $
-    ltFuncMinApply l $ if mb_l == ltFuncId then fmap readOnlyShape mb_sh
-                       else mb_sh
-  ltFuncMinApply l [nuP| PExpr_RWShape mb_rw mb_sh |] =
-    PExpr_RWShape (subst1 l mb_rw) (ltFuncMinApply l mb_sh)
-  ltFuncMinApply l [nuP| PExpr_PtrShape sh |] =
-    PExpr_PtrShape $ ltFuncMinApply l sh
+  ltFuncMinApply l [nuP| PExpr_PtrShape mb_maybe_rw mb_maybe_l mb_sh |] =
+    let maybe_rw' =
+          if mb_maybe_l == fmap Just ltFuncId then Just PExpr_Read
+          else subst1 l mb_maybe_rw in
+    PExpr_PtrShape maybe_rw' (subst1 l mb_maybe_l) $ ltFuncMinApply l mb_sh
   ltFuncMinApply l [nuP| PExpr_FieldShape fld |] =
     PExpr_FieldShape $ ltFuncMinApply l fld
   ltFuncMinApply l [nuP| PExpr_ArrayShape len stride flds |] =
@@ -4149,16 +4149,15 @@ instance LtFuncMinApply (PermExpr a) where
   ltFuncMinApply l [nuP| PExpr_ValPerm p |] =
     PExpr_ValPerm $ ltFuncMinApply l p
 
--- | Change all read/write modalities in a shape that are associated with the
--- lifetime of that shape (i.e., that are not inside a @lifetime_sh@) to
--- 'PExpr_Read'.
+-- | Change all pointer shapes that are associated with the current lifetime of
+-- that shape (i.e., that are not inside a pointer shape with an explicit
+-- lifetime) to 'PExpr_Read'.
 readOnlyShape :: PermExpr (LLVMShapeType w) -> PermExpr (LLVMShapeType w)
 readOnlyShape PExpr_EmptyShape = PExpr_EmptyShape
 readOnlyShape e@(PExpr_EqShape _) = e
-readOnlyShape e@(PExpr_LifetimeShape _ _) = e
-readOnlyShape (PExpr_RWShape _ sh) =
-  PExpr_RWShape PExpr_Read (readOnlyShape sh)
-readOnlyShape (PExpr_PtrShape sh) = PExpr_PtrShape $ readOnlyShape sh
+readOnlyShape e@(PExpr_PtrShape _ (Just _) sh) = e
+readOnlyShape (PExpr_PtrShape _ Nothing sh) =
+  PExpr_PtrShape (Just PExpr_Read) Nothing $ readOnlyShape sh
 readOnlyShape e@(PExpr_FieldShape _) = e
 readOnlyShape e@(PExpr_ArrayShape _ _ _) =
   -- FIXME: when array shapes contain lists of shapes instead of lists of
@@ -4514,11 +4513,9 @@ instance SubstVar s m => Substable s (PermExpr a) m where
   genSubst _ [nuP| PExpr_EmptyShape |] = return PExpr_EmptyShape
   genSubst s [nuP| PExpr_EqShape b |] =
     PExpr_EqShape <$> genSubst s b
-  genSubst s [nuP| PExpr_LifetimeShape l sh |] =
-    PExpr_LifetimeShape <$> genSubst s l <*> genSubst s sh
-  genSubst s [nuP| PExpr_RWShape rw sh |] =
-    PExpr_RWShape <$> genSubst s rw <*> genSubst s sh
-  genSubst s [nuP| PExpr_PtrShape sh |] = PExpr_PtrShape <$> genSubst s sh
+  genSubst s [nuP| PExpr_PtrShape maybe_rw maybe_l sh |] =
+    PExpr_PtrShape <$> genSubst s maybe_rw <*> genSubst s maybe_l
+     <*> genSubst s sh
   genSubst s [nuP| PExpr_FieldShape sh |] =
     PExpr_FieldShape <$> genSubst s sh
   genSubst s [nuP| PExpr_SeqShape sh1 sh2 |] =
@@ -4566,8 +4563,8 @@ instance SubstVar s m => Substable s (AtomicPerm a) m where
   genSubst s [nuP| Perm_LLVMFunPtr tp p |] =
     Perm_LLVMFunPtr (mbLift tp) <$> genSubst s p
   genSubst _ [nuP| Perm_IsLLVMPtr |] = return Perm_IsLLVMPtr
-  genSubst s [nuP| Perm_LLVMBlockShape rw l sh |] =
-    Perm_LLVMBlockShape <$> genSubst s rw <*> genSubst s l <*> genSubst s sh
+  genSubst s [nuP| Perm_LLVMBlockShape sh |] =
+    Perm_LLVMBlockShape <$> genSubst s sh
   genSubst s [nuP| Perm_LLVMFrame fp |] = Perm_LLVMFrame <$> genSubst s fp
   genSubst s [nuP| Perm_LOwned e |] = Perm_LOwned <$> genSubst s e
   genSubst s [nuP| Perm_LCurrent e |] = Perm_LCurrent <$> genSubst s e
@@ -5190,16 +5187,10 @@ instance AbstractVars (PermExpr a) where
   abstractPEVars ns1 ns2 (PExpr_EqShape b) =
     absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_EqShape |]))
     `clMbMbApplyM` abstractPEVars ns1 ns2 b
-  abstractPEVars ns1 ns2 (PExpr_LifetimeShape l sh) =
-    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_LifetimeShape |]))
-    `clMbMbApplyM` abstractPEVars ns1 ns2 l
-    `clMbMbApplyM` abstractPEVars ns1 ns2 sh
-  abstractPEVars ns1 ns2 (PExpr_RWShape rw sh) =
-    absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_RWShape |]))
-    `clMbMbApplyM` abstractPEVars ns1 ns2 rw
-    `clMbMbApplyM` abstractPEVars ns1 ns2 sh
-  abstractPEVars ns1 ns2 (PExpr_PtrShape sh) =
+  abstractPEVars ns1 ns2 (PExpr_PtrShape maybe_rw maybe_l sh) =
     absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_PtrShape |]))
+    `clMbMbApplyM` abstractPEVars ns1 ns2 maybe_rw
+    `clMbMbApplyM` abstractPEVars ns1 ns2 maybe_l
     `clMbMbApplyM` abstractPEVars ns1 ns2 sh
   abstractPEVars ns1 ns2 (PExpr_FieldShape fsh) =
     absVarsReturnH ns1 ns2 ($(mkClosed [| PExpr_FieldShape |]))
@@ -5298,10 +5289,8 @@ instance AbstractVars (AtomicPerm a) where
     `clMbMbApplyM` abstractPEVars ns1 ns2 p
   abstractPEVars ns1 ns2 Perm_IsLLVMPtr =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_IsLLVMPtr |])
-  abstractPEVars ns1 ns2 (Perm_LLVMBlockShape rw l sh) =
+  abstractPEVars ns1 ns2 (Perm_LLVMBlockShape sh) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMBlockShape |])
-    `clMbMbApplyM` abstractPEVars ns1 ns2 rw
-    `clMbMbApplyM` abstractPEVars ns1 ns2 l
     `clMbMbApplyM` abstractPEVars ns1 ns2 sh
   abstractPEVars ns1 ns2 (Perm_LLVMFrame fp) =
     absVarsReturnH ns1 ns2 $(mkClosed [| Perm_LLVMFrame |])
@@ -5882,9 +5871,7 @@ instance GetDetVarsClauses (AtomicPerm a) where
   getDetVarsClauses (Perm_LLVMField fp) = getDetVarsClauses fp
   getDetVarsClauses (Perm_LLVMArray ap) = getDetVarsClauses ap
   getDetVarsClauses (Perm_LLVMBlock bp) = getDetVarsClauses bp
-  getDetVarsClauses (Perm_LLVMBlockShape rw l sh) =
-    concat <$>
-    sequence [getDetVarsClauses rw, getDetVarsClauses l, getDetVarsClauses sh]
+  getDetVarsClauses (Perm_LLVMBlockShape sh) = getDetVarsClauses sh
   getDetVarsClauses (Perm_LLVMFrame frame_perm) =
     concat <$> mapM (getDetVarsClauses . fst) frame_perm
   getDetVarsClauses _ = return []

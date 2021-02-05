@@ -12,6 +12,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 
 module Verifier.SAW.Heapster.PermParser where
 
@@ -483,22 +484,24 @@ parseExpr tp@(LLVMShapeRepr w) =
        (try (string "emptysh") >> return (PExpr_EmptyShape)) <|>
        (try (string "eqsh") >> spaces >> parseInParens
         (PExpr_EqShape <$> parseExpr (LLVMBlockRepr w))) <|>
-       (do try (char '[')
-           l <- parseExpr knownRepr
-           spaces >> char ']'
-           PExpr_LifetimeShape l <$> parseExpr tp) <|>
-       (do try (string "rwsh" >> spaces)
-           char '('
-           rw <- parseExpr knownRepr
-           spaces >> char ','
-           sh <- parseExpr tp
+       (do maybe_l <-
+             (do try (spaces >> char '[')
+                 l <- parseExpr knownRepr
+                 spaces >> char ']' >> spaces >> string "ptrsh"
+                 spaces >> char '('
+                 return (Just l)) <|>
+             (try (spaces >> string "ptrsh") >> spaces >> char '(' >>
+              return Nothing)
+           spaces
+           (maybe_rw,sh) <-
+             (do rw <-
+                   try (parseExpr knownRepr >>=
+                        \rw -> spaces >> comma >> return rw)
+                 sh <- parseExpr tp
+                 return (Just rw, sh)) <|>
+             (Nothing,) <$> parseExpr tp
            spaces >> char ')'
-           return $ PExpr_RWShape rw sh) <|>
-       (do try (string "ptrsh" >> spaces)
-           char '('
-           sh <- parseExpr tp
-           spaces >> char ')'
-           return $ PExpr_PtrShape sh) <|>
+           return $ PExpr_PtrShape maybe_rw maybe_l sh) <|>
        (try (string "fieldsh") >> spaces >>
         PExpr_FieldShape <$> parseLLVMFieldShape True w) <|>
        (try (string "arraysh") >> spaces >> parseInParens
@@ -691,15 +694,9 @@ parseAtomicPerm tp@(LLVMFrameRepr w)
      ("atomic permission of type " ++ show tp))
 
 parseAtomicPerm tp@(LLVMBlockRepr w) =
-  (withKnownNat w $
-   do l <- parseLifetimePrefix
-      (try (string "shape") >> spaces)
-      char '('
-      rw <- parseExpr knownRepr
-      spaces >> char ','
-      sh <- withKnownNat w $ parseExpr (LLVMShapeRepr w)
-      spaces >> char ')'
-      return (Perm_LLVMBlockShape rw l sh)) <?>
+  (withKnownNat w
+   (try (string "shape" >> spaces) >>
+    Perm_LLVMBlockShape <$> parseInParens (parseExpr $ LLVMShapeRepr w))) <?>
   ("atomic permission of type " ++ show tp)
 
 parseAtomicPerm tp@(StructRepr tps) =
