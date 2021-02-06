@@ -66,15 +66,12 @@ $(mkNuMatching [t| SomeLLVMPerm |])
 -- | Info used for converting Rust types to shapes
 data RustConvInfo =
   RustConvInfo { rciPermEnv :: PermEnv,
-                 rciLifetime :: PermExpr LifetimeType,
-                 rciRW :: PermExpr RWModalityType,
                  rciCtx :: [(String, TypedName)] }
 
 -- | The default, top-level 'RustConvInfo' for a given 'PermEnv'
 mkRustConvInfo :: PermEnv -> RustConvInfo
 mkRustConvInfo env =
-  RustConvInfo { rciPermEnv = env, rciLifetime = PExpr_Always,
-                 rciRW = PExpr_Write, rciCtx = [] }
+  RustConvInfo { rciPermEnv = env, rciCtx = [] }
 
 -- | The Rust conversion monad is just a state-error monad
 newtype RustConvM a =
@@ -121,7 +118,7 @@ lookupName :: String -> TypeRepr a -> RustConvM (Name a)
 lookupName str tp =
   lookupTypedName str >>= \n -> castTypedM "variable" tp n
 
--- | A context of Rust type and lifetime variables
+-- | The conversion of a context of Rust type and lifetime variables
 type RustCtx = RAssign (Product (Constant String) TypeRepr)
 
 -- | Extract a 'CruCtx' from a 'RustCtx'
@@ -153,29 +150,76 @@ data SomeShapeFun w =
   forall args. SomeShapeFun (CruCtx args) (Mb args (PermExpr (LLVMShapeType w)))
 
 -- | A sequence of 'PermExprs' along with their types
-data TypedPermExprs ctx = TypedPermExprs (CruCtx ctx) (PermExprs ctx)
+type TypedPermExprs = RAssign (Typed PermExpr)
+
+-- | The empty sequence of typed permission expressions
+emptyTypedPermExprs :: Some TypedPermExprs
+emptyTypedPermExprs = Some MNil
+
+appendTypedExprs :: Some TypedPermExprs -> Some TypedPermExprs ->
+                    Some TypedPermExprs
+appendTypedExprs (Some exprs1) (Some exprs2) = Some (RL.append exprs1 exprs2)
+
+-- | Extract a type context from a 'TypedPermExprs'
+typedPermExprsCtx :: TypedPermExprs ctx -> CruCtx ctx
+typedPermExprsCtx = cruCtxOfTypes . RL.map typedType
+
+-- | Extract the expressions from a 'TypedPermExprs'
+typedPermExprsExprs :: TypedPermExprs ctx -> PermExprs ctx
+typedPermExprsExprs = rassignToExprs . RL.map typedObj
 
 -- | Apply a 'SomeShapeFun', if possible
 tryApplySomeShapeFun :: SomeShapeFun w -> Some TypedPermExprs ->
                         Maybe (PermExpr (LLVMShapeType w))
-tryApplySomeShapeFun (SomeShapeFun ctx mb_sh) (Some (TypedPermExprs ctx' args))
-  | Just Refl <- testEquality ctx ctx' =
-    Just $ subst (substOfExprs args) mb_sh
+tryApplySomeShapeFun (SomeShapeFun ctx mb_sh) (Some exprs)
+  | Just Refl <- testEquality ctx (typedPermExprsCtx exprs) =
+    Just $ subst (substOfExprs $ typedPermExprsExprs exprs) mb_sh
 tryApplySomeShapeFun _ _ = Nothing
+
+-- | Build a 'SomeShapeFun' with no arguments
+constShapeFun :: PermExpr (LLVMShapeType w) -> SomeShapeFun w
+constShapeFun sh = SomeShapeFun CruCtxNil (emptyMb sh)
 
 -- | Build the shape @fieldsh(exists z:bv sz.eq(llvmword(z))@
 sizedIntShapeFun :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
                     prx1 w -> prx2 sz -> SomeShapeFun w
-sizedIntShapeFun _ (_ :: prx2 sz) =
-  SomeShapeFun CruCtxNil $ emptyMb $
-  PExpr_FieldShape (LLVMFieldShape $ ValPerm_Exists $ nu $
-                    \(z :: ExprVar (BVType sz)) ->
-                     ValPerm_Eq (PExpr_LLVMWord (PExpr_Var z)))
+sizedIntShapeFun _ sz =
+  constShapeFun $ PExpr_FieldShape (LLVMFieldShape $
+                                    ValPerm_Exists $ llvmExEqWord sz)
 
 -- | A table for converting Rust base types to shapes
 namedTypeTable :: (1 <= w, KnownNat w) => prx w -> [(String,SomeShapeFun w)]
 namedTypeTable w =
-  [("bool", sizedIntShapeFun @_ @1 w Proxy)]
+  [("bool", sizedIntShapeFun @_ @1 w Proxy),
+   ("i8", sizedIntShapeFun @_ @8 w Proxy),
+   ("u8", sizedIntShapeFun @_ @8 w Proxy),
+   ("i16", sizedIntShapeFun @_ @16 w Proxy),
+   ("u16", sizedIntShapeFun @_ @16 w Proxy),
+   ("i32", sizedIntShapeFun @_ @32 w Proxy),
+   ("u32", sizedIntShapeFun @_ @32 w Proxy),
+   ("i64", sizedIntShapeFun @_ @64 w Proxy),
+   ("u64", sizedIntShapeFun @_ @64 w Proxy),
+
+   -- isize and usize are the same size as pointers, which is w
+   ("isize", sizedIntShapeFun w w),
+   ("usize", sizedIntShapeFun w w),
+
+   -- Strings contain three fields: a pointer, a length, and a capacity
+   ("String",
+    constShapeFun (PExpr_ExShape $ nu $ \cap ->
+                    (PExpr_SeqShape
+                     -- The pointer to an array of bytes
+                     (PExpr_PtrShape Nothing Nothing $
+                      PExpr_ArrayShape (PExpr_Var cap) 1
+                      [LLVMFieldShape $ ValPerm_Exists $ llvmExEqWord $ Proxy @8])
+                     (PExpr_SeqShape
+                      -- The length value
+                      (PExpr_FieldShape $ LLVMFieldShape $
+                       ValPerm_Exists $ llvmExEqWord w)
+                      -- The capacity
+                      (PExpr_FieldShape $ LLVMFieldShape $ ValPerm_Eq $
+                       PExpr_LLVMWord $ PExpr_Var cap)))))
+   ]
 
 -- | A fully qualified Rust path without any of the parameters; e.g.,
 -- @Foo<X>::Bar<Y,Z>::Baz@ just becomes @[Foo,Bar,Baz]@
@@ -224,15 +268,8 @@ instance RsConvert w (Lifetime Span) (PermExpr LifetimeType) where
   rsConvert _ (Lifetime l span) =
     PExpr_Var <$> atSpan span (lookupName l knownRepr)
 
-instance RsConvert w (Generics Span) (Some RustCtx) where
-  rsConvert _ _ = error "FIXME HERE"
-
 typedExprsOfList :: TypeRepr a -> [PermExpr a] -> Some TypedPermExprs
 typedExprsOfList = error "FIXME HERE"
-
-appendTypedExprs :: Some TypedPermExprs -> Some TypedPermExprs ->
-                    Some TypedPermExprs
-appendTypedExprs = error "FIXME HERE"
 
 instance RsConvert w (PathParameters Span) (Some TypedPermExprs) where
   rsConvert w (AngleBracketed rust_ls rust_tps [] _) =
@@ -242,7 +279,8 @@ instance RsConvert w (PathParameters Span) (Some TypedPermExprs) where
          (typedExprsOfList knownRepr ls) (typedExprsOfList knownRepr shs)
 
 instance RsConvert w [PathParameters Span] (Some TypedPermExprs) where
-  rsConvert _ _ = error "FIXME HERE"
+  rsConvert w paramss =
+    foldr appendTypedExprs emptyTypedPermExprs <$> mapM (rsConvert w) paramss
 
 instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
   rsConvert _ (Rptr _ _ (Slice _ _) _) =
@@ -261,8 +299,15 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        case tryApplySomeShapeFun sh_f args of
          Just sh -> return sh
          Nothing -> fail "Argument types not as expected"
-  rsConvert w (BareFn _ _ _ _ _) =
-    error "FIXME HERE: translate function types!"
+  rsConvert (w :: prx w) (BareFn _ _ rust_ls2 fn_tp span) =
+    do Some3FunPerm fun_perm <- rsConvertMonoFun w span rust_ls2 fn_tp
+       let args = funPermArgs fun_perm
+       case cruCtxToReprEq args of
+         Refl ->
+           return $ PExpr_FieldShape $ LLVMFieldShape @w @w $ ValPerm_Conj1 $
+           Perm_LLVMFunPtr
+           (FunctionHandleRepr (cruCtxToRepr args) (funPermRet fun_perm)) $
+           ValPerm_Conj1 $ Perm_Fun fun_perm
   rsConvert _ tp = fail ("Rust type not supported: " ++ show tp)
 
 -- | Convert a Rust type to a shape and test if that shape has a single field,
@@ -280,6 +325,33 @@ rustTypeToPerm w tp =
 -- * Top-level Entrypoints
 ----------------------------------------------------------------------
 
+-- | Function permission that is existential over all types
+data Some3FunPerm =
+  forall ghosts args ret. Some3FunPerm (FunPerm ghosts args ret)
+
+-- | Try to convert a 'Some3FunPerm' to a 'SomeFunPerm' at a specific type
+un3SomeFunPerm :: CruCtx args -> TypeRepr ret -> Some3FunPerm ->
+                  Maybe (SomeFunPerm args ret)
+un3SomeFunPerm args ret (Some3FunPerm fun_perm)
+  | Just Refl <- testEquality args (funPermArgs fun_perm)
+  , Just Refl <- testEquality ret (funPermRet fun_perm) =
+    Just $ SomeFunPerm fun_perm
+un3SomeFunPerm _ _ _ = Nothing
+
+-- | Convert a monomorphic function type, i.e., one with no type arguments
+rsConvertMonoFun :: (1 <= w, KnownNat w) => prx w -> Span ->
+                    [LifetimeDef Span] -> FnDecl Span ->
+                    RustConvM Some3FunPerm
+rsConvertMonoFun w span ls fn_tp =
+  rsConvertFun w (Generics ls [] (WhereClause [] span) span) fn_tp
+
+-- | Convert a Rust polymorphic function type to a Heapster function permission
+rsConvertFun :: (1 <= w, KnownNat w) => prx w ->
+                Generics Span -> FnDecl Span -> RustConvM Some3FunPerm
+rsConvertFun w (Generics rust_ls rust_tps
+                (WhereClause [] _) _) (FnDecl args maybe_tp False _) =
+  error "FIXME HERE"
+
 -- | Parse a polymorphic Rust function type of the form
 --
 -- > <generics> (T1,...,Tn) -> T
@@ -292,16 +364,13 @@ parseFunPermFromRust env w args ret str =
   case execParser ((,) <$> parser <*> parser)
        (inputStreamFromString str) initPos of
     Left err -> fail $ show err
-    Right (generics :: Generics Span, rust_tp) ->
+    Right (Generics rust_ls1 rust_tvars wc span,
+           BareFn _ _ rust_ls2 fn_tp _) ->
       runLiftRustConvM (mkRustConvInfo env) $
-      do Some rust_ctx <- rsConvert w generics
-         mb_some_perm <- inRustCtx rust_ctx $ rustTypeToPerm w rust_tp
-         case mb_some_perm of
-           [nuP| SomeLLVMPerm
-                  (ValPerm_Conj1
-                   (Perm_LLVMFunPtr (FunctionHandleRepr args' ret')
-                    (ValPerm_Conj1 (Perm_Fun fun_perm)))) |]
-             | Just Refl <- testEquality (mkCruCtx $ mbLift args') args
-             , Just Refl <- testEquality (mbLift ret') ret ->
-               return (SomeFunPerm $ mbFunPerm (rustCtxCtx rust_ctx) fun_perm)
-           _ -> fail "FIXME: better error message!"
+      do some_fun_perm <-
+           rsConvertFun w (Generics
+                           (rust_ls1 ++ rust_ls2) rust_tvars wc span) fn_tp
+         case un3SomeFunPerm args ret some_fun_perm of
+           Just fun_perm -> return fun_perm
+           Nothing ->
+             error "Wrong type of function (FIXME: better error message)"

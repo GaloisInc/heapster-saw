@@ -428,7 +428,7 @@ closeAssign f (viewAssign -> AssignExtend asgn fa) =
 
 -- | An element of some representation type functor @f a@ along with a
 -- 'TypeRepr' for @a@
-data Typed f a = Typed (TypeRepr a) (f a)
+data Typed f a = Typed { typedType :: TypeRepr a, typedObj :: f a }
 
 $(mkNuMatching [t| forall f a. NuMatching (f a) => Typed f a |])
 

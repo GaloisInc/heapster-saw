@@ -2528,9 +2528,9 @@ mkPermLLVMFunPtrs (w :: f w) fun_perms@(SomeFunPerm fun_perm:_) =
       (ValPerm_Conj $ map (\(SomeFunPerm fp) -> Perm_Fun fp) fun_perms)
 
 -- | Existential permission @x:eq(word(e))@ for some @e@
-llvmExEqWord :: (1 <= w, KnownNat w) =>
+llvmExEqWord :: (1 <= w, KnownNat w) => prx w ->
                 Binding (BVType w) (ValuePerm (LLVMPointerType w))
-llvmExEqWord = nu $ \e -> ValPerm_Eq (PExpr_LLVMWord $ PExpr_Var e)
+llvmExEqWord _ = nu $ \e -> ValPerm_Eq (PExpr_LLVMWord $ PExpr_Var e)
 
 {-
 -- | Create a field pointer permission with offset 0 and @eq(e)@ permissions
@@ -3311,7 +3311,7 @@ llvmFieldsPermOfSize :: (1 <= w, KnownNat w) => f w -> Integer ->
 llvmFieldsPermOfSize w n =
   ValPerm_Conj $ map llvmArrayFieldToAtomicPerm $ llvmFieldsOfSize w n
 
--- | Create an 'LLVMArrayPerm' for an array of bytes
+-- | Create an 'LLVMArrayPerm' for an array of uninitialized bytes
 llvmByteArrayArrayPerm :: (1 <= w, KnownNat w) =>
                           PermExpr (BVType w) -> PermExpr (BVType w) ->
                           PermExpr RWModalityType -> PermExpr LifetimeType ->
@@ -3702,18 +3702,21 @@ shapeIsCopyable rw (PExpr_ExShape mb_sh) =
 
 
 -- | Convert a 'FunPerm' in a name-binding to a 'FunPerm' that takes those bound
--- names as additional ghost arguments
-mbFunPerm :: CruCtx ctx -> Mb ctx (FunPerm ghosts args ret) ->
+-- names as additional ghost arguments with the supplied input permissions and
+-- no output permissions
+mbFunPerm :: CruCtx ctx -> Mb ctx (ValuePerms ctx) ->
+             Mb ctx (FunPerm ghosts args ret) ->
              FunPerm (ctx :++: ghosts) args ret
-mbFunPerm ctx [nuP| FunPerm mb_ghosts mb_args mb_ret ps_in ps_out |] =
+mbFunPerm ctx mb_ps [nuP| FunPerm mb_ghosts mb_args mb_ret ps_in ps_out |] =
   let ghosts = mbLift mb_ghosts
       args = mbLift mb_args
       ctx_perms = trueValuePerms $ cruCtxToTypes ctx in
   case appendAssoc ctx ghosts (cruCtxToTypes args) of
     Refl ->
       FunPerm (appendCruCtx ctx ghosts) args (mbLift mb_ret)
-      (fmap (RL.append ctx_perms) $ mbCombine ps_in)
-      (fmap (RL.append ctx_perms) $ mbCombine ps_out)
+      (mbCombine $
+       mbMap2 (\ps mb_ps_in -> fmap (RL.append ps) mb_ps_in) mb_ps ps_in)
+      (fmap (RL.append $ trueValuePerms $ cruCtxToTypes ctx) $ mbCombine ps_out)
 
 -- | Substitute ghost and regular arguments into a function permission to get
 -- its input permissions for those arguments, where ghost arguments are given

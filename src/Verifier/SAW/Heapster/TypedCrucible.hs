@@ -1959,7 +1959,7 @@ convertRegType _ loc reg (BVRepr w1) tp2@(BVRepr w2)
 convertRegType ExtRepr_LLVM loc reg (LLVMPointerRepr w1) (BVRepr w2)
   | Just Refl <- testEquality w1 w2 =
     withKnownNat w1 $
-    stmtProvePerm reg llvmExEqWord >>>= \subst ->
+    stmtProvePerm reg (llvmExEqWord w1) >>>= \subst ->
     let e = substLookup subst Member_Base in
     emitLLVMStmt knownRepr loc (DestructLLVMWord reg e) >>>= \x ->
     stmtRecombinePerms >>>
