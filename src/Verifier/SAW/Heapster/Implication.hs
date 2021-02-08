@@ -5189,8 +5189,7 @@ proveVarLLVMBlock x ps off len mb_bp
 proveVarLLVMBlock x ps off len mb_bp
   | [nuP| PExpr_ArrayShape
         mb_sz mb_stride mb_shs |] <- fmap llvmBlockShape mb_bp
-  , stride <- mbLift mb_stride
-  , mbLift $ fmap (flip bvLeq len) mb_sz =
+  , stride <- mbLift mb_stride =
 
     -- First, prove the required array permission
     implPopM x (ValPerm_Conj ps) >>>
@@ -5211,6 +5210,10 @@ proveVarLLVMBlock x ps off len mb_bp
     let bp = bp_out { llvmBlockLen = sz } in
 
     -- Next, prove an empty memblock permission of size len-sz
+    --
+    -- FIXME: note that this will in general fail if len < sz, meaning that we
+    -- are trying to prove a memblock permission whose length is smaller than
+    -- that of its shape; this is a weird edge case, so we are ok with this...
     proveVarImpl x (flip fmap mb_bp $ const $ ValPerm_Conj1 $ Perm_LLVMBlock $
                     bp { llvmBlockOffset = bvAdd off sz,
                          llvmBlockLen = bvSub len sz,
