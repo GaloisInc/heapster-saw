@@ -468,6 +468,7 @@ parseExpr tp@(FunctionHandleRepr _ _) =
              unexpected ("unknown variable or function: " ++ str)
 parseExpr LOwnedPermRepr =
   -- FIXME: parse non-empty lowned permissions
+  parseInParens (parseExpr LOwnedPermRepr) <|>
   (string "[]" >> return PExpr_LOwnedPermNil) <|>
   (PExpr_Var <$> parseExprVarOfType LOwnedPermRepr) <?>
   "lowned permission expression"
@@ -706,6 +707,16 @@ parseAtomicPerm tp@(StructRepr tps) =
       return (Perm_Struct ps)) <|>
   parseAtomicNamedPerm tp <?>
   ("atomic permission of type " ++ show tp)
+
+parseAtomicPerm tp@LifetimeRepr =
+  (do try (string "lowned" >> spaces1)
+      ps <- parseExpr LOwnedPermRepr
+      return $ Perm_LOwned ps) <|>
+  (do l <- parseLifetimePrefix
+      string "lcurrent"
+      return $ Perm_LCurrent l) <|>
+  parseAtomicNamedPerm tp <?>
+  "atomic permission of type lifetime"
 
 parseAtomicPerm tp =
   parseAtomicNamedPerm tp <?>
