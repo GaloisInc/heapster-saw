@@ -4489,9 +4489,9 @@ instance SubstVar PermVarSubst m =>
 instance SubstVar s m => Substable s (PermExpr a) m where
   genSubst s [nuP| PExpr_Var x |] = substExprVar s x
   genSubst _ [nuP| PExpr_Unit |] = return $ PExpr_Unit
+  genSubst _ [nuP| PExpr_Bool b |] = return $ PExpr_Bool $ mbLift b
   genSubst _ [nuP| PExpr_Nat n |] = return $ PExpr_Nat $ mbLift n
   genSubst _ [nuP| PExpr_String str |] = return $ PExpr_String $ mbLift str
-  genSubst _ [nuP| PExpr_Bool b |] = return $ PExpr_Bool $ mbLift b
   genSubst s [nuP| PExpr_BV factors off |] =
     foldr bvAdd (PExpr_BV [] (mbLift off)) <$>
     mapM (substBVFactor s) (mbList factors)
@@ -4521,6 +4521,9 @@ instance SubstVar s m => Substable s (PermExpr a) m where
      <*> genSubst s sh
   genSubst s [nuP| PExpr_FieldShape sh |] =
     PExpr_FieldShape <$> genSubst s sh
+  genSubst s [nuP| PExpr_ArrayShape len stride flds |] =
+    PExpr_ArrayShape <$> genSubst s len <*> return (mbLift stride)
+    <*> genSubst s flds
   genSubst s [nuP| PExpr_SeqShape sh1 sh2 |] =
     PExpr_SeqShape <$> genSubst s sh1 <*> genSubst s sh2
   genSubst s [nuP| PExpr_OrShape sh1 sh2 |] =
