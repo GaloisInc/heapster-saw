@@ -3345,6 +3345,15 @@ llvmBlockPermToByteArrayPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
 llvmBlockPermToByteArrayPerm (LLVMBlockPerm {..}) =
   llvmByteArrayPerm llvmBlockOffset llvmBlockLen llvmBlockRW llvmBlockLifetime
 
+-- | Create a @memblock(W,0,sz,emptysh)@ permission for a given size @sz@
+llvmBlockPermOfSize :: (1 <= w, KnownNat w) => Integer ->
+                       ValuePerm (LLVMPointerType w)
+llvmBlockPermOfSize sz =
+  ValPerm_Conj1 $ Perm_LLVMBlock $
+  LLVMBlockPerm { llvmBlockRW = PExpr_Write, llvmBlockLifetime = PExpr_Always,
+                  llvmBlockOffset = bvInt 0, llvmBlockLen = bvInt sz,
+                  llvmBlockShape = PExpr_EmptyShape }
+
 -- | Add an offset @off@ to an LLVM permission @p@, meaning change @p@ so that
 -- it indicates that @x+off@ has permission @p@.
 --
@@ -3501,10 +3510,7 @@ llvmFrameDeletionPerms :: (1 <= w, KnownNat w) => LLVMFramePerm w ->
 llvmFrameDeletionPerms [] = Some DistPermsNil
 llvmFrameDeletionPerms ((asLLVMOffset -> Just (x,off), sz):fperm')
   | Some del_perms <- llvmFrameDeletionPerms fperm' =
-    Some $ DistPermsCons del_perms x $ ValPerm_Conj
-    (map (llvmArrayFieldToAtomicPerm . offsetLLVMArrayField off) $
-     llvmFieldsOfSize knownNat sz)
-    -- [offsetLLVMAtomicPerm off $ llvmArrayPtrPermOfSize sz]
+    Some $ DistPermsCons del_perms x $ llvmBlockPermOfSize sz
 llvmFrameDeletionPerms _ =
   error "llvmFrameDeletionPerms: unexpected LLVM word allocated in frame"
 
@@ -3656,7 +3662,7 @@ atomicPermIsCopyable (Perm_LLVMArray
                       (LLVMArrayPerm { llvmArrayFields = fs })) =
   all (atomicPermIsCopyable . llvmArrayFieldToAtomicPerm) fs
 atomicPermIsCopyable (Perm_LLVMBlock (LLVMBlockPerm {..})) =
-  shapeIsCopyable llvmBlockRW llvmBlockShape
+  llvmBlockRW == PExpr_Read && shapeIsCopyable llvmBlockRW llvmBlockShape
 atomicPermIsCopyable (Perm_LLVMFree _) = True
 atomicPermIsCopyable (Perm_LLVMFunPtr _ _) = True
 atomicPermIsCopyable Perm_IsLLVMPtr = True
