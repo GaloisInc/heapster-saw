@@ -2752,6 +2752,7 @@ modalizeShape _ _ sh@(PExpr_EqShape _) = Just sh
 modalizeShape rw l (PExpr_PtrShape _ _ sh) =
   Just $ PExpr_PtrShape (Just rw) (Just l) sh
 modalizeShape _ _ sh@(PExpr_FieldShape _) = Just sh
+modalizeShape _ _ sh@(PExpr_ArrayShape _ _ _) = Just sh
 modalizeShape rw l (PExpr_SeqShape sh1 sh2) =
   PExpr_SeqShape <$> modalizeShape rw l sh1 <*> modalizeShape rw l sh2
 modalizeShape rw l (PExpr_OrShape sh1 sh2) =
@@ -3693,6 +3694,8 @@ shapeIsCopyable rw (PExpr_PtrShape maybe_rw' _ sh) =
   let rw' = maybe rw id maybe_rw' in
   rw' == PExpr_Read && shapeIsCopyable rw' sh
 shapeIsCopyable _ (PExpr_FieldShape (LLVMFieldShape p)) = permIsCopyable p
+shapeIsCopyable _ (PExpr_ArrayShape _ _ flds) =
+  all (\(LLVMFieldShape p) -> permIsCopyable p) flds
 shapeIsCopyable rw (PExpr_SeqShape sh1 sh2) =
   shapeIsCopyable rw sh1 && shapeIsCopyable rw sh2
 shapeIsCopyable rw (PExpr_OrShape sh1 sh2) =
@@ -3806,7 +3809,9 @@ instance FreeVars (PermExpr a) where
   freeVars (PExpr_EqShape b) = freeVars b
   freeVars (PExpr_PtrShape maybe_rw maybe_l sh) =
     NameSet.unions [freeVars maybe_rw, freeVars maybe_l, freeVars sh]
-  freeVars (PExpr_FieldShape (LLVMFieldShape p)) = freeVars p
+  freeVars (PExpr_FieldShape fld) = freeVars fld
+  freeVars (PExpr_ArrayShape len _ flds) =
+    NameSet.union (freeVars len) (freeVars flds)
   freeVars (PExpr_SeqShape sh1 sh2) =
     NameSet.union (freeVars sh1) (freeVars sh2)
   freeVars (PExpr_OrShape sh1 sh2) =
@@ -3820,6 +3825,9 @@ instance FreeVars (BVFactor w) where
 instance FreeVars (PermExprs as) where
   freeVars PExprs_Nil = NameSet.empty
   freeVars (PExprs_Cons es e) = NameSet.union (freeVars es) (freeVars e)
+
+instance FreeVars (LLVMFieldShape w) where
+  freeVars (LLVMFieldShape p) = freeVars p
 
 instance FreeVars (LifetimeFunctorArg a) where
   freeVars (LifetimeFunctorArg_RW e) = freeVars e
