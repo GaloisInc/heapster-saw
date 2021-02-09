@@ -184,6 +184,16 @@ insertNth i x xs = take i xs ++ x : drop i xs
 findMaybeIndices :: (a -> Maybe b) -> [a] -> [(Int, b)]
 findMaybeIndices f l = catMaybes $ zipWith (\i a -> (i,) <$> f a) [0 ..] l
 
+-- | Find the index of the first element of a list that returns the maximal
+-- positive value from the supplied ranking function, or return 'Nothing' if all
+-- elements have non-positive rank
+findBestIndex :: (a -> Int) -> [a] -> Maybe Int
+findBestIndex rank_f l =
+  fst $ foldl (\(best_ix,best_rank) (ix,rank) ->
+                if rank > best_rank then (Just ix, rank) else
+                  (best_ix,best_rank))
+  (Nothing, 0) (zipWith (\i a -> (i,rank_f a)) [0 ..] l)
+
 -- | Combine all elements of a list like 'foldr1' unless the list is empty, in
 -- which case return the default case
 foldr1WithDefault :: (a -> a -> a) -> a -> [a] -> a
@@ -3957,6 +3967,7 @@ instance NeededVars (AtomicPerm a) where
   neededVars (Perm_LLVMField fp) = neededVars fp
   neededVars (Perm_LLVMArray ap) = neededVars ap
   neededVars (Perm_LLVMBlock bp) = neededVars bp
+  neededVars (Perm_LLVMBlockShape _) = NameSet.empty
   neededVars p = freeVars p
 
 instance NeededVars (LLVMFieldPerm w sz) where

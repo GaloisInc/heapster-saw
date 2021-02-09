@@ -5756,20 +5756,39 @@ proveVarConjImpl x ps [nuP| [] |] =
   implPopM x (ValPerm_Conj ps) >>> introConjM x
 
 -- If there is a defined or recursive name on the right, prove it first,
--- ensuring that we only choose recursive names if there are no defined ones;
--- otherwise just choose the head of the list, i.e., i = 0
+-- ensuring that we only choose recursive names if there are no defined ones,
+-- and that, in all cases, we choose a permission that is provable with the
+-- currently-set evars
 proveVarConjImpl x ps mb_ps =
-  let maybe_i = mbLift $ fmap (\ps_r ->
-                                findIndex isDefinedConjPerm ps_r <|>
-                                findIndex isRecursiveConjPerm ps_r) mb_ps
-      i = maybe 0 id maybe_i
-      mb_p = fmap (!!i) mb_ps in
-  proveVarAtomicImpl x ps mb_p >>>
-  let mb_ps' = fmap (deleteNth i) mb_ps in
-  proveVarImpl x (fmap ValPerm_Conj mb_ps') >>>
-  (partialSubstForceM (mbMap2 (,)
-                       mb_ps' mb_p) "proveVarConjImpl") >>>= \(ps',p) ->
-  implInsertConjM x p ps' i
+  (psubstMbUnsetVars <$> getPSubst) >>>= \mbUnsetVars ->
+  case findBestIndex
+       (\mb_ap ->
+         case
+           (isProvablePerm mbUnsetVars (fmap (const x) mb_ap) (fmap
+                                                               ValPerm_Conj1
+                                                               mb_ap),
+            mbLift (fmap isDefinedConjPerm mb_ap),
+            mbLift (fmap isRecursiveConjPerm mb_ap)) of
+           (True, True, _) -> 3
+           (True, _, True) -> 2
+           (True, _, _) -> 1
+           (False, _, _) -> 0)
+       (mbList mb_ps) of
+    Just i ->
+      let mb_p = fmap (!!i) mb_ps in
+      let mb_ps' = fmap (deleteNth i) mb_ps in
+      proveVarAtomicImpl x ps mb_p >>>
+      proveVarImpl x (fmap ValPerm_Conj mb_ps') >>>
+      (partialSubstForceM (mbMap2 (,)
+                           mb_ps' mb_p) "proveVarConjImpl") >>>= \(ps',p) ->
+      implInsertConjM x p ps' i
+    Nothing ->
+      implTraceM
+      (\i ->
+        sep [PP.fillSep [PP.pretty
+             "Could not determine enough variables to prove permissions:",
+             permPretty i (fmap ValPerm_Conj mb_ps)]]) >>>=
+      implFailM
 
 
 ----------------------------------------------------------------------
