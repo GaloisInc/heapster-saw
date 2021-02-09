@@ -779,8 +779,8 @@ data SimplImpl ps_in ps_out where
 
   -- | Prove an llvmblock permission of pointer shape from a pointer:
   --
-  -- > x:[l]ptr((rw,0) |-> [l2]memblock(rw2,off,len,sh))
-  -- >   -o x:[l]memblock(rw,off,len,[l2]ptrsh(rw2,sh))
+  -- > x:[l]ptr((rw,off,w) |-> [l2]memblock(rw2,off,'llvmShapeLength'(sh),sh))
+  -- >   -o x:[l]memblock(rw,off,w/8,[l2]ptrsh(rw2,sh))
   SImpl_IntroLLVMBlockPtr ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
     Maybe (PermExpr RWModalityType) -> Maybe (PermExpr LifetimeType) ->
@@ -789,8 +789,9 @@ data SimplImpl ps_in ps_out where
 
   -- | Eliminate an llvmblock permission of pointer shape:
   --
-  -- > x:[l]memblock(rw,off,len,[l2]ptrsh(rw2,sh))
-  -- >   -o x:[l]ptr((rw,0) |-> [l2]memblock(rw2,off,len,sh))
+  -- > x:[l]memblock(rw,off,w/8,[l2]ptrsh(rw2,sh))
+  -- >   -o x:[l]ptr((rw,off,w) |->
+  -- >                 [l2]memblock(rw2,off,'llvmShapeLength'(sh),sh))
   SImpl_ElimLLVMBlockPtr ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) ->
     Maybe (PermExpr RWModalityType) -> Maybe (PermExpr LifetimeType) ->
@@ -808,7 +809,7 @@ data SimplImpl ps_in ps_out where
   -- | Eliminate a block of field shape to the corresponding field permission
   -- plus an empty memblock for the remaining @len@, which is the extra arg:
   --
-  -- > x:[l]memblock(rw,off,len,ptrsh(sz,p))
+  -- > x:[l]memblock(rw,off,len,fieldsh(sz,p))
   -- >   -o x:[l]ptr((rw,off,sz) |-> p) * [l]memblock(rw,off+sz,len-sz,emptysh)
   SImpl_ElimLLVMBlockField ::
     (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
@@ -1572,20 +1573,27 @@ simplImplIn (SImpl_IntroLLVMBlockFromEq x bp y) =
                 bp { llvmBlockShape = PExpr_EqShape $ PExpr_Var y })
   y (ValPerm_Conj1 $ Perm_LLVMBlockShape $ llvmBlockShape bp)
 simplImplIn (SImpl_IntroLLVMBlockPtr x maybe_rw2 maybe_l2 bp) =
-  let rw2 = maybe (llvmBlockRW bp) id maybe_rw2
-      l2 = maybe (llvmBlockLifetime bp) id maybe_l2 in
-  distPerms1 x
-  (ValPerm_Conj1 $ Perm_LLVMField $ LLVMFieldPerm
-   { llvmFieldRW = llvmBlockRW bp,
-     llvmFieldLifetime = llvmBlockLifetime bp,
-     llvmFieldOffset = bvInt 0,
-     llvmFieldContents =
-       ValPerm_Conj1 $ Perm_LLVMBlock (bp { llvmBlockRW = rw2,
-                                            llvmBlockLifetime = l2 }) })
+  if llvmShapeLength (llvmBlockShape bp) == Just (llvmBlockLen bp) then
+    let rw2 = maybe (llvmBlockRW bp) id maybe_rw2
+        l2 = maybe (llvmBlockLifetime bp) id maybe_l2 in
+    distPerms1 x
+    (ValPerm_Conj1 $ Perm_LLVMField $ LLVMFieldPerm
+     { llvmFieldRW = llvmBlockRW bp,
+       llvmFieldLifetime = llvmBlockLifetime bp,
+       llvmFieldOffset = bvInt 0,
+       llvmFieldContents =
+         ValPerm_Conj1 $ Perm_LLVMBlock (bp { llvmBlockRW = rw2,
+                                              llvmBlockLifetime = l2 }) })
+  else
+    error "simplImplIn: SImpl_IntroLLVMBlockPtr: incorrect length"
 simplImplIn (SImpl_ElimLLVMBlockPtr x maybe_rw2 maybe_l2 bp) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
-                bp { llvmBlockShape =
-                       PExpr_PtrShape maybe_rw2 maybe_l2 (llvmBlockShape bp) })
+  if llvmShapeLength (llvmBlockShape bp) == Just (llvmBlockLen bp) then
+    distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                  bp { llvmBlockLen = bvInt (machineWordBytes bp),
+                       llvmBlockShape =
+                         PExpr_PtrShape maybe_rw2 maybe_l2 (llvmBlockShape bp) })
+  else
+    error "simplImplIn: SImpl_ElimLLVMBlockPtr: incorrect length"
 simplImplIn (SImpl_IntroLLVMBlockField x fp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMField fp)
 simplImplIn (SImpl_ElimLLVMBlockField x fp len) =
@@ -1884,20 +1892,27 @@ simplImplOut (SImpl_ElimLLVMBlockSeqEmpty x bp) =
 simplImplOut (SImpl_IntroLLVMBlockFromEq x bp _) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplOut (SImpl_IntroLLVMBlockPtr x maybe_rw2 maybe_l2 bp) =
-  distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
-                bp { llvmBlockShape =
-                       PExpr_PtrShape maybe_rw2 maybe_l2 (llvmBlockShape bp) })
+  if llvmShapeLength (llvmBlockShape bp) == Just (llvmBlockLen bp) then
+    distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
+                  bp { llvmBlockLen = bvInt (machineWordBytes bp),
+                       llvmBlockShape =
+                         PExpr_PtrShape maybe_rw2 maybe_l2 (llvmBlockShape bp) })
+  else
+    error "simplImplOut: SImpl_IntroLLVMBlockPtr: incorrect length"
 simplImplOut (SImpl_ElimLLVMBlockPtr x maybe_rw2 maybe_l2 bp) =
-  let rw2 = maybe (llvmBlockRW bp) id maybe_rw2
-      l2 = maybe (llvmBlockLifetime bp) id maybe_l2 in
-  distPerms1 x
-  (ValPerm_Conj1 $ Perm_LLVMField $ LLVMFieldPerm
-   { llvmFieldRW = llvmBlockRW bp,
-     llvmFieldLifetime = llvmBlockLifetime bp,
-     llvmFieldOffset = bvInt 0,
-     llvmFieldContents =
-       ValPerm_Conj1 $ Perm_LLVMBlock (bp { llvmBlockRW = rw2,
-                                            llvmBlockLifetime = l2 }) })
+  if llvmShapeLength (llvmBlockShape bp) == Just (llvmBlockLen bp) then
+    let rw2 = maybe (llvmBlockRW bp) id maybe_rw2
+        l2 = maybe (llvmBlockLifetime bp) id maybe_l2 in
+    distPerms1 x
+    (ValPerm_Conj1 $ Perm_LLVMField $ LLVMFieldPerm
+     { llvmFieldRW = llvmBlockRW bp,
+       llvmFieldLifetime = llvmBlockLifetime bp,
+       llvmFieldOffset = bvInt 0,
+       llvmFieldContents =
+         ValPerm_Conj1 $ Perm_LLVMBlock (bp { llvmBlockRW = rw2,
+                                              llvmBlockLifetime = l2 }) })
+  else
+    error "simplImplOut: SImpl_ElimLLVMBlockPtr: incorrect length"
 simplImplOut (SImpl_IntroLLVMBlockField x fp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $ llvmFieldPermToBlock fp)
 simplImplOut (SImpl_ElimLLVMBlockField x fp len) =
@@ -1913,7 +1928,7 @@ simplImplOut (SImpl_IntroLLVMBlockArray x ap) =
   case llvmAtomicPermToBlock (Perm_LLVMArray ap) of
     Just bp -> distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
     Nothing ->
-      error "simplImplOut: SImpl_IntroLLVMBlockField: malformed array permission"
+      error "simplImplOut: SImpl_IntroLLVMBlockArray: malformed array permission"
 simplImplOut (SImpl_ElimLLVMBlockArray x ap) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMArray ap)
 simplImplOut (SImpl_IntroLLVMBlockSeq x bp1 len2 sh2) =
