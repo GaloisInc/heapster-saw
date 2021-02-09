@@ -22,3 +22,23 @@ Print list_is_empty__tuple_fun.
 Print list_head__tuple_fun.
 
 Print list_head_impl__tuple_fun.
+
+Print str_struct_new__tuple_fun.
+
+Lemma no_errors_str_struct_new : refinesFun str_struct_new (fun _ _ _ => noErrorsSpec).
+Proof.
+  unfold str_struct_new, str_struct_new__tuple_fun, noErrorsSpec, llvm__x2ememcpy__x2ep0i8__x2ep0i8__x2ei64, to_string_str.
+  prove_refinement.
+Qed.
+
+Definition str_struct_new_spec (len:bitvector 64) (_:unit)
+           (str:BVVec 64 len int8Trans) :
+  CompM {len' : bitvector 64
+                & (BVVec 64 len' int8Trans * (int64Trans * unit))%type} :=
+  returnM (existT (fun len' => (BVVec 64 len' int8Trans * (int64Trans * unit))%type) len (str, (existT _ len tt, tt))).
+
+Lemma str_struct_new_correct : refinesFun str_struct_new str_struct_new_spec.
+Proof.
+  unfold str_struct_new, str_struct_new__tuple_fun, noErrorsSpec, llvm__x2ememcpy__x2ep0i8__x2ep0i8__x2ei64, to_string_str.
+  prove_refinement.
+Qed.

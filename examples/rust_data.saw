@@ -7,6 +7,7 @@ env <- heapster_init_env_from_file "rust_data.sawcore" "rust_data.bc";
 
 // Integer types
 heapster_define_perm env "int64" " " "llvmptr 64" "exists x:bv 64.eq(llvmword(x))";
+heapster_define_perm env "int8" " " "llvmptr 8" "exists x:bv 8.eq(llvmword(x))";
 heapster_define_perm env "int1" " " "llvmptr 1" "exists x:bv 1.eq(llvmword(x))";
 
 // Result type
@@ -19,6 +20,13 @@ heapster_define_llvmshape env "Sum" 64 "X:llvmshape 64, Y:llvmshape 64" "(fields
 heapster_define_llvmshape env "List" 64 "L:perm(llvmptr 64),X:llvmshape 64" "(fieldsh(eq(llvmword(0)))) orsh (fieldsh(eq(llvmword(1)));X;fieldsh(L))";
 heapster_define_recursive_perm env "ListPerm" "X:llvmshape 64, Xlen:bv 64, rw:rwmodality, l:lifetime" "llvmptr 64" ["[l]memblock(rw,0,Xlen + 16,List<ListPerm<X,Xlen,rw,l>,X>)"] "\\ (X:sort 0) (_:bitvector 64) -> List X" "\\ (X:sort 0) (_:bitvector 64) -> foldListPermH X" "\\ (X:sort 0) (_:bitvector 64) -> unfoldListPermH X";
 
+// The String type
+// FIXME: a version without ptrsh
+heapster_define_llvmshape env "String" 64 "" "exsh cap:bv 64. ptrsh(arraysh(cap,1,[(8,int8<>)]));fieldsh(int64<>);fieldsh(eq(llvmword(cap)))";
+
+// FIXME: this is the correct version
+//heapster_define_llvmshape env "String" 64 "" "exsh cap:bv 64. ptrsh(arraysh(cap,1,[(8,int8<>)]));fieldsh(int64<>);fieldsh(eq(llvmword(cap)))";
+
 
 /***
  *** Assumed Functions
@@ -29,8 +37,23 @@ exchange_malloc_sym <- heapster_find_symbol env "15exchange_malloc";
 heapster_assume_fun_rename env exchange_malloc_sym "exchange_malloc" "(len:bv 64).arg0:eq(llvmword(len)),arg1:true -o ret:array(0,<len,*1,[(W,0,8) |-> true])" "\\ (len:bitvector 64) -> returnM (BVVec 64 len #()) (repeatBVVec 64 len #() ())";
 
 // memcpy
-//heapster_assume_fun env "llvm.memcpy.p0i8.p0i8.i64" "(rw:rwmodality, l1:lifetime, l2:lifetime, sh:llvmshape 64, b:llvmblock 64, len:bv 64).arg0:[l1]memblock(W,0,len,sh), arg1:[l2]memblock(rw,0,len,eqsh(b)), arg2:eq(llvmword(len))  -o  arg0:[l1]memblock(W,0,len,eqsh(b)), arg1:[l2]memblock(rw,0,len,eqsh(b))" "\\ (X:sort 0) (len:bitvector 64) (x:X) (_:#()) -> returnM (#() * #() * #()) ((),(),())";
+heapster_assume_fun env "llvm.memcpy.p0i8.p0i8.i64" "(rw:rwmodality, l1:lifetime, l2:lifetime, sh:llvmshape 64, b:llvmblock 64, len:bv 64).arg0:[l1]memblock(W,0,len,sh), arg1:[l2]memblock(rw,0,len,eqsh(b)), arg2:eq(llvmword(len))  -o  arg0:[l1]memblock(W,0,len,eqsh(b)), arg1:[l2]memblock(rw,0,len,eqsh(b))" "\\ (X:sort 0) (len:bitvector 64) (x:X) (_:#()) -> returnM (#() * #() * #()) ((),(),())";
 
+// <str as alloc::string::ToString>::to_string
+to_string_str <- heapster_find_symbol env "$LT$str$u20$as$u20$alloc..string..ToString$GT$9to_string";
+// NOTE: this is the more incorrect version, with no lifetime argument and no shapes
+heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:exists len':bv 64. ptr((W,0) |-> array(0,<len',*1,[(R,0,8) |-> int8<>])) * ptr((W,8) |-> int64<>) * ptr((W,16) |-> eq(llvmword(len')))" "\\ (len:bitvector 64) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
+
+// NOTE: this is the incorrect version, with no lifetime argument
+//heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:memblock(W,0,24,String<>)" "\\ (len:bitvector 64) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
+
+// FIXME: this is the correct version, with a lifetime argument
+//heapster_assume_fun_rename env to_string_str "to_string_str" "(ps:lowned_perm,l:lifetime,len:bv 64). l:lowned ps, arg0:[l]memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[[l](R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o l:lowned ps, arg0:[l]memblock(W,0,24,String<>)" "\\ (len:bitvector 64) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
+
+
+/***
+ *** Type-Checked Functions
+ ***/
 
 // test_result
 test_result_sym <- heapster_find_symbol env "11test_result";
@@ -53,5 +76,19 @@ heapster_typecheck_fun_rename env list_head_sym "list_head" "(rw:rwmodality).arg
 // list_head_impl
 list_head_impl_sym <- heapster_find_symbol env "14list_head_impl";
 heapster_typecheck_fun_rename env list_head_impl_sym "list_head_impl" "(rw:rwmodality).arg0:ListPerm<fieldsh(int64<>),8,rw,always> -o ret:(struct(eq(llvmword(0)),exists z:bv 64. eq(llvmword(z)))) or (struct(eq(llvmword(1)),true))";
+
+// StrStruct::new
+str_struct_new <- heapster_find_symbol env "9StrStruct3new";
+
+// FIXME: this is the simplified version, that returns ptr permissions
+heapster_typecheck_fun_rename env str_struct_new "str_struct_new" "(len:bv 64).arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:exists len':bv 64. ptr((W,16) |-> eq(llvmword(len'))) * ptr((W,0) |-> array(0,<len',*1,[(R,0,8) |-> int8<>])) * ptr((W,8) |-> int64<>)";
+
+// FIXME: this is the correct version, with the String shape
+//heapster_typecheck_fun_rename env str_struct_new "str_struct_new" "(len:bv 64).arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:memblock(W,0,24,String<>)";
+
+
+/***
+ *** Export to Coq
+ ***/
 
 heapster_export_coq env "rust_data.v";

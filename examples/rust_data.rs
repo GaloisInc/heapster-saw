@@ -18,6 +18,45 @@ pub fn bool_and_struct (xy:BoolStruct) -> bool {
     xy.fst_bool & xy.snd_bool
 }
 
+/* A struct containing 4 32-bit values, to test how structs that fit into 2
+ * 64-bit values are represented */
+pub struct FourValues(u32,u32,u32,u32);
+
+pub fn mk_four_values (x1:u32,x2:u32,x3:u32,x4:u32) -> FourValues {
+    FourValues(x1,x2,x3,x4)
+}
+
+pub extern fn mk_four_values_extern (x1:u32,x2:u32,x3:u32,x4:u32) -> FourValues {
+    FourValues(x1,x2,x3,x4)
+}
+
+pub fn four_values_proj1 (x:FourValues) -> u32 {
+    match x {
+        FourValues(x1,_,_,_) => x1
+    }
+}
+
+pub extern fn four_values_proj1_extern (x:FourValues) -> u32 {
+    match x {
+        FourValues(x1,_,_,_) => x1
+    }
+}
+
+
+/* A struct containing 5 32-bit values, to test how structs that do not quite
+ * fit into 2 64-bit values are represented */
+pub struct FiveValues(u32,u32,u32,u32,u32);
+
+pub fn mk_five_values (x1:u32,x2:u32,x3:u32,x4:u32,x5:u32) -> FiveValues {
+    FiveValues(x1,x2,x3,x4,x5)
+}
+
+pub extern fn mk_five_values_extern (x1:u32,x2:u32,x3:u32,x4:u32,x5:u32)
+                                     -> FiveValues {
+    FiveValues(x1,x2,x3,x4,x5)
+}
+
+
 /* Test if a Result is Ok or Err */
 pub fn test_result (r:&Result<u64,u64>) -> bool {
     match r {
@@ -34,12 +73,62 @@ pub enum Sum<X,Y> {
     Right (Y)
 }
 
-/* Similar to above but in an impl block */
+
+/***
+ *** Some tests for how Rust compiles functions on enums
+ ***/
+
 impl Sum<u64,u64> {
     pub fn test_sum_impl (&self) -> bool {
         match self {
             Sum::Left(_) => true,
             Sum::Right(_) => false
+        }
+    }
+
+    pub fn mk_u64_sum_left (x:u64) -> Self {
+        Sum::Left (x)
+    }
+
+    pub extern fn mk_u64_sum_left_extern (x:u64) -> Self {
+        Sum::Left (x)
+    }
+}
+
+pub fn mk_string_sum_left (x:&str) -> Sum<String,u64> {
+    Sum::Left (x.to_string())
+}
+
+pub fn mk_sum_sum_left (x:Sum<u64,u64>) -> Sum<Sum<u64,u64>,u64> {
+    Sum::Left (x)
+}
+
+pub extern fn mk_sum_sum_left_extern (x:Sum<u64,u64>) -> Sum<Sum<u64,u64>,u64> {
+    Sum::Left (x)
+}
+
+
+/* A struct containing a string */
+pub struct StrStruct(String);
+
+impl StrStruct {
+    /* Constructor for StrStruct */
+    pub fn new(name: &str) -> StrStruct {
+        StrStruct(name.to_string())
+    }
+    pub extern fn new_extern(name: &str) -> StrStruct {
+        StrStruct(name.to_string())
+    }
+
+    /* Accessor for StrStruct */
+    pub fn name(&self) -> String {
+        match self {
+            StrStruct(s) => s.to_string(),
+        }
+    }
+    pub extern fn name_extern(&self) -> String {
+        match self {
+            StrStruct(s) => s.to_string(),
         }
     }
 }
