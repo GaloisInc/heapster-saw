@@ -5279,7 +5279,8 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
                    PExpr_PtrShape maybe_rw maybe_l sh ->
                      (llvmBlockPtrAtomicPerm $
                       llvmBlockAdjustModalities maybe_rw maybe_l $
-                      bp { llvmBlockLen = fromJust $ llvmShapeLength sh }))
+                      bp { llvmBlockLen = fromJust (llvmShapeLength sh),
+                           llvmBlockShape = sh }))
           mb_bp in
     proveVarLLVMBlocks x ps psubst mb_bps (mbMap2 (:) mb_p_ptr mb_ps) >>>
 
@@ -5291,8 +5292,9 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
     -- Use the SImpl_IntroLLVMBlockPtr rule to prove the required memblock perm
     partialSubstForceM mb_bp "proveVarLLVMBlocks" >>>= \bp ->
     let PExpr_PtrShape maybe_rw maybe_l sh = llvmBlockShape bp in
+    let Just sh_len = llvmShapeLength sh in
     implSimplM Proxy (SImpl_IntroLLVMBlockPtr x maybe_rw maybe_l $
-                      bp { llvmBlockShape = sh }) >>>
+                      bp { llvmBlockLen = sh_len, llvmBlockShape = sh }) >>>
 
     -- Finally, move the memblock perm we proved back into position
     implSwapInsertConjM x (Perm_LLVMBlock bp) (deleteNth i ps') 0
@@ -5376,7 +5378,7 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
     implSplitSwapConjsM x ps' 2 >>>
 
     -- Use the SImpl_IntroLLVMBlockSeq rule combine them into one memblock perm
-    implSplitSwapConjsM x [Perm_LLVMBlock bp1, Perm_LLVMBlock bp2] 1 >>>
+    implSplitConjsM x [Perm_LLVMBlock bp1, Perm_LLVMBlock bp2] 1 >>>
     implSimplM Proxy (SImpl_IntroLLVMBlockSeq x bp1 len2 sh2) >>>
 
     -- Finally, move the memblock perm we proved back into position
