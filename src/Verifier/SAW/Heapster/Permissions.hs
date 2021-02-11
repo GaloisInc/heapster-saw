@@ -1456,6 +1456,28 @@ pattern ValPerm_True = ValPerm_Conj []
 pattern ValPerm_Conj1 :: AtomicPerm a -> ValuePerm a
 pattern ValPerm_Conj1 p = ValPerm_Conj [p]
 
+-- | The conjunction of exactly 1 field permission
+pattern ValPerm_LLVMField :: () => (a ~ LLVMPointerType w, 1 <= w, KnownNat w,
+                                    1 <= sz, KnownNat sz) =>
+                             LLVMFieldPerm w sz -> ValuePerm a
+pattern ValPerm_LLVMField fp <- ValPerm_Conj [Perm_LLVMField fp]
+  where
+    ValPerm_LLVMField fp = ValPerm_Conj [Perm_LLVMField fp]
+
+-- | The conjunction of exactly 1 array permission
+pattern ValPerm_LLVMArray :: () => (a ~ LLVMPointerType w, 1 <= w, KnownNat w) =>
+                             LLVMArrayPerm w -> ValuePerm a
+pattern ValPerm_LLVMArray ap <- ValPerm_Conj [Perm_LLVMArray ap]
+  where
+    ValPerm_LLVMArray ap = ValPerm_Conj [Perm_LLVMArray ap]
+
+-- | The conjunction of exactly 1 block permission
+pattern ValPerm_LLVMBlock :: () => (a ~ LLVMPointerType w, 1 <= w, KnownNat w) =>
+                             LLVMBlockPerm w -> ValuePerm a
+pattern ValPerm_LLVMBlock bp <- ValPerm_Conj [Perm_LLVMBlock bp]
+  where
+    ValPerm_LLVMBlock bp = ValPerm_Conj [Perm_LLVMBlock bp]
+
 -- | A sequence of value permissions
 {-
 data ValuePerms as where
@@ -2687,6 +2709,11 @@ llvmAtomicPermOffset :: AtomicPerm (LLVMPointerType w) ->
                         Maybe (PermExpr (BVType w))
 llvmAtomicPermOffset = fmap llvmBlockOffset . llvmAtomicPermToBlock
 
+-- | Get the length of an atomic permission, if it has one
+llvmAtomicPermLen :: AtomicPerm (LLVMPointerType w) ->
+                     Maybe (PermExpr (BVType w))
+llvmAtomicPermLen = fmap llvmBlockLen . llvmAtomicPermToBlock
+
 
 -- | Get the range of offsets represented by an 'LLVMBlockPerm'
 llvmBlockRange :: (1 <= w, KnownNat w) => LLVMBlockPerm w -> BVRange w
@@ -2730,23 +2757,66 @@ llvmFieldShapePermToArrayField :: (1 <= w, KnownNat w) => PermExpr RWModalityTyp
 llvmFieldShapePermToArrayField rw l off (LLVMFieldShape p) =
   (LLVMArrayField (LLVMFieldPerm rw l off p), exprLLVMTypeBytesExpr p)
 
--- | Convert an aray shape inside (i.e., with all the other components of) a
--- @memblock@ permission to an array permission
-llvmArrayShapeToPerm :: (1 <= w, KnownNat w) =>
-                        PermExpr RWModalityType -> PermExpr LifetimeType ->
-                        PermExpr (BVType w) -> PermExpr (BVType w) -> Bytes ->
-                        [LLVMFieldShape w] -> LLVMArrayPerm w
-llvmArrayShapeToPerm rw l off len stride fshs =
-  LLVMArrayPerm
-  { llvmArrayOffset = off, llvmArrayLen = len, llvmArrayStride = stride,
-    llvmArrayBorrows = [],
-    llvmArrayFields =
-      snd $
-      foldl (\(off,flds) sh ->
-              let (fld, sz) = llvmFieldShapePermToArrayField rw l off sh in
-              (bvAdd off sz, flds ++ [fld]))
-      (bvInt 0, [])
-      fshs }
+-- | Convert a @memblock@ permission with array shape to an array permission
+llvmArrayBlockToArrayPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
+                             LLVMArrayPerm w
+llvmArrayBlockToArrayPerm bp
+  | PExpr_ArrayShape len stride fshs <- llvmBlockShape bp
+  , rw <- llvmBlockRW bp
+  , l <- llvmBlockLifetime bp =
+    LLVMArrayPerm
+    { llvmArrayOffset = llvmBlockOffset bp,
+      llvmArrayLen = bvMult (toInteger stride) len,
+      llvmArrayStride = stride,
+      llvmArrayBorrows = [],
+      llvmArrayFields =
+        snd $
+        foldl (\(off,flds) sh ->
+                let (fld, sz) = llvmFieldShapePermToArrayField rw l off sh in
+                (bvAdd off sz, flds ++ [fld]))
+        (bvInt 0, [])
+        fshs }
+
+-- | Adjust the read/write and lifetime modalities of a block permission by
+-- setting those modalities that are supplied as arguments
+llvmBlockAdjustModalities :: Maybe (PermExpr RWModalityType) ->
+                             Maybe (PermExpr LifetimeType) ->
+                             LLVMBlockPerm w -> LLVMBlockPerm w
+llvmBlockAdjustModalities maybe_rw maybe_l bp =
+  let rw = maybe (llvmBlockRW bp) id maybe_rw
+      l = maybe (llvmBlockLifetime bp) id maybe_l in
+  bp { llvmBlockRW = rw, llvmBlockLifetime = l }
+
+-- | Create a field permission for a pointer to a block permission which uses
+-- the offset, read/write modality, and lifetime of the block permission; that
+-- is, return
+--
+-- > [l]ptr((rw,off) |-> [l]memblock(rw,0,len,sh))
+llvmBlockPtrFieldPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
+                         LLVMFieldPerm w w
+llvmBlockPtrFieldPerm bp =
+  LLVMFieldPerm
+  { llvmFieldRW = llvmBlockRW bp,
+    llvmFieldLifetime = llvmBlockLifetime bp,
+    llvmFieldOffset = llvmBlockOffset bp,
+    llvmFieldContents = ValPerm_LLVMBlock (bp { llvmBlockOffset = bvInt 0 }) }
+
+-- | Create a pointer atomic permission to a block permission which uses the
+-- offset, read/write modality, and lifetime of the block permission; that is,
+-- return
+--
+-- > [l]ptr((rw,off) |-> [l]memblock(rw,0,len,sh))
+llvmBlockPtrAtomicPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
+                          AtomicPerm (LLVMPointerType w)
+llvmBlockPtrAtomicPerm bp = Perm_LLVMField $ llvmBlockPtrFieldPerm bp
+
+-- | Create a pointer permission to a block permission which uses the offset,
+-- read/write modality, and lifetime of the block permission; that is, return
+--
+-- > [l]ptr((rw,off) |-> [l]memblock(rw,0,len,sh))
+llvmBlockPtrPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
+                    ValuePerm (LLVMPointerType w)
+llvmBlockPtrPerm bp = ValPerm_Conj1 $ llvmBlockPtrAtomicPerm bp
 
 -- | Add the given read/write and lifetime modalities to all top-level pointer
 -- shapes in a shape. Top-level here means we do not recurse inside pointer
@@ -2776,97 +2846,6 @@ modalizeBlockShape :: LLVMBlockPerm w -> PermExpr (LLVMShapeType w)
 modalizeBlockShape bp@(LLVMBlockPerm {..}) =
   maybe (error "modalizeBlockShape") id $
   modalizeShape llvmBlockRW llvmBlockLifetime llvmBlockShape
-
--- FIXME: don't still need unfoldLLVMBlock...?
-
--- | Unfold an @llvmblock@ permission @bp@ to a sequence of atomic permissions
--- as much as is possible; this may just be @bp@ itself if it is disjunctive or
--- existential
-unfoldLLVMBlockAtomic :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
-                         [AtomicPerm (LLVMPointerType w)]
-unfoldLLVMBlockAtomic bp
-  | ValPerm_Conj ps <- unfoldLLVMBlock bp = ps
-unfoldLLVMBlockAtomic bp = [Perm_LLVMBlock bp]
-
--- | Unfold an @llvmblock@ permission to the permission it represents as much as
--- is possible; this may just be @bp@ itself if it cannot be unfolded. A key
--- property of this function is that the SAW translation of the unfolding should
--- be the same type as that of the @llvmblock@ permission.
-unfoldLLVMBlock :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
-                   ValuePerm (LLVMPointerType w)
-
--- Empty shapes could conceivably unfold to an array of bytes; however, the
--- translation of an array of bytes is a vector of unit objects, while the
--- translation of the empty shape is empty, so we prove and eliminate empty
--- shapes separately from unfolding
-unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape = PExpr_EmptyShape }) =
-  ValPerm_Conj1 $ Perm_LLVMBlock bp
-  -- llvmByteArrayPerm llvmBlockOffset llvmBlockLen llvmBlockRW llvmBlockLifetime
-
--- Field shapes can only unfold if we know statically that the block length is
--- no greater than the field size
-unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape =
-                                      PExpr_FieldShape (LLVMFieldShape p), ..})
-  | sz_expr <- exprLLVMTypeBytesExpr p
-  , bvLeq sz_expr llvmBlockLen =
-    ValPerm_Conj
-    [Perm_LLVMField $ LLVMFieldPerm {
-        llvmFieldRW = llvmBlockRW,
-        llvmFieldLifetime = llvmBlockLifetime,
-        llvmFieldOffset = llvmBlockOffset,
-        llvmFieldContents = p },
-     Perm_LLVMBlock (bp { llvmBlockShape = PExpr_EmptyShape,
-                          llvmBlockOffset = bvAdd llvmBlockOffset sz_expr,
-                          llvmBlockLen = bvSub llvmBlockLen sz_expr })
-     {-
-     llvmByteArrayArrayPerm
-       (bvAdd llvmBlockOffset sz_expr)
-       (bvSub llvmBlockLen sz_expr)
-       llvmBlockRW
-       llvmBlockLifetime -}]
-
--- Array shapes can only unfold if we know statically that the block length is
--- no greater than the array length
-unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape =
-                                      PExpr_ArrayShape len stride fshs, ..})
-  | bvLeq len llvmBlockLen
-  , BVRepr (w :: NatRepr w) <- exprType len =
-    ValPerm_Conj
-    [Perm_LLVMArray (llvmArrayShapeToPerm llvmBlockRW llvmBlockLifetime
-                     llvmBlockOffset len stride fshs),
-     Perm_LLVMBlock (bp { llvmBlockShape = PExpr_EmptyShape,
-                          llvmBlockOffset = bvAdd llvmBlockOffset len,
-                          llvmBlockLen = bvSub llvmBlockLen len })]
-
-
--- Sequence shapes sh1;sh2 can only be unfolded if we have an expression for the
--- length of sh1
-unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape = PExpr_SeqShape sh1 sh2, .. })
-  | Just len <- llvmShapeLength sh1 =
-    ValPerm_Conj
-    (unfoldLLVMBlockAtomic (bp { llvmBlockShape = sh1 }) ++
-     unfoldLLVMBlockAtomic (bp { llvmBlockShape = sh2,
-                                 llvmBlockOffset = bvAdd llvmBlockOffset len,
-                                 llvmBlockLen = bvSub llvmBlockLen len }))
-
--- Disjunctive shapes unfold to disjunctive permissions
-unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape = PExpr_OrShape sh1 sh2 }) =
-  ValPerm_Or
-  (unfoldLLVMBlock $ bp { llvmBlockShape = sh1 })
-  (unfoldLLVMBlock $ bp { llvmBlockShape = sh2 })
-
--- Existential shapes unfold to or existential permissions
-unfoldLLVMBlock bp@(LLVMBlockPerm { llvmBlockShape = PExpr_ExShape mb_sh }) =
-  ValPerm_Exists $
-  fmap (\sh -> unfoldLLVMBlock $ bp { llvmBlockShape = sh }) mb_sh
-
--- In all other cases, a block permission unfolds to itself
-unfoldLLVMBlock bp = ValPerm_Conj1 $ Perm_LLVMBlock bp
-
-
--- | Test if an llvmblock permission unfolds to something other than itself
-canUnfoldLLVMBlock :: (1 <= w, KnownNat w) => LLVMBlockPerm w -> Bool
-canUnfoldLLVMBlock bp = unfoldLLVMBlock bp /= ValPerm_Conj1 (Perm_LLVMBlock bp)
 
 -- | Convert an array cell number @cell@ to the byte offset for that cell, given
 -- by @stride * cell + field_num@

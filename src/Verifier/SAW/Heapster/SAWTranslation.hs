@@ -2589,13 +2589,13 @@ translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockOr _ _ _ |] m =
        (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockEx _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockEx _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockEx _ _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockEx _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
      withPermStackM id
        (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [transTerm1 ptrans])
