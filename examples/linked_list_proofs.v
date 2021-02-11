@@ -57,7 +57,7 @@ Arguments is_elem_fun /.
 Lemma is_elem_fun_ref : refinesFun is_elem is_elem_fun.
 Proof.
   unfold is_elem, is_elem__tuple_fun, is_elem_fun, List_def.
-  time "is_elem_fun_ref" prove_refinement with NoRewrite.
+  time "is_elem_fun_ref" prove_refinement.
 Qed.
 
 Lemma is_elem_fun_ref_manual : refinesFun is_elem is_elem_fun.
@@ -100,9 +100,7 @@ Qed.
 Lemma is_elem_pure_fun_ref_manual : @refinesFun is_elem_lrt is_elem_fun (fun x l => returnM (is_elem_pure x l)).
 Proof.
   unfold is_elem_fun, is_elem_pure.
-  apply refinesFunStep; intro x.
-  apply refinesFunStep; intro l.
-  induction l; simpl.
+  intros x l; induction l; simpl.
   - reflexivity.
   - apply refinesM_if_l; intro H; rewrite H.
     + reflexivity.

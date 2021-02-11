@@ -15,19 +15,19 @@ Import SAWCorePrelude.
 
 Ltac listF_destruct l l' := destruct l as [| ? l'].
 Ltac listF_induction l l' := induction l as [| ? l'].
+Ltac listF_simpl := simpl unfoldListF in *; simpl foldListF in *; simpl ListF__rec in *.
 
 Hint Extern 2 (IntroArg ?n (eq (unfoldListF _ _ ?l)
                                (SAWCorePrelude.Left _ _ _)) _) =>
-  doInduction (listF_destruct) l : refinesFun.
+  doDestruction (listF_destruct) (listF_simpl) l : refinesFun.
 Hint Extern 2 (IntroArg ?n (eq (unfoldListF _ _ ?l)
                                (SAWCorePrelude.Right _ _ _)) _) =>
-  doInduction (listF_destruct) l : refinesFun.
+  doDestruction (listF_destruct) (listF_simpl) l : refinesFun.
 
 Hint Extern 9 (ListF__rec _ _ _ _ _ ?l |= _) =>
-  doInduction (listF_induction) l : refinesFun.
+  doInduction (listF_induction) (listF_simpl) l : refinesFun.
 Hint Extern 9 (_ |= ListF__rec _ _ _ _ _ ?l) =>
-  doInduction (listF_induction) l : refinesFun.
-
+  doInduction (listF_induction) (listF_simpl) l : refinesFun.
 
 Lemma transListF_NilF_r a b l x : transListF a b l (NilF a b x) = putListF a unit b l x.
 Proof. induction l; eauto. Qed.
@@ -53,7 +53,7 @@ Proof.
   unfold noErrorsSpec.
   time "no_errors_incr_list" prove_refinement.
   (* All but one of the remaining goals are taken care of by assumptions we have in scope: *)
-  all: try assumption.
+  all: try destruct e_assuming0 as [?e_assuming ?e_assuming]; try assumption.
   (* We just have to show this case is impossible by virtue of our loop invariant: *)
   apply isBvult_to_isBvule_suc in e_assuming0.
   apply bvule_msb_l in e_assuming0; try assumption.
