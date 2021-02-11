@@ -2776,6 +2776,8 @@ llvmArrayBlockToArrayPerm bp
                 (bvAdd off sz, flds ++ [fld]))
         (bvInt 0, [])
         fshs }
+llvmArrayBlockToArrayPerm _ =
+  error "llvmArrayBlockToArrayPerm: block perm not of array shape"
 
 -- | Adjust the read/write and lifetime modalities of a block permission by
 -- setting those modalities that are supplied as arguments
