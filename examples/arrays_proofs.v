@@ -117,8 +117,7 @@ Proof.
   * rewrite <- isBvult_to_isBvslt_pos in e_assuming4; try assumption.
     rewrite e_assuming4 in e_maybe.
     discriminate e_maybe.
-  * rewrite e_assuming5.
-    apply isBvsle_suc_r, isBvslt_to_isBvsle.
+  * rewrite <- isBvsle_suc_r; try assumption.
     rewrite e_assuming6, e_assuming2.
     reflexivity.
   * apply isBvslt_to_isBvsle_suc, isBvult_to_isBvslt_pos; assumption.
