@@ -3830,6 +3830,7 @@ implIntroLLVMBlock x p@(Perm_LLVMArray ap)
 implIntroLLVMBlock x (Perm_LLVMBlock bp) = greturn ()
 implIntroLLVMBlock _ _ = error "implIntroLLVMBlock: malformed permission"
 
+
 -- | Eliminate a @memblock@ permission on the top of the stack, if possible,
 -- otherwise fail
 implElimLLVMBlock :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
@@ -3838,6 +3839,13 @@ implElimLLVMBlock :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                      (ps :> LLVMPointerType w) ()
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape = PExpr_EmptyShape }) =
   implSimplM Proxy (SImpl_ElimLLVMBlockToBytes x bp)
+implElimLLVMBlock x bp
+  | Just sh_len <- llvmShapeLength $ llvmBlockShape bp
+  , bvLt sh_len $ llvmBlockLen bp =
+    -- If the "natural" length of the shape of a memblock permission is smaller
+    -- than its actual length, sequence with the empty shape and then eliminate
+    implSimplM Proxy (SImpl_IntroLLVMBlockSeqEmpty x bp) >>>
+    implSimplM Proxy (SImpl_ElimLLVMBlockSeq x bp PExpr_EmptyShape)
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
                                           PExpr_EqShape (PExpr_Var y) }) =
   -- For shape eqsh(y), prove y:block(sh) for some sh, apply
@@ -3851,11 +3859,12 @@ implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
   implSimplM Proxy (SImpl_IntroLLVMBlockFromEq x bp' y) >>>
   implElimLLVMBlock x bp'
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
-                                          PExpr_PtrShape maybe_rw maybe_l sh }) =
-  let bp' = bp { llvmBlockShape = sh } in
-  implSimplM Proxy (SImpl_ElimLLVMBlockPtr x maybe_rw maybe_l bp')
-  -- NOTE: no need to recurse in this case, because we have a normal pointer
-  -- permission on x (even though its contents are a memblock permission)
+                                          PExpr_PtrShape maybe_rw maybe_l sh })
+  | Just len <- llvmShapeLength sh =
+    let bp' = bp { llvmBlockLen = len, llvmBlockShape = sh } in
+    implSimplM Proxy (SImpl_ElimLLVMBlockPtr x maybe_rw maybe_l bp')
+    -- NOTE: no need to recurse in this case, because we have a normal pointer
+    -- permission on x (even though its contents are a memblock permission)
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
                                         PExpr_FieldShape (LLVMFieldShape p)
                                       , ..}) =
@@ -3866,8 +3875,11 @@ implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
                                      llvmFieldContents = p })
                     llvmBlockLen)
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
+                                          PExpr_ArrayShape _ _ _ }) =
+  implSimplM Proxy (SImpl_ElimLLVMBlockArray x $ llvmArrayBlockToArrayPerm bp)
+implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
                                           PExpr_SeqShape sh1 sh2, ..})
-  | len1 <- llvmShapeLength sh1 =
+  | isJust $ llvmShapeLength sh1 =
     implSimplM Proxy (SImpl_ElimLLVMBlockSeq
                       x (bp { llvmBlockShape = sh1 }) sh2)
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
@@ -4724,6 +4736,15 @@ proveVarLLVMArrayH x _ ps ap
   | bvEq (llvmArrayLen ap) (bvInt 0) =
     implPopM x (ValPerm_Conj ps) >>> implLLVMArrayEmpty x ap
 
+-- If the offset of our array permission is inside a memblock permission,
+-- eliminate that memblock permission and try again
+proveVarLLVMArrayH x _ ps ap
+  | Just i <- findIndex (isLLVMAtomicPermWithOffset $ llvmArrayOffset ap) ps
+  , Perm_LLVMBlock bp <- ps!!i =
+    implGetPopConjM x ps i >>> implElimPopLLVMBlock x bp >>>
+    mbVarsM (ValPerm_LLVMArray ap) >>>= \mb_p ->
+    proveVarImpl x mb_p
+
 -- If the required array permission ap is equivalent to a sequence of field
 -- permissions that we have all of, then prove it by proving those field
 -- permissions. This is accomplished by first proving the array with the
@@ -5258,8 +5279,7 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
                               isJust (llvmPermContainsOffset off p)
                             _ -> False) ps
   , Perm_LLVMBlock bp <- ps!!i =
-    implGetPopConjM x ps i >>> implElimLLVMBlock x bp >>>
-    (getTopDistPerm x >>>= recombinePerm x) >>>
+    implGetPopConjM x ps i >>> implElimPopLLVMBlock x bp >>>
     proveVarImpl x (fmap ValPerm_Conj $
                     mbMap2 (++)
                     (fmap (map Perm_LLVMBlock) $ mbMap2 (:) mb_bp mb_bps)
