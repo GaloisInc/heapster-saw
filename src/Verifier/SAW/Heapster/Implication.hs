@@ -5783,7 +5783,7 @@ proveVarAtomicImpl x ps p@[nuP| Perm_Struct mb_str_ps |]
   , Perm_Struct str_ps <- ps!!i =
     getDistPerms >>>= \perms ->
     implGetPopConjM x ps i >>> implElimStructAllFields x str_ps >>>= \ys ->
-    proveVarsImplAppend (fmap (valuePermsToDistPerms ys) mb_str_ps) >>>
+    proveVarsImplAppendH (fmap (valuePermsToDistPerms ys) mb_str_ps) >>>
     partialSubstForceM mb_str_ps "proveVarAtomicImpl" >>>= \str_ps' ->
     implMoveUpM (distPermsSnoc perms) str_ps' x MNil >>>
     implIntroStructAllFields x
@@ -5865,16 +5865,13 @@ proveVarConjImpl x ps mb_ps =
   (psubstMbUnsetVars <$> getPSubst) >>>= \mbUnsetVars ->
   case findBestIndex
        (\mb_ap ->
-         case
-           (isProvablePerm mbUnsetVars (fmap (const x) mb_ap) (fmap
-                                                               ValPerm_Conj1
-                                                               mb_ap),
-            mbLift (fmap isDefinedConjPerm mb_ap),
-            mbLift (fmap isRecursiveConjPerm mb_ap)) of
-           (True, True, _) -> 3
-           (True, _, True) -> 2
-           (True, _, _) -> 1
-           (False, _, _) -> 0)
+         case isProvablePerm mbUnsetVars (fmap (const x) mb_ap)
+              (fmap ValPerm_Conj1 mb_ap) of
+           rank | rank > 0 && mbLift (fmap isDefinedConjPerm mb_ap) ->
+             isProvablePermMax + 2
+           rank | rank > 0 && mbLift (fmap isRecursiveConjPerm mb_ap) ->
+             isProvablePermMax + 1
+           rank -> rank)
        (mbList mb_ps) of
     Just i ->
       let mb_p = fmap (!!i) mb_ps in
@@ -6260,20 +6257,31 @@ extExDistPermsSplit (ExDistPermsSplit ps1 mb_x mb_p ps2) y p' =
   mbMap2 DistPermsCons ps2 y `mbApply` p'
 
 
+-- | The maximum priority returned by 'isProvablePerm'
+isProvablePermMax :: Int
+isProvablePermMax = 2
+
 -- | Test if a permission is of a form where 'proveExVarImpl' will succeed,
--- given the current set of existential variables whose values have not been set
+-- given the current set of existential variables whose values have not been
+-- set. Return a priority for the permission, where higher priorities are proved
+-- first and 0 means it cannot be proved.
 isProvablePerm :: Mb vars (NameSet CrucibleType) ->
-                  Mb vars (ExprVar a) -> Mb vars (ValuePerm a) -> Bool
+                  Mb vars (ExprVar a) -> Mb vars (ValuePerm a) -> Int
+
+-- Lifetime permissions can always be proved, but we want to prove them after
+-- any other permissions that might depend on them, so they get priority 1
+isProvablePerm _ _ [nuP| ValPerm_Conj mb_ps |]
+  | mbLift $ fmap (any (isJust . isLifetimePerm)) mb_ps = 1
 
 -- If x and all the needed vars in p are set, we can prove x:p
 isProvablePerm mbUnsetVars mb_x mb_p
   | mbNeeded <- mbMap2 (\x p -> NameSet.insert x $ neededVars p) mb_x mb_p
   , mbLift $ mbMap2 (\s1 s2 ->
                       NameSet.null $
-                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars = True
+                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars = 2
 
 -- Special case: an LLVMFrame permission can always be proved
-isProvablePerm _ _ [nuP| ValPerm_Conj [Perm_LLVMFrame _] |] = True
+isProvablePerm _ _ [nuP| ValPerm_Conj [Perm_LLVMFrame _] |] = 2
 
 -- Special case: a variable permission X can always be proved when the variable
 -- x and the offset are known, since X is either a free variable, so we can
@@ -6283,31 +6291,50 @@ isProvablePerm mbUnsetVars mb_x [nuP| ValPerm_Var _ mb_off |]
   | mbNeeded <- mbMap2 (\x off -> NameSet.insert x $ freeVars off) mb_x mb_off
   , mbLift $ mbMap2 (\s1 s2 ->
                       NameSet.null $
-                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars = True
+                      NameSet.intersection s1 s2) mbNeeded mbUnsetVars = 2
 
--- Otherwise we fail
-isProvablePerm _ _ _ = False
+-- Otherwise we cannot prove the permission, so we return priority 0
+isProvablePerm _ _ _ = 0
 
 
--- | Find a permission in the supplied list where 'proveExVarImpl' will succeed,
--- given the current set of existential variables whose values have not been
--- set, and split out that permission from the list
+-- | Choose the next permission in the supplied list to try to prove by picking
+-- one with maximal priority, as returned by 'isProvablePerm', and return its
+-- location in the supplied list along with its priority. We assume that the
+-- list is non-empty.
 findProvablePerm :: Mb vars (NameSet CrucibleType) -> ExDistPerms vars ps ->
-                    Maybe (ExDistPermsSplit vars ps)
+                    (Int, ExDistPermsSplit vars ps)
 
--- First try to recurse on the LHS and see if we can prove a permission there
-findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |]
-  | Just ret <- findProvablePerm mbUnsetVars ps =
-    Just $ extExDistPermsSplit ret mb_x mb_p
+findProvablePerm _ [nuP| DistPermsNil |] =
+  error "findProvablePerm: empty list"
 
--- If not, test if we can prove x
-findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |]
-  | isProvablePerm mbUnsetVars mb_x mb_p =
-    Just $ ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p)
+findProvablePerm mbUnsetVars [nuP| DistPermsCons ps_nil@DistPermsNil mb_x mb_p |] =
+  (isProvablePerm mbUnsetVars mb_x mb_p,
+   ExDistPermsSplit ps_nil mb_x mb_p ps_nil)
 
--- Otherwise we fail
-findProvablePerm _ _ = Nothing
+findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |] =
+  let (best_rank,best) = findProvablePerm mbUnsetVars ps in
+  let rank = isProvablePerm mbUnsetVars mb_x mb_p in
+  if rank > best_rank then
+    (rank, ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p))
+  else
+    (best_rank, extExDistPermsSplit best mb_x mb_p)
 
+
+-- | Find all existential lifetime variables that are assigned permissions in an
+-- 'ExDistPerms' list, and instantiate them with fresh lifetimes
+instantiateLifetimeVars :: NuMatchingAny1 r => PartialSubst vars ->
+                           ExDistPerms vars ps -> ImplM vars s r ps_in ps_in ()
+instantiateLifetimeVars _ [nuP| DistPermsNil |] = greturn ()
+instantiateLifetimeVars psubst [nuP| DistPermsCons mb_ps mb_x
+                                   (ValPerm_Conj1 mb_p) |]
+  | Just Refl <- mbLift $ fmap isLifetimePerm mb_p
+  , Left memb <- mbNameBoundP mb_x
+  , Nothing <- psubstLookup psubst memb =
+    implBeginLifetimeM >>>= \l ->
+    setVarM memb (PExpr_Var l) >>>
+    instantiateLifetimeVars (psubstSet memb (PExpr_Var l) psubst) mb_ps
+instantiateLifetimeVars psubst [nuP| DistPermsCons mb_ps _ _ |] =
+  instantiateLifetimeVars psubst mb_ps
 
 
 -- | Prove a list of existentially-quantified distinguished permissions, adding
@@ -6318,16 +6345,26 @@ findProvablePerm _ _ = Nothing
 -- fresh variable and @e@ is the expression used to instantiate @x@.
 proveVarsImplAppend :: NuMatchingAny1 r => ExDistPerms vars ps ->
                        ImplM vars s r (ps_in :++: ps) ps_in ()
-proveVarsImplAppend [nuP| DistPermsNil |] = return ()
 proveVarsImplAppend ps =
+  getPSubst >>>= \psubst ->
+  instantiateLifetimeVars psubst ps >>>
+  proveVarsImplAppendH ps
+
+-- | The main loop for 'proveVarsImplAppend', which assumes all initial setup
+-- work, like beginning all the appropriate lifetimes, has been performed
+proveVarsImplAppendH :: NuMatchingAny1 r => ExDistPerms vars ps ->
+                        ImplM vars s r (ps_in :++: ps) ps_in ()
+
+proveVarsImplAppendH [nuP| DistPermsNil |] = return ()
+proveVarsImplAppendH ps =
   getPSubst >>>= \psubst ->
   getPerms >>>= \cur_perms ->
   case findProvablePerm (psubstMbUnsetVars psubst) ps of
-    Just (ExDistPermsSplit ps1 mb_x mb_p ps2) ->
+    ((> 0) -> True, ExDistPermsSplit ps1 mb_x mb_p ps2) ->
       proveExVarImpl psubst mb_x mb_p >>>= \x ->
-      proveVarsImplAppend (mbMap2 appendDistPerms ps1 ps2) >>>
+      proveVarsImplAppendH (mbMap2 appendDistPerms ps1 ps2) >>>
       implMoveUpM cur_perms (mbDistPermsToProxies ps1) x (mbDistPermsToProxies ps2)
-    Nothing ->
+    _ ->
       implTraceM
       (\i ->
         sep [PP.fillSep [PP.pretty

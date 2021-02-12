@@ -2958,6 +2958,13 @@ translatePermImpl1 _ [nuP| Impl1_ElimLLVMBlockToEq _ mb_bp |] mb_impls =
          typeTransF tp_trans2 [transTerm1 ptrans])
        m
 
+translatePermImpl1 _ [nuP| Impl1_BeginLifetime |] mb_impls =
+  translatePermImplUnary mb_impls $ \m ->
+  inExtTransM ETrans_Lifetime $
+  do tp_trans <-
+       translateClosed $ ValPerm_Conj1 $ Perm_LOwned PExpr_LOwnedPermNil
+     withPermStackM (:>: Member_Base) (:>: typeTransF tp_trans []) m
+
 -- If e1 and e2 are already equal, short-circuit the proof construction and then
 -- elimination
 translatePermImpl1 _ [nuP| Impl1_TryProveBVProp

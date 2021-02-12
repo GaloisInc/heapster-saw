@@ -2490,6 +2490,12 @@ isLLVMBlockPerm :: AtomicPerm a -> Bool
 isLLVMBlockPerm (Perm_LLVMBlock _) = True
 isLLVMBlockPerm _ = False
 
+-- | Test if an 'AtomicPerm' is a lifetime permission
+isLifetimePerm :: AtomicPerm a -> Maybe (a :~: LifetimeType)
+isLifetimePerm (Perm_LOwned _) = Just Refl
+isLifetimePerm (Perm_LCurrent _) = Just Refl
+isLifetimePerm _ = Nothing
+
 -- | Test if an 'AtomicPerm' is a struct permission
 isStructPerm :: AtomicPerm a -> Bool
 isStructPerm (Perm_Struct _) = True
@@ -3949,6 +3955,7 @@ instance NeededVars (AtomicPerm a) where
   neededVars (Perm_LLVMArray ap) = neededVars ap
   neededVars (Perm_LLVMBlock bp) = neededVars bp
   neededVars (Perm_LLVMBlockShape _) = NameSet.empty
+  neededVars (Perm_LOwned _) = NameSet.empty
   neededVars p = freeVars p
 
 instance NeededVars (LLVMFieldPerm w sz) where
@@ -5886,6 +5893,7 @@ instance GetDetVarsClauses (AtomicPerm a) where
   getDetVarsClauses (Perm_LLVMBlockShape sh) = getDetVarsClauses sh
   getDetVarsClauses (Perm_LLVMFrame frame_perm) =
     concat <$> mapM (getDetVarsClauses . fst) frame_perm
+  getDetVarsClauses (Perm_LOwned ps) = getDetVarsClauses ps
   getDetVarsClauses _ = return []
 
 instance (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
