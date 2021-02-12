@@ -1,0 +1,31 @@
+
+module rust_lifetimes where
+
+import Prelude;
+
+-- The translation of the permission int8<>
+int8Trans : sort 0;
+int8Trans = Sigma (bitvector 8) (\ (_:bitvector 8) -> #());
+
+-- The translation of the permission int64<>
+int64Trans : sort 0;
+int64Trans = Sigma (bitvector 64) (\ (_:bitvector 64) -> #());
+
+-- Build an int64Trans from a 64-bit bitvector
+mkInt64Trans : bitvector 64 -> int64Trans;
+mkInt64Trans bv = exists (bitvector 64) (\ (_:bitvector 64) -> #()) bv ();
+
+unfoldListPermH : (a:sort 0) -> List a -> Either #() (#() * a * List a);
+unfoldListPermH a l =
+  List__rec a (\ (_:List a) -> Either #() (#() * a * List a))
+  (Left #() (#() * a * List a) ())
+  (\ (x:a) (l:List a) (_:Either #() (#() * a * List a)) ->
+     Right #() (#() * a * List a) ((), x, l))
+  l;
+
+foldListPermH : (a:sort 0) -> Either #() (#() * a * List a) -> List a;
+foldListPermH a =
+  either #() (#() * a * List a) (List a)
+         (\ (_ : #()) -> Nil a)
+         (\ (tup : (#() * a * List a)) ->
+            Cons a tup.(2).(1) tup.(2).(2));

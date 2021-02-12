@@ -42,3 +42,9 @@ rust_data.bc: rust_data.rs
 
 rust_data.v: rust_data.bc rust_data.saw
 	$(SAW) rust_data.saw
+
+rust_lifetimes.bc: rust_lifetimes.rs
+	rustc --crate-type=lib --emit=llvm-bc rust_lifetimes.rs
+
+rust_lifetimes.v: rust_lifetimes.bc rust_lifetimes.saw
+	$(SAW) rust_lifetimes.saw
