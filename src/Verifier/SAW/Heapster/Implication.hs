@@ -5783,7 +5783,7 @@ proveVarAtomicImpl x ps p@[nuP| Perm_Struct mb_str_ps |]
   , Perm_Struct str_ps <- ps!!i =
     getDistPerms >>>= \perms ->
     implGetPopConjM x ps i >>> implElimStructAllFields x str_ps >>>= \ys ->
-    proveVarsImplAppendH (fmap (valuePermsToDistPerms ys) mb_str_ps) >>>
+    proveVarsImplAppend (fmap (valuePermsToDistPerms ys) mb_str_ps) >>>
     partialSubstForceM mb_str_ps "proveVarAtomicImpl" >>>= \str_ps' ->
     implMoveUpM (distPermsSnoc perms) str_ps' x MNil >>>
     implIntroStructAllFields x
@@ -6322,19 +6322,25 @@ findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |] =
 
 -- | Find all existential lifetime variables that are assigned permissions in an
 -- 'ExDistPerms' list, and instantiate them with fresh lifetimes
-instantiateLifetimeVars :: NuMatchingAny1 r => PartialSubst vars ->
-                           ExDistPerms vars ps -> ImplM vars s r ps_in ps_in ()
-instantiateLifetimeVars _ [nuP| DistPermsNil |] = greturn ()
-instantiateLifetimeVars psubst [nuP| DistPermsCons mb_ps mb_x
+instantiateLifetimeVars :: NuMatchingAny1 r => ExDistPerms vars ps ->
+                           ImplM vars s r ps_in ps_in ()
+instantiateLifetimeVars mb_ps =
+  getPSubst >>>= \psubst -> instantiateLifetimeVars' psubst mb_ps
+
+-- | The main loop for 'instantiateLifetimeVars'
+instantiateLifetimeVars' :: NuMatchingAny1 r => PartialSubst vars ->
+                            ExDistPerms vars ps -> ImplM vars s r ps_in ps_in ()
+instantiateLifetimeVars' _ [nuP| DistPermsNil |] = greturn ()
+instantiateLifetimeVars' psubst [nuP| DistPermsCons mb_ps mb_x
                                    (ValPerm_Conj1 mb_p) |]
   | Just Refl <- mbLift $ fmap isLifetimePerm mb_p
   , Left memb <- mbNameBoundP mb_x
   , Nothing <- psubstLookup psubst memb =
     implBeginLifetimeM >>>= \l ->
     setVarM memb (PExpr_Var l) >>>
-    instantiateLifetimeVars (psubstSet memb (PExpr_Var l) psubst) mb_ps
-instantiateLifetimeVars psubst [nuP| DistPermsCons mb_ps _ _ |] =
-  instantiateLifetimeVars psubst mb_ps
+    instantiateLifetimeVars' (psubstSet memb (PExpr_Var l) psubst) mb_ps
+instantiateLifetimeVars' psubst [nuP| DistPermsCons mb_ps _ _ |] =
+  instantiateLifetimeVars' psubst mb_ps
 
 
 -- | Prove a list of existentially-quantified distinguished permissions, adding
@@ -6345,24 +6351,14 @@ instantiateLifetimeVars psubst [nuP| DistPermsCons mb_ps _ _ |] =
 -- fresh variable and @e@ is the expression used to instantiate @x@.
 proveVarsImplAppend :: NuMatchingAny1 r => ExDistPerms vars ps ->
                        ImplM vars s r (ps_in :++: ps) ps_in ()
+proveVarsImplAppend [nuP| DistPermsNil |] = return ()
 proveVarsImplAppend ps =
-  getPSubst >>>= \psubst ->
-  instantiateLifetimeVars psubst ps >>>
-  proveVarsImplAppendH ps
-
--- | The main loop for 'proveVarsImplAppend', which assumes all initial setup
--- work, like beginning all the appropriate lifetimes, has been performed
-proveVarsImplAppendH :: NuMatchingAny1 r => ExDistPerms vars ps ->
-                        ImplM vars s r (ps_in :++: ps) ps_in ()
-
-proveVarsImplAppendH [nuP| DistPermsNil |] = return ()
-proveVarsImplAppendH ps =
   getPSubst >>>= \psubst ->
   getPerms >>>= \cur_perms ->
   case findProvablePerm (psubstMbUnsetVars psubst) ps of
     ((> 0) -> True, ExDistPermsSplit ps1 mb_x mb_p ps2) ->
       proveExVarImpl psubst mb_x mb_p >>>= \x ->
-      proveVarsImplAppendH (mbMap2 appendDistPerms ps1 ps2) >>>
+      proveVarsImplAppend (mbMap2 appendDistPerms ps1 ps2) >>>
       implMoveUpM cur_perms (mbDistPermsToProxies ps1) x (mbDistPermsToProxies ps2)
     _ ->
       implTraceM

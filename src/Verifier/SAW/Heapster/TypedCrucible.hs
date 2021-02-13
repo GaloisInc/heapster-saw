@@ -1854,6 +1854,8 @@ stmtRecombinePerms =
   embedImplM TypedImplStmt emptyCruCtx (recombinePerms dist_perms) >>>
   greturn ()
 
+-- | Prove a sequence of permissions over some existential variables and append
+-- them to the top of the stack
 stmtProvePermsAppend :: PermCheckExtC ext =>
                         CruCtx vars -> ExDistPerms vars ps ->
                         StmtPermCheckM ext cblocks blocks tops ret
@@ -1864,22 +1866,31 @@ stmtProvePermsAppend vars ps =
   embedImplWithErrM TypedImplStmt vars err (proveVarsImplAppend ps) >>>= \(s,_) ->
   greturn s
 
-stmtProvePerms' :: PermCheckExtC ext =>
-                   CruCtx vars -> ExDistPerms vars ps ->
-                   StmtPermCheckM ext cblocks blocks tops ret
-                   ps RNil (PermSubst vars)
-stmtProvePerms' vars ps =
+-- | Prove a sequence of permissions over some existential variables in the
+-- context of the empty permission stack
+stmtProvePerms :: PermCheckExtC ext =>
+                  CruCtx vars -> ExDistPerms vars ps ->
+                  StmtPermCheckM ext cblocks blocks tops ret
+                  ps RNil (PermSubst vars)
+stmtProvePerms vars ps =
   permGetPPInfo >>>= \ppInfo ->
   let err = pretty "Could not prove" <+> permPretty ppInfo ps in
   embedImplWithErrM TypedImplStmt vars err (proveVarsImpl ps) >>>= \(s,_) ->
   greturn s
 
--- | Prove permissions in the context of type-checking statements
-stmtProvePerms :: (PermCheckExtC ext, KnownRepr CruCtx vars) =>
-                  ExDistPerms vars ps ->
-                  StmtPermCheckM ext cblocks blocks tops ret
-                  ps RNil (PermSubst vars)
-stmtProvePerms ps = stmtProvePerms' knownRepr ps
+-- | Prove a sequence of permissions over some existential variables in the
+-- context of the empty permission stack, but first generate fresh lifetimes for
+-- any existential lifetime variables
+stmtProvePermsFreshLs :: PermCheckExtC ext =>
+                         CruCtx vars -> ExDistPerms vars ps ->
+                         StmtPermCheckM ext cblocks blocks tops ret
+                         ps RNil (PermSubst vars)
+stmtProvePermsFreshLs vars ps =
+  permGetPPInfo >>>= \ppInfo ->
+  let err = pretty "Could not prove" <+> permPretty ppInfo ps in
+  embedImplWithErrM TypedImplStmt vars err (instantiateLifetimeVars ps >>>
+                                            proveVarsImpl ps) >>>= \(s,_) ->
+  greturn s
 
 -- | Prove a single permission in the context of type-checking statements
 stmtProvePerm :: (PermCheckExtC ext, KnownRepr CruCtx vars) =>
@@ -2335,8 +2346,8 @@ tcEmitStmt' ctx loc (CallHandle ret freg_untyped args_ctx args_untyped) =
     SomeFunPerm fun_perm ->
       let ghosts = funPermGhosts fun_perm
           args_ns = typedRegsToVars args in
-      (stmtProvePerms' ghosts (funPermExDistIns
-                               fun_perm args_ns)) >>>= \gsubst ->
+      (stmtProvePermsFreshLs ghosts (funPermExDistIns
+                                     fun_perm args_ns)) >>>= \gsubst ->
       let gexprs = exprsOfSubst gsubst in
       (RL.split ghosts args_ns <$>
        distPermsVars <$> view distPerms <$> stCurPerms <$> gget)
@@ -2685,7 +2696,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PopFrame _) =
   case (maybe_fp, fp_perm) of
     (Just fp, ValPerm_Conj [Perm_LLVMFrame fperms])
       | Some del_perms <- llvmFrameDeletionPerms fperms ->
-        stmtProvePerms (distPermsToExDistPerms del_perms) >>>= \_ ->
+        stmtProvePerms knownRepr (distPermsToExDistPerms del_perms) >>>= \_ ->
         stmtProvePerm fp (emptyMb fp_perm) >>>= \_ ->
         emitLLVMStmt knownRepr loc (TypedLLVMDeleteFrame
                                     fp fperms del_perms) >>>= \y ->
