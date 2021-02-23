@@ -2986,7 +2986,8 @@ implApplyImpl1 impl1 mb_ms =
         implSetNameTypes ns ctx >>>
         f ns)
 
--- | Emit debugging output using the current 'PPInfo'
+-- | Emit debugging output using the current 'PPInfo' if the 'implStateDoTrace'
+-- flag is set
 implTraceM :: (PPInfo -> PP.Doc ann) -> ImplM vars s r ps ps String
 implTraceM f =
   (view implStateDoTrace <$> gget) >>>= \do_trace ->
@@ -2994,6 +2995,16 @@ implTraceM f =
   let str = renderDoc doc in fn do_trace str (greturn str)
   where fn True  = trace
         fn False = const id
+
+-- | Run an 'ImplM' computation with 'implStateDoTrace' temporarily disabled
+implWithoutTracingM :: ImplM vars s r ps_out ps_in a ->
+                       ImplM vars s r ps_out ps_in a
+implWithoutTracingM m =
+  (view implStateDoTrace <$> gget) >>>= \saved ->
+  gmodify (set implStateDoTrace False) >>>
+  m >>>= \a ->
+  gmodify (set implStateDoTrace saved) >>>
+  greturn a
 
 -- | Terminate the current proof branch with a failure
 implFailM :: NuMatchingAny1 r => String -> ImplM vars s r ps_any ps a

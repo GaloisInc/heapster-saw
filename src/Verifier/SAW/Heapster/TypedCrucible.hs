@@ -1786,11 +1786,11 @@ data WithImplState vars a ps ps' =
 
 -- | Call 'runImplM' in the 'PermCheckM' monad
 pcmRunImplM ::
-  Bool -> CruCtx vars -> Doc () -> (a -> r ps_out) ->
+  CruCtx vars -> Doc () -> (a -> r ps_out) ->
   ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in a ->
   PermCheckM ext cblocks blocks tops ret r' ps_in r' ps_in
   (AnnotPermImpl r ps_in)
-pcmRunImplM do_trace vars fail_doc retF impl_m =
+pcmRunImplM vars fail_doc retF impl_m =
   getErrorPrefix >>>= \err_prefix ->
   (stCurPerms <$> gget) >>>= \perms_in ->
   (stPermEnv <$> top_get) >>>= \env ->
@@ -1798,7 +1798,7 @@ pcmRunImplM do_trace vars fail_doc retF impl_m =
   (stVarTypes <$> gget) >>>= \varTypes ->
   liftPermCheckM $ lift $
   fmap (AnnotPermImpl (renderDoc (err_prefix <> line <> fail_doc))) $
-  runImplM vars perms_in env ppInfo "" do_trace varTypes
+  runImplM vars perms_in env ppInfo "" True varTypes
   (return . retF . fst) impl_m
 
 -- | Embed an implication computation inside a permission-checking computation,
@@ -3019,7 +3019,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
 
       -- Prove the required input perms for this entrypoint and return the
       -- jump target inside an implication
-      pcmRunImplM True ghosts
+      pcmRunImplM ghosts
       (pretty "Could not prove: " <+> permPretty (stPPInfo st) ex_perms)
       (\(ghost_exprs, perms) ->
         TypedJumpTarget entryID Proxy (mkCruCtx args_tps) ghost_exprs perms)
@@ -3112,8 +3112,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           let target_t =
                 TypedJumpTarget entryID Proxy (mkCruCtx args_tps)
                 (namesToExprs ghosts_ns) perms_in in
-          pcmRunImplM False CruCtxNil mempty (const target_t) $
-          implPushOrReflMultiM perms_in
+          pcmRunImplM CruCtxNil mempty (const target_t) $
+          implWithoutTracingM $ implPushOrReflMultiM perms_in
 
 
 -- | Type-check a termination statement
@@ -3149,7 +3149,7 @@ tcTermStmt ctx (Return reg) =
         varSubst (singletonVarSubst $ typedRegVar treg) mb_ret_perms
       err = pretty "Could not prove:" <+> permPretty (stPPInfo st) req_perms in
   TypedReturn <$>
-  pcmRunImplM True CruCtxNil err
+  pcmRunImplM CruCtxNil err
   (const $ TypedRet Refl (stRetType top_st) treg mb_ret_perms)
   (proveVarsImpl $ distPermsToExDistPerms req_perms)
 tcTermStmt ctx (ErrorStmt reg) =
