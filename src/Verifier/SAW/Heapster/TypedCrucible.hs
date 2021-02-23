@@ -1464,24 +1464,24 @@ lookupBlockInfo memb =
 
 -- | Create a new entry ID for the given block with the given ghost variables
 getNextEntryID :: Member blocks args -> CruCtx ghosts ->
-                  PermCheckM ext cblocks blocks tops ret r ps r ps
+                  InnerPermCheckM ext cblocks blocks tops ret
                   (TypedEntryID blocks args ghosts)
 getNextEntryID memb ghosts =
-  (stBlockInfo <$> top_get) >>>= \blkMap ->
+  (stBlockInfo <$> ask) >>= \blkMap ->
   let max_ix =
         foldr max 0 $ map entryInfoIndex $
         blockInfoEntries $ RL.get memb blkMap in
-  greturn (TypedEntryID memb ghosts (max_ix + 1))
+  return (TypedEntryID memb ghosts (max_ix + 1))
 
 -- | Insert a new block entry point
 insNewBlockEntry :: Member blocks args -> CruCtx args -> CruCtx ghosts ->
                     Closed (MbValuePerms ((tops :++: args) :++: ghosts)) ->
-                    PermCheckM ext cblocks blocks tops ret r ps r ps
+                    InnerPermCheckM ext cblocks blocks tops ret
                     (TypedEntryID blocks args ghosts)
 insNewBlockEntry memb args ghosts perms_in =
   do entryID <- getNextEntryID memb ghosts
-     topCtx <- stTopCtx <$> top_get
-     liftPermCheckM $ modify $ \cl_st ->
+     topCtx <- stTopCtx <$> ask
+     modify $ \cl_st ->
        $(mkClosed [| \st delta ->
                     st { innerBlockInfo =
                            innerBlockInfo st ++ [delta] } |]) `clApply`
@@ -1783,6 +1783,18 @@ stmtFailM msg =
 -- not have to use 'traversePermImpl' after we run an 'ImplM'
 data WithImplState vars a ps ps' =
   WithImplState a (ImplState vars ps) (ps' :~: ps)
+
+-- | Run a 'PermCheckM' computation in a locally-scoped way, where all effects
+-- are restricted to the local computation. This is essentially a form of the
+-- @reset@ operation of delimited continuations.
+--
+-- FIXME: this is not used, but is still here in case we need it later...
+localPermCheckM ::
+  PermCheckM ext cblocks blocks tops ret r_out ps_out r_in ps_in r_out ->
+  PermCheckM ext cblocks blocks tops ret r' ps_in r' ps_in r_in
+localPermCheckM m =
+  gget >>>= \st ->
+  liftPermCheckM (runGenContM (runGenStateT m st) (return . fst))
 
 -- | Call 'runImplM' in the 'PermCheckM' monad
 pcmRunImplM ::
@@ -2832,9 +2844,9 @@ tcEmitLLVMStmt _arch _ctx _loc _stmt =
 
 -- | Simplify and drop permissions @p@ on variable @x@ so they only depend on
 -- the determined variables given in the supplied list
-simplify1PermForDetVars :: PermCheckExtC ext =>
+simplify1PermForDetVars :: NuMatchingAny1 r =>
                            NameSet CrucibleType -> Name a -> ValuePerm a ->
-                           StmtPermCheckM ext cblocks blocks tops ret RNil RNil ()
+                           ImplM vars s r RNil RNil ()
 
 -- If the permissions contain an array permission with undetermined borrows,
 -- return those undetermined borrows if possible
@@ -2857,9 +2869,10 @@ simplify1PermForDetVars det_vars x (ValPerm_Conj ps)
                                  (freeVars b) det_vars) (llvmArrayBorrows ap)
   , ret_p <- ValPerm_Conj1 $ Perm_LLVMArray $ ap { llvmArrayBorrows =
                                                      det_borrows } =
-    stmtProvePerm (TypedReg x) (emptyMb ret_p) >>>
-    stmtRecombinePerms >>>
-    getVarPerm x >>>= \new_p ->
+    mbVarsM ret_p >>>= \mb_ret_p ->
+    proveVarImpl x mb_ret_p >>>
+    (getTopDistPerm x >>>= recombinePerm x) >>>
+    getPerm x >>>= \new_p ->
     simplify1PermForDetVars det_vars x new_p
 
 -- If none of the above cases match but p has only determined free variables,
@@ -2869,19 +2882,18 @@ simplify1PermForDetVars det_vars _ p
 
 -- Otherwise, drop p, because it is not determined
 simplify1PermForDetVars det_vars x p =
-  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+  implPushM x p >>> implDropM x p
 
 
 -- | Simplify and drop permissions so they only depend on the determined
 -- variables given in the supplied list
-simplifyPermsForDetVars ::
-  PermCheckExtC ext => [SomeName CrucibleType] ->
-  StmtPermCheckM ext cblocks blocks tops ret RNil RNil ()
+simplifyPermsForDetVars :: NuMatchingAny1 r => [SomeName CrucibleType] ->
+                           ImplM vars s r RNil RNil ()
 simplifyPermsForDetVars det_vars_list =
   let det_vars = NameSet.fromList det_vars_list in
-  (permSetVars <$> stCurPerms <$> gget) >>>= \vars ->
-  mapM_ (\(SomeName x) -> getVarPerm x >>>=
-                          simplify1PermForDetVars det_vars x) vars
+  (permSetVars <$> getPerms) >>>= \vars ->
+  mapM_ (\(SomeName x) ->
+          getPerm x >>>= simplify1PermForDetVars det_vars x) vars
 
 
 -- | If @x@ has permission @eq(llvmword e)@ where @e@ is not a needed variable
@@ -2892,8 +2904,8 @@ simplifyPermsForDetVars det_vars_list =
 -- permissions @ptr((rw,off) |-> p)@ to the permission @ptr((rw,off) |-> eq(y))@
 -- for fresh variable @y@ and generalizing unneeded word equalities for @y@.
 generalizeUnneededEqPerms1 ::
-  PermCheckExtC ext => NameSet CrucibleType -> Name a -> ValuePerm a ->
-  StmtPermCheckM ext cblocks blocks tops ret ps ps ()
+  NuMatchingAny1 r => NameSet CrucibleType -> Name a -> ValuePerm a ->
+  ImplM vars s r ps ps ()
 
 -- For x:eq(y) for needed variable y, do nothing
 generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_Var y))
@@ -2908,9 +2920,9 @@ generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_LLVMWord e))
   , NameSet.member y needed_vars = greturn ()
 generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
   let mb_eq = nu $ \z -> ValPerm_Eq $ PExpr_LLVMWord $ PExpr_Var z in
-  stmtEmbedImplM (implPushM x p >>>
-                  introExistsM x e mb_eq >>>
-                  implPopM x (ValPerm_Exists mb_eq))
+  implPushM x p >>>
+  introExistsM x e mb_eq >>>
+  implPopM x (ValPerm_Exists mb_eq)
 
 -- Similarly, for x:eq(y &+ off) for needed variable y, do nothing
 generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_LLVMOffset y _))
@@ -2918,11 +2930,11 @@ generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_LLVMOffset y _))
 
 -- For x:eq(e) where e is a literal, just drop the eq(e) permission
 generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq PExpr_Unit) =
-  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+  implPushM x p >>> implDropM x p
 generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_Nat _)) =
-  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+  implPushM x p >>> implDropM x p
 generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_Bool _)) =
-  stmtEmbedImplM (implPushM x p >>> implDropM x p)
+  implPushM x p >>> implDropM x p
 
 -- If x:p1 * ... * pn, generalize the contents of field permissions in the pis
 generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Conj ps)
@@ -2933,24 +2945,22 @@ generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Conj ps)
   , (case y_p of
         ValPerm_Eq (PExpr_Var _) -> False
         _ -> True) =
-    stmtEmbedImplM
-    (implPushM x p >>> implExtractConjM x ps i >>>
-     implPopM x (ValPerm_Conj ps') >>>
-     implElimLLVMFieldContentsM x fp >>>= \y ->
-     let fp' = fp { llvmFieldContents = ValPerm_Eq (PExpr_Var y) } in
-     implPushM x (ValPerm_Conj ps') >>>
-     implInsertConjM x (Perm_LLVMField fp') ps' i >>>
-     implPopM x (ValPerm_Conj (take i ps' ++ Perm_LLVMField fp' : drop i ps')) >>>
-     greturn y) >>>= \y ->
+    implPushM x p >>> implExtractConjM x ps i >>>
+    implPopM x (ValPerm_Conj ps') >>>
+    implElimLLVMFieldContentsM x fp >>>= \y ->
+    let fp' = fp { llvmFieldContents = ValPerm_Eq (PExpr_Var y) } in
+    implPushM x (ValPerm_Conj ps') >>>
+    implInsertConjM x (Perm_LLVMField fp') ps' i >>>
+    implPopM x (ValPerm_Conj (take i ps' ++ Perm_LLVMField fp' : drop i ps')) >>>
+    greturn y >>>= \y ->
     generalizeUnneededEqPerms1 needed_vars y y_p
 generalizeUnneededEqPerms1 _ _ _ = greturn ()
 
 -- | Find all permissions of the form @x:eq(llvmword e)@ other than those where
 -- @e@ is a needed variable, and replace them with @x:exists z.eq(llvmword z)@
-generalizeUnneededEqPerms ::
-  PermCheckExtC ext => StmtPermCheckM ext cblocks blocks tops ret ps ps ()
+generalizeUnneededEqPerms :: NuMatchingAny1 r => ImplM vars s r ps ps ()
 generalizeUnneededEqPerms =
-  (permSetAllVarPerms <$> stCurPerms <$> gget) >>>= \(Some var_perms) ->
+  (permSetAllVarPerms <$> getPerms) >>>= \(Some var_perms) ->
   let needed_vars = neededVars var_perms in
   foldDistPerms (\m x p ->
                   m >>> generalizeUnneededEqPerms1 needed_vars x p)
@@ -3045,13 +3055,15 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
 
       -- Step 2: Simplify and drop permissions so they do not depend on
       -- undetermined variables
-      simplifyPermsForDetVars det_vars >>>
+      embedImplM TypedImplStmt emptyCruCtx (simplifyPermsForDetVars det_vars) >>>
 
       -- Step 3: if gen_perms_hint is set, generalize any permissions of the
       -- form eq(llvmword e) to exists z.eq(llvmword z) as long as they do not
       -- determine a variable that we need, i.e., as long as they are not of the
       -- form eq(llvmword x) for a variable x that we need
-      (if gen_perms_hint then generalizeUnneededEqPerms else greturn ()) >>>
+      (if gen_perms_hint then
+         snd <$> embedImplM TypedImplStmt emptyCruCtx generalizeUnneededEqPerms
+       else greturn ()) >>>
 
       -- Step 4: Compute the ghost variables for the target block as those
       -- variables whose values are determined by the permissions on the top and
@@ -3101,7 +3113,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           -- Step 6: insert a new block entrypoint that has all the permissions
           -- we constructed above as input permissions
           getVarTypes ghosts_ns >>>= \ghosts_tps ->
-          (insNewBlockEntry
+          (liftPermCheckM $ insNewBlockEntry
            memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
 
           -- Step 6: return a TypedJumpTarget inside a PermImpl that proves all
