@@ -5947,7 +5947,7 @@ determinedVars top_perms vars =
          if det_vars == [] then return [] else
            (det_vars ++) <$> determinedVarsForGraph graph
 
-         -- If the LHS of a clause has become determined but its RHS is not, return
+    -- If the LHS of a clause has become determined but its RHS is not, return
     -- its RHS, otherwise return nothing
     determinedVarsForClause :: DetVarsClause ->
                                State (NameSet CrucibleType) [SomeName CrucibleType]
