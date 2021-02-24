@@ -1478,6 +1478,20 @@ pattern ValPerm_LLVMBlock bp <- ValPerm_Conj [Perm_LLVMBlock bp]
   where
     ValPerm_LLVMBlock bp = ValPerm_Conj [Perm_LLVMBlock bp]
 
+-- | A single @lowned@ permission
+pattern ValPerm_LOwned :: () => (a ~ LifetimeType) =>
+                          PermExpr LOwnedPermType -> ValuePerm a
+pattern ValPerm_LOwned ps <- ValPerm_Conj [Perm_LOwned ps]
+  where
+    ValPerm_LOwned ps = ValPerm_Conj [Perm_LOwned ps]
+
+-- | A single @lcurrent@ permission
+pattern ValPerm_LCurrent :: () => (a ~ LifetimeType) =>
+                            PermExpr LifetimeType -> ValuePerm a
+pattern ValPerm_LCurrent l <- ValPerm_Conj [Perm_LCurrent l]
+  where
+    ValPerm_LCurrent l = ValPerm_Conj [Perm_LCurrent l]
+
 -- | A sequence of value permissions
 {-
 data ValuePerms as where
@@ -2033,6 +2047,15 @@ eqDistPerms ns exprs =
 trueDistPerms :: RAssign Name ps -> DistPerms ps
 trueDistPerms MNil = DistPermsNil
 trueDistPerms (ns :>: n) = DistPermsCons (trueDistPerms ns) n ValPerm_True
+
+-- | Build the permission and the variable it applies to that is needed to prove
+-- that @l@ is current during @l2@. If @l@ is @always@, this holds vacuously, so
+-- return the permission @l2:true@, and otherwise, if @l@ is a variable, return
+-- @l:[l2]lcurrent@.
+lcurrentPerm :: PermExpr LifetimeType -> ExprVar LifetimeType ->
+                (ExprVar LifetimeType, ValuePerm LifetimeType)
+lcurrentPerm PExpr_Always l2 = (l2, ValPerm_True)
+lcurrentPerm (PExpr_Var l) l2 = (l, ValPerm_LCurrent $ PExpr_Var l2)
 
 -- | A special-purpose 'DistPerms' that specifies a list of permissions needed
 -- to prove that a lifetime is current

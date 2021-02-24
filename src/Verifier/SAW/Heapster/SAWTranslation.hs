@@ -2158,32 +2158,6 @@ translateSimplImpl _ [nuP| SImpl_IntroLLVMFieldContents x _ mb_fld |] m =
     pctx :>: PTrans_Conj [APTrans_LLVMField mb_fld ptrans])
   m
 
-translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeCurrent _ mb_fld _ mb_l |] m =
-  withPermStackM RL.tail
-  (\(pctx :>: ptrans :>: _) ->
-    let (_,ptrans') =
-          unPTransLLVMField
-          "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent"
-          knownNat ptrans in
-    pctx :>: PTrans_Conj [APTrans_LLVMField
-                          (mbMap2 (\fp l -> fp { llvmFieldLifetime = l })
-                           mb_fld mb_l)
-                          ptrans'])
-  m
-
-translateSimplImpl _ [nuP| SImpl_LLVMFieldLifetimeAlways _ mb_fld mb_l |] m =
-  withPermStackM id
-  (\(pctx :>: ptrans) ->
-    let (_,ptrans') =
-          unPTransLLVMField
-          "translateSimplImpl: SImpl_LLVMFieldLifetimeCurrent"
-          knownNat ptrans in
-    pctx :>: PTrans_Conj [APTrans_LLVMField
-                          (mbMap2 (\fp l -> fp { llvmFieldLifetime = l })
-                           mb_fld mb_l)
-                          ptrans'])
-  m
-
 translateSimplImpl _ [nuP| SImpl_DemoteLLVMFieldWrite _ _ |] m =
   withPermStackM id
   (\(pctx :>: ptrans) ->
@@ -2442,6 +2416,16 @@ translateSimplImpl _ simpl@[nuP| SImpl_SubsumeLifetime _ _ _ _ |] m =
          -- permissions of SImplSubsumeLifetime are all lifetime permissions, so
          -- we can just pass the empty list of terms
          RL.append pctx (typeTransF pctx_out_trans []))
+       m
+
+translateSimplImpl _ simpl@[nuP| SImpl_WeakenLifetime _ _ _ _ |] m =
+  do pctx_out_trans <- translate $ fmap simplImplOut simpl
+     withPermStackM RL.tail
+       (\(pctx :>: ptrans_x :>: _) ->
+         -- NOTE: lifetime permissions have no term translations, so we can
+         -- construct the output PermTransCtx by just passing the terms in
+         -- ptrans_x to pctx_out_trans
+         RL.append pctx (typeTransF pctx_out_trans $ transTerms ptrans_x))
        m
 
 translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime _ _ ps_in ps_out |] m =
