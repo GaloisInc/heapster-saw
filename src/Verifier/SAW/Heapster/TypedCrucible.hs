@@ -3110,6 +3110,10 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           implTraceM (\i ->
                        pretty ("tcJumpTarget " ++ show blkID ++ " (unvisited)") <>
                        (if gen_perms_hint then pretty "(gen)" else emptyDoc) <> line <>
+                       (case permSetAllVarPerms orig_cur_perms of
+                           Some all_perms ->
+                             pretty "Current perms:" <+> permPretty i all_perms)
+                       <> line <>
                        pretty "Determined vars:"<+>
                        list (map (permPretty i) det_vars) <> line <>
                        pretty "Input perms:" <+>
