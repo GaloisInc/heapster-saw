@@ -1813,6 +1813,23 @@ pcmRunImplM vars fail_doc retF impl_m =
   runImplM vars perms_in env ppInfo "" True varTypes
   (return . retF . fst) impl_m
 
+-- | Call 'runImplImplM' in the 'PermCheckM' monad
+pcmRunImplImplM ::
+  CruCtx vars -> Doc () ->
+  ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in (PermImpl
+                                                                   r ps_out) ->
+  PermCheckM ext cblocks blocks tops ret r' ps_in r' ps_in
+  (AnnotPermImpl r ps_in)
+pcmRunImplImplM vars fail_doc impl_m =
+  getErrorPrefix >>>= \err_prefix ->
+  (stCurPerms <$> gget) >>>= \perms_in ->
+  (stPermEnv <$> top_get) >>>= \env ->
+  (stPPInfo <$> gget) >>>= \ppInfo ->
+  (stVarTypes <$> gget) >>>= \varTypes ->
+  liftPermCheckM $ lift $
+  fmap (AnnotPermImpl (renderDoc (err_prefix <> line <> fail_doc))) $
+  runImplImplM vars perms_in env ppInfo "" True varTypes impl_m
+
 -- | Embed an implication computation inside a permission-checking computation,
 -- also supplying an overall error message for failures
 embedImplWithErrM ::
@@ -3042,6 +3059,15 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
     -- as input
     Nothing ->
 
+      -- Step 0: run all of the following steps inside a local ImplM
+      -- computation, which we run in order to get out an AnnotPermImpl. This
+      -- ensures that any simplifications or other changes to permissions that
+      -- are performed by this computation are kept inside this local scope,
+      -- which in turn is necessary so that when we type-check a condition
+      -- branch instruction (Br), the simplifications of each branch do not
+      -- affect each other.
+      pcmRunImplImplM CruCtxNil mempty $
+
       -- Step 1: Compute the variables whose values are determined by the
       -- permissions on the top and normal arguments as the starting point for
       -- figuring out our ghost variables. The determined variables are the only
@@ -3055,23 +3081,22 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
 
       -- Step 2: Simplify and drop permissions so they do not depend on
       -- undetermined variables
-      embedImplM TypedImplStmt emptyCruCtx (simplifyPermsForDetVars det_vars) >>>
+      simplifyPermsForDetVars det_vars >>>
 
       -- Step 3: if gen_perms_hint is set, generalize any permissions of the
       -- form eq(llvmword e) to exists z.eq(llvmword z) as long as they do not
       -- determine a variable that we need, i.e., as long as they are not of the
       -- form eq(llvmword x) for a variable x that we need
-      (if gen_perms_hint then
-         snd <$> embedImplM TypedImplStmt emptyCruCtx generalizeUnneededEqPerms
-       else greturn ()) >>>
+      (if gen_perms_hint then generalizeUnneededEqPerms else greturn ()) >>>
 
       -- Step 4: Compute the ghost variables for the target block as those
       -- variables whose values are determined by the permissions on the top and
       -- normal arguments after our above simplifications, adding in the
       -- extension-specific variables as well
-      (stCurPerms <$> gget) >>>= \cur_perms ->
+      getPerms >>>= \cur_perms ->
       case namesListToNames $ determinedVars cur_perms tops_args_ext_ns of
         Some ghosts_ns' ->
+          localImplM $
           let ghosts_ns = RL.append ext_ns ghosts_ns'
               tops_perms = varPermsMulti tops_ns cur_perms
               tops_set = NameSet.fromList $ namesToNamesList tops_ns
@@ -3082,7 +3107,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
                                       else cur_perms ^. varPerm n) args_ns
               perms_in = appendDistPerms (appendDistPerms
                                           tops_perms args_perms) ghosts_perms in
-          stmtTraceM (\i ->
+          implTraceM (\i ->
                        pretty ("tcJumpTarget " ++ show blkID ++ " (unvisited)") <>
                        (if gen_perms_hint then pretty "(gen)" else emptyDoc) <> line <>
                        pretty "Determined vars:"<+>
@@ -3102,7 +3127,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
               Nothing
                 | Some orig_det_vars <- namesListToNames det_vars
                 , orig_perms <- varPermsMulti orig_det_vars orig_cur_perms ->
-                  stmtTraceM
+                  implTraceM
                   (\i ->
                     pretty ("tcJumpTarget: unexpected free variable in perms_in:\n"
                             ++ renderDoc (permPretty i perms_in)
@@ -3112,8 +3137,8 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
 
           -- Step 6: insert a new block entrypoint that has all the permissions
           -- we constructed above as input permissions
-          getVarTypes ghosts_ns >>>= \ghosts_tps ->
-          (liftPermCheckM $ insNewBlockEntry
+          implGetVarTypes ghosts_ns >>>= \ghosts_tps ->
+          (liftGenStateContM $ flip runReaderT top_st $ insNewBlockEntry
            memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
 
           -- Step 6: return a TypedJumpTarget inside a PermImpl that proves all
@@ -3121,11 +3146,10 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           -- copying the existing permissions into the current distinguished
           -- perms, except for the eq permissions for real arguments, which are
           -- proved by reflexivity.
-          let target_t =
-                TypedJumpTarget entryID Proxy (mkCruCtx args_tps)
-                (namesToExprs ghosts_ns) perms_in in
-          pcmRunImplM CruCtxNil mempty (const target_t) $
-          implWithoutTracingM $ implPushOrReflMultiM perms_in
+          implWithoutTracingM (implPushOrReflMultiM perms_in) >>>
+          greturn (PermImpl_Done $
+                   TypedJumpTarget entryID Proxy (mkCruCtx args_tps)
+                   (namesToExprs ghosts_ns) perms_in)
 
 
 -- | Type-check a termination statement

@@ -2706,6 +2706,18 @@ runImplM vars perms env ppInfo fail_prefix do_trace nameTypes k m =
                                fail_prefix do_trace nameTypes))
   (\as -> PermImpl_Done <$> k as)
 
+-- | Run an 'ImplM' computation that returns a 'PermImpl', by inserting that
+-- 'PermImpl' inside of the larger 'PermImpl' that is built up by the 'ImplM'
+-- computation.
+runImplImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
+                String -> Bool -> NameMap TypeRepr ->
+                ImplM vars s r ps_out ps_in (PermImpl r ps_out) ->
+                State (Closed s) (PermImpl r ps_in)
+runImplImplM vars perms env ppInfo fail_prefix do_trace nameTypes m =
+  runGenContM (runGenStateT m (mkImplState vars perms env ppInfo
+                               fail_prefix do_trace nameTypes))
+  (return . fst)
+
 -- | Embed a sub-computation in a name-binding inside another 'ImplM'
 -- computation, throwing away any state from that sub-computation and returning
 -- a 'PermImpl' inside a name-binding
@@ -2722,6 +2734,18 @@ embedMbImplM mb_ps_in mb_m =
          (view implStateFailPrefix s) (view implStateDoTrace s)
          (view implStateNameTypes s) (return . fst) m)
       mb_ps_in mb_m)
+
+-- | Run an 'ImplM' computation in a locally-scoped way, where all effects
+-- are restricted to the local computation. This is essentially a form of the
+-- @reset@ operation of delimited continuations.
+--
+-- FIXME: figure out a more general @reset@ combinator...
+localImplM ::
+  ImplM vars s r ps_out ps_in (PermImpl r ps_out) ->
+  ImplM vars s r ps_in ps_in (PermImpl r ps_in)
+localImplM m =
+  gget >>>= \st ->
+  gcaptureCC $ \k -> runGenContM (runGenStateT m st) (return . fst) >>= k
 
 -- | Look up the type of an existential variable
 getExVarType :: Member vars tp -> ImplM vars s r ps ps (TypeRepr tp)
@@ -2929,6 +2953,12 @@ implGetVarType n =
       implTraceM (\i -> pretty "Could not find type for variable:" <+>
                         permPretty i n) >>>
       error "implGetVarType"
+
+-- | Look up the types of a list of free variables
+implGetVarTypes :: RAssign Name a -> ImplM vars s r ps ps (CruCtx a)
+implGetVarTypes MNil = greturn CruCtxNil
+implGetVarTypes (xs :>: x) =
+  CruCtxCons <$> implGetVarTypes xs <*> implGetVarType x
 
 -- | Find the first variable of a specific type
 implFindVarOfType :: TypeRepr a -> ImplM vars s r ps ps (Maybe (Name a))
