@@ -4654,43 +4654,12 @@ extractNeededLLVMFieldPerm x ap@(Perm_LLVMField fp) _ _ mb_fp
 
 -- If proving x:[l1]ptr((rw,off) |-> p) |- x:[l2]ptr((R,off') |-> p') for rw not
 -- equal to R (i.e., equal to W or to a variable), demote rw to R and copy it
---
--- FIXME HERE: before demoting, split the lifetime of the input permission if l2
--- /= l1 and we have an lowned permission for l2, and then demote to read and
--- copy the read permission as in the R |- R case above
 extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' _ mb_fp
   | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
                                                   fmap llvmFieldSize mb_fp)
   , PExpr_Read /= llvmFieldRW fp
   , [nuP| PExpr_Read |] <- fmap llvmFieldRW mb_fp
-  = partialSubstForceM (fmap llvmFieldLifetime mb_fp)
-    "extractNeededLLVMFieldPerm" >>>= \l2 ->
-    -- NOTE: we could allow existential lifetimes on the RHS by just adding some
-    -- more cases here
-    {-
-    (case l2 of
-        PExpr_Var l2_var ->
-          getPerm l2_var >>>= \l2_perm ->
-          (case l2_perm of
-              ValPerm_Conj [Perm_LOwned ps] ->
-                implPushM l2_var l2_perm >>>
-                implSplitLifetimeM x (ValPerm_Conj1 p) l2_var >>>
-                implPopM l2_var (ValPerm_Conj
-                                 [Perm_LOwned
-                                  (PExpr_PermListCons (PExpr_Var x)
-                                   (ValPerm_Conj1 p) ps)]) >>>
-                greturn (fp { llvmFieldLifetime = l2 })
-              l_p ->
-                implTraceM (\i ->
-                             sep [ pretty "No lowned perm for" <+> permPretty i l2
-                                   <> comma
-                                 , pretty "instead found" <+> permPretty i l_p
-                                   <> comma
-                                 , pretty "so we must demote the RW on"
-                                   <> permPretty i x]) >>>
-                greturn fp)
-        _ -> greturn fp) >>>= \fp' -> -}
-    let fp' = fp in
+  = let fp' = fp in
     implSimplM Proxy (SImpl_DemoteLLVMFieldWrite x fp') >>>
     let fp'' = fp' { llvmFieldRW = PExpr_Read } in
     implCopyConjM x [Perm_LLVMField fp''] 0 >>>
