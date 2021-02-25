@@ -296,6 +296,12 @@ permPrettyString info a = renderDoc $ permPretty info a
 tracePretty :: Doc ann -> a -> a
 tracePretty doc = trace (renderDoc doc)
 
+-- | Pretty-print a comma-separated list using 'fillSep'
+ppCommaSep :: [Doc ann] -> Doc ann
+ppCommaSep [] = mempty
+ppCommaSep ds =
+  align $ fillSep (map (<> comma) (take (length ds - 1) ds) ++ [last ds])
+
 instance (PermPretty a, PermPretty b) => PermPretty (a,b) where
   permPrettyM (a,b) = tupled <$> sequence [permPrettyM a, permPrettyM b]
 
@@ -330,12 +336,8 @@ instance PermPretty (SomeName Type) where
   permPrettyM (SomeName x) = permPrettyM x
 
 instance PermPrettyF f => PermPretty (RAssign f ctx) where
-  permPrettyM MNil = return mempty
-  permPrettyM (MNil :>: x) = permPrettyMF x
-  permPrettyM (xs :>: x) =
-    do pp_xs <- permPrettyM xs
-       pp_x <- permPrettyMF x
-       return (pp_xs <> comma <+> pp_x)
+  permPrettyM xs =
+    ppCommaSep <$> sequence (RL.mapToList permPrettyMF xs)
 
 instance PermPretty (TypeRepr a) where
   permPrettyM UnitRepr = return $ pretty "unit"
@@ -354,9 +356,7 @@ instance PermPretty (TypeRepr a) where
     return (pretty "llvmblock" <+> pretty (intValue w))
   permPrettyM LOwnedPermRepr = return $ pretty "lowned_perm"
   permPrettyM (StructRepr flds) =
-    (pretty "struct" <+>) <$> parens <$>
-    foldrMFC (\tp rest ->
-               (<> (comma <+> rest)) <$> permPrettyM tp) mempty flds
+    (pretty "struct" <+>) <$> parens <$> permPrettyM (assignToRList flds)
   permPrettyM (ValuePermRepr tp) = (pretty "perm" <+>) <$> permPrettyM tp
   permPrettyM tp =
     return (pretty "not-yet-printable type" <+> parens (pretty tp))
@@ -904,11 +904,12 @@ prettyLOwnedPermH (PExpr_LOwnedPermConsL l p rest) =
 prettyLOwnedPermM :: PermExpr LOwnedPermType -> PermPPM (Doc ann)
 prettyLOwnedPermM e = prettyLOwnedPermH e >>= \(pps, maybe_doc) ->
   case maybe_doc of
-    Just pp_x -> return $ encloseSep lparen rparen (pretty "::") (pps ++ [pp_x])
-    Nothing -> return $ list pps
+    Just pp_x ->
+      return $ align $ encloseSep lparen rparen (pretty "::") (pps ++ [pp_x])
+    Nothing -> return $ align $ list pps
 
 instance PermPretty (PermExprs as) where
-  permPrettyM es = encloseSep mempty mempty comma <$> helper es where
+  permPrettyM es = ppCommaSep <$> helper es where
     helper :: PermExprs as' -> PermPPM [Doc ann]
     helper PExprs_Nil = return []
     helper (PExprs_Cons es e) =
@@ -2202,11 +2203,6 @@ instance Eq (FunPerm ghosts args ret) where
 instance PermPretty (NamedPermName ns args a) where
   permPrettyM (NamedPermName str _ _ _ _) = return $ pretty str
 
-ppCommaSep :: [Doc ann] -> Doc ann
-ppCommaSep [] = mempty
-ppCommaSep ds =
-  align (fillSep (map (<> comma) (take (length ds - 1) ds) ++ [last ds]))
-
 instance PermPretty (ValuePerm a) where
   permPrettyM (ValPerm_Eq e) = ((pretty "eq" <>) . parens) <$> permPrettyM e
   permPrettyM (ValPerm_Or p1 p2) =
@@ -2279,8 +2275,8 @@ instance (1 <= w, KnownNat w) => PermPretty (LLVMArrayPerm w) where
        pp_bs <- mapM permPrettyM llvmArrayBorrows
        return (pretty "array" <>
                parens (ppCommaSep [pp_off, pretty "<" <> pp_len,
-                                      pretty "*" <> pp_stride,
-                                      list pp_flds, list pp_bs]))
+                                   pretty "*" <> pp_stride,
+                                   list pp_flds, list pp_bs]))
 
 instance (1 <= w, KnownNat w) => PermPretty (LLVMBlockPerm w) where
   permPrettyM (LLVMBlockPerm {..}) =
@@ -2339,8 +2335,8 @@ instance PermPretty (FunPerm ghosts args ret) where
        pp_ps_out <- permPrettyM ps_out
        pp_ghosts <- permPrettyM (RL.map2 VarAndType ghosts_ns $
                                  cruCtxToTypes ghosts)
-       return ((parens pp_ghosts) <> dot <>
-               pp_ps_in <+> pretty "-o" <+> pp_ps_out)
+       return $ align $
+         sep [parens pp_ghosts <> dot, pp_ps_in, pretty "-o", pp_ps_out]
 
 instance PermPretty (BVRange w) where
   permPrettyM (BVRange e1 e2) =
@@ -2368,7 +2364,7 @@ instance PermPretty (LLVMArrayBorrow w) where
   permPrettyM (RangeBorrow rng) = permPrettyM rng
 
 instance PermPretty (DistPerms ps) where
-  permPrettyM ps = encloseSep mempty mempty comma <$> helper ps where
+  permPrettyM ps = ppCommaSep <$> helper ps where
     helper :: DistPerms ps' -> PermPPM [Doc ann]
     helper DistPermsNil = return []
     helper (DistPermsCons ps x p) =
@@ -3954,7 +3950,7 @@ isDeterminingExpr e =
 -- | Generic function to compute the /needed/ variables of a permission, meaning
 -- those whose values must be determined before that permission can be
 -- proved. This includes, e.g., all the offsets and lengths of field and array
--- permissions
+-- permissions.
 class NeededVars a where
   neededVars :: a -> NameSet CrucibleType
 
