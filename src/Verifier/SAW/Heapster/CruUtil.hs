@@ -12,6 +12,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Verifier.SAW.Heapster.CruUtil where
 
@@ -162,6 +163,33 @@ instance LiftableAny1 f => Liftable (RAssign f ctx) where
   mbLift [nuP| MNil |] = MNil
   mbLift [nuP| xs :>: x |] = mbLift xs :>: mbLiftAny1 x
 
+-- FIXME: move to Hobbits
+instance TestEquality f => TestEquality (RAssign f) where
+  testEquality MNil MNil = Just Refl
+  testEquality (xs1 :>: x1) (xs2 :>: x2)
+    | Just Refl <- testEquality xs1 xs2
+    , Just Refl <- testEquality x1 x2
+    = Just Refl
+  testEquality _ _ = Nothing
+
+-- | Typeclass for functors that allow equality testing at all types
+class Eq1 f where
+  eq1 :: f a -> f a -> Bool
+
+-- FIXME: move to Hobbits
+instance Eq1 f => Eq (RAssign f ctx) where
+  MNil == MNil = True
+  (xs1 :>: x1) == (xs2 :>: x2) = xs1 == xs2 && eq1 x1 x2
+
+-- FIXME: move to Hobbits
+$(mkNuMatching [t| forall f g a. (NuMatchingAny1 f,
+                                  NuMatchingAny1 g) => Product f g a |])
+
+-- FIXME: move to Hobbits
+instance (NuMatchingAny1 f,
+          NuMatchingAny1 g) => NuMatchingAny1 (Product f g) where
+  nuMatchingAny1Proof = nuMatchingProof
+
 instance NuMatching OpenTerm where
   nuMatchingProof = unsafeMbTypeRepr
 
@@ -207,6 +235,12 @@ instance Closable (TypeRepr tp) where
 
 instance Liftable (TypeRepr tp) where
   mbLift = unClosed . mbLift . fmap toClosed
+
+  -- FIXME: we will need this instance when we define CruCtx via RAssign
+{-
+instance ClosableAny1 TypeRepr where
+  closableAny1 _ = IsClosable
+-}
 
 instance NuMatching (BaseTypeRepr tp) where
   nuMatchingProof = unsafeMbTypeRepr
@@ -496,9 +530,26 @@ mkKnownReprObj _ = KnownReprObj
 unKnownReprObj :: KnownReprObj f a -> f a
 unKnownReprObj (KnownReprObj :: KnownReprObj f a) = knownRepr :: f a
 
+-- FIXME: this change for issue #28 requires ClosableAny1 to be exported from
+-- Hobbits
+{-
+-- | A context of Crucible types
+type CruCtx = RAssign TypeRepr
 
--- | A context of Crucible types. NOTE: we do not use 'RAssign' here, because
--- we do not yet have a nice way to define the 'NuMatching' instance we want...
+-- | Pattern for an empty 'CruCtx'
+pattern CruCtxNil :: () => (ctx ~ RNil) => CruCtx ctx
+pattern CruCtxNil = MNil
+
+-- | Pattern for a non-empty 'CruCtx'
+pattern CruCtxCons :: () => (ctx ~ (ctx' :> a)) =>
+                         CruCtx ctx' -> TypeRepr a -> CruCtx ctx
+pattern CruCtxCons tps tp <- tps :>: tp
+  where
+    CruCtxCons tps tp = tps :>: tp
+-}
+
+-- | A context of Crucible types
+-- FIXME: should be defined in terms of 'RAssign' as above
 data CruCtx ctx where
   CruCtxNil :: CruCtx RNil
   CruCtxCons :: CruCtx ctx -> TypeRepr a -> CruCtx (ctx :> a)

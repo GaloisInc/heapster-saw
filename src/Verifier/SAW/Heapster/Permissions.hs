@@ -1996,14 +1996,37 @@ data DefinedPerm b args a = DefinedPerm {
   definedPermDef :: Mb args (ValuePerm a)
 }
 
+-- | A pair of a variable and its permission; we give it its own datatype to
+-- make certain typeclass instances (like pretty-printing) specific to it
+data VarAndPerm a = VarAndPerm (ExprVar a) (ValuePerm a)
+
 -- | A list of "distinguished" permissions to named variables
 -- FIXME: just call these VarsAndPerms or something like that...
+type DistPerms = RAssign VarAndPerm
+
+-- | Pattern for an empty 'DistPerms'
+pattern DistPermsNil :: () => (ps ~ RNil) => DistPerms ps
+pattern DistPermsNil = MNil
+
+-- | Pattern for a non-empty 'DistPerms'
+pattern DistPermsCons :: () => (ps ~ (ps' :> a)) =>
+                         DistPerms ps' -> ExprVar a -> ValuePerm a ->
+                         DistPerms ps
+pattern DistPermsCons ps x p <- ps :>: (VarAndPerm x p)
+  where
+    DistPermsCons ps x p = ps :>: VarAndPerm x p
+
+{-
 data DistPerms ps where
   DistPermsNil :: DistPerms RNil
   DistPermsCons :: DistPerms ps -> ExprVar a -> ValuePerm a ->
                    DistPerms (ps :> a)
+-}
 
 type MbDistPerms ps = Mb ps (DistPerms ps)
+
+-- FIXME: change all of the following functions on DistPerms to use the RAssign
+-- combinators
 
 -- | Fold a function over a 'DistPerms' list, where
 --
@@ -2100,6 +2123,21 @@ mbLifetimeCurrentPermsProxies [nuP| LOwnedCurrentPerms _ _ |] = MNil :>: Proxy
 mbLifetimeCurrentPermsProxies [nuP| CurrentTransPerms cur_ps _ |] =
   mbLifetimeCurrentPermsProxies cur_ps :>: Proxy
 
+instance TestEquality VarAndPerm where
+  testEquality (VarAndPerm x1 p1) (VarAndPerm x2 p2)
+    | Just Refl <- testEquality x1 x2
+    , p1 == p2
+    = Just Refl
+  testEquality _ _ = Nothing
+
+instance Eq (VarAndPerm a) where
+  vp1 == vp2 | Just _ <- testEquality vp1 vp2 = True
+  _ == _ = False
+
+instance Eq1 VarAndPerm where
+  eq1 = (==)
+
+{-
 instance TestEquality DistPerms where
   testEquality DistPermsNil DistPermsNil = Just Refl
   testEquality (DistPermsCons ps1 x1 p1) (DistPermsCons ps2 x2 p2)
@@ -2114,6 +2152,7 @@ instance Eq (DistPerms ps) where
     case testEquality perms1 perms2 of
       Just _ -> True
       Nothing -> False
+-}
 
 instance Eq (ValuePerm a) where
   (ValPerm_Eq e1) == (ValPerm_Eq e2) = e1 == e2
@@ -2170,10 +2209,15 @@ instance Eq (AtomicPerm a) where
   (Perm_BVProp p1) == (Perm_BVProp p2) = p1 == p2
   (Perm_BVProp _) == _ = False
 
+instance Eq1 ValuePerm where
+  eq1 = (==)
+
+{-
 instance Eq (ValuePerms as) where
   ValPerms_Nil == ValPerms_Nil = True
   (ValPerms_Cons ps1 p1) == (ValPerms_Cons ps2 p2) =
     ps1 == ps2 && p1 == p2
+-}
 
 -- | Test if function permissions with different ghost argument lists are equal
 funPermEq :: FunPerm ghosts1 args ret -> FunPerm ghosts2 args ret ->
@@ -2363,6 +2407,14 @@ instance PermPretty (LLVMArrayBorrow w) where
        return (parens pp_ix <> pretty "." <> pp_fld_num)
   permPrettyM (RangeBorrow rng) = permPrettyM rng
 
+instance PermPretty (VarAndPerm a) where
+  permPrettyM (VarAndPerm x p) =
+    (\pp1 pp2 -> pp1 <> colon <> pp2) <$> permPrettyM x <*> permPrettyM p
+
+instance PermPrettyF VarAndPerm where
+  permPrettyMF = permPrettyM
+
+{-
 instance PermPretty (DistPerms ps) where
   permPrettyM ps = ppCommaSep <$> helper ps where
     helper :: DistPerms ps' -> PermPPM [Doc ann]
@@ -2371,6 +2423,7 @@ instance PermPretty (DistPerms ps) where
       do x_pp <- permPrettyM x
          p_pp <- permPrettyM p
          (++ [x_pp <> colon <> p_pp]) <$> helper ps
+-}
 
 
 $(mkNuMatching [t| forall a . PermExpr a |])
@@ -2382,6 +2435,7 @@ $(mkNuMatching [t| forall w. BVProp w |])
 $(mkNuMatching [t| forall a . AtomicPerm a |])
 $(mkNuMatching [t| forall a . ValuePerm a |])
 -- $(mkNuMatching [t| forall as. ValuePerms as |])
+$(mkNuMatching [t| forall a . VarAndPerm a |])
 
 instance NuMatchingAny1 PermExpr where
   nuMatchingAny1Proof = nuMatchingProof
@@ -2390,6 +2444,9 @@ instance NuMatchingAny1 LifetimeFunctorArg where
   nuMatchingAny1Proof = nuMatchingProof
 
 instance NuMatchingAny1 ValuePerm where
+  nuMatchingAny1Proof = nuMatchingProof
+
+instance NuMatchingAny1 VarAndPerm where
   nuMatchingAny1Proof = nuMatchingProof
 
 $(mkNuMatching [t| forall w sz . LLVMFieldPerm w sz |])
@@ -2412,7 +2469,6 @@ $(mkNuMatching [t| forall b args a. OpaquePerm b args a |])
 $(mkNuMatching [t| forall args a reach. ReachMethods args a reach |])
 $(mkNuMatching [t| forall b reach args a. RecPerm b reach args a |])
 $(mkNuMatching [t| forall b args a. DefinedPerm b args a |])
-$(mkNuMatching [t| forall ps. DistPerms ps |])
 $(mkNuMatching [t| forall ps. LifetimeCurrentPerms ps |])
 
 
@@ -4713,11 +4769,21 @@ instance SubstVar PermVarSubst m =>
     CurrentTransPerms <$> genSubst s ps <*> genSubst s l
 
 instance SubstVar PermVarSubst m =>
+         Substable PermVarSubst (VarAndPerm a) m where
+  genSubst s [nuP| VarAndPerm x p |] =
+    VarAndPerm <$> genSubst s x <*> genSubst s p
+
+instance SubstVar PermVarSubst m => Substable1 PermVarSubst VarAndPerm m where
+  genSubst1 = genSubst
+
+{-
+instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (DistPerms ps) m where
   genSubst s [nuP| DistPermsNil |] = return DistPermsNil
   genSubst s [nuP| DistPermsCons dperms' x p |] =
     DistPermsCons <$> genSubst s dperms' <*>
     return (varSubstVar s x) <*> genSubst s p
+-}
 
 
 ----------------------------------------------------------------------
