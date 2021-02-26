@@ -14,3 +14,5 @@ Import rust_lifetimes.
 Import SAWCorePrelude.
 
 Print mux_mut_refs_u64__tuple_fun.
+
+Print use_mux_mut_refs__tuple_fun.
