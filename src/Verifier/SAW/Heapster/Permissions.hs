@@ -414,6 +414,8 @@ instance PermPretty a => PermPretty (Mb (ctx :: RList Type) a) where
     permPrettyPermMb $ \docs ppm ->
     (\pp -> hang 2 (tupled (RL.toList docs) <> dot <> softline <> pp)) <$> ppm
 
+instance PermPretty Integer where
+  permPrettyM = return . pretty
 
 ----------------------------------------------------------------------
 -- * Expressions for Permissions

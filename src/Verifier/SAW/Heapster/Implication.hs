@@ -4196,6 +4196,7 @@ instance ProveEq (LLVMFramePerm w) where
       proveEq e mb_e >>>= \eqp1 ->
       proveEq fperms mb_fperms >>>= \eqp2 ->
       greturn (mapEqProof2 (\x y -> (x,i):y) eqp1 eqp2)
+  proveEq perms mb = proveEqFail perms mb
 
 instance ProveEq (LLVMBlockPerm w) where
   proveEq bp mb_bp =
