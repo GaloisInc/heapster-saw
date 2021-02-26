@@ -32,35 +32,30 @@ Definition zero_array : @CompM.lrtToType (@CompM.LRT_Fun (@SAWCorePrelude.bitvec
 Definition zero_array_from__tuple_fun : @CompM.lrtTupleType (@CompM.LRT_Cons (@CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg0 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg1 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (fun (perm0 : @SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) => @CompM.LRT_Ret (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))))))) (@CompM.LRT_Nil)) :=
   @CompM.multiFixM (@CompM.LRT_Cons (@CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg0 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg1 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (fun (perm0 : @SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) => @CompM.LRT_Ret (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))))))) (@CompM.LRT_Nil)) (fun (zero_array_from : @CompM.lrtToType (@CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg0 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg1 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (fun (perm0 : @SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) => @CompM.LRT_Ret (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)))))))) => pair (fun (e0 : @SAWCorePrelude.bitvector 64) (e1 : @SAWCorePrelude.bitvector 64) (p0 : @SAWCorePrelude.BVVec 64 e0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) => @CompM.letRecM (@CompM.LRT_Cons (@CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg0 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg1 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (fun (p1 : @SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) => @CompM.LRT_Fun (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (fun (p2 : @sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) => @CompM.LRT_Ret (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)))))))) (@CompM.LRT_Nil)) (@SAWCorePrelude.BVVec 64 e0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (fun (f : @CompM.lrtToType (@CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg0 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg1 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (fun (p1 : @SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) => @CompM.LRT_Fun (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (fun (p2 : @sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) => @CompM.LRT_Ret (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))))))))) => pair (fun (e2 : @SAWCorePrelude.bitvector 64) (e3 : @SAWCorePrelude.bitvector 64) (p1 : @SAWCorePrelude.BVVec 64 e2 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (p2 : @sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) => if @SAWCoreScaffolding.not (@SAWCorePrelude.bvEq 1 (if @SAWCoreVectorsAsCoqVectors.bvult 64 (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) p2) e2 then intToBv 1 (-1)%Z else intToBv 1 0%Z) (intToBv 1 0%Z)) then if @SAWCoreScaffolding.and (@SAWCoreVectorsAsCoqVectors.bvsle 64 (intToBv 64 0xf000000000000000%Z) (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) (@existT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit) (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) p2) tt))) (@SAWCoreVectorsAsCoqVectors.bvsle 64 (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) (@existT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit) (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) p2) tt)) (intToBv 64 0xfffffffffffffff%Z)) then @SAWCorePrelude.maybe (@SAWCoreScaffolding.EqP (@SAWCoreScaffolding.Bool) (@SAWCoreVectorsAsCoqVectors.bvult 64 (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) (@existT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit) (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) p2) tt)) e2) (@SAWCoreScaffolding.true)) (CompM (@SAWCorePrelude.BVVec 64 e2 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)))) (@errorM CompM _ (@SAWCorePrelude.BVVec 64 e2 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) "z15 <u top1"%string) (fun (ult_pf0 : @SAWCoreScaffolding.EqP (@SAWCoreScaffolding.Bool) (@SAWCoreVectorsAsCoqVectors.bvult 64 (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) (@existT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit) (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) p2) tt)) e2) (@SAWCoreScaffolding.true)) => @errorM CompM _ (@SAWCorePrelude.BVVec 64 e2 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) "At arrays.c:67:3 (jump %9($0, $1, $2))
   Regs: $0 = local6, $1 = local7, $2 = local8
-  Input perms: top1:true
-  ,top2:true
-  ,top3:array(0, <top1, *8, [ (W,0) |->
-                                exists z17. eq(LLVMword z17) ], [(ghost14).0])
-          *ptr((W,8*ghost14+0) |-> eq(ghost15))
-  ,top4:eq(LLVMword top1)
-  ,top5:exists z17. eq(LLVMword z17)
-  ,ghost10:llvmframe [local8:8, local7:8, local6:8]
-  ,local6:ptr((W,0) |-> eq(ghost11))
-  ,local7:ptr((W,0) |-> eq(ghost12))
-  ,local8:ptr((W,0) |-> eq(local9))
-  ,local9:exists z17. eq(LLVMword z17)
-  ,ghost11:eq(top3)
-  ,ghost12:eq(LLVMword top1)
-  ,ghost14:true
-  ,ghost15:exists z17. eq(LLVMword z17)
-  Could not prove:  (z20, z19, z18, z17). top1:true
-                      ,top2:true
-                      ,top3:array(0, <top1, *8,
-                                  [(W,0) |-> exists z21. eq(LLVMword z21)], [])
-                      ,top4:eq(LLVMword top1)
-                      ,top5:exists z21. eq(LLVMword z21)
-                      ,local6:ptr((W,0) |-> eq(z19))
-                      ,local7:ptr((W,0) |-> eq(z18))
-                      ,local8:ptr((W,0) |-> eq(z17))
-                      ,z20:llvmframe [local8:8, local7:8, local6:8]
-                      ,z19:eq(top3)
-                      ,z18:eq(top4)
-                      ,z17:eq(top5)
+  Input perms: top1:true, top2:true,
+               top3:array(0, <top1, *8, [ (W,0) |->
+                                            exists z17. eq(LLVMword z17) ],
+                          [(ghost14).0])
+                      *ptr((W,8*ghost14+0) |-> eq(ghost15)),
+               top4:eq(LLVMword top1), top5:exists z17. eq(LLVMword z17),
+               ghost10:llvmframe [local8:8, local7:8, local6:8],
+               local6:ptr((W,0) |-> eq(ghost11)), local7:ptr((W,0) |->
+                                                               eq(ghost12)),
+               local8:ptr((W,0) |-> eq(local9)),
+               local9:exists z17. eq(LLVMword z17), ghost11:eq(top3),
+               ghost12:eq(LLVMword top1), ghost14:true,
+               ghost15:exists z17. eq(LLVMword z17)
+  Could not prove:  (z20, z19, z18, z17).
+                      top1:true, top2:true,
+                      top3:array(0, <top1, *8, [ (W,0) |->
+                                                   exists z21. eq(LLVMword z21) ],
+                                 []), top4:eq(LLVMword top1),
+                      top5:exists z21. eq(LLVMword z21), local6:ptr((W,0) |->
+                                                                      eq(z19)),
+                      local7:ptr((W,0) |-> eq(z18)), local8:ptr((W,0) |->
+                                                                  eq(z17)),
+                      z20:llvmframe [local8:8, local7:8, local6:8], z19:eq(top3),
+                      z18:eq(top4), z17:eq(top5)
 
   proveEq: Could not prove z20 = (z24, z23, z22, z21). z18"%string) (@SAWCorePrelude.bvultWithProof 64 (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) (@existT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit) (@projT1 (@SAWCorePrelude.bitvector 64) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 64) => unit) p2) tt)) e2) else @errorM CompM _ (@SAWCorePrelude.BVVec 64 e2 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) "Failed Assert at arrays.c:68:5"%string else @returnM CompM _ (@SAWCorePrelude.BVVec 64 e2 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) p1) tt) (fun (f : @CompM.lrtToType (@CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg0 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.bitvector 64) (fun (arg1 : @SAWCorePrelude.bitvector 64) => @CompM.LRT_Fun (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) (fun (p1 : @SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))) => @CompM.LRT_Fun (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (fun (p2 : @sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) => @CompM.LRT_Ret (@SAWCorePrelude.BVVec 64 arg0 (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit))))))))) => f e0 e1 p0 (@existT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit) e1 tt))) tt).
 

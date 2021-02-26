@@ -38,29 +38,21 @@ Definition string_set_remove : forall (p0 : @string_set), forall (p1 : @SAWCoreS
 Definition insert_remove__tuple_fun : @CompM.lrtTupleType (@CompM.LRT_Cons (@CompM.LRT_Fun (@string_set) (fun (perm0 : @string_set) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm1 : @SAWCoreScaffolding.String) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm2 : @SAWCoreScaffolding.String) => @CompM.LRT_Ret (prod (@string_set) (prod (@SAWCoreScaffolding.String) unit)))))) (@CompM.LRT_Nil)) :=
   @CompM.multiFixM (@CompM.LRT_Cons (@CompM.LRT_Fun (@string_set) (fun (perm0 : @string_set) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm1 : @SAWCoreScaffolding.String) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm2 : @SAWCoreScaffolding.String) => @CompM.LRT_Ret (prod (@string_set) (prod (@SAWCoreScaffolding.String) unit)))))) (@CompM.LRT_Nil)) (fun (insert_remove : @CompM.lrtToType (@CompM.LRT_Fun (@string_set) (fun (perm0 : @string_set) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm1 : @SAWCoreScaffolding.String) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm2 : @SAWCoreScaffolding.String) => @CompM.LRT_Ret (prod (@string_set) (prod (@SAWCoreScaffolding.String) unit))))))) => pair (fun (p0 : @string_set) (p1 : @SAWCoreScaffolding.String) (p2 : @SAWCoreScaffolding.String) => @CompM.letRecM (@CompM.LRT_Nil) (prod (@string_set) (prod (@SAWCoreScaffolding.String) unit)) tt (@errorM CompM _ (prod (@string_set) (prod (@SAWCoreScaffolding.String) unit)) "At string_set.c:15:3 ($14 = call $13($10, $11);)
   Regs: $13 = x22, $10 = x19, $11 = x20
-  Input perms: top1:true
-  ,top2:string_set<W,top1>
-  ,top3:string<>
-  ,top4:string<>
-  ,ghost8:llvmframe [x12:8, x11:8, x10:8]
-  ,x22:(ghost26:lifetime).ghost26:true
-         ,arg25:string_set<W,ghost26>
-         ,arg24:string<> -o ghost26:true
-         ,arg25:string_set<W,ghost26>
-         ,arg24:true
-         ,ret23:true
-  ,x19:eq(top2)
-  ,x20:eq(top3)
-  ,x10:ptr((W,0) |-> eq(x19))
-  ,x11:ptr((W,0) |-> eq(x20))
-  ,x12:ptr((W,0) |-> eq(local7))
-  ,local7:eq(top4)
-  Could not prove (z23). z23:true
-                    ,x19:string_set<W,z23>
-                    ,x20:string<>
+  Input perms: top1:true, top2:string_set<W, top1>, top3:string<>,
+               top4:string<>, ghost8:llvmframe [x12:8, x11:8, x10:8],
+               x22:(ghost26:lifetime).
+                   ghost26:true, arg25:string_set<W, ghost26>, arg24:string<>
+                   -o
+                   ghost26:true, arg25:string_set<W, ghost26>, arg24:true,
+                   ret23:true, x19:eq(top2), x20:eq(top3), x10:ptr((W,0) |->
+                                                                     eq(x19)),
+               x11:ptr((W,0) |-> eq(x20)), x12:ptr((W,0) |-> eq(local7)),
+               local7:eq(top4)
+  Could not prove (z23). z23:true, x19:string_set<W, z23>,
+                         x20:string<>
 
   Could not determine enough variables to prove permissions:
-  (z23). z23:true,x19:string_set<W,z23>"%string)) tt).
+  (z23). z23:true, x19:string_set<W, z23>"%string)) tt).
 
 Definition insert_remove : @CompM.lrtToType (@CompM.LRT_Fun (@string_set) (fun (perm0 : @string_set) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm1 : @SAWCoreScaffolding.String) => @CompM.LRT_Fun (@SAWCoreScaffolding.String) (fun (perm2 : @SAWCoreScaffolding.String) => @CompM.LRT_Ret (prod (@string_set) (prod (@SAWCoreScaffolding.String) unit)))))) :=
   SAWCoreScaffolding.fst (@insert_remove__tuple_fun).

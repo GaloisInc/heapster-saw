@@ -628,9 +628,24 @@ data PermExpr (a :: CrucibleType) where
 
 
 -- | A sequence of permission expressions
+type PermExprs = RAssign PermExpr
+
+-- | Pattern for an empty 'PermExprs' list
+pattern PExprs_Nil :: () => (tps ~ RNil) => PermExprs tps
+pattern PExprs_Nil = MNil
+
+-- | Pattern for a non-empty 'PermExprs' list
+pattern PExprs_Cons :: () => (tps ~ (tps' :> a)) =>
+                       PermExprs tps' -> PermExpr a -> PermExprs tps
+pattern PExprs_Cons es e <- es :>: e
+  where
+    PExprs_Cons es e = es :>: e
+
+{-
 data PermExprs (as :: RList CrucibleType) where
   PExprs_Nil :: PermExprs RNil
   PExprs_Cons :: PermExprs as -> PermExpr a -> PermExprs (as :> a)
+-}
 
 -- | Convert a 'PermExprs' to an 'RAssign'
 exprsToRAssign :: PermExprs as -> RAssign PermExpr as
@@ -815,9 +830,8 @@ instance Eq (PermExpr a) where
   (PExpr_ValPerm _) == _ = False
 
 
-instance Eq (PermExprs as) where
-  PExprs_Nil == PExprs_Nil = True
-  (PExprs_Cons es1 e1) == (PExprs_Cons es2 e2) = es1 == es2 && e1 == e2
+instance Eq1 PermExpr where
+  eq1 = (==)
 
 instance Eq (BVFactor w) where
   (BVFactor i1 x1) == (BVFactor i2 x2) = i1 == i2 && x1 == x2
@@ -908,12 +922,8 @@ prettyLOwnedPermM e = prettyLOwnedPermH e >>= \(pps, maybe_doc) ->
       return $ align $ encloseSep lparen rparen (pretty "::") (pps ++ [pp_x])
     Nothing -> return $ align $ list pps
 
-instance PermPretty (PermExprs as) where
-  permPrettyM es = ppCommaSep <$> helper es where
-    helper :: PermExprs as' -> PermPPM [Doc ann]
-    helper PExprs_Nil = return []
-    helper (PExprs_Cons es e) =
-      (\pps pp -> pps ++ [pp]) <$> helper es <*> permPrettyM e
+instance PermPrettyF PermExpr where
+  permPrettyMF = permPrettyM
 
 instance PermPretty (BVFactor w) where
   permPrettyM (BVFactor i x) =
@@ -2429,7 +2439,6 @@ instance PermPretty (DistPerms ps) where
 $(mkNuMatching [t| forall a . PermExpr a |])
 $(mkNuMatching [t| forall a . BVFactor a |])
 $(mkNuMatching [t| forall a . LifetimeFunctorArg a |])
-$(mkNuMatching [t| forall as . PermExprs as |])
 $(mkNuMatching [t| forall w. BVRange w |])
 $(mkNuMatching [t| forall w. BVProp w |])
 $(mkNuMatching [t| forall a . AtomicPerm a |])
@@ -4621,10 +4630,8 @@ instance SubstVar s m => Substable s (PermExpr a) m where
   genSubst s [nuP| PExpr_ValPerm p |] =
     PExpr_ValPerm <$> genSubst s p
 
-instance SubstVar s m => Substable s (PermExprs as) m where
-  genSubst s [nuP| PExprs_Nil |] = return PExprs_Nil
-  genSubst s [nuP| PExprs_Cons es e |] =
-    PExprs_Cons <$> genSubst s es <*> genSubst s e
+instance SubstVar s m => Substable1 s PermExpr m where
+  genSubst1 = genSubst
 
 instance SubstVar s m => Substable s (LifetimeFunctorArg a) m where
   genSubst s [nuP| LifetimeFunctorArg_RW e |] =
