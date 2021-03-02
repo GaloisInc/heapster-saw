@@ -285,8 +285,8 @@ parseTypeKnown =
        return (Some $ mkKnownReprObj LifetimeRepr)) <|>
    (do try (string "rwmodality")
        return (Some $ mkKnownReprObj RWModalityRepr)) <|>
-   (do try (string "lowned_perm")
-       return (Some $ mkKnownReprObj LOwnedPermRepr)) <|>
+   (do try (string "permlist")
+       return (Some $ mkKnownReprObj PermListRepr)) <|>
    (do try (string "struct")
        spaces
        some_fld_tps <- parseInParens parseStructFieldTypesKnown
@@ -466,12 +466,33 @@ parseExpr tp@(FunctionHandleRepr _ _) =
                          show (handleType hn))
            Nothing ->
              unexpected ("unknown variable or function: " ++ str)
-parseExpr LOwnedPermRepr =
-  -- FIXME: parse non-empty lowned permissions
-  parseInParens (parseExpr LOwnedPermRepr) <|>
-  (string "[]" >> return PExpr_LOwnedPermNil) <|>
-  (PExpr_Var <$> parseExprVarOfType LOwnedPermRepr) <?>
-  "lowned permission expression"
+parseExpr PermListRepr =
+  -- Case 1: parse in parentheses
+  parseInParens (parseExpr PermListRepr) <|>
+
+  -- Case 2: empty
+  (try (string "empty") >> return PExpr_PermListNil) <|>
+
+  -- Case 3: parse x:p, optionally followed by ",ps" or "::x". A source of
+  -- complexity here is that x could be any type, so we don't parse an arbitrary
+  -- expression form e:p, because we have to know the type of e before parsing
+  -- (we should eventually rewrite this parser anyway...)
+  (try (parseExprVar >>= \typed_x ->
+         spaces >> char ':' >> return typed_x) >>= \case
+      Some (Typed tp x) ->
+        do p <- parseValPerm tp
+           l <-
+             -- Sub-case: comma followed by the tail of the list
+             (try (spaces >> comma) >> parseExpr PermListRepr) <|>
+             -- Sub-case: "::" followed by a variable
+             (try (spaces >> string "::") >>
+              PExpr_Var <$> parseExprVarOfType PermListRepr) <|>
+             -- Sub-case: we are done, so return nil
+             (return PExpr_PermListNil)
+           return $ PExpr_PermListCons tp (PExpr_Var x) p l) <|>
+
+  (PExpr_Var <$> parseExprVarOfType PermListRepr) <?>
+  "permission list expression"
 parseExpr RWModalityRepr =
   (string "R" >> return PExpr_Read) <|> (string "W" >> return PExpr_Write) <|>
   (PExpr_Var <$> parseExprVarOfType knownRepr) <?>
@@ -709,9 +730,12 @@ parseAtomicPerm tp@(StructRepr tps) =
   ("atomic permission of type " ++ show tp)
 
 parseAtomicPerm tp@LifetimeRepr =
-  (do try (string "lowned" >> spaces1)
-      ps <- parseExpr LOwnedPermRepr
-      return $ Perm_LOwned ps) <|>
+  (try (string "lowned" >> spaces) >>
+   parseInParens
+   (do ps_in <- parseExpr PermListRepr
+       spaces >> string "-o" >> spaces
+       ps_out <- parseExpr PermListRepr
+       return $ Perm_LOwned ps_in ps_out)) <|>
   (do l <- parseLifetimePrefix
       string "lcurrent"
       return $ Perm_LCurrent l) <|>

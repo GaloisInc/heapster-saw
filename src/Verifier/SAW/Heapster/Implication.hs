@@ -650,23 +650,28 @@ data SimplImpl ps_in ps_out where
   -- | Save a permission for later by splitting it into part that is in the
   -- current lifetime and part that is saved in the lifetime for later:
   --
-  -- > x:F<l> * l:[l2]lcurrent * l2:lowned ps -o x:F<l2> * l2:lowned(x:F<l>,ps)
+  -- > x:F<l,rws> * l:[l2]lcurrent * l2:lowned (ps_in -o ps_out)
+  -- >   -o x:F<l2,rws> * l2:lowned (x:F<l,Rs>, ps_in -o x:F<l,rws>,ps_out)
   --
   -- Note that this rule also supports @l=always@, in which case the second
   -- permission is just @l2:true@ (as a hack, because it has the same type)
   SImpl_SplitLifetime ::
-    KnownRepr TypeRepr a => ExprVar a -> Binding LifetimeType (ValuePerm a) ->
-    PermExpr LifetimeType -> ExprVar LifetimeType -> PermExpr LOwnedPermType ->
+    KnownRepr TypeRepr a => ExprVar a -> LifetimeFunctor args a ->
+    PermExprs args -> PermExpr LifetimeType -> ExprVar LifetimeType ->
+    PermExpr PermListType -> PermExpr PermListType ->
     SimplImpl (RNil :> a :> LifetimeType :> LifetimeType)
     (RNil :> a :> LifetimeType)
 
   -- | Subsume a smaller lifetime @l2@ inside a bigger lifetime @l1@, by putting
   -- the @lowned@ permission for @l1@ inside that of @l2@:
   --
-  -- > l1:lowned ps1 * l2:lowned ps2 -o
-  -- >   l1:[l2]lcurrent * l2:lowned (l1:lowned ps1,ps2)
-  SImpl_SubsumeLifetime :: ExprVar LifetimeType -> PermExpr LOwnedPermType ->
-                           ExprVar LifetimeType -> PermExpr LOwnedPermType ->
+  -- > l1:lowned (ps_in1 -o ps_out1) * l2:lowned (ps_in2 -o ps_out2)
+  -- >   -o l1:[l2]lcurrent
+  -- >      * l2:lowned (ps_in2 -o l1:lowned (ps_in1 -o ps_out1),ps_out2)
+  SImpl_SubsumeLifetime :: ExprVar LifetimeType ->
+                           PermExpr PermListType -> PermExpr PermListType ->
+                           ExprVar LifetimeType ->
+                           PermExpr PermListType -> PermExpr PermListType ->
                            SimplImpl (RNil :> LifetimeType :> LifetimeType)
                            (RNil :> LifetimeType :> LifetimeType)
 
@@ -676,7 +681,7 @@ data SimplImpl ps_in ps_out where
   --
   -- > F<l> * 'lcurrentPerm' l l2 -o F<l2>
   SImpl_WeakenLifetime :: KnownRepr TypeRepr a => ExprVar a ->
-                          Binding LifetimeType (ValuePerm a) ->
+                          LifetimeFunctor args a -> PermExprs args ->
                           PermExpr LifetimeType -> ExprVar LifetimeType ->
                           SimplImpl (RNil :> a :> LifetimeType) (RNil :> a)
 
@@ -684,10 +689,11 @@ data SimplImpl ps_in ps_out where
   -- required by the @lowned@ permission to end it, and returning all
   -- permissions given back by the @lowned@ lifetime:
   --
-  -- > 'ltEndPermsIn' l ps * l:lowned ps -o 'ltEndPermsOut' ps
-  SImpl_EndLifetime :: ExprVar LifetimeType -> PermExpr LOwnedPermType ->
-                       DistPerms ps_owned -> DistPerms ps_owned ->
-                       SimplImpl (ps_owned :> LifetimeType) ps_owned
+  -- > ps_in * l:lowned (ps_in -o ps_out) -o ps_out
+  SImpl_EndLifetime :: ExprVar LifetimeType ->
+                       PermExpr PermListType -> PermExpr PermListType ->
+                       DistPerms ps_in -> DistPerms ps_out ->
+                       SimplImpl (ps_in :> LifetimeType) ps_out
 
   -- | Reflexivity for @lcurrent@ proofs:
   --
@@ -1068,7 +1074,7 @@ data PermImpl1 ps_in ps_outs where
 
   -- | Begin a new lifetime:
   --
-  -- > . -o ret:lowned(nil)
+  -- > . -o ret:lowned(empty -o empty)
   Impl1_BeginLifetime ::
     PermImpl1 ps (RNil :> '(RNil :> LifetimeType, ps :> LifetimeType))
 
@@ -1490,20 +1496,21 @@ simplImplIn (SImpl_LLVMArrayIsPtr x ap) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMArray ap])
 simplImplIn (SImpl_LLVMBlockIsPtr x bp) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMBlock bp])
-simplImplIn (SImpl_SplitLifetime x f l l2 l2_ps) =
+simplImplIn (SImpl_SplitLifetime x f args l l2 ps_in ps_out) =
   -- If l=always then the second permission is l2:true
   let (l',l'_p) = lcurrentPerm l l2 in
-  distPerms3 x (subst1 l f) l' l'_p l2 (ValPerm_LOwned l2_ps)
-simplImplIn (SImpl_SubsumeLifetime l1 l1_ps l2 l2_ps) =
-  distPerms2 l1 (ValPerm_Conj1 $ Perm_LOwned l1_ps)
-  l2 (ValPerm_Conj1 $ Perm_LOwned l2_ps)
-simplImplIn (SImpl_WeakenLifetime x f l l2) =
+  distPerms3 x (ltFuncApply f args l) l' l'_p l2 (ValPerm_LOwned ps_in ps_out)
+simplImplIn (SImpl_SubsumeLifetime l1 ps_in1 ps_out1 l2 ps_in2 ps_out2) =
+  distPerms2 l1 (ValPerm_LOwned ps_in1 ps_out1)
+  l2 (ValPerm_LOwned ps_in2 ps_out2)
+simplImplIn (SImpl_WeakenLifetime x f args l l2) =
   let (l',l'_p) = lcurrentPerm l l2 in
-  distPerms2 x (subst1 l f) l' l'_p
-simplImplIn (SImpl_EndLifetime l l_ps ps_in ps_out) =
-  case ltEndPermsIn (PExpr_Var l) l_ps of
-    Some ps_in' | Just Refl <- testEquality ps_in ps_in' ->
-                  DistPermsCons ps_in l (ValPerm_Conj1 $ Perm_LOwned l_ps)
+  distPerms2 x (ltFuncApply f args l) l' l'_p
+simplImplIn (SImpl_EndLifetime l l_in l_out ps_in ps_out) =
+  case matchVarPermList l_in of
+    Just (Some ps_in')
+      | Just Refl <- testEquality ps_in' ps_in ->
+        DistPermsCons ps_in l $ ValPerm_LOwned l_in l_out
     _ -> error "simplImplIn: SImpl_EndLifetime: incorrect input permissions"
 simplImplIn (SImpl_LCurrentRefl _) = DistPermsNil
 simplImplIn (SImpl_LCurrentTrans l1 l2 l3) =
@@ -1788,20 +1795,24 @@ simplImplOut (SImpl_LLVMArrayIsPtr x ap) =
 simplImplOut (SImpl_LLVMBlockIsPtr x bp) =
   distPerms2 x (ValPerm_Conj1 Perm_IsLLVMPtr)
   x (ValPerm_Conj [Perm_LLVMBlock bp])
-simplImplOut (SImpl_SplitLifetime x f l l2 l2_ps) =
-  distPerms2 x (subst1 (PExpr_Var l2) f)
-  l2 (ValPerm_LOwned $ PExpr_LOwnedPermConsP (PExpr_Var x) f l l2_ps)
-simplImplOut (SImpl_SubsumeLifetime l1 l1_ps l2 l2_ps) =
+simplImplOut (SImpl_SplitLifetime x f args l l2 ps_in ps_out) =
+  distPerms2 x (ltFuncApply f args $ PExpr_Var l2)
+  l2 (ValPerm_LOwned
+      (PExpr_PermListCons knownRepr (PExpr_Var x) (ltFuncMinApply f l) ps_in)
+      ps_out)
+simplImplOut (SImpl_SubsumeLifetime l1 ps_in1 ps_out1 l2 ps_in2 ps_out2) =
   distPerms2 l1 (ValPerm_LCurrent $ PExpr_Var l2)
-  l2 (ValPerm_Conj1 $ Perm_LOwned $
-      PExpr_LOwnedPermConsL (PExpr_Var l1) l1_ps l2_ps)
-simplImplOut (SImpl_WeakenLifetime x f l l2) =
-  distPerms1 x (subst1 (PExpr_Var l2) f)
-simplImplOut (SImpl_EndLifetime l l_ps ps_in ps_out) =
-  case ltEndPermsOut (PExpr_Var l) l_ps of
-    Some ps_out' | Just Refl <- testEquality ps_out ps_out' -> ps_out
-    _ ->
-      error "simplImplOut: SImpl_EndLifetime: incorrect output permissions"
+  l2 (ValPerm_LOwned ps_in2 $
+      PExpr_PermListCons knownRepr (PExpr_Var l1)
+      (ValPerm_LOwned ps_in1 ps_out2) ps_out2)
+simplImplOut (SImpl_WeakenLifetime x f args l l2) =
+  distPerms1 x (ltFuncApply f args $ PExpr_Var l2)
+simplImplOut (SImpl_EndLifetime l l_in l_out ps_in ps_out) =
+  case matchVarPermList l_out of
+    Just (Some ps_out')
+      | Just Refl <- testEquality ps_out' ps_out ->
+        ps_out
+    _ -> error "simplImplOut: SImpl_EndLifetime: incorrect output permissions"
 simplImplOut (SImpl_LCurrentRefl l) =
   distPerms1 l (ValPerm_LCurrent $ PExpr_Var l)
 simplImplOut (SImpl_LCurrentTrans l1 _ l3) =
@@ -2038,7 +2049,7 @@ applyImpl1 _ (Impl1_ElimLLVMBlockToEq x bp) ps =
     error "applyImpl1: SImpl_ElimLLVMBlockToEq: unexpected permission"
 applyImpl1 _ Impl1_BeginLifetime ps =
   mbPermSets1 $ nu $ \l ->
-  pushPerm l (ValPerm_Conj1 $ Perm_LOwned PExpr_LOwnedPermNil) ps
+  pushPerm l (ValPerm_LOwned PExpr_PermListNil PExpr_PermListNil) ps
 applyImpl1 _ (Impl1_TryProveBVProp x prop _) ps =
   mbPermSets1 $ emptyMb $
   pushPerm x (ValPerm_Conj [Perm_BVProp prop]) ps
@@ -2168,18 +2179,20 @@ instance SubstVar PermVarSubst m =>
     SImpl_LLVMArrayIsPtr <$> genSubst s x <*> genSubst s ap
   genSubst s [nuP| SImpl_LLVMBlockIsPtr x bp |] =
     SImpl_LLVMBlockIsPtr <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_SplitLifetime x f l l2 l2_ps |] =
-    SImpl_SplitLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s l
-    <*> genSubst s l2 <*> genSubst s l2_ps
-  genSubst s [nuP| SImpl_SubsumeLifetime l1 l1_ps l2 l2_ps |] =
-    SImpl_SubsumeLifetime <$> genSubst s l1 <*> genSubst s l1_ps
-    <*> genSubst s l2 <*> genSubst s l2_ps
-  genSubst s [nuP| SImpl_WeakenLifetime x f l l2 |] =
-    SImpl_WeakenLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s l
-    <*> genSubst s l2
-  genSubst s [nuP| SImpl_EndLifetime l l_ps ps_in ps_out |] =
-    SImpl_EndLifetime <$> genSubst s l <*> genSubst s l_ps <*> genSubst s ps_in
-    <*> genSubst s ps_out
+  genSubst s [nuP| SImpl_SplitLifetime x f args l l2 ps_in ps_out |] =
+    SImpl_SplitLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s args
+    <*> genSubst s l <*> genSubst s l2
+    <*> genSubst s ps_in <*> genSubst s ps_out
+  genSubst s [nuP| SImpl_SubsumeLifetime l1 ps_in1 ps_out1 l2 ps_in2 ps_out2 |] =
+    SImpl_SubsumeLifetime <$> genSubst s l1 <*> genSubst s ps_in1
+    <*> genSubst s ps_out1 <*> genSubst s l2 <*> genSubst s ps_in2
+    <*> genSubst s ps_out2
+  genSubst s [nuP| SImpl_WeakenLifetime x f args l l2 |] =
+    SImpl_WeakenLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s args
+     <*> genSubst s l <*> genSubst s l2
+  genSubst s [nuP| SImpl_EndLifetime l l_in l_out ps_in ps_out |] =
+    SImpl_EndLifetime <$> genSubst s l <*> genSubst s l_in <*> genSubst s l_out
+    <*> genSubst s ps_in <*> genSubst s ps_out
   genSubst s [nuP| SImpl_LCurrentRefl l |] =
     SImpl_LCurrentRefl <$> genSubst s l
   genSubst s [nuP| SImpl_LCurrentTrans l1 l2 l3 |] =
@@ -2898,10 +2911,10 @@ implPushCurLifetimePermM l =
      error "implPushLifetimePermM: wrong value for the current lifetime!") >>>
   getPerm l >>>= \p ->
   case p of
-    ValPerm_Conj [Perm_LOwned _] -> implPushM l p
+    ValPerm_Conj [Perm_LOwned _ _] -> implPushM l p
     _ -> error "implPushLifetimePermM: no LOwned permission for the current lifetime!"
 
--- | Pop (as in 'implPushM') the permission for the current lifetime
+-- | Pop (as in 'implPopM') the permission for the current lifetime
 implPopCurLifetimePermM :: NuMatchingAny1 r => ExprVar LifetimeType ->
                            ImplM vars s r ps (ps :> LifetimeType) ()
 implPopCurLifetimePermM l =
@@ -2910,7 +2923,7 @@ implPopCurLifetimePermM l =
      error "implPopLifetimePermM: wrong value for the current lifetime!") >>>
   getTopDistPerm l >>>= \p ->
   case p of
-    ValPerm_Conj [Perm_LOwned _] -> implPopM l p
+    ValPerm_Conj [Perm_LOwned _ _] -> implPopM l p
     _ -> error "implPopLifetimePermM: no LOwned permission for the current lifetime!"
 
 {- FIXME: this should no longer be needed!
@@ -3666,7 +3679,7 @@ implBeginLifetimeM :: NuMatchingAny1 r =>
 implBeginLifetimeM =
   implApplyImpl1 Impl1_BeginLifetime
   (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \l ->
-  implPopM l (ValPerm_Conj1 $ Perm_LOwned PExpr_LOwnedPermNil) >>>
+  implPopM l (ValPerm_LOwned PExpr_PermListNil PExpr_PermListNil) >>>
   greturn l
 
 -- | Save a permission for later by splitting it into part that is in the
@@ -3678,14 +3691,18 @@ implBeginLifetimeM =
 -- are on the top of the stack, and return @x:F<l2>@ on top of the stack,
 -- popping the new @lowned@ permission on @l2@
 implSplitLifetimeM :: (KnownRepr TypeRepr a, NuMatchingAny1 r) =>
-                      ExprVar a -> Binding LifetimeType (ValuePerm a) ->
-                      PermExpr LifetimeType -> ExprVar LifetimeType ->
-                      PermExpr LOwnedPermType ->
+                      ExprVar a -> LifetimeFunctor args a ->
+                      PermExprs args -> PermExpr LifetimeType ->
+                      ExprVar LifetimeType ->
+                      PermExpr PermListType -> PermExpr PermListType ->
                       ImplM vars s r (ps :> a)
                       (ps :> a :> LifetimeType :> LifetimeType) ()
-implSplitLifetimeM x f l l2 l2_ps =
-  implSimplM Proxy (SImpl_SplitLifetime x f l l2 l2_ps) >>>
-  implPopM l2 (ValPerm_LOwned $ PExpr_LOwnedPermConsP (PExpr_Var x) f l l2_ps)
+implSplitLifetimeM x f args l l2 ps_in ps_out =
+  implSimplM Proxy (SImpl_SplitLifetime x f args l l2 ps_in ps_out) >>>
+  implPopM l2 (ValPerm_LOwned
+               (PExpr_PermListCons
+                knownRepr (PExpr_Var x) (ltFuncMinApply f l) ps_in)
+               ps_out)
 
 -- | Combine proofs of @x:ptr(pps,(off,spl) |-> eq(y))@ and @y:p@ on the top of
 -- the permission stack into a proof of @x:ptr(pps,(off,spl |-> p))@
@@ -3942,7 +3959,8 @@ getLifetimeCurrentPerms PExpr_Always = greturn $ Some AlwaysCurrentPerms
 getLifetimeCurrentPerms (PExpr_Var l) =
   getPerm l >>>= \p ->
   case p of
-    ValPerm_LOwned ps -> greturn $ Some $ LOwnedCurrentPerms l ps
+    ValPerm_LOwned ps_in ps_out ->
+      greturn $ Some $ LOwnedCurrentPerms l ps_in ps_out
     ValPerm_LCurrent l' ->
       getLifetimeCurrentPerms l' >>>= \some_cur_perms ->
       case some_cur_perms of
@@ -3956,8 +3974,8 @@ getLifetimeCurrentPerms (PExpr_Var l) =
 proveLifetimeCurrent :: NuMatchingAny1 r => LifetimeCurrentPerms ps_l ->
                         ImplM vars s r (ps :++: ps_l) ps ()
 proveLifetimeCurrent AlwaysCurrentPerms = greturn ()
-proveLifetimeCurrent (LOwnedCurrentPerms l ps) =
-  implPushM l (ValPerm_Conj1 $ Perm_LOwned ps)
+proveLifetimeCurrent (LOwnedCurrentPerms l ps_in ps_out) =
+  implPushM l (ValPerm_LOwned ps_in ps_out)
 proveLifetimeCurrent (CurrentTransPerms cur_perms l) =
   proveLifetimeCurrent cur_perms >>>
   let l' = lifetimeCurrentPermsLifetime cur_perms
@@ -4143,8 +4161,8 @@ recombineLifetimeCurrentPerms :: NuMatchingAny1 r =>
                                  LifetimeCurrentPerms ps_l ->
                                  ImplM vars s r ps (ps :++: ps_l) ()
 recombineLifetimeCurrentPerms AlwaysCurrentPerms = greturn ()
-recombineLifetimeCurrentPerms (LOwnedCurrentPerms l ps) =
-  recombinePermExpl l ValPerm_True (ValPerm_Conj1 $ Perm_LOwned ps)
+recombineLifetimeCurrentPerms (LOwnedCurrentPerms l ps_in ps_out) =
+  recombinePermExpl l ValPerm_True (ValPerm_LOwned ps_in ps_out)
 recombineLifetimeCurrentPerms (CurrentTransPerms cur_perms l) =
   implDropM l (ValPerm_LCurrent $ lifetimeCurrentPermsLifetime cur_perms) >>>
   recombineLifetimeCurrentPerms cur_perms
@@ -4460,61 +4478,61 @@ proveVarEqH x e _ mb_e =
 -- instantiating existential variables in @mb_l@ and/or splitting lifetimes.
 proveVarLifetimeFunctor ::
   (KnownRepr TypeRepr a, NuMatchingAny1 r) =>
-  ExprVar a -> Binding LifetimeType (ValuePerm a) ->
+  ExprVar a -> LifetimeFunctor args a -> PermExprs args ->
   PermExpr LifetimeType -> Mb vars (PermExpr LifetimeType) ->
   ImplM vars s r (ps :> a) (ps :> a) ()
-proveVarLifetimeFunctor x f l mb_l =
-  getPSubst >>>= \psubst -> proveVarLifetimeFunctor' x f l mb_l psubst
+proveVarLifetimeFunctor x f args l mb_l =
+  getPSubst >>>= \psubst -> proveVarLifetimeFunctor' x f args l mb_l psubst
 
 -- | The main workhorse for 'proveVarLifetimeFunctor'
 proveVarLifetimeFunctor' ::
   (KnownRepr TypeRepr a, NuMatchingAny1 r) =>
-  ExprVar a -> Binding LifetimeType (ValuePerm a) ->
+  ExprVar a -> LifetimeFunctor args a -> PermExprs args ->
   PermExpr LifetimeType -> Mb vars (PermExpr LifetimeType) ->
   PartialSubst vars ->
   ImplM vars s r (ps :> a) (ps :> a) ()
 
 -- If mb_l is an unset evar, set mb_l = l and return
-proveVarLifetimeFunctor' x f l [nuP| PExpr_Var mb_z |] psubst
+proveVarLifetimeFunctor' _ _ _ l [nuP| PExpr_Var mb_z |] psubst
   | Left memb <- mbNameBoundP mb_z
   , Nothing <- psubstLookup psubst memb =
     setVarM memb l
 
 -- If mb_l is a set evar, substitute for it and recurse
-proveVarLifetimeFunctor' x f l [nuP| PExpr_Var mb_z |] psubst
+proveVarLifetimeFunctor' x f args l [nuP| PExpr_Var mb_z |] psubst
   | Left memb <- mbNameBoundP mb_z
   , Just l2 <- psubstLookup psubst memb =
-    proveVarLifetimeFunctor' x f l (fmap (const l2) mb_z) psubst
+    proveVarLifetimeFunctor' x f args l (fmap (const l2) mb_z) psubst
 
 -- If mb_l==l, we are done
-proveVarLifetimeFunctor' x f l mb_l psubst
+proveVarLifetimeFunctor' _ _ _ l mb_l _
   | mbLift $ fmap (== l) mb_l =
     greturn ()
 
 -- If mb_l is a free variable l2 /= l, we need to split or weaken the lifetime
-proveVarLifetimeFunctor' x f l [nuP| PExpr_Var mb_z |] psubst
+proveVarLifetimeFunctor' x f args l [nuP| PExpr_Var mb_z |] psubst
   | Right l2 <- mbNameBoundP mb_z =
     getPerm l2 >>>= \case
 
       -- If we have l2:lowned ps, prove l:[l2]lcurrent * l2:lowned ps and then
       -- split the lifetime
-      ValPerm_LOwned l2_ps ->
+      ValPerm_LOwned ps_in ps_out ->
         let (l',l'_p) = lcurrentPerm l l2 in
         proveVarImpl l' (fmap (const l'_p) mb_z) >>>
-        implPushM l2 (ValPerm_LOwned l2_ps) >>>
-        implSplitLifetimeM x f l l2 l2_ps
+        implPushM l2 (ValPerm_LOwned ps_in ps_out) >>>
+        implSplitLifetimeM x f args l l2 ps_in ps_out
 
       -- Otherwise, prove l:[l2]lcurrent and weaken the lifetime
       _ ->
         let (l',l'_p) = lcurrentPerm l l2 in
         proveVarImpl l' (fmap (const l'_p) mb_z) >>>
-        implSimplM Proxy (SImpl_WeakenLifetime x f l l2)
+        implSimplM Proxy (SImpl_WeakenLifetime x f args l l2)
 
 -- Otherwise, fail; this should only include the case where the RHS is always
 -- but the LHS is not, which we cannot do anything with
-proveVarLifetimeFunctor' x f l mb_l _ =
-  implFailVarM "proveVarLifetimeFunctor" x (subst1 l f)
-  (fmap (flip subst1 f) mb_l)
+proveVarLifetimeFunctor' x f args l mb_l _ =
+  implFailVarM "proveVarLifetimeFunctor" x (ltFuncApply f args l)
+  (fmap (ltFuncApply f args) mb_l)
 
 
 ----------------------------------------------------------------------
@@ -4578,10 +4596,10 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
 
   -- Step 3: change the lifetime if needed
   --
-  proveVarLifetimeFunctor x (nu $ \l ->
-                              ValPerm_LLVMField (fp'' { llvmFieldLifetime =
-                                                          PExpr_Var l}))
-  (llvmFieldLifetime fp'') (fmap llvmFieldLifetime mb_fp) >>>
+  let (f, args) = fieldToLTFunc fp'' in
+  proveVarLifetimeFunctor x f args (llvmFieldLifetime fp'') (fmap
+                                                             llvmFieldLifetime
+                                                             mb_fp) >>>
   getTopDistPerm x >>>= \(ValPerm_LLVMField fp''') ->
 
   -- Step 4: prove the contents
@@ -5166,10 +5184,10 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
     getTopDistPerm x >>>= \(ValPerm_LLVMBlock bp') ->
 
     -- Get the lifetime correct
-    proveVarLifetimeFunctor x (nu $ \l ->
-                                ValPerm_LLVMBlock (bp' { llvmBlockLifetime =
-                                                           PExpr_Var l}))
-    (llvmBlockLifetime bp) (fmap llvmBlockLifetime mb_bp) >>>
+    let (f, args) = blockToLTFunc bp' in
+    proveVarLifetimeFunctor x f args (llvmBlockLifetime bp) (fmap
+                                                             llvmBlockLifetime
+                                                             mb_bp) >>>
     getTopDistPerm x >>>= \(ValPerm_LLVMBlock bp'') ->
 
     -- Move it down below ps'
@@ -5802,9 +5820,11 @@ proveVarAtomicImpl x aps@[Perm_LLVMFrame
   proveEq fperms mb_fperms >>>= \eqp ->
   implCastPermM x (fmap (ValPerm_Conj1 . Perm_LLVMFrame) eqp)
 
-proveVarAtomicImpl x aps@[Perm_LOwned ps] mb_ap@[nuP| Perm_LOwned mb_ps |] =
-  proveEq ps mb_ps >>>= \eqp ->
-  implCastPermM x (fmap (ValPerm_Conj1 . Perm_LOwned) eqp)
+proveVarAtomicImpl x aps@[Perm_LOwned
+                          ps_in ps_out] mb_ap@[nuP| Perm_LOwned
+                                                  mb_ps_in mb_ps_out |] =
+  proveEqCast x (\(ps_in',ps_out') -> ValPerm_LOwned ps_in' ps_out')
+  (ps_in,ps_out) (mbMap2 (,) mb_ps_in mb_ps_out)
 
 proveVarAtomicImpl x ps p@[nuP| Perm_LCurrent mb_l' |] =
   partialSubstForceM mb_l' "proveVarAtomicImpl" >>>= \l' ->

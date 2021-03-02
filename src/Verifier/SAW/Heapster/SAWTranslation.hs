@@ -185,9 +185,6 @@ data ExprTrans (a :: CrucibleType) where
   -- | Read-write modalities also have no computational content
   ETrans_RWModality :: ExprTrans RWModalityType
 
-  -- | lowned permissions also have no computational content
-  ETrans_LOwnedPerm :: ExprTrans LOwnedPermType
-
   -- | Structs are translated as a sequence of translations of the fields
   ETrans_Struct :: ExprTransCtx (CtxToRList ctx) -> ExprTrans (StructType ctx)
 
@@ -239,7 +236,6 @@ instance IsTermTrans (ExprTrans tp) where
   transTerms ETrans_LLVMFrame = []
   transTerms ETrans_Lifetime = []
   transTerms ETrans_RWModality = []
-  transTerms ETrans_LOwnedPerm = []
   transTerms (ETrans_Struct etranss) =
     concat $ RL.mapToList transTerms etranss
   transTerms ETrans_Fun = []
@@ -596,8 +592,8 @@ instance TransInfo info =>
     return $ mkTypeTrans0 ETrans_LLVMFrame
   translate [nuP| LifetimeRepr |] =
     return $ mkTypeTrans0 ETrans_Lifetime
-  translate [nuP| LOwnedPermRepr |] =
-    return $ mkTypeTrans0 ETrans_LOwnedPerm
+  translate [nuP| PermListRepr |] =
+    returnType1 (sortOpenTerm $ mkSort 0)
   translate [nuP| RWModalityRepr |] =
     return $ mkTypeTrans0 ETrans_RWModality
 
@@ -748,9 +744,11 @@ instance TransInfo info =>
   translate [nuP| PExpr_LLVMWord _ |] = return ETrans_LLVM
   translate [nuP| PExpr_LLVMOffset _ _ |] = return ETrans_LLVM
   translate [nuP| PExpr_Fun _ |] = return ETrans_Fun
-  translate [nuP| PExpr_LOwnedPermNil |] = return ETrans_LOwnedPerm
-  translate [nuP| PExpr_LOwnedPermConsP _ _ _ _ |] = return ETrans_LOwnedPerm
-  translate [nuP| PExpr_LOwnedPermConsL _ _ _ |] = return ETrans_LOwnedPerm
+  translate [nuP| PExpr_PermListNil |] = return $ ETrans_Term unitTypeOpenTerm
+  translate [nuP| PExpr_PermListCons _ _ p l |] =
+    ETrans_Term <$> (pairTypeOpenTerm <$>
+                     (typeTransTupleType <$> translate p) <*>
+                     (translate1 l))
   translate [nuP| PExpr_RWModality _ |] = return ETrans_RWModality
 
   -- LLVM shapes are translated to types
@@ -889,9 +887,15 @@ data AtomicPermTrans ctx a where
                        Mb ctx (LLVMFramePerm w) ->
                        AtomicPermTrans ctx (LLVMFrameType w)
 
-  -- | Lifetime permissions have no computational content
-  APTrans_LifetimePerm :: Mb ctx (AtomicPerm LifetimeType) ->
-                          AtomicPermTrans ctx LifetimeType
+  -- | LOwned permissions translate to a monadic function from (the translation
+  -- of) the input permissions to the output permissions
+  APTrans_LOwned :: Mb ctx (PermExpr PermListType) ->
+                    Mb ctx (PermExpr PermListType) ->
+                    OpenTerm -> AtomicPermTrans ctx LifetimeType
+
+  -- | LCurrent permissions have no computational content
+  APTrans_LCurrent :: Mb ctx (PermExpr LifetimeType) ->
+                      AtomicPermTrans ctx LifetimeType
 
   -- | The translation of a struct permission is sequence of the translations of
   -- the permissions in the struct permission
@@ -1048,7 +1052,8 @@ instance IsTermTrans (AtomicPermTrans ctx a) where
   transTerms (APTrans_LLVMBlockShape _ t) = [t]
   transTerms (APTrans_NamedConj _ _ _ t) = [t]
   transTerms (APTrans_LLVMFrame _) = []
-  transTerms (APTrans_LifetimePerm _) = []
+  transTerms (APTrans_LOwned _ _ t) = [t]
+  transTerms (APTrans_LCurrent _) = []
   transTerms (APTrans_Struct pctx) = transTerms pctx
   transTerms (APTrans_Fun _ t) = [t]
   transTerms (APTrans_BVProp prop) = transTerms prop
@@ -1100,7 +1105,9 @@ atomicPermTransPerm _ (APTrans_LLVMBlockShape mb_sh _) =
 atomicPermTransPerm _ (APTrans_NamedConj npn args off _) =
   mbMap2 (Perm_NamedConj npn) args off
 atomicPermTransPerm _ (APTrans_LLVMFrame fp) = fmap Perm_LLVMFrame fp
-atomicPermTransPerm _ (APTrans_LifetimePerm p) = p
+atomicPermTransPerm _ (APTrans_LOwned ps_in ps_out _) =
+  mbMap2 Perm_LOwned ps_in ps_out
+atomicPermTransPerm _ (APTrans_LCurrent l) = fmap Perm_LCurrent l
 atomicPermTransPerm prxs (APTrans_Struct ps) =
   fmap Perm_Struct $ permTransCtxPerms prxs ps
 atomicPermTransPerm _ (APTrans_Fun fp _) = fmap Perm_Fun fp
@@ -1155,7 +1162,9 @@ instance ExtPermTrans AtomicPermTrans where
   extPermTrans (APTrans_NamedConj npn args off t) =
     APTrans_NamedConj npn (extMb args) (extMb off) t
   extPermTrans (APTrans_LLVMFrame fp) = APTrans_LLVMFrame $ extMb fp
-  extPermTrans (APTrans_LifetimePerm p) = APTrans_LifetimePerm $ extMb p
+  extPermTrans (APTrans_LOwned ps_in ps_out t) =
+    APTrans_LOwned (extMb ps_in) (extMb ps_out) t
+  extPermTrans (APTrans_LCurrent p) = APTrans_LCurrent $ extMb p
   extPermTrans (APTrans_Struct ps) = APTrans_Struct $ RL.map extPermTrans ps
   extPermTrans (APTrans_Fun fp t) = APTrans_Fun (extMb fp) t
   extPermTrans (APTrans_BVProp prop_trans) =
@@ -1546,10 +1555,15 @@ instance TransInfo info =>
                        APTrans_NamedConj (mbLift npn) args off t) ptrans
   translate [nuP| Perm_LLVMFrame fp |] =
     return $ mkTypeTrans0 $ APTrans_LLVMFrame fp
-  translate p@[nuP| Perm_LOwned _ |] =
-    return $ mkTypeTrans0 $ APTrans_LifetimePerm p
-  translate p@[nuP| Perm_LCurrent _ |] =
-    return $ mkTypeTrans0 $ APTrans_LifetimePerm p
+  translate [nuP| Perm_LOwned ps_in ps_out |] =
+    do tp_in <- translate1 ps_in
+       tp_out <- translate1 ps_out
+       let tp = arrowOpenTerm "ps" tp_in (applyOpenTerm
+                                          (globalOpenTerm "Prelude.CompM")
+                                          tp_out)
+       return $ mkTypeTrans1 tp (APTrans_LOwned ps_in ps_out)
+  translate [nuP| Perm_LCurrent l |] =
+    return $ mkTypeTrans0 $ APTrans_LCurrent l
   translate [nuP| Perm_Struct ps |] =
     fmap APTrans_Struct <$> translate ps
   translate ([nuP| Perm_Fun fun_perm |]) =
@@ -1919,8 +1933,8 @@ class NuMatchingAny1 f => ImplTranslateF f ext blocks tops ret where
 
 -- | Translate a 'SimplImpl' to a function on translation computations
 translateSimplImpl :: Proxy ps -> Mb ctx (SimplImpl ps_in ps_out) ->
-                      ImpTransM ext blocks tops ret (ps :++: ps_out) ctx res ->
-                      ImpTransM ext blocks tops ret (ps :++: ps_in) ctx res
+                      ImpTransM ext blocks tops ret (ps :++: ps_out) ctx OpenTerm ->
+                      ImpTransM ext blocks tops ret (ps :++: ps_in) ctx OpenTerm
 
 translateSimplImpl _ [nuP| SImpl_Drop _ _ |] m =
   withPermStackM (\(xs :>: _) -> xs) (\(ps :>: _) -> ps) m
@@ -2397,56 +2411,101 @@ translateSimplImpl _ [nuP| SImpl_LLVMBlockIsPtr x _ |] m =
     pctx :>: PTrans_Conj [APTrans_IsLLVMPtr] :>: ptrans)
   m
 
-translateSimplImpl _ simpl@[nuP| SImpl_SplitLifetime _ _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_SplitLifetime _ f args l _ ps_in ps_out |] m =
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
+     ps_in_tp <- translate1 ps_in
+     ps_out_tp <- translate1 ps_out
+     x_tp <- typeTransTupleType <$> translate (mbMap3 ltFuncApply f args l)
      withPermStackM
        (\(ns :>: x :>: _ :>: l2) -> ns :>: x :>: l2)
-       (\(pctx :>: ptrans_x :>: _ :>: _) ->
-         -- NOTE: lifetime permissions have no term translations, so we can
-         -- construct the output PermTransCtx by just passing the terms in
-         -- ptrans_x to pctx_out_trans
-         RL.append pctx (typeTransF pctx_out_trans $ transTerms ptrans_x))
+       (\(pctx :>: ptrans_x :>: _ :>: ptrans_l) ->
+         -- The permission for x does not change type, just its lifetime; the
+         -- permission for l has the (tupled) type of x added as a new input and
+         -- output with tupleCompMFunBoth
+         RL.append pctx $
+         typeTransF pctx_out_trans
+         (transTerms ptrans_x ++ [applyOpenTermMulti
+                                  (globalOpenTerm "Prelude.tupleCompMFunBoth")
+                                  [ps_in_tp, ps_out_tp, x_tp,
+                                   transTerm1 ptrans_l]]))
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_SubsumeLifetime _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_SubsumeLifetime
+                               _ _ ps_in1 ps_out1 ps_in2 ps_out2 |] m =
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
+     ps_in1_tp <- translate1 ps_in1
+     ps_out1_tp <- translate1 ps_out1
+     ps_in2_tp <- translate1 ps_in2
+     ps_out2_tp <- translate1 ps_out2
+     let fun_tp1 = arrowOpenTerm "ps" ps_in1_tp (applyOpenTerm
+                                                 (globalOpenTerm "Prelude.CompM")
+                                                 ps_out1_tp)
      withPermStackM id
-       (\(pctx :>: _ :>: _) ->
-         -- NOTE: lifetime permissions have no term translations, and the output
-         -- permissions of SImplSubsumeLifetime are all lifetime permissions, so
-         -- we can just pass the empty list of terms
-         RL.append pctx (typeTransF pctx_out_trans []))
+       (\(pctx :>: ptrans_l1 :>: ptrans_l2) ->
+         -- The output permissions are an lcurrent permission, which has no term
+         -- translation, and the updated lowned permission, which is the result
+         -- of adding the translation of the lowned permission for l1 to the
+         -- return value of that for l2
+         RL.append pctx $
+         typeTransF pctx_out_trans [applyOpenTermMulti
+                                    (globalOpenTerm "Prelude.tupleCompMFunOut")
+                                    [ps_in2_tp, ps_out2_tp, fun_tp1,
+                                     transTerm1 ptrans_l1,
+                                     transTerm1 ptrans_l2]])
        m
 
-translateSimplImpl _ simpl@[nuP| SImpl_WeakenLifetime _ _ _ _ |] m =
+translateSimplImpl _ simpl@[nuP| SImpl_WeakenLifetime _ _ _ _ _ |] m =
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
      withPermStackM RL.tail
        (\(pctx :>: ptrans_x :>: _) ->
-         -- NOTE: lifetime permissions have no term translations, so we can
+         -- NOTE: lcurrent permissions have no term translations, so we can
          -- construct the output PermTransCtx by just passing the terms in
          -- ptrans_x to pctx_out_trans
          RL.append pctx (typeTransF pctx_out_trans $ transTerms ptrans_x))
        m
 
-translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime _ _ ps_in ps_out |] m =
+translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime
+                                _ ps_in ps_out dps_in dps_out |] m =
+  -- First, translate the output permissions and the input and output types of
+  -- the monadic function for the lifeime ownership permission
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
-     withPermStackM RL.tail
-       (\pctx ->
-         let (pctx_ps, pctx_in :>: _) =
-               RL.split ps (mbDistPermsToProxies ps_in :>: Proxy) pctx in
-         -- NOTE: ltEndPermsIn and ltEndPermsOut have the same translation, so
-         -- we can get out the terms of pctx_in and use them to build pctx_out
-         RL.append pctx_ps (typeTransF pctx_out_trans $ transTerms pctx_in))
-       m
+     ps_in_tp <- translate1 ps_in
+     ps_out_tp <- translate1 ps_out
+
+     -- Next, split out the ps_in permissions from the rest of the pctx
+     pctx <- itiPermStack <$> ask
+     let (pctx_ps, pctx_in :>: ptrans_l) =
+           RL.split ps (mbDistPermsToProxies dps_in :>: Proxy) pctx
+
+     -- Also split out the ps_in variables and replace them with the ps_out vars
+     pctx_vars <- itiPermStackVars <$> ask
+     let (ps_vars, _ :>: _) =
+           RL.split ps (mbDistPermsToProxies dps_in :>: Proxy) pctx_vars
+     let vars_out =
+           -- RL.append ps_vars $
+           error "FIXME HERE NOW"
+
+     -- Now we apply the lifetime ownerhip function to ps_in and bind its output
+     -- in the rest of the computation
+     applyMultiTransM (return $ globalOpenTerm "Prelude.bindM")
+       [return ps_out_tp, returnTypeM,
+        return (applyOpenTermMulti (transTerm1 ptrans_l) (transTerms pctx_in)),
+        lambdaOpenTermTransM "endl_ps" ps_out_tp $ \ps_out_val ->
+         withPermStackM
+         (\_ -> vars_out)
+         (\_ ->
+           RL.append pctx_ps $
+           typeTransF (tupleTypeTrans pctx_out_trans) [ps_out_val])
+         m]
 
 translateSimplImpl _ [nuP| SImpl_LCurrentRefl l |] m =
   withPermStackM (:>: translateVar l)
-  (:>: PTrans_Conj [APTrans_LifetimePerm $ fmap (Perm_LCurrent . PExpr_Var) l])
+  (:>: PTrans_Conj [APTrans_LCurrent $ fmap PExpr_Var l])
   m
 
 translateSimplImpl _ [nuP| SImpl_LCurrentTrans l1 l2 l3 |] m =
   withPermStackM RL.tail
-  ((:>: PTrans_Conj [APTrans_LifetimePerm $ fmap Perm_LCurrent l3]) .
+  ((:>: PTrans_Conj [APTrans_LCurrent l3]) .
    RL.tail . RL.tail)
   m
 
@@ -2946,8 +3005,12 @@ translatePermImpl1 _ [nuP| Impl1_BeginLifetime |] mb_impls =
   translatePermImplUnary mb_impls $ \m ->
   inExtTransM ETrans_Lifetime $
   do tp_trans <-
-       translateClosed $ ValPerm_Conj1 $ Perm_LOwned PExpr_LOwnedPermNil
-     withPermStackM (:>: Member_Base) (:>: typeTransF tp_trans []) m
+       translateClosed $ ValPerm_LOwned PExpr_PermListNil PExpr_PermListNil
+     let id_fun =
+           lambdaOpenTerm "ps_empty" unitTypeOpenTerm $ \x ->
+           applyOpenTermMulti (globalOpenTerm "Prelude.returnM")
+           [unitTypeOpenTerm, x]
+     withPermStackM (:>: Member_Base) (:>: typeTransF tp_trans [id_fun]) m
 
 -- If e1 and e2 are already equal, short-circuit the proof construction and then
 -- elimination
