@@ -466,6 +466,9 @@ data Typed f a = Typed { typedType :: TypeRepr a, typedObj :: f a }
 
 $(mkNuMatching [t| forall f a. NuMatching (f a) => Typed f a |])
 
+instance NuMatchingAny1 f => NuMatchingAny1 (Typed f) where
+  nuMatchingAny1Proof = nuMatchingProof
+
 -- | Cast an existential 'Typed' to a particular type or raise an error
 castTypedM :: MonadFail m => String -> TypeRepr a -> Some (Typed f) -> m (f a)
 castTypedM _ tp (Some (Typed tp' f))

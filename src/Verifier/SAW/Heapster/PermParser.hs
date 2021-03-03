@@ -97,9 +97,6 @@ mkParserEnv env = ParserEnv [] env
 
 $(mkNuMatching [t| ParserEnv |])
 
-instance NuMatchingAny1 f => NuMatchingAny1 (Typed f) where
-  nuMatchingAny1Proof = nuMatchingProof
-
 -- | Look up an expression variable by name in a 'ParserEnv'
 lookupExprVar :: String -> ParserEnv -> Maybe TypedName
 lookupExprVar str = lookup str . parserEnvExprVars

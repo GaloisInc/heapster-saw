@@ -617,7 +617,7 @@ data SimplImpl ps_in ps_out where
   SImpl_LLVMArrayContents ::
     (1 <= w, KnownNat w) =>
     ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> Int -> LLVMArrayField w ->
-    PermImpl ((:~:) (RNil :> LLVMPointerType w)) (RNil :> LLVMPointerType w) ->
+    LocalPermImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w) ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Prove that @x@ is a pointer from a field permission:
@@ -651,7 +651,7 @@ data SimplImpl ps_in ps_out where
   -- current lifetime and part that is saved in the lifetime for later:
   --
   -- > x:F<l,rws> * l:[l2]lcurrent * l2:lowned (ps_in -o ps_out)
-  -- >   -o x:F<l2,rws> * l2:lowned (x:F<l,Rs>, ps_in -o x:F<l,rws>,ps_out)
+  -- >   -o x:F<l2,rws> * l2:lowned (x:F<l,Rs>, ps_in -o x:F<l,rws>, ps_out)
   --
   -- Note that this rule also supports @l=always@, in which case the second
   -- permission is just @l2:true@ (as a hack, because it has the same type)
@@ -685,14 +685,27 @@ data SimplImpl ps_in ps_out where
                           PermExpr LifetimeType -> ExprVar LifetimeType ->
                           SimplImpl (RNil :> a :> LifetimeType) (RNil :> a)
 
+  -- | Map the input and output permissions of a lifetime ownership permission
+  -- using local implications:
+  --
+  -- > Ps1 * Ps_in' -o Ps_in                          Ps2 * Ps_out -o Ps_out'
+  -- > ----------------------------------------------------------------------
+  -- > Ps1 * Ps2 * l:lowned (Ps_in -o Ps_out) -o l:lowned (Ps_in' -o Ps_out')
+  SImpl_MapLifetime ::
+    ExprVar LifetimeType -> TypedDistPerms ps_in -> TypedDistPerms ps_out ->
+    TypedDistPerms ps_in' -> TypedDistPerms ps_out' ->
+    DistPerms ps1 -> DistPerms ps2 ->
+    LocalPermImpl (ps1 :++: ps_in') ps_in ->
+    LocalPermImpl (ps2 :++: ps_out) ps_out' ->
+    SimplImpl (ps1 :++: ps2 :> LifetimeType) (RNil :> LifetimeType)
+
   -- | End a lifetime, taking in its @lowned@ permission and all the permissions
   -- required by the @lowned@ permission to end it, and returning all
   -- permissions given back by the @lowned@ lifetime:
   --
   -- > ps_in * l:lowned (ps_in -o ps_out) -o ps_out
   SImpl_EndLifetime :: ExprVar LifetimeType ->
-                       PermExpr PermListType -> PermExpr PermListType ->
-                       DistPerms ps_in -> DistPerms ps_out ->
+                       TypedDistPerms ps_in -> TypedDistPerms ps_out ->
                        SimplImpl (ps_in :> LifetimeType) ps_out
 
   -- | Reflexivity for @lcurrent@ proofs:
@@ -1120,6 +1133,14 @@ data MbPermImpls r bs_pss where
   MbPermImpls_Cons :: !(MbPermImpls r bs_pss) -> !(Mb bs (PermImpl r ps)) ->
                       MbPermImpls r (bs_pss :> '(bs,ps))
 
+-- | A local implication, from an input to an output permission set
+newtype LocalPermImpl ps_in ps_out =
+  LocalPermImpl (PermImpl (LocalImplRet ps_out) ps_in)
+
+-- | The "success" condition of a 'LocalPermImpl', which essentially is just a
+-- type equality stating that the output permissions are as expected
+newtype LocalImplRet ps ps' = LocalImplRet (ps :~: ps')
+
 -- type IsLLVMPointerTypeList w ps = RAssign ((:~:) (LLVMPointerType w)) ps
 
 $(mkNuMatching [t| forall a. EqPerm a |])
@@ -1128,8 +1149,13 @@ $(mkNuMatching [t| forall ps_in ps_out. SimplImpl ps_in ps_out |])
 $(mkNuMatching [t| forall ps_in ps_outs. PermImpl1 ps_in ps_outs |])
 $(mkNuMatching [t| forall r bs_pss. NuMatchingAny1 r => MbPermImpls r bs_pss |])
 $(mkNuMatching [t| forall r ps. NuMatchingAny1 r => PermImpl r ps |])
+$(mkNuMatching [t| forall ps_in ps_out. LocalPermImpl ps_in ps_out |])
+$(mkNuMatching [t| forall ps ps'. LocalImplRet ps ps' |])
 
 instance NuMatchingAny1 EqPerm where
+  nuMatchingAny1Proof = nuMatchingProof
+
+instance NuMatchingAny1 (LocalImplRet ps) where
   nuMatchingAny1Proof = nuMatchingProof
 
 
@@ -1506,12 +1532,12 @@ simplImplIn (SImpl_SubsumeLifetime l1 ps_in1 ps_out1 l2 ps_in2 ps_out2) =
 simplImplIn (SImpl_WeakenLifetime x f args l l2) =
   let (l',l'_p) = lcurrentPerm l l2 in
   distPerms2 x (ltFuncApply f args l) l' l'_p
-simplImplIn (SImpl_EndLifetime l l_in l_out ps_in ps_out) =
-  case matchVarPermList l_in of
-    Just (Some ps_in')
-      | Just Refl <- testEquality ps_in' ps_in ->
-        DistPermsCons ps_in l $ ValPerm_LOwned l_in l_out
-    _ -> error "simplImplIn: SImpl_EndLifetime: incorrect input permissions"
+simplImplIn (SImpl_MapLifetime l ps_in ps_out _ _ ps1 ps2 _ _) =
+  RL.append ps1 $ DistPermsCons ps2 l $
+  ValPerm_LOwned (typedPermsToPermList ps_in) (typedPermsToPermList ps_out)
+simplImplIn (SImpl_EndLifetime l ps_in ps_out) =
+  DistPermsCons (unTypeDistPerms ps_in) l $
+  ValPerm_LOwned (typedPermsToPermList ps_in) (typedPermsToPermList ps_out)
 simplImplIn (SImpl_LCurrentRefl _) = DistPermsNil
 simplImplIn (SImpl_LCurrentTrans l1 l2 l3) =
   distPerms2 l1 (ValPerm_LCurrent $ PExpr_Var l2) l2 (ValPerm_LCurrent l3)
@@ -1807,12 +1833,11 @@ simplImplOut (SImpl_SubsumeLifetime l1 ps_in1 ps_out1 l2 ps_in2 ps_out2) =
       (ValPerm_LOwned ps_in1 ps_out2) ps_out2)
 simplImplOut (SImpl_WeakenLifetime x f args l l2) =
   distPerms1 x (ltFuncApply f args $ PExpr_Var l2)
-simplImplOut (SImpl_EndLifetime l l_in l_out ps_in ps_out) =
-  case matchVarPermList l_out of
-    Just (Some ps_out')
-      | Just Refl <- testEquality ps_out' ps_out ->
-        ps_out
-    _ -> error "simplImplOut: SImpl_EndLifetime: incorrect output permissions"
+simplImplOut (SImpl_MapLifetime l _ _ ps_in' ps_out' _ _ _ _) =
+  distPerms1 l $
+  ValPerm_LOwned (typedPermsToPermList ps_in') (typedPermsToPermList ps_out')
+simplImplOut (SImpl_EndLifetime l ps_in ps_out) =
+  unTypeDistPerms ps_out
 simplImplOut (SImpl_LCurrentRefl l) =
   distPerms1 l (ValPerm_LCurrent $ PExpr_Var l)
 simplImplOut (SImpl_LCurrentTrans l1 _ l3) =
@@ -2190,9 +2215,15 @@ instance SubstVar PermVarSubst m =>
   genSubst s [nuP| SImpl_WeakenLifetime x f args l l2 |] =
     SImpl_WeakenLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s args
      <*> genSubst s l <*> genSubst s l2
-  genSubst s [nuP| SImpl_EndLifetime l l_in l_out ps_in ps_out |] =
-    SImpl_EndLifetime <$> genSubst s l <*> genSubst s l_in <*> genSubst s l_out
-    <*> genSubst s ps_in <*> genSubst s ps_out
+  genSubst s [nuP| SImpl_MapLifetime l ps_in ps_out ps_in' ps_out'
+                 ps1 ps2 impl1 impl2 |] =
+    SImpl_MapLifetime <$> genSubst s l <*> genSubst s ps_in
+    <*> genSubst s ps_out <*> genSubst s ps_in' <*> genSubst s ps_out'
+    <*> genSubst s ps1 <*> genSubst s ps2 <*> genSubst s impl1
+    <*> genSubst s impl2
+  genSubst s [nuP| SImpl_EndLifetime l ps_in ps_out |] =
+    SImpl_EndLifetime <$> genSubst s l <*> genSubst s ps_in
+    <*> genSubst s ps_out
   genSubst s [nuP| SImpl_LCurrentRefl l |] =
     SImpl_LCurrentRefl <$> genSubst s l
   genSubst s [nuP| SImpl_LCurrentTrans l1 l2 l3 |] =
@@ -2315,11 +2346,22 @@ instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
   genSubst s [nuP| MbPermImpls_Cons mb_impl mb_impls |] =
     MbPermImpls_Cons <$> genSubst s mb_impl <*> genSubst s mb_impls
 
+-- FIXME: shouldn't need the SubstVar PermVarSubst m assumption...
+instance SubstVar PermVarSubst m =>
+         Substable PermVarSubst (LocalPermImpl ps_in ps_out) m where
+  genSubst s [nuP| LocalPermImpl impl |] = LocalPermImpl <$> genSubst s impl
+
 instance SubstVar s m => Substable s (a :~: b) m where
   genSubst _ = return . mbLift
 
 instance SubstVar s m => Substable1 s ((:~:) a) m where
   genSubst1 _ = return . mbLift
+
+instance SubstVar s m => Substable s (LocalImplRet ps ps') m where
+  genSubst _ [nuP| LocalImplRet Refl |] = return $ LocalImplRet Refl
+
+instance SubstVar s m => Substable1 s (LocalImplRet ps) m where
+  genSubst1 _ [nuP| LocalImplRet Refl |] = return $ LocalImplRet Refl
 
 
 ----------------------------------------------------------------------

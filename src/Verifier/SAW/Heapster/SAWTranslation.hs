@@ -1634,6 +1634,11 @@ instance TransInfo info =>
                                             (PermTransCtx ctx ps)) where
   translate = translate . mbDistPermsToValuePerms
 
+instance TransInfo info =>
+         Translate info ctx (TypedDistPerms ps) (TypeTrans
+                                                 (PermTransCtx ctx ps)) where
+  translate = translate . mbDistPermsToValuePerms . fmap unTypeDistPerms
+
 -- Translate a FunPerm to a pi-abstraction (FIXME: more documentation!)
 instance TransInfo info =>
          Translate info ctx (FunPerm ghosts args ret) OpenTerm where
@@ -2464,26 +2469,75 @@ translateSimplImpl _ simpl@[nuP| SImpl_WeakenLifetime _ _ _ _ _ |] m =
          RL.append pctx (typeTransF pctx_out_trans $ transTerms ptrans_x))
        m
 
-translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime
-                                _ ps_in ps_out dps_in dps_out |] m =
+translateSimplImpl ps simpl@[nuP| SImpl_MapLifetime l ps_in ps_out
+                                ps_in' ps_out' ps1 ps2 impl_in impl_out |] m =
+  -- First, translate the output permissions and all of the perm lists
+  do pctx_out_trans <- translate $ fmap simplImplOut simpl
+     ps_in_tp <- translate1 ps_in
+     ps_out_tp <- translate1 ps_out
+     ps_in'_tp <- translate1 ps_in'
+     ps_out'_tp <- translate1 ps_out'
+     ps1_tp <- typeTransTupleType <$> translate ps1
+     ps2_tp <- typeTransTupleType <$> translate ps2
+
+     -- Next, split out the various input permissions from the rest of the pctx
+     let prxs1 = mbRAssignProxies ps1
+     let prxs2 = mbRAssignProxies ps2
+     let prxs_in = RL.append prxs1 prxs2 :>: Proxy
+     pctx <- itiPermStack <$> ask
+     let (pctx_ps, pctx12 :>: ptrans_l) = RL.split ps prxs_in pctx
+     let (pctx1, pctx2) = RL.split prxs1 prxs2 pctx12
+
+     -- Also split out the input variables and replace them with the ps_out vars
+     pctx_vars <- itiPermStackVars <$> ask
+     let (vars_ps, vars12 :>: _) = RL.split ps prxs_in pctx_vars
+     let (vars1, vars2) = RL.split prxs1 prxs2 vars12
+     let vars_out = vars_ps :>: translateVar l
+
+     -- Now build the output lowned function by composing the input lowned
+     -- function with the translations of the implications on inputs and outputs
+     impl_in_tm <-
+       translateCurryLocalPermImpl "Error mapping lifetime input perms:" impl_in
+       pctx1 vars1 (fmap unTypeDistPerms ps_in') (fmap unTypeDistPerms ps_in)
+     impl_out_tm <-
+       translateCurryLocalPermImpl "Error mapping lifetime output perms:" impl_out
+       pctx2 vars2 (fmap unTypeDistPerms ps_out) (fmap unTypeDistPerms ps_out')
+     let l_res_tm =
+           applyOpenTermMulti
+           (globalOpenTerm "Prelude.composeM")
+           [ps_in'_tp, ps_in_tp, ps_out'_tp, impl_in_tm,
+            applyOpenTermMulti
+            (globalOpenTerm "Prelude.composeM")
+            [ps_in_tp, ps_out_tp, ps_out'_tp, transTerm1 ptrans_l, impl_in_tm]]
+
+     -- Finally, update the permissions
+     withPermStackM
+       (\_ -> vars_out)
+       (\_ ->
+         RL.append pctx_ps $
+         typeTransF (tupleTypeTrans pctx_out_trans) [l_res_tm])
+       m
+
+translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime _ ps_in ps_out |] m =
   -- First, translate the output permissions and the input and output types of
   -- the monadic function for the lifeime ownership permission
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
      ps_in_tp <- translate1 ps_in
      ps_out_tp <- translate1 ps_out
+     let prxs_in = mbRAssignProxies ps_in :>: Proxy
 
      -- Next, split out the ps_in permissions from the rest of the pctx
      pctx <- itiPermStack <$> ask
-     let (pctx_ps, pctx_in :>: ptrans_l) =
-           RL.split ps (mbDistPermsToProxies dps_in :>: Proxy) pctx
+     let (pctx_ps, pctx_in :>: ptrans_l) = RL.split ps prxs_in pctx
 
      -- Also split out the ps_in variables and replace them with the ps_out vars
      pctx_vars <- itiPermStackVars <$> ask
-     let (ps_vars, _ :>: _) =
-           RL.split ps (mbDistPermsToProxies dps_in :>: Proxy) pctx_vars
+     let (ps_vars, _ :>: _) = RL.split ps prxs_in pctx_vars
      let vars_out =
-           -- RL.append ps_vars $
-           error "FIXME HERE NOW"
+           RL.append ps_vars $
+           RL.map (translateVar
+                   . fmap (\(Typed _ (VarAndPerm x _)) -> x) . getCompose) $
+           mbRAssign ps_out
 
      -- Now we apply the lifetime ownerhip function to ps_in and bind its output
      -- in the rest of the computation
@@ -3168,6 +3222,38 @@ instance ImplTranslateF r ext blocks tops ret =>
     ImplFailContMsg (mbLift err ++ "\n\n"
                      ++ concat (intersperse
                                 "\n\n--------------------\n\n" errs))
+
+-- We translate a LocalImplRet to a term that returns all current permissions
+instance ImplTranslateF (LocalImplRet ps) ext blocks ps_in ret where
+  translateF _ =
+    do pctx <- itiPermCtx <$> ask
+       ret_tp <- returnTypeM
+       return $ applyOpenTermMulti (globalOpenTerm "Prelude.returnM")
+         [ret_tp, transTupleTerm pctx]
+
+-- | Translate a local implication to its output, adding an error message
+translateLocalPermImpl :: String -> Mb ctx (LocalPermImpl ps_in ps_out) ->
+                          ImpTransM ext blocks tops ret ps_in ctx OpenTerm
+translateLocalPermImpl err [nuP| LocalPermImpl impl |] =
+  translate $ fmap (AnnotPermImpl err) impl
+
+-- | Translate a local implication over two sequences of permissions to a
+-- monadic function that takes in the second permissions by passing in the first
+-- sequence of permissions
+translateCurryLocalPermImpl ::
+  String -> Mb ctx (LocalPermImpl (ps1 :++: ps2) ps_out) ->
+  PermTransCtx ctx ps1 -> RAssign (Member ctx) ps1 -> Mb ctx (DistPerms ps2) ->
+  Mb ctx (DistPerms ps_out) -> ImpTransM ext blocks tops ret ps ctx OpenTerm
+translateCurryLocalPermImpl err impl pctx1 vars1 ps2 ps_out =
+  translate ps_out >>= \ps_out_trans ->
+  lambdaPermCtx (mbDistPermsToValuePerms ps2) $ \pctx2 ->
+  local (\info -> info { itiReturnType = typeTransTupleType ps_out_trans }) $
+  let vars2 = RL.map (translateVar
+                      . getCompose) $ mbRAssign $ fmap distPermsVars ps2 in
+  withPermStackM
+    (const (RL.append vars1 vars2))
+    (const (RL.append pctx1 pctx2))
+    (translateLocalPermImpl err impl)
 
 
 ----------------------------------------------------------------------

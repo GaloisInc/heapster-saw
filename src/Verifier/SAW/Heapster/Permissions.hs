@@ -119,6 +119,10 @@ mbRAssign :: NuMatchingAny1 f => Mb ctx (RAssign f as) ->
 mbRAssign [nuP| MNil |] = MNil
 mbRAssign [nuP| mb_xs :>: mb_x |] = mbRAssign mb_xs :>: Compose mb_x
 
+-- | Convert an 'RAssign' in a binding to an 'RAssign' of 'Proxy's
+mbRAssignProxies :: Mb ctx (RAssign f as) -> RAssign Proxy as
+mbRAssignProxies = mbLift . fmap (RL.map (const Proxy))
+
 -- | Build an 'RAssign' from a 'Foldable' data structure by mapping each element
 -- to 'Some' typed object
 --
@@ -417,6 +421,7 @@ instance PermPretty a => PermPretty (Mb (ctx :: RList Type) a) where
 instance PermPretty Integer where
   permPrettyM = return . pretty
 
+
 ----------------------------------------------------------------------
 -- * Expressions for Permissions
 ----------------------------------------------------------------------
@@ -696,30 +701,6 @@ matchPermList (PExpr_Var ps) = (Some MNil, Just ps)
 matchPermList (PExpr_PermListCons _ e p l)
   | (Some eperms, term) <- matchPermList l
   = (Some (RL.append (MNil :>: ExprAndPerm e p) eperms), term)
-
--- FIXME HERE NOW: remove this!
-{-
--- | Pattern-match a permission list expression as a typed list of permissions
--- consed onto a terminator, which can either be the empty list (represented by
--- 'Nothing') or a variable expression
-matchPermListTyped :: PermExpr PermListType -> (Some (Product CruCtx ExprPerms),
-                                                Maybe (ExprVar PermListType))
-matchPermListTyped PExpr_PermListNil = (Some (Pair CruCtxNil MNil), Nothing)
-matchPermListTyped (PExpr_Var ps) = (Some (Pair CruCtxNil MNil), Just ps)
-matchPermListTyped (PExpr_PermListCons e p l)
-  | (Some (Pair ctx eperms), term) <- matchPermListTyped l
-  = (Some (Pair (appendCruCtx (singletonCruCtx $ exprType e) ctx)
-           (RL.append (MNil :>: ExprAndPerm e p) eperms)), term)
-
--- | Pattern-match a permission list expression as a list of permissions consed
--- onto a terminator, which can either be the empty list (represented by
--- 'Nothing') or a variable expression
-matchPermList :: PermExpr PermListType -> (Some ExprPerms,
-                                           Maybe (ExprVar PermListType))
-matchPermList e =
-  let (typed_perms, term) = matchPermListTyped e in
-  (fmapF (\(Pair _ ps) -> ps) typed_perms, term)
--}
 
 -- | Pattern-match a permission list expression as a list of permissions on
 -- variables with an empty list (not a variable) as a terminator
@@ -2090,6 +2071,32 @@ eqDistPerms ns exprs =
 trueDistPerms :: RAssign Name ps -> DistPerms ps
 trueDistPerms MNil = DistPermsNil
 trueDistPerms (ns :>: n) = DistPermsCons (trueDistPerms ns) n ValPerm_True
+
+-- | A list of "distinguished" permissions with types
+type TypedDistPerms = RAssign (Typed VarAndPerm)
+
+-- | Convert a permission list expression to a 'TypedDistPerms', if possible
+permListToTypedPerms :: PermExpr PermListType -> Maybe (Some TypedDistPerms)
+permListToTypedPerms PExpr_PermListNil = Just $ Some MNil
+permListToTypedPerms (PExpr_PermListCons tp (PExpr_Var x) p l)
+  | Just (Some perms) <- permListToTypedPerms l =
+    Just $ Some $ RL.append (MNil :>: Typed tp (VarAndPerm x p)) perms
+permListToTypedPerms _ = Nothing
+
+-- | Convert a 'TypedDistPerms' to a permission list
+typedPermsToPermList :: TypedDistPerms ps -> PermExpr PermListType
+typedPermsToPermList = flip helper PExpr_PermListNil where
+  -- We use an accumulator to reverse as we go, because DistPerms cons to the
+  -- right while PermLists cons to the left
+  helper :: TypedDistPerms ps' -> PermExpr PermListType -> PermExpr PermListType
+  helper MNil accum = accum
+  helper (ps :>: Typed tp (VarAndPerm x p)) accum =
+    helper ps $ PExpr_PermListCons tp (PExpr_Var x) p accum
+
+-- | Convert a 'TypedDistPerms' to a normal 'DistPerms'
+unTypeDistPerms :: TypedDistPerms ps -> DistPerms ps
+unTypeDistPerms = RL.map (\(Typed _ v_and_p) -> v_and_p)
+
 
 instance TestEquality VarAndPerm where
   testEquality (VarAndPerm x1 p1) (VarAndPerm x2 p2)
@@ -4661,6 +4668,11 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m => Substable1 PermVarSubst VarAndPerm m where
   genSubst1 = genSubst
+
+instance Substable1 s f m => Substable1 s (Typed f) m where
+  genSubst1 s mb_typed =
+    Typed (mbLift $ fmap typedType mb_typed) <$>
+    genSubst1 s (fmap typedObj mb_typed)
 
 {-
 instance SubstVar PermVarSubst m =>
