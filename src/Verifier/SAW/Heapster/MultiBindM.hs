@@ -54,6 +54,47 @@ import Data.Binding.Hobbits.NuMatchingInstances
 import Verifier.SAW.Heapster.CruUtil
 
 
+-- * The untyped lambda-calculus with modules
+
+data LCTag
+type LCVar = Name LCTag
+type LCBinding = Binding LCTag
+
+data LC
+  = LC_Var LCVar
+  | LC_App LC LC
+  | LC_Lam (LCBinding LC)
+  | LC_Let LC (LCBinding LC)
+  deriving (Show)
+
+data LCModule
+  = LCModNil
+  | LCModCons String LC (LCBinding LCModule)
+
+
+-- * An approach based on the continuation monad that returns multiple levels of
+-- "un-binding functions"
+
+data UnbindFuns (rs :: RList Type) r (ctx :: RList k) where
+  UnbindFunsNil :: (Mb ctx r -> r) -> UnbindFuns RNil r ctx
+  UnbindFunsCons :: UnbindFuns rs r_next ctx -> RAssign Proxy ctx' ->
+                    (Mb ctx (Mb ctx' r -> r_next)) ->
+                    UnbindFuns (rs :> r_next) r (ctx :++: ctx')
+
+data BuilderRet (rs :: RList Type) r where
+  BuilderRet :: Closed (UnbindFuns rs r ctx) -> Mb ctx r -> BuilderRet rs r
+
+type Builder (rs :: RList Type) r = Cont (BuilderRet rs r)
+
+openBinding :: (Mb ctx (BuilderRet rs r) -> BuilderRet rs r) ->
+               Mb ctx a -> Builder rs r a
+openBinding f_out mb_a =
+  cont $ \k -> f_out $ fmap k mb_a
+
+
+-- * A name-binding monad with state-monad-like structure
+
+-- | Commuting existentials with name-bindings
 mbSome :: Mb ctx (Some f) -> Some (Compose (Mb ctx) f)
 mbSome = error "FIXME HERE NOW"
 
@@ -135,6 +176,9 @@ instance (BindMonoid w, Monad m) => Applicative (BindT w m) where
 -}
 
 
+
+-- * A name-binding monad with writer-monad-like structure
+
 newtype Flip f a b = Flip { unFlip :: f b a }
 
 type BindRet w a = Some (Product w (Flip Mb a))
@@ -189,24 +233,10 @@ instance BindMonoid (UnbindFun r) where
     (appUnbindFun f1 . mbApply (fmap appUnbindFun mb_f2)
      . mbSeparate (mbUnbindFunCtx mb_f2))
 
-data LCTag
-type LCVar = Name LCTag
-type LCBinding = Binding LCTag
-
-data LC
-  = LC_Var LCVar
-  | LC_App LC LC
-  | LC_Lam (LCBinding LC)
-  | LC_Let LC (LCBinding LC)
-  deriving (Show)
-
-data LCModule
-  = LCModNil
-  | LCModCons String LC (LCBinding LCModule)
-
-
 -- type LCBuilder = BindT (UnbindFun LCModule) (BindT (UnbindFun LC) Identity)
 
+
+-- * Ideas about a partially closed / "un-binding" type
 
 newtype UnMb (reg :: Type) a = UnMb { reMb :: a }
 
