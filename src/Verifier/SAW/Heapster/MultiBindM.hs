@@ -258,19 +258,31 @@ mkLam f =
   withLevelM
   (openBinding Member_Base lambdaBindingFun (nu $ \x -> LC_Var x) >>= f)
 
-class IsMember rs r where
-  isMember :: Member rs r
+class HasModule rs where
+  moduleMember :: Member rs LCModule
 
-instance IsMember (rs :> r) r where
-  isMember = Member_Base
+instance HasModule (rs :> LCModule) where
+  moduleMember = Member_Base
 
-instance IsMember rs r => IsMember (rs :> r') r where
-  isMember = Member_Step isMember
+instance HasModule rs => HasModule (rs :> LC) where
+  moduleMember = Member_Step moduleMember
 
-moduleBind :: IsMember rs LCModule => String -> LC -> Builder Type rs r LC
+moduleBind :: HasModule rs => String -> LC -> Builder Type rs r LC
 moduleBind str rhs =
-  openBinding isMember (modConsBindingFun str rhs) (nu $ \x -> LC_Var x)
+  openBinding moduleMember (modConsBindingFun str rhs) (nu $ \x -> LC_Var x)
 
+
+example1 :: LCModule
+example1 =
+  runBuilder $ withLevelM $
+  do foo1_def <- mkLam (\x -> mkLam $ \y -> return $ LC_App x y)
+     foo1 <- moduleBind "foo1" foo1_def
+     foo3_def <- mkLam (\x ->
+                         do foo2_def <- mkLam return
+                            foo2 <- moduleBind "foo2" foo2_def
+                            return $ LC_App foo2 x)
+     foo2 <- moduleBind "foo3" foo3_def
+     return LCModNil
 
 
 -- * Another approach based on a single continuation monad with "binding commands"
