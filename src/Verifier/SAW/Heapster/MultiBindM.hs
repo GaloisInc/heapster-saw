@@ -29,6 +29,7 @@ module Verifier.SAW.Heapster.MultiBindM where
 import Data.Kind
 import Data.Functor.Compose
 import Data.Functor.Product
+import Control.Applicative
 import Control.Monad.Cont
 import Control.Monad.State
 import Control.Monad.Identity
@@ -71,24 +72,525 @@ data LCModule
   = LCModNil
   | LCModCons String LC (LCBinding LCModule)
 
+$(mkNuMatching [t| LC |])
+$(mkNuMatching [t| LCModule |])
 
--- * An approach based on the continuation monad that returns multiple levels of
--- "un-binding functions"
+class NuMatching a => MaybeLiftable a where
+  mbMaybeLift :: Mb ctx a -> Maybe a
 
-data UnbindFuns (rs :: RList Type) r (ctx :: RList k) where
-  UnbindFunsNil :: (Mb ctx r -> r) -> UnbindFuns RNil r ctx
-  UnbindFunsCons :: UnbindFuns rs r_next ctx -> RAssign Proxy ctx' ->
-                    (Mb ctx (Mb ctx' r -> r_next)) ->
-                    UnbindFuns (rs :> r_next) r (ctx :++: ctx')
+mbForceLift :: MaybeLiftable a => Mb ctx a -> a
+mbForceLift mb_a | Just a <- mbMaybeLift mb_a = a
+mbForceLift _ = error "mbForceLift"
 
-data BuilderRet (rs :: RList Type) r where
-  BuilderRet :: Closed (UnbindFuns rs r ctx) -> Mb ctx r -> BuilderRet rs r
+class NuMatchingAny1 f => MaybeLiftableAny1 f where
+  mbMaybeLift1 :: Mb ctx (f a) -> Maybe (f a)
 
-type Builder (rs :: RList Type) r = Cont (BuilderRet rs r)
+instance MaybeLiftable () where
+  mbMaybeLift _ = Just ()
 
-openBinding :: (Mb ctx (BuilderRet rs r) -> BuilderRet rs r) ->
-               Mb ctx a -> Builder rs r a
-openBinding f_out mb_a =
+instance MaybeLiftable String where
+  mbMaybeLift = Just . mbLift
+
+instance (MaybeLiftable a, MaybeLiftable b) => MaybeLiftable (a,b) where
+  mbMaybeLift mb_ab =
+    (,) <$> mbMaybeLift (fmap fst mb_ab) <*> mbMaybeLift (fmap snd mb_ab)
+
+instance MaybeLiftable a => MaybeLiftable (Mb ctx a) where
+  mbMaybeLift mb_mb_a
+    | [nuP| Just mb_a |] <- fmap mbMaybeLift $ mbSwap mb_mb_a = Just mb_a
+  mbMaybeLift _ = Nothing
+
+mbMaybe :: NuMatching a => Mb ctx (Maybe a) -> Maybe (Mb ctx a)
+mbMaybe [nuP| Just mb_a |] = Just mb_a
+mbMaybe [nuP| Nothing |] = Nothing
+
+instance MaybeLiftable LC where
+  mbMaybeLift [nuP| LC_Var mb_x |]
+    | Right x <- mbNameBoundP mb_x = Just $ LC_Var x
+  mbMaybeLift [nuP| LC_Var _ |] = Nothing
+  mbMaybeLift [nuP| LC_App t1 t2 |] =
+    LC_App <$> mbMaybeLift t1 <*> mbMaybeLift t2
+  mbMaybeLift [nuP| LC_Lam mb_mb_body |] =
+    LC_Lam <$> mbMaybe (fmap mbMaybeLift $ mbSwap mb_mb_body)
+  mbMaybeLift [nuP| LC_Let mb_rhs mb_mb_body |] =
+    LC_Let <$> mbMaybeLift mb_rhs <*>
+    mbMaybe (fmap mbMaybeLift $ mbSwap mb_mb_body)
+
+instance MaybeLiftable LCModule where
+  mbMaybeLift [nuP| LCModNil |] = Just LCModNil
+  mbMaybeLift [nuP| LCModCons mb_str mb_def mb_mb_rest |] =
+    LCModCons (mbLift mb_str) <$> mbMaybeLift mb_def <*>
+    mbMaybe (fmap mbMaybeLift $ mbSwap mb_mb_rest)
+
+-- * Yet another approach based on a single continuation monad with "binding
+-- commands"
+
+-- | A function that binds a context in an @r@ by showing how to map in @r@ in a
+-- binding to one not in a binding. Binding functions are parameterized by an
+-- argument that we can try to lift.
+data BindingFun ctx r =
+  forall arg. MaybeLiftable arg => BindingFun (Closed (arg -> Mb ctx r -> r)) arg
+
+$(mkNuMatching [t| forall ctx r. BindingFun ctx r |])
+
+instance MaybeLiftable (BindingFun ctx r) where
+  mbMaybeLift [nuP| BindingFun mb_cl_f mb_arg |] =
+    BindingFun (mbLift mb_cl_f) <$> mbMaybeLift mb_arg
+
+-- | A return value @a@ inside a sequence of "binding functions"
+data BindingCmds k rs a where
+  BindingCmdsNil :: a -> BindingCmds k rs a
+  BindingCmdsCons :: Member rs r ->
+                     BindingFun (ctx :: RList k) r ->
+                     Mb (ctx :: RList k) (BindingCmds k rs a) ->
+                     BindingCmds k rs a
+
+instance Functor (BindingCmds k rs) where
+  fmap f (BindingCmdsNil x) = BindingCmdsNil $ f x
+  fmap f (BindingCmdsCons memb bindF mb_cmds) =
+    BindingCmdsCons memb bindF (fmap (fmap f) mb_cmds)
+
+instance Applicative (BindingCmds k rs) where
+  pure x = BindingCmdsNil x
+  liftA2 f (BindingCmdsNil r1) cmds2 = fmap (f r1) cmds2
+  liftA2 f (BindingCmdsCons memb bindF mb_cmds1) cmds2 =
+    BindingCmdsCons memb bindF $ fmap (\cmds1 -> liftA2 f cmds1 cmds2) mb_cmds1
+
+instance Monad (BindingCmds k rs) where
+  return = pure
+  (BindingCmdsNil x) >>= f = f x
+  (BindingCmdsCons memb bindF mb_cmds) >>= f =
+    BindingCmdsCons memb bindF $ fmap (>>= f) mb_cmds
+
+$(mkNuMatching [t| forall k rs r. NuMatching r => BindingCmds k rs r |])
+
+bindingCmdsM :: MonadStrongBind m => BindingCmds k rs (m a) ->
+                m (BindingCmds k rs a)
+bindingCmdsM (BindingCmdsNil m) = BindingCmdsNil <$> m
+bindingCmdsM (BindingCmdsCons memb bindF mb_cmds) =
+  BindingCmdsCons memb bindF <$> strongMbM (fmap bindingCmdsM mb_cmds)
+
+-- | Apply a binding function in a binding to an argument in an extended binding
+mbApplyBindFun :: RAssign prx' ctx' -> Mb ctx (BindingFun ctx' r) ->
+                  Mb (ctx :++: ctx') r -> Mb ctx r
+mbApplyBindFun ctx' [nuP| BindingFun mb_bindF mb_arg |] mb_r =
+  fmap unClosed mb_bindF `mbApply` mb_arg `mbApply`
+  mbSeparate ctx' mb_r
+
+-- | Helper function for 'runInnerBindingCmds'
+runMbInnerBindingCmds :: NuMatching r => (Mb ctx r -> r) ->
+                         Mb (ctx :: RList k) (BindingCmds k (rs :> r) r) ->
+                         BindingCmds k rs r
+runMbInnerBindingCmds bindF [nuP| BindingCmdsNil mb_r |] =
+  BindingCmdsNil $ bindF mb_r
+runMbInnerBindingCmds bindF [nuP| BindingCmdsCons Member_Base bindF' cmds |] =
+  let prxs = mbLift (fmap mbToProxy cmds) in
+  runMbInnerBindingCmds (bindF . mbApplyBindFun prxs bindF') (mbCombine cmds)
+runMbInnerBindingCmds bindF [nuP| BindingCmdsCons (Member_Step memb) bindF' cmds |] =
+  BindingCmdsCons (mbLift memb) (mbForceLift bindF')
+  (fmap (runMbInnerBindingCmds bindF) $ mbSwap cmds)
+
+-- | "Run" the innermost level of binding commands in a 'BindingCmds' sequence,
+-- to get a sequence of binding commands with one fewer level
+runInnerBindingCmds :: NuMatching r => BindingCmds k (rs :> r) r ->
+                       BindingCmds k rs r
+runInnerBindingCmds = runMbInnerBindingCmds elimEmptyMb . emptyMb
+
+-- | "Run" a list of binding commands with no levels by just returning its contents
+runTopBindingCmds :: BindingCmds k RNil a -> a
+runTopBindingCmds (BindingCmdsNil a) = a
+
+-- | The monad transformer for building an @r@ inside multiple levels of
+-- bindings for names of kind @k@
+type BuilderT k rs r m = ContT (BindingCmds k rs r) m
+
+-- | Run a 'BuilderT'
+runBuilderT :: Monad m => BuilderT k RNil r m r -> m r
+runBuilderT m = runTopBindingCmds <$> runContT m (return . BindingCmdsNil)
+
+-- | The builder monad
+type Builder k rs r = BuilderT k rs r Identity
+
+-- | Run a 'Builder'
+runBuilder :: Builder k RNil r r -> r
+runBuilder = runIdentity . runBuilderT
+
+-- | Run a computation inside a binding that we can account for in one of the
+-- levels with a binding command
+openBinding :: MonadStrongBind m => Member rs r' ->
+               BindingFun (ctx :: RList k) r' -> Mb ctx a ->
+               BuilderT k rs r m a
+openBinding memb bindF mb_a =
+  ContT $ \k ->
+  BindingCmdsCons memb bindF <$> strongMbM (fmap k mb_a)
+
+-- | Run a computation locally with a new level
+withLevelM :: (MonadStrongBind m, NuMatching r) =>
+              BuilderT k (rs :> r) r m r ->
+              BuilderT k rs r' m r
+withLevelM m =
+  ContT $ \k ->
+  (runInnerBindingCmds <$> runContT m (return . BindingCmdsNil)) >>= \cmds ->
+  fmap join (bindingCmdsM (fmap k cmds))
+
+
+-- | The 'BindingFun' for let-binding a lambda-calculus term
+letBindingFun :: LC -> BindingFun (RNil :> LCTag) LC
+letBindingFun rhs = BindingFun $(mkClosed [| LC_Let |]) rhs
+
+-- | The 'BindingFun' for lambda
+lambdaBindingFun :: BindingFun (RNil :> LCTag) LC
+lambdaBindingFun = BindingFun $(mkClosed [| const LC_Lam |]) ()
+
+-- | The 'BindingFun' for module cons
+modConsBindingFun :: String -> LC -> BindingFun (RNil :> LCTag) LCModule
+modConsBindingFun str rhs =
+  BindingFun $(mkClosed [| \(str,rhs) -> LCModCons str rhs |]) (str,rhs)
+
+-- | Let-bind a value at the current binding level
+letBind :: LC -> Builder Type (rs :> LC) LC LC
+letBind rhs =
+  openBinding Member_Base (letBindingFun rhs) (nu $ \x -> LC_Var x)
+
+-- | Create a lambda
+mkLam :: (LC -> Builder Type (rs :> LC) LC LC) -> Builder Type rs r LC
+mkLam f =
+  withLevelM
+  (openBinding Member_Base lambdaBindingFun (nu $ \x -> LC_Var x) >>= f)
+
+class IsMember rs r where
+  isMember :: Member rs r
+
+instance IsMember (rs :> r) r where
+  isMember = Member_Base
+
+instance IsMember rs r => IsMember (rs :> r') r where
+  isMember = Member_Step isMember
+
+moduleBind :: IsMember rs LCModule => String -> LC -> Builder Type rs r LC
+moduleBind str rhs =
+  openBinding isMember (modConsBindingFun str rhs) (nu $ \x -> LC_Var x)
+
+
+
+-- * Another approach based on a single continuation monad with "binding commands"
+
+data CmdSteps cmd r where
+  CmdStepsNil :: r -> CmdSteps cmd r
+  CmdStepsCons :: NuMatching a => cmd a -> (a -> CmdSteps cmd r) -> CmdSteps cmd r
+
+data BindingCmd3 rs a where
+  BindingCmd3 :: (MaybeLiftable arg, MaybeLiftable a) => Member rs r ->
+                 Closed (arg -> Mb ctx r -> r) -> arg -> Mb ctx a ->
+                 BindingCmd3 rs a
+
+$(mkNuMatching [t| forall cmd r. (NuMatchingAny1 cmd,
+                                  NuMatching r) => CmdSteps cmd r |])
+$(mkNuMatching [t| forall rs a. BindingCmd3 rs a |])
+
+instance NuMatchingAny1 (BindingCmd3 rs) where
+  nuMatchingAny1Proof = nuMatchingProof
+
+-- NOTE: can't do this because we can't maybe-lift the continuation, only force
+-- lift it (which maybe is ok...?)
+instance (MaybeLiftable r, MaybeLiftableAny1 cmd) =>
+         MaybeLiftable (CmdSteps cmd r) where
+  mbMaybeLift [nuP| CmdStepsNil mb_r |] = CmdStepsNil <$> mbMaybeLift mb_r
+  mbMaybeLift [nuP| CmdStepsCons mb_cmd mb_k |] =
+    CmdStepsCons <$> mbMaybeLift1 mb_cmd <*>
+    return (\a -> mbForceLift $ fmap ($ a) mb_k)
+
+instance MaybeLiftable (BindingCmd3 rs a) where
+  mbMaybeLift [nuP| BindingCmd3 mb_memb mb_bindF mb_arg mb_mb_a |]
+    | Just mb_a <- mbMaybeLift mb_mb_a
+    , Just arg <- mbMaybeLift mb_arg =
+      Just $ BindingCmd3 (mbLift mb_memb) (mbLift mb_bindF) arg mb_a
+  mbMaybeLift _ = Nothing
+
+{-
+liftCmdStepsBC3 :: NuMatching r => CmdSteps (BindingCmd3 (rs :> r)) r ->
+                   CmdSteps (BindingCmd3 rs) r
+liftCmdStepsBC3 (CmdStepsNil r) = CmdStepsNil r
+liftCmdStepsBC3 (CmdStepsCons
+                  (BindingCmd3 Member_Base bindF arg mb_a)
+                  k) =
+  
+
+openBindingBC3 :: NuMatching r => (Mb ctx r -> r) -> Mb ctx a ->
+                  (a -> CmdSteps (BindingCmd3 (rs :> r)) r) ->
+                  CmdSteps (BindingCmd3 rs) r
+openBindingBC3 bindF mb_a k
+  | [nuP| CmdStepsNil mb_r |] <- fmap k mb_a = CmdStepsNil $ bindF mb_r
+openBindingBC3 bindF mb_a k
+  | [nuP| CmdStepsCons
+        (BindingCmd3 Member_Base mb_bindF' mb_arg mb_b) mb_k' |] <- fmap k mb_a
+  = bindF $ mbApply mb_k' _
+
+
+(Mb ctx r -> r) -> Mb ctx (CmdSteps (BindingCmd3 (rs :> r)) r) ->
+CmdSteps (BindingCmd3 rs) r
+
+
+liftBindingBC3 :: FreeM (BindingCmd3 (rs :> r)) r -> FreeM (BindingCmd3 rs) r
+liftBindingBC3 m =
+  runFreeM m Left (\case
+                      CmdStep (BindingCmd3 Member_Base bindF arg mb_a) k
+                        | 
+                        )
+-}
+
+
+-- * An approach based on a single continuation monad with "binding commands"
+
+data BindingCmd2 rs where
+  BindingCmd2 :: MaybeLiftable a => Member rs r ->
+                 Closed (a -> Mb ctx r -> r) -> a ->
+                 BindingCmd2 rs
+
+$(mkNuMatching [t| forall rs. BindingCmd2 rs |])
+
+instance MaybeLiftable (BindingCmd2 rs) where
+  mbMaybeLift [nuP| BindingCmd2 mb_memb mb_f mb_a |]
+    | Just a <- mbMaybeLift mb_a =
+      Just $ BindingCmd2 (mbLift mb_memb) (mbLift mb_f) a
+  mbMaybeLift _ = Nothing
+
+
+type BC2Builder rs r = Cont (BindingCmd2 rs, r)
+
+{-
+openTopBinding :: (Mb ctx r -> r) -> Mb ctx a -> BC2Builder rs r a
+openTopBinding bindF mb_a =
+  cont $ \k ->
+-}
+
+
+-- * An approach based on free monads
+
+data CmdStep cmd r where
+  CmdStep :: cmd a -> (a -> r) -> CmdStep cmd r
+
+newtype FreeM cmd a =
+  FreeM { runFreeM :: forall r. (a -> r) -> (CmdStep cmd r -> r) -> r }
+
+instance Monad (FreeM f) where
+  return x = FreeM $ \kpure _ -> kpure x
+  FreeM m >>= f =
+    FreeM (\kpure kcmd -> m (\a -> runFreeM (f a) kpure kcmd) kcmd)
+
+instance Functor (FreeM f) where
+  fmap f (FreeM g) = FreeM (\kpure -> g (kpure . f))
+
+instance Applicative (FreeM f) where
+  pure = return
+  FreeM f <*> FreeM g = FreeM (\kpure kcmd -> f (\a -> g (kpure . a) kcmd) kcmd)
+
+applyCmd :: cmd a -> FreeM cmd a
+applyCmd cmd = FreeM $ \kpure kcmd -> kcmd $ CmdStep cmd kpure
+
+data BindingCmd rs a where
+  BindingCmd :: Member rs r -> (Mb ctx r -> r) -> Mb ctx a ->
+                BindingCmd rs a
+
+
+liftBindingFreeM :: FreeM (BindingCmd (rs :> r)) r -> FreeM (BindingCmd rs) r
+liftBindingFreeM = error "FIXME: this is not writeable!"
+
+
+
+-- * An approach based on multiple levels of continuation transformers
+
+type Cont2T r1 r2 = ContT r1 (Cont r2)
+
+mbCont2T :: Liftable r2 => Mb ctx (Cont2T r1 r2 a) ->
+            Cont2T r1 r2 (Mb ctx a)
+mbCont2T mb_m =
+  error "FIXME: this doesn't work!"
+
+
+-- openBindingCont2T :: Liftable r2 => (Mb ctx r1 -> r1) -> Mb ctx a ->
+--                      Cont2T r1 r2 a
+
+
+
+-- * An approach based on prompts and multiple continuations
+
+-- | A "multi-continuation"
+data MultiCont r_out rs r_in where
+  MultiContNil :: MultiCont r RNil r
+  MultiContCons ::
+    MultiCont r_out rs r -> (r_in -> r) ->
+    MultiCont r_out (rs :> r) r_in
+
+applyMultiCont :: MultiCont r_out rs a -> a -> r_out
+applyMultiCont MultiContNil a = a
+applyMultiCont (MultiContCons k f) a = applyMultiCont k (f a)
+
+
+data MultiContSplit r_out rs r r_in where
+  MultiContSplit :: MultiCont r_out rs1 r -> MultiCont r rs2 r_in ->
+                    MultiContSplit r_out (rs1 :++: rs2) r r_in
+
+-- | Split a 'MultiCont' into the parts before and after a particular type
+splitMultiCont :: Member rs r -> MultiCont r_out rs r_in ->
+                  MultiContSplit r_out rs r r_in
+splitMultiCont Member_Base (MultiContCons k f) =
+  MultiContSplit k (MultiContCons MultiContNil f)
+splitMultiCont (Member_Step memb) (MultiContCons k' f) =
+  case splitMultiCont memb k' of
+    MultiContSplit k1 k2 ->
+      MultiContSplit k1 $ MultiContCons k2 f
+
+-- | Append two 'MultiCont's
+appendMultiCont ::
+  MultiCont r_out rs1 r ->
+  MultiCont r rs2 r_in ->
+  MultiCont r_out (rs1 :++: rs2) r_in
+appendMultiCont k1 MultiContNil = k1
+appendMultiCont k1 (MultiContCons k2 f) =
+  MultiContCons (appendMultiCont k1 k2) f
+
+newtype MultiContT r_out rs m a =
+  MultiContT { unMultiContT :: MultiCont (m r_out) rs a -> m r_out }
+
+instance Monad m => Monad (MultiContT r_out rs m) where
+  return x = MultiContT $ \k -> applyMultiCont k x
+  m >>= f =
+    error "FIXME: bind does not work here!"
+    {-
+    MultiContT $ \k ->
+    unMultiContT m $ \a ->
+    unMultiContT (f a) k
+   -}
+
+instance Monad m => Functor (MultiContT r_out rs m) where
+  fmap f xs = xs >>= return . f
+
+instance Monad m => Applicative (MultiContT r_out rs m) where
+  pure = return
+  (<*>) = ap
+
+openBindingMultiContT :: Member rs r -> (Mb ctx r -> r) ->
+                         Mb ctx a -> MultiContT r_out rs m a
+openBindingMultiContT memb bindF mb_a =
+  MultiContT $ \k ->
+  case splitMultiCont memb k of
+    MultiContSplit k2 k1 ->
+      applyMultiCont k2 $ bindF $ fmap (applyMultiCont k1) mb_a
+
+
+-- * An approach based on the continuation monad that returns multiple functions
+-- that map between binding contexts
+
+-- | Typeclass for types whose free variables can be abstracted out
+class AbstractVars k a where
+  abstractVars :: RAssign Name (ctx :: RList k) -> a ->
+                  Maybe (Closed (Mb ctx a))
+
+-- | A "contextual multi-continuation"
+{-
+data MultiCont (ctx_out :: RList k) rs ctx_in where
+  MultiContNil :: MultiCont ctx RNil ctx
+  MultiCont1 :: (Mb ctx_in r -> Mb ctx_out r) ->
+                MultiCont ctx_out (RNil :> r) ctx_in
+  MultiContCons :: MultiCont ctx_out (rs :> r) ctx ->
+                   (Mb ctx_in r_in -> Mb ctx r) ->
+                   MultiCont ctx_out (rs :> r :> r_in) ctx_in
+-}
+
+-- | A "contextual multi-continuation"
+data CtxMultiCont (ctx_out :: RList k) rs ctx_in where
+  CtxMultiContNil :: CtxMultiCont ctx '(r,RNil,r) ctx
+  CtxMultiContCons ::
+    CtxMultiCont ctx_out '(r_out,rs,r) ctx ->
+    (Mb ctx_in r_in -> Mb ctx r) ->
+    CtxMultiCont ctx_out '(r_out,rs :> r,r_in) ctx_in
+
+{-
+-- | The existential return type for splitting a 'CtxMultiCont'
+data CtxMultiContSplit ctx_out rs ctx_in where
+  CtxMultiContSplit ::
+    CtxMultiCont ctx_out '(r_out,rs1,r) ctx ->
+    CtxMultiCont ctx '(r,rs2,r_in) ctx_in ->
+    CtxMultiContSplit ctx_out '(r_out, rs1 :++: rs2, r_in) ctx_in
+
+-- | Split a 'CtxMultiCont' into the parts before and after a particular type
+splitCtxMultiCont :: Member rs r ->
+                     CtxMultiCont ctx_out '(r_out,rs,r_in) ctx_in ->
+                     CtxMultiContSplit ctx_out '(r_out,rs,r_in) ctx_in
+splitCtxMultiCont Member_Base (CtxMultiContCons k f) =
+  CtxMultiContSplit k (CtxMultiContCons CtxMultiContNil f)
+splitCtxMultiCont (Member_Step memb) (CtxMultiContCons k' f) =
+  case splitCtxMultiCont memb k' of
+    CtxMultiContSplit k1 k2 ->
+      CtxMultiContSplit k1 $ CtxMultiContCons k2 f
+-}
+
+data CtxMultiContSplit ctx_out r_out rs1 rs2 r_in ctx_in where
+  CtxMultiContSplit ::
+    CtxMultiCont ctx_out '(r_out,rs1,r) ctx ->
+    CtxMultiCont ctx '(r,rs2,r_in) ctx_in ->
+    CtxMultiContSplit ctx_out r_out rs1 rs2 r_in ctx_in
+
+-- | Split a 'CtxMultiCont' into the parts before and after a particular type
+splitCtxMultiCont :: prx1 rs1 -> RAssign prx2 rs2 ->
+                     CtxMultiCont ctx_out '(r_out,rs1 :++: rs2,r_in) ctx_in ->
+                     CtxMultiContSplit ctx_out r_out rs1 rs2 r_in ctx_in
+splitCtxMultiCont _ MNil k =
+  CtxMultiContSplit k CtxMultiContNil
+splitCtxMultiCont rs1 (rs2' :>: _) (CtxMultiContCons k' f) =
+  case splitCtxMultiCont rs1 rs2' k' of
+    CtxMultiContSplit k1 k2 ->
+      CtxMultiContSplit k1 $ CtxMultiContCons k2 f
+
+-- | Append two 'CtxMultiCont's
+appendCtxMultiCont ::
+  CtxMultiCont ctx_out '(r_out,rs1,r) ctx ->
+  CtxMultiCont ctx '(r,rs2,r_in) ctx_in ->
+  CtxMultiCont ctx_out '(r_out, rs1 :++: rs2, r_in) ctx_in
+appendCtxMultiCont k1 CtxMultiContNil = k1
+appendCtxMultiCont k1 (CtxMultiContCons k2 f) =
+  CtxMultiContCons (appendCtxMultiCont k1 k2) f
+
+-- | A multi-binding plus a 'CtxMultiCont' to map it to a final result type
+data CMCBuilderRet rs where
+  CMCBuilderRet :: Closed (CtxMultiCont RNil '(r_out,rs,r) ctx) -> Mb ctx r ->
+                   CMCBuilderRet '(r_out,rs,r)
+
+-- | Remove a level from a 'CMCBuilderRet'
+remLevelCMCBuilderRet :: CMCBuilderRet '(r_out, rs :> r, r') ->
+                         CMCBuilderRet '(r_out, rs, r)
+remLevelCMCBuilderRet (CMCBuilderRet [clP| CtxMultiContCons k f |] mb_r') =
+  CMCBuilderRet k $ unClosed f mb_r'
+
+-- | Add a level to a 'CMCBuilderRet' using an initial mapping
+{-
+addLevelCMCBuilderRet :: Closed (r' -> r) -> (r -> r -> r) ->
+                         CMCBuilderRet '(r_out, rs, r) ->
+                         CMCBuilderRet '(r_out, rs :> r, r')
+addLevelCMCBuilderRet cl_f_r' f_r (CMCBuilderRet cl_k mb_r) =
+  CMCBuilderRet ($(mkClosed [| \f_r k -> CtxMultiContCons k $ fmap f_r |]))
+-}
+
+-- | A monad for building expressions in multiple levels of binders
+type CMCBuilder rs = Cont (CMCBuilderRet rs)
+
+-- NOTE: this is not possible
+-- addLevelM :: CMCBuilder '(r_out, rs, r) a -> CMCBuilder '(r_out, rs:>r, r') a
+
+{-
+-- | Run a computation locally with another level
+withLevelM  :: Closed (r' -> r) -> CMCBuilder '(r_out,rs :> r, r') r' ->
+               CMCBuilder '(r_out,rs,r) r
+withLevelM f_r m =
+  cont $ \k ->
+  remLevelCMCBuilderRet $ runCont m (error "FIXME")
+-}
+
+-- | Run a computation inside a name-binding
+openBindingCMCBuilder :: (Mb ctx (CMCBuilderRet rs) -> CMCBuilderRet rs) ->
+                         Mb ctx a -> CMCBuilder rs a
+openBindingCMCBuilder f_out mb_a =
   cont $ \k -> f_out $ fmap k mb_a
 
 
