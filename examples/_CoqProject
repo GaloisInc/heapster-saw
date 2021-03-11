@@ -16,6 +16,8 @@ arrays.v
 arrays_proofs.v
 iter_linked_list.v
 iter_linked_list_proofs.v
+iso_recursive.v
+iso_recursive_proofs.v
 memcpy.v
 memcpy_proofs.v
 rust_data.v
