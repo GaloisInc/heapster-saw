@@ -97,12 +97,17 @@ import Verifier.SAW.Heapster.Permissions
 import Verifier.SAW.Heapster.Implication
 import Verifier.SAW.Heapster.TypedCrucible
 
+import GHC.Stack
 import Debug.Trace
 
 
 ----------------------------------------------------------------------
 -- * Translation Monads
 ----------------------------------------------------------------------
+
+-- | Call 'prettyCallStack' and insert a newline in front
+nlPrettyCallStack :: CallStack -> String
+nlPrettyCallStack = ("\n" ++) . prettyCallStack
 
 -- | The result of translating a type-like construct such as a 'TypeRepr' or a
 -- permission, parameterized by the (Haskell) type of the translations of the
@@ -132,10 +137,10 @@ mkTypeTrans1 tp f = TypeTrans [tp] (\[t] -> f t)
 
 -- | Extract out the single SAW type associated with a 'TypeTrans', or the unit
 -- type if it has 0 SAW types. It is an error if it has 2 or more SAW types.
-typeTransType1 :: TypeTrans tr -> OpenTerm
+typeTransType1 :: HasCallStack => TypeTrans tr -> OpenTerm
 typeTransType1 (TypeTrans [] _) = unitTypeOpenTerm
 typeTransType1 (TypeTrans [tp] _) = tp
-typeTransType1 _ = error "typeTransType1"
+typeTransType1 _ = error ("typeTransType1" ++ nlPrettyCallStack callStack)
 
 -- | Build the tuple of @N@ types, with the special case that a single type is
 -- just converted to itself
@@ -218,10 +223,10 @@ transTupleTerm (transTerms -> [t]) = t
 transTupleTerm tr = tupleOpenTerm $ transTerms tr
 
 -- | Like 'transTupleTerm' but raise an error if there are more than 1 terms
-transTerm1 :: IsTermTrans tr => tr -> OpenTerm
+transTerm1 :: HasCallStack => IsTermTrans tr => tr -> OpenTerm
 transTerm1 (transTerms -> []) = unitOpenTerm
 transTerm1 (transTerms -> [t]) = t
-transTerm1 _ = error "transTerm1"
+transTerm1 _ = error ("transTerm1" ++ nlPrettyCallStack callStack)
 
 
 instance IsTermTrans tr => IsTermTrans [tr] where
@@ -512,11 +517,12 @@ translateToTuple a = transTupleTerm <$> translate a
 
 -- | Translate to SAW and then convert to a single SAW term, raising an error if
 -- the result has 0 or more than 1 terms
-translate1 :: (IsTermTrans tr, Translate info ctx a tr) =>
+translate1 :: (IsTermTrans tr, Translate info ctx a tr, HasCallStack) =>
               Mb ctx a -> TransM info ctx OpenTerm
 translate1 a = translate a >>= \tr -> case transTerms tr of
   [t] -> return t
-  ts -> error ("translate1: expected 1 term, found " ++ show (length ts))
+  ts -> error ("translate1: expected 1 term, found " ++ show (length ts)
+               ++ nlPrettyCallStack callStack)
 
 -- | Translate a "closed" term, that is not in a binding
 translateClosed :: (TransInfo info, Translate info ctx a tr) =>
@@ -1826,17 +1832,17 @@ getPermStackDistPerms =
 
 -- | Assert a property of the current permission stack, raising an 'error' if it
 -- fails to hold. The 'String' names the construct being translated.
-assertPermStackM :: String -> (RAssign (Member ctx) ps ->
-                               PermTransCtx ctx ps -> Bool) ->
+assertPermStackM :: HasCallStack => String ->
+                    (RAssign (Member ctx) ps -> PermTransCtx ctx ps -> Bool) ->
                     ImpTransM ext blocks tops ret ps ctx ()
 assertPermStackM nm f =
   ask >>= \info ->
   if f (itiPermStackVars info) (itiPermStack info) then return () else
-    error ("translate: " ++ nm)
+    error ("translate: " ++ nm ++ nlPrettyCallStack callStack)
 
 -- | Assert that the top portion of the current permission stack equals the
 -- given 'DistPerms'
-assertPermStackTopEqM :: ps ~ (ps1 :++: ps2) =>
+assertPermStackTopEqM :: HasCallStack => ps ~ (ps1 :++: ps2) =>
                          String -> f ps1 -> Mb ctx (DistPerms ps2) ->
                          ImpTransM ext blocks tops ret ps ctx ()
 assertPermStackTopEqM nm prx expected =
@@ -1847,10 +1853,11 @@ assertPermStackTopEqM nm prx expected =
     error ("assertPermStackEqM (" ++ nm ++ "): expected permission stack:\n" ++
            permPrettyString emptyPPInfo expected ++
            "\nFound permission stack:\n" ++
-           permPrettyString emptyPPInfo actuals)
+           permPrettyString emptyPPInfo actuals ++
+           nlPrettyCallStack callStack)
 
 -- | Assert that the current permission stack equals the given 'DistPerms'
-assertPermStackEqM :: String -> Mb ctx (DistPerms ps) ->
+assertPermStackEqM :: HasCallStack => String -> Mb ctx (DistPerms ps) ->
                       ImpTransM ext blocks tops ret ps ctx ()
 assertPermStackEqM nm perms =
   -- FIXME: unify this function with assertPermStackTopEqM
@@ -1859,10 +1866,12 @@ assertPermStackEqM nm perms =
     error ("assertPermStackEqM (" ++ nm ++ "): expected permission stack:\n" ++
            permPrettyString emptyPPInfo perms ++
            "\nFound permission stack:\n" ++
-           permPrettyString emptyPPInfo stack_perms)
+           permPrettyString emptyPPInfo stack_perms ++
+           nlPrettyCallStack callStack)
 
 -- | Assert that the top permission is as given by the arguments
-assertTopPermM :: String -> Mb ctx (ExprVar a) -> Mb ctx (ValuePerm a) ->
+assertTopPermM :: HasCallStack => String -> Mb ctx (ExprVar a) ->
+                  Mb ctx (ValuePerm a) ->
                   ImpTransM ext blocks tops ret (ps :> a) ctx ()
 assertTopPermM nm x p =
   getPermStackDistPerms >>= \stack_perms ->
@@ -1872,7 +1881,8 @@ assertTopPermM nm x p =
       error ("assertTopPermM (" ++ nm ++ "): expected top permissions:\n" ++
              permPrettyString emptyPPInfo (mbMap2 distPerms1 x p) ++
              "\nFound top permissions:\n" ++
-             permPrettyString emptyPPInfo (mbMap2 distPerms1 x' p'))
+             permPrettyString emptyPPInfo (mbMap2 distPerms1 x' p') ++
+             nlPrettyCallStack callStack)
 
 -- | Get the (translation of the) perms for a variable
 getVarPermM :: Mb ctx (ExprVar tp) ->
@@ -1880,14 +1890,16 @@ getVarPermM :: Mb ctx (ExprVar tp) ->
 getVarPermM x = RL.get (translateVar x) <$> itiPermCtx <$> ask
 
 -- | Assert that a variable has a given permission
-assertVarPermM :: String -> Mb ctx (ExprVar tp) -> Mb ctx (ValuePerm tp) ->
+assertVarPermM :: HasCallStack => String -> Mb ctx (ExprVar tp) ->
+                  Mb ctx (ValuePerm tp) ->
                   ImpTransM ext blocks tops ret ps ctx ()
 assertVarPermM nm x p =
   do x_p <- permTransPerm (mbToProxy p) <$> getVarPermM x
      if x_p == p then return () else
        error ("assertVarPermM (" ++ nm ++ "):\n" ++
               "expected: " ++ permPrettyString emptyPPInfo p ++ "\n" ++
-              "found:" ++ permPrettyString emptyPPInfo x_p)
+              "found:" ++ permPrettyString emptyPPInfo x_p ++
+              nlPrettyCallStack callStack)
 
 -- | Set the (translation of the) perms for a variable in a computation
 setVarPermM :: Mb ctx (ExprVar tp) -> PermTrans ctx tp ->
