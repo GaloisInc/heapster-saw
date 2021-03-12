@@ -2485,10 +2485,10 @@ translateSimplImpl ps simpl@[nuP| SImpl_MapLifetime l ps_in ps_out
                                 ps_in' ps_out' ps1 ps2 impl_in impl_out |] m =
   -- First, translate the output permissions and all of the perm lists
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
-     ps_in_tp <- translate1 ps_in
-     ps_out_tp <- translate1 ps_out
-     ps_in'_tp <- translate1 ps_in'
-     ps_out'_tp <- translate1 ps_out'
+     ps_in_tp <- typeTransTupleType <$> translate ps_in
+     ps_out_tp <- typeTransTupleType <$> translate ps_out
+     ps_in'_tp <- typeTransTupleType <$> translate ps_in'
+     ps_out'_tp <- typeTransTupleType <$> translate ps_out'
      ps1_tp <- typeTransTupleType <$> translate ps1
      ps2_tp <- typeTransTupleType <$> translate ps2
 
