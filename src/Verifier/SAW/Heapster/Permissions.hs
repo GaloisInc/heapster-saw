@@ -22,6 +22,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE EmptyDataDecls #-}
 
 module Verifier.SAW.Heapster.Permissions where
 
@@ -711,6 +712,56 @@ matchVarPermList (PExpr_PermListCons _ (PExpr_Var x) p l)
     Just $ Some $ RL.append (MNil :>: VarAndPerm x p) perms
 matchVarPermList _ = Nothing
 
+-- | Fold over all permissions associated with a specific variable in a
+-- permission list
+foldPermList :: ExprVar a -> (ValuePerm a -> r -> r) -> r ->
+                PermExpr PermListType -> r
+foldPermList _ _ r PExpr_PermListNil = r
+foldPermList _ _ r (PExpr_Var _) = r
+foldPermList x f r (PExpr_PermListCons _ (PExpr_Var y) p plist)
+  | Just Refl <- testEquality x y =
+    f p $ foldPermList x f r plist
+foldPermList x f r (PExpr_PermListCons _ _ _ plist) =
+  foldPermList x f r plist
+
+-- | Fold over all atomic permissions associated with a specific variable in a
+-- permission list
+foldPermListAtomic :: ExprVar a -> (AtomicPerm a -> r -> r) -> r ->
+                      PermExpr PermListType -> r
+foldPermListAtomic x f =
+  foldPermList x (\p rest ->
+                   case p of
+                     ValPerm_Conj ps -> foldr f rest ps
+                     _ -> rest)
+
+-- | Find a permission on a specific variable in a permission list
+findPermInList :: ExprVar a -> (ValuePerm a -> Bool) -> PermExpr PermListType ->
+                  Maybe (ValuePerm a)
+findPermInList x pred plist =
+  foldPermList x (\p rest -> if pred p then Just p else rest) Nothing plist
+
+-- | Find an atomic permission on a specific variable in a permission list
+findAtomicPermInList :: ExprVar a -> (AtomicPerm a -> Bool) ->
+                        PermExpr PermListType -> Maybe (AtomicPerm a)
+findAtomicPermInList x pred plist =
+  foldPermListAtomic x (\p rest ->
+                         if pred p then Just p else rest) Nothing plist
+
+-- FIXME: move this down below the mkNuMatching calls or move
+-- llvmAtomicPermToBlock up before them... or just remove this function
+{-
+-- | Find a permission on a specific variable in a permission list that is
+-- equivalent to a block permission
+findBlockPermInList :: ExprVar (LLVMPointerType w) ->
+                       (LLVMBlockPerm w -> Bool) ->
+                       PermExpr PermListType -> Maybe (LLVMBlockPerm w)
+findBlockPermInList x pred plist =
+  foldPermListAtomic x (\p rest ->
+                         case llvmAtomicPermToBlock p of
+                           Just bp | pred bp -> Just bp
+                           _ -> rest) Nothing plist
+-}
+
 -- | A bitvector variable, possibly multiplied by a constant
 data BVFactor w where
   -- | A variable of type @'BVType' w@ multiplied by a constant @i@, which
@@ -1164,6 +1215,12 @@ bvPropRangeSubset (BVRange off1 len1) (BVRange off2 len2) =
   [BVProp_ULeq (bvSub off1 off2) len2,
    BVProp_ULeq_Diff len1 len2 (bvSub off1 off2)]
 
+-- | Test that one range is a subset of another, by testing that the
+-- propositions returned by 'bvPropRangeSubset' all hold (in the sense of
+-- 'bvPropHolds')
+bvRangeSubset :: (1 <= w, KnownNat w) => BVRange w -> BVRange w -> Bool
+bvRangeSubset rng1 rng2 = all bvPropHolds $ bvPropRangeSubset rng1 rng2
+
 -- | Build the proposition that @[off1,off1+len1)@ and @[off2,off2+len2)@ are
 -- disjoint as following pair of propositions:
 --
@@ -1189,6 +1246,17 @@ bvRangesOverlap rng1 rng2 =
 bvRangesCouldOverlap :: (1 <= w, KnownNat w) => BVRange w -> BVRange w -> Bool
 bvRangesCouldOverlap rng1 rng2 =
   not $ all bvPropHolds $ bvPropRangesDisjoint rng1 rng2
+
+-- | Get the ending offset of a range
+bvRangeEnd :: (1 <= w, KnownNat w) => BVRange w -> PermExpr (BVType w)
+bvRangeEnd (BVRange off len) = bvAdd off len
+
+-- | Take the suffix of a range starting at a given offset, assuming that offset
+-- is in the range
+bvRangeSuffix :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> BVRange w ->
+                 BVRange w
+bvRangeSuffix off' (BVRange off len) =
+  BVRange off' (bvSub len (bvSub off' off))
 
 -- | Subtract a bitvector word from the offset of a 'BVRange'
 bvRangeSub :: (1 <= w, KnownNat w) => BVRange w -> PermExpr (BVType w) ->
@@ -2851,7 +2919,7 @@ llvmFieldPermToBlock fp =
     llvmBlockLen = llvmFieldLen fp,
     llvmBlockShape = PExpr_FieldShape (LLVMFieldShape $ llvmFieldContents fp) }
 
--- | Convert an atomic permisison to a @memblock@, if possible
+-- | Convert an atomic permission to a @memblock@, if possible
 llvmAtomicPermToBlock :: AtomicPerm (LLVMPointerType w) ->
                          Maybe (LLVMBlockPerm w)
 llvmAtomicPermToBlock (Perm_LLVMField fp) = Just $ llvmFieldPermToBlock fp
@@ -2862,7 +2930,8 @@ llvmAtomicPermToBlock (Perm_LLVMArray ap)
                LLVMArrayField fp'
                  | llvmFieldRW fp == llvmFieldRW fp'
                  , llvmFieldLifetime fp == llvmFieldLifetime fp' ->
-                     Just $ LLVMFieldShape (llvmFieldContents fp'))
+                     Just $ LLVMFieldShape (llvmFieldContents fp')
+               _ -> Nothing)
       (llvmArrayFields ap)
   = Just $ LLVMBlockPerm
       { llvmBlockRW = llvmFieldRW fp,
@@ -2874,6 +2943,29 @@ llvmAtomicPermToBlock (Perm_LLVMArray ap)
 llvmAtomicPermToBlock (Perm_LLVMBlock bp) = Just bp
 llvmAtomicPermToBlock _ = Nothing
 
+-- | An 'LLVMBlockPerm' with a proof that its type is valid
+data SomeLLVMBlockPerm a where
+  SomeLLVMBlockPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
+                       SomeLLVMBlockPerm (LLVMPointerType w)
+
+-- | Convert an atomic permission whose type is unknown to a @memblock@, if
+-- possible, along with a proof that its type is a valid llvm pointer type
+llvmAtomicPermToSomeBlock :: AtomicPerm a -> Maybe (SomeLLVMBlockPerm a)
+llvmAtomicPermToSomeBlock p@(Perm_LLVMField _) =
+  SomeLLVMBlockPerm <$> llvmAtomicPermToBlock p
+llvmAtomicPermToSomeBlock p@(Perm_LLVMArray _) =
+  SomeLLVMBlockPerm <$> llvmAtomicPermToBlock p
+llvmAtomicPermToSomeBlock (Perm_LLVMBlock bp) =
+  Just $ SomeLLVMBlockPerm $ bp
+llvmAtomicPermToSomeBlock _ = Nothing
+
+-- | Get the lifetime of an atomic permission, if it has one
+llvmAtomicPermLifetime :: AtomicPerm a -> Maybe (PermExpr LifetimeType)
+llvmAtomicPermLifetime (llvmAtomicPermToSomeBlock ->
+                        Just (SomeLLVMBlockPerm bp)) =
+  Just $ llvmBlockLifetime bp
+llvmAtomicPermLifetime _ = Nothing
+
 -- | Get the offset of an atomic permission, if it has one
 llvmAtomicPermOffset :: AtomicPerm (LLVMPointerType w) ->
                         Maybe (PermExpr (BVType w))
@@ -2884,10 +2976,18 @@ llvmAtomicPermLen :: AtomicPerm (LLVMPointerType w) ->
                      Maybe (PermExpr (BVType w))
 llvmAtomicPermLen = fmap llvmBlockLen . llvmAtomicPermToBlock
 
+-- | Get the range of offsets of an atomic permission, if it has one
+llvmAtomicPermRange :: AtomicPerm (LLVMPointerType w) -> Maybe (BVRange w)
+llvmAtomicPermRange p = fmap llvmBlockRange $ llvmAtomicPermToBlock p
 
 -- | Get the range of offsets represented by an 'LLVMBlockPerm'
-llvmBlockRange :: (1 <= w, KnownNat w) => LLVMBlockPerm w -> BVRange w
+llvmBlockRange :: LLVMBlockPerm w -> BVRange w
 llvmBlockRange bp = BVRange (llvmBlockOffset bp) (llvmBlockLen bp)
+
+-- | Get the ending offset of a block permission
+llvmBlockEndOffset :: (1 <= w, KnownNat w) => LLVMBlockPerm w ->
+                      PermExpr (BVType w)
+llvmBlockEndOffset = bvRangeEnd . llvmBlockRange
 
 -- | Return the expression for the length of a shape if there is one
 llvmShapeLength :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
@@ -3018,6 +3118,98 @@ modalizeBlockShape :: LLVMBlockPerm w -> PermExpr (LLVMShapeType w)
 modalizeBlockShape bp@(LLVMBlockPerm {..}) =
   maybe (error "modalizeBlockShape") id $
   modalizeShape llvmBlockRW llvmBlockLifetime llvmBlockShape
+
+-- | Split a block permission into portions that are before and after a given
+-- offset, if possible, assuming the offset is in the block permission
+splitLLVMBlockPerm :: (1 <= w, KnownNat w) => PermExpr (BVType w) ->
+                      LLVMBlockPerm w ->
+                      Maybe (LLVMBlockPerm w, LLVMBlockPerm w)
+splitLLVMBlockPerm off bp
+  | bvEq off (llvmBlockOffset bp)
+  = Just (bp { llvmBlockLen = bvInt 0, llvmBlockShape = PExpr_EmptyShape },
+          bp)
+splitLLVMBlockPerm off bp@(LLVMBlockPerm { llvmBlockShape = sh })
+  | Just sh_len <- llvmShapeLength sh
+  , bvLt sh_len (bvSub off (llvmBlockOffset bp)) =
+    -- If we are splitting after the end of the natural length of a shape, then
+    -- pad out the block permission to its natural length and fall back to the
+    -- sequence shape case below
+    splitLLVMBlockPerm off (bp { llvmBlockShape =
+                                   PExpr_SeqShape sh PExpr_EmptyShape })
+splitLLVMBlockPerm _ (llvmBlockShape -> PExpr_Var _) = Nothing
+splitLLVMBlockPerm off bp@(llvmBlockShape -> PExpr_EmptyShape) =
+  Just (bp { llvmBlockLen = bvSub off (llvmBlockOffset bp) },
+        bp { llvmBlockOffset = off,
+             llvmBlockLen = bvSub (llvmBlockLen bp) off })
+splitLLVMBlockPerm _ (llvmBlockShape -> PExpr_EqShape _) = Nothing
+splitLLVMBlockPerm _ (llvmBlockShape -> PExpr_PtrShape _ _ _) = Nothing
+splitLLVMBlockPerm _ (llvmBlockShape -> PExpr_FieldShape _) = Nothing
+splitLLVMBlockPerm off bp@(llvmBlockShape -> PExpr_ArrayShape len stride flds)
+  | Just (ix, BV.BV 0) <-
+      bvMatchFactorPlusConst (bytesToInteger stride) (bvSub off $
+                                                      llvmBlockOffset bp)
+  , off_diff <- bvSub off (llvmBlockOffset bp)
+  = Just (bp { llvmBlockLen = off_diff,
+               llvmBlockShape = PExpr_ArrayShape ix stride flds },
+          bp { llvmBlockOffset = off,
+               llvmBlockLen = bvSub (llvmBlockLen bp) off_diff,
+               llvmBlockShape = PExpr_ArrayShape (bvSub len ix) stride flds })
+splitLLVMBlockPerm off bp@(llvmBlockShape -> PExpr_SeqShape sh1 sh2)
+  | Just sh1_len <- llvmShapeLength sh1
+  , off_diff <- bvSub off (llvmBlockOffset bp)
+  , bvLt off_diff sh1_len
+  = splitLLVMBlockPerm off (bp { llvmBlockLen = sh1_len,
+                                 llvmBlockShape = sh1 }) >>= \(bp1,bp2) ->
+    Just (bp1,
+          bp2 { llvmBlockLen = bvSub (llvmBlockLen bp) off_diff,
+                llvmBlockShape = PExpr_SeqShape (llvmBlockShape bp2) sh2 })
+splitLLVMBlockPerm off bp@(llvmBlockShape -> PExpr_SeqShape sh1 sh2)
+  | Just sh1_len <- llvmShapeLength sh1
+  , off_diff <- bvSub off (llvmBlockOffset bp)
+  = splitLLVMBlockPerm off
+    (bp { llvmBlockOffset = bvAdd (llvmBlockOffset bp) sh1_len,
+          llvmBlockLen = bvSub (llvmBlockLen bp) sh1_len,
+          llvmBlockShape = sh2 }) >>= \(bp1,bp2) ->
+    Just (bp1 { llvmBlockOffset = llvmBlockOffset bp,
+                llvmBlockLen = bvAdd (llvmBlockLen bp1) sh1_len,
+                llvmBlockShape = PExpr_SeqShape sh1 (llvmBlockShape bp1) },
+          bp2)
+splitLLVMBlockPerm off bp@(llvmBlockShape -> PExpr_OrShape sh1 sh2) =
+  do (bp1_L,bp1_R) <- splitLLVMBlockPerm off (bp { llvmBlockShape = sh1 })
+     (bp2_L,bp2_R) <- splitLLVMBlockPerm off (bp { llvmBlockShape = sh2 })
+     let or_helper bp1 bp2 =
+           bp1 { llvmBlockShape =
+                   PExpr_OrShape (llvmBlockShape bp1) (llvmBlockShape bp2)}
+     Just (or_helper bp1_L bp2_L, or_helper bp1_R bp2_R)
+splitLLVMBlockPerm off bp@(llvmBlockShape -> PExpr_ExShape mb_sh) =
+  case fmap (\sh -> splitLLVMBlockPerm off (bp { llvmBlockShape = sh })) mb_sh of
+    [nuP| Just (mb_bp1,mb_bp2) |] ->
+      let off_diff = bvSub off (llvmBlockOffset bp) in
+      Just (bp { llvmBlockLen = off_diff,
+                 llvmBlockShape = PExpr_ExShape (fmap llvmBlockShape mb_bp1) },
+            bp { llvmBlockOffset = off,
+                 llvmBlockLen = bvSub (llvmBlockLen bp) off_diff,
+                 llvmBlockShape = PExpr_ExShape (fmap llvmBlockShape mb_bp2) })
+    _ -> Nothing
+splitLLVMBlockPerm _ _ = Nothing
+
+-- | Remove a range of offsets from a block permission, if possible, yielding a
+-- list of block permissions for the remaining offsets
+remLLVMBLockPermRange :: (1 <= w, KnownNat w) => BVRange w -> LLVMBlockPerm w ->
+                         Maybe [LLVMBlockPerm w]
+remLLVMBLockPermRange rng bp
+  | bvRangeSubset (llvmBlockRange bp) rng = Just []
+remLLVMBLockPermRange rng bp =
+  do (bps_l, bp') <-
+       if bvInRange (bvRangeOffset rng) (llvmBlockRange bp) then
+         do (bp_l,bp') <- splitLLVMBlockPerm (bvRangeOffset rng) bp
+            return ([bp_l],bp')
+       else return ([],bp)
+     bp_r <-
+       if bvInRange (bvRangeEnd rng) (llvmBlockRange bp) then
+         snd <$> splitLLVMBlockPerm (bvRangeEnd rng) bp
+       else return bp'
+     return (bps_l ++ [bp_r])
 
 -- | Convert an array cell number @cell@ to the byte offset for that cell, given
 -- by @stride * cell + field_num@

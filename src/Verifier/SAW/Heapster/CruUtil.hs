@@ -609,6 +609,14 @@ cruCtxToReprEq (CruCtxCons ctx tp) =
   case cruCtxToReprEq ctx of
     Refl -> Refl
 
+-- | Build a proof that calling 'mkCruCtx' followed by 'cruCtxToRepr' yields
+-- equal types
+reprToCruCtxEq :: CtxRepr ctx -> RListToCtx (CtxToRList ctx) :~: ctx
+reprToCruCtxEq (viewAssign -> AssignEmpty) = Refl
+reprToCruCtxEq (viewAssign -> AssignExtend ctx _) =
+  case reprToCruCtxEq ctx of
+    Refl -> Refl
+
 -- | Convert a 'CruCtx' to an assignment of 'TypeRepr's
 --
 -- FIXME: 'CruCtx' should just be defined as an assignment!

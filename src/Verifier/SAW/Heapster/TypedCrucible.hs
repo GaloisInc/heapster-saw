@@ -1526,7 +1526,7 @@ getPushSimpleRegPerm :: PermCheckExtC ext => TypedReg a ->
                         (ps :> a) ps (ValuePerm a)
 getPushSimpleRegPerm r =
   getRegPerm r >>>= \p_init ->
-  embedImplM TypedImplStmt emptyCruCtx
+  pcmEmbedImplM TypedImplStmt emptyCruCtx
   (implPushM (typedRegVar r) p_init >>>
    elimOrsExistsNamesM (typedRegVar r)) >>>= \(_, p_ret) ->
   greturn p_ret
@@ -1537,16 +1537,16 @@ getSimpleRegPerm :: PermCheckExtC ext => TypedReg a ->
                     StmtPermCheckM ext cblocks blocks tops ret ps ps
                     (ValuePerm a)
 getSimpleRegPerm r =
-  snd <$> embedImplM TypedImplStmt emptyCruCtx (getSimpleVarPerm $
-                                                typedRegVar r)
+  snd <$> pcmEmbedImplM TypedImplStmt emptyCruCtx (getSimpleVarPerm $
+                                                   typedRegVar r)
 
 -- | A version of 'getEqualsExpr' for 'TypedReg's
 getRegEqualsExpr ::
   PermCheckExtC ext => TypedReg a ->
   StmtPermCheckM ext cblocks blocks tops ret ps ps (PermExpr a)
 getRegEqualsExpr r =
-  snd <$> embedImplM TypedImplStmt emptyCruCtx (getEqualsExpr $
-                                                PExpr_Var $ typedRegVar r)
+  snd <$> pcmEmbedImplM TypedImplStmt emptyCruCtx (getEqualsExpr $
+                                                   PExpr_Var $ typedRegVar r)
 
 -- | Eliminate any disjunctions, existentials, recursive permissions, or
 -- equality permissions for an LLVM register until we either get a conjunctive
@@ -1566,32 +1566,34 @@ getAtomicOrWordLLVMPerms r =
     ValPerm_Conj ps ->
       greturn $ Right ps
     ValPerm_Eq (PExpr_Var y) ->
-      embedImplM TypedImplStmt emptyCruCtx
+      pcmEmbedImplM TypedImplStmt emptyCruCtx
       (introEqCopyM x (PExpr_Var y) >>> recombinePerm x p) >>>
       getAtomicOrWordLLVMPerms (TypedReg y) >>>= \eith ->
       case eith of
         Left e ->
-          embedImplM TypedImplStmt emptyCruCtx
+          pcmEmbedImplM TypedImplStmt emptyCruCtx
           (introCastM x y $ ValPerm_Eq $ PExpr_LLVMWord e) >>>
           greturn (Left e)
         Right ps ->
-          embedImplM TypedImplStmt emptyCruCtx (introCastM x y $
-                                                ValPerm_Conj ps) >>>
+          pcmEmbedImplM TypedImplStmt emptyCruCtx (introCastM x y $
+                                                   ValPerm_Conj ps) >>>
           greturn (Right ps)
     ValPerm_Eq e@(PExpr_LLVMOffset y off) ->
-      embedImplM TypedImplStmt emptyCruCtx
+      pcmEmbedImplM TypedImplStmt emptyCruCtx
       (introEqCopyM x e >>> recombinePerm x p) >>>
       getAtomicOrWordLLVMPerms (TypedReg y) >>>= \eith ->
       case eith of
         Left e ->
-          embedImplM TypedImplStmt emptyCruCtx (offsetLLVMWordM y e off x) >>>
+          pcmEmbedImplM TypedImplStmt emptyCruCtx (offsetLLVMWordM
+                                                   y e off x) >>>
           greturn (Left $ bvAdd e off)
         Right ps ->
-          embedImplM TypedImplStmt emptyCruCtx (castLLVMPtrM y (ValPerm_Conj ps) off x) >>>
+          pcmEmbedImplM TypedImplStmt emptyCruCtx (castLLVMPtrM
+                                                   y (ValPerm_Conj ps) off x) >>>
           greturn (Right $ mapMaybe (offsetLLVMAtomicPerm $ bvNegate off) ps)
     ValPerm_Eq e@(PExpr_LLVMWord e_word) ->
-      embedImplM TypedImplStmt emptyCruCtx (introEqCopyM x e >>>
-                                            recombinePerm x p) >>>
+      pcmEmbedImplM TypedImplStmt emptyCruCtx (introEqCopyM x e >>>
+                                               recombinePerm x p) >>>
       greturn (Left e_word)
     _ ->
       stmtFailM (\i ->
@@ -1832,12 +1834,12 @@ pcmRunImplImplM vars fail_doc impl_m =
 
 -- | Embed an implication computation inside a permission-checking computation,
 -- also supplying an overall error message for failures
-embedImplWithErrM ::
+pcmEmbedImplWithErrM ::
   (forall ps. AnnotPermImpl r ps -> r ps) -> CruCtx vars -> Doc () ->
   ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in a ->
   PermCheckM ext cblocks blocks tops ret (r ps_out) ps_out (r ps_in) ps_in
   (PermSubst vars, a)
-embedImplWithErrM f_impl vars fail_doc m =
+pcmEmbedImplWithErrM f_impl vars fail_doc m =
   getErrorPrefix >>>= \err_prefix ->
   gmapRet ((f_impl . AnnotPermImpl (renderDoc
                                     (err_prefix <> line <> fail_doc))) <$>) >>>
@@ -1856,21 +1858,21 @@ embedImplWithErrM f_impl vars fail_doc m =
   greturn (completePSubst vars (implSt ^. implStatePSubst), a)
 
 -- | Embed an implication computation inside a permission-checking computation
-embedImplM ::
+pcmEmbedImplM ::
   (forall ps. AnnotPermImpl r ps -> r ps) -> CruCtx vars ->
   ImplM vars (InnerPermCheckState blocks tops ret) r ps_out ps_in a ->
   PermCheckM ext cblocks blocks tops ret (r ps_out) ps_out (r ps_in) ps_in
   (PermSubst vars, a)
-embedImplM f_impl vars m = embedImplWithErrM f_impl vars mempty m
+pcmEmbedImplM f_impl vars m = pcmEmbedImplWithErrM f_impl vars mempty m
 
--- | Special case of 'embedImplM' for a statement type-checking context where
+-- | Special case of 'pcmEmbedImplM' for a statement type-checking context where
 -- @vars@ is empty
 stmtEmbedImplM ::
   ImplM RNil (InnerPermCheckState
               blocks tops ret) (TypedStmtSeq ext blocks tops ret) ps_out ps_in a ->
   StmtPermCheckM ext cblocks blocks tops ret ps_out ps_in a
 stmtEmbedImplM m =
-  embedImplM TypedImplStmt emptyCruCtx m >>>= \(_,a) -> greturn a
+  pcmEmbedImplM TypedImplStmt emptyCruCtx m >>>= \(_,a) -> greturn a
 
 
 -- | Recombine any outstanding distinguished permissions back into the main
@@ -1880,7 +1882,7 @@ stmtRecombinePerms ::
 stmtRecombinePerms =
   gget >>>= \(!st) ->
   let dist_perms = view distPerms (stCurPerms st) in
-  embedImplM TypedImplStmt emptyCruCtx (recombinePerms dist_perms) >>>
+  pcmEmbedImplM TypedImplStmt emptyCruCtx (recombinePerms dist_perms) >>>
   greturn ()
 
 -- | Prove a sequence of permissions over some existential variables and append
@@ -1892,7 +1894,8 @@ stmtProvePermsAppend :: PermCheckExtC ext =>
 stmtProvePermsAppend vars ps =
   permGetPPInfo >>>= \ppInfo ->
   let err = pretty "Could not prove" <+> permPretty ppInfo ps in
-  embedImplWithErrM TypedImplStmt vars err (proveVarsImplAppend ps) >>>= \(s,_) ->
+  pcmEmbedImplWithErrM TypedImplStmt vars err (proveVarsImplAppend
+                                               ps) >>>= \(s,_) ->
   greturn s
 
 -- | Prove a sequence of permissions over some existential variables in the
@@ -1904,7 +1907,7 @@ stmtProvePerms :: PermCheckExtC ext =>
 stmtProvePerms vars ps =
   permGetPPInfo >>>= \ppInfo ->
   let err = pretty "Could not prove" <+> permPretty ppInfo ps in
-  embedImplWithErrM TypedImplStmt vars err (proveVarsImpl ps) >>>= \(s,_) ->
+  pcmEmbedImplWithErrM TypedImplStmt vars err (proveVarsImpl ps) >>>= \(s,_) ->
   greturn s
 
 -- | Prove a sequence of permissions over some existential variables in the
@@ -1917,8 +1920,8 @@ stmtProvePermsFreshLs :: PermCheckExtC ext =>
 stmtProvePermsFreshLs vars ps =
   permGetPPInfo >>>= \ppInfo ->
   let err = pretty "Could not prove" <+> permPretty ppInfo ps in
-  embedImplWithErrM TypedImplStmt vars err (instantiateLifetimeVars ps >>>
-                                            proveVarsImpl ps) >>>= \(s,_) ->
+  pcmEmbedImplWithErrM TypedImplStmt vars err (instantiateLifetimeVars ps >>>
+                                               proveVarsImpl ps) >>>= \(s,_) ->
   greturn s
 
 -- | Prove a single permission in the context of type-checking statements
@@ -1931,8 +1934,8 @@ stmtProvePerm (TypedReg x) mb_p =
   let err =
         pretty "Could not prove" <+>
         permPretty ppInfo (fmap (distPerms1 x) mb_p) in
-  embedImplWithErrM TypedImplStmt knownRepr err (proveVarImpl
-                                                 x mb_p) >>>= \(s,_) ->
+  pcmEmbedImplWithErrM TypedImplStmt knownRepr err (proveVarImpl
+                                                    x mb_p) >>>= \(s,_) ->
   greturn s
 
 -- | Try to prove that a register equals a constant integer (of the given input
