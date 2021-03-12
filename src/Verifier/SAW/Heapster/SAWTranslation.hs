@@ -3257,8 +3257,9 @@ translateCurryLocalPermImpl ::
   PermTransCtx ctx ps1 -> RAssign (Member ctx) ps1 -> Mb ctx (DistPerms ps2) ->
   Mb ctx (DistPerms ps_out) -> ImpTransM ext blocks tops ret ps ctx OpenTerm
 translateCurryLocalPermImpl err impl pctx1 vars1 ps2 ps_out =
+  translate ps2 >>= \ps2_tp_trans ->
   translate ps_out >>= \ps_out_trans ->
-  lambdaPermCtx (mbDistPermsToValuePerms ps2) $ \pctx2 ->
+  lambdaTupleTransM "x_local" ps2_tp_trans $ \pctx2 ->
   local (\info -> info { itiReturnType = typeTransTupleType ps_out_trans }) $
   let vars2 = RL.map (translateVar
                       . getCompose) $ mbRAssign $ fmap distPermsVars ps2 in
