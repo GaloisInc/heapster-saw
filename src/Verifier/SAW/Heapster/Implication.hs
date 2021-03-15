@@ -4785,19 +4785,21 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
      implSimplM Proxy (SImpl_CastLLVMFieldOffset x fp' off') >>>
      greturn (fp' { llvmFieldOffset = off' })) >>>= \fp'' ->
 
-  -- Step 3: change the lifetime if needed
-  --
-  let (f, args) = fieldToLTFunc fp'' in
-  proveVarLifetimeFunctor x f args (llvmFieldLifetime fp'') (fmap
-                                                             llvmFieldLifetime
-                                                             mb_fp) >>>
-  getTopDistPerm x >>>= \(ValPerm_LLVMField fp''') ->
-
-  -- Step 4: prove the contents
+  -- Step 3: prove the contents
   proveVarImpl y (fmap llvmFieldContents mb_fp) >>>
   partialSubstForceM (fmap llvmFieldContents mb_fp)
   "proveVarLLVMFieldFromField" >>>= \p_y ->
-  introLLVMFieldContentsM x y (fp''' { llvmFieldContents = p_y })
+  let fp''' = fp'' { llvmFieldContents = p_y } in
+  introLLVMFieldContentsM x y fp''' >>>
+
+  -- Step 4: change the lifetime if needed. This is done after proving the
+  -- contents, so that, if we need to split the lifetime, we don't split the
+  -- lifetime of a pointer permission with eq(y) permissions, as that would
+  -- require the pointer to be constant until the end of the new lifetime.
+  let (f, args) = fieldToLTFunc fp''' in
+  proveVarLifetimeFunctor x f args (llvmFieldLifetime fp''') (fmap
+                                                              llvmFieldLifetime
+                                                              mb_fp)
 
 
 -- | Extract an LLVM field permission from the given atomic permission, leaving
