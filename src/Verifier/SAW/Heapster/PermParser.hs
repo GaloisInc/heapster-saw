@@ -177,10 +177,10 @@ instance Liftable s => MonadBind (ParsecT s ParserEnv Identity) where
                                       (mbLift err))))
       [nuP| Identity (Consumed (Identity (Error err))) |] ->
         Identity (Consumed (Identity (Error (mbLift err))))
-      [nuP| Identity (Consumed (Identity (Ok a s' err))) |] ->
+      [nuP| Identity (Empty (Identity (Ok a s' err))) |] ->
         Identity (Empty (Identity (Ok a (liftParsecState env s')
                                    (mbLift err))))
-      [nuP| Identity (Consumed (Identity (Error err))) |] ->
+      [nuP| Identity (Empty (Identity (Error err))) |] ->
         Identity (Empty (Identity (Error (mbLift err))))
 
 -- | Run a parsing computation in a context extended with an expression variable
