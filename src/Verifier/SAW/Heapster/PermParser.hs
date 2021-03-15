@@ -729,9 +729,9 @@ parseAtomicPerm tp@(StructRepr tps) =
 parseAtomicPerm tp@LifetimeRepr =
   (try (string "lowned" >> spaces) >>
    parseInParens
-   (do ps_in <- parseExpr PermListRepr
+   (do Some ps_in <- parseLOwnedPerms
        spaces >> string "-o" >> spaces
-       ps_out <- parseExpr PermListRepr
+       Some ps_out <- parseLOwnedPerms
        return $ Perm_LOwned ps_in ps_out)) <|>
   (do l <- parseLifetimePrefix
       string "lcurrent"
@@ -962,6 +962,29 @@ parseDistPerms =
                      return $ Some (DistPermsCons perms x p))
            <|>
            return (Some $ distPerms1 x p)
+
+-- | Parse a sequence @x1:p1, x2:p2, ...@ of variables and their permissions,
+-- which must all be valid 'LOwnedPerm's
+parseLOwnedPerms :: (Stream s Identity Char, Liftable s) =>
+                    PermParseM s (Some LOwnedPerms)
+parseLOwnedPerms =
+  parseExprVar >>= \some_x ->
+  case some_x of
+    Some (Typed tp x) ->
+      do spaces >> char ':' >> spaces
+         p <- parseValPerm tp
+         lop <-
+           case varAndPermLOwnedPerm (VarAndPerm x p) of
+             Just lop -> return lop
+             Nothing -> fail ("Not a valid lifetime ownership permission: "
+                              ++ permPrettyString emptyPPInfo p)
+         try (do spaces >> comma
+                 some_lops' <- parseLOwnedPerms
+                 case some_lops' of
+                   Some lops ->
+                     return $ Some (lops :>: lop))
+           <|>
+           return (Some (MNil :>: lop))
 
 -- | Helper type for 'parseValuePerms' that represents whether a pair @x:p@ has
 -- been parsed yet for a specific variable @x@ and, if so, contains that @p@

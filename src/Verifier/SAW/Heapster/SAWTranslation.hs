@@ -165,6 +165,15 @@ tupleTypeTrans ttrans =
   (\[t] -> typeTransF ttrans $ map (\i -> projTupleOpenTerm i t) $
            take (length $ typeTransTypes ttrans) [0..])
 
+-- | Convert a 'TypeTrans' over 0 or more types to one over 1 type of the form
+-- @#(tp1, #(tp2, ... #(tpn, #()) ...))@. This is "strict" in the sense that
+-- even a single type is tupled.
+strictTupleTypeTrans :: TypeTrans tr -> TypeTrans tr
+strictTupleTypeTrans ttrans =
+  TypeTrans [tupleTypeOpenTerm $ typeTransTypes ttrans]
+  (\[t] -> typeTransF ttrans $ map (\i -> projTupleOpenTerm i t) $
+           take (length $ typeTransTypes ttrans) [0..])
+
 -- | Build a type translation for a list of translations
 listTypeTrans :: [TypeTrans tr] -> TypeTrans [tr]
 listTypeTrans [] = pure []
@@ -221,6 +230,14 @@ class IsTermTrans tr where
 transTupleTerm :: IsTermTrans tr => tr -> OpenTerm
 transTupleTerm (transTerms -> [t]) = t
 transTupleTerm tr = tupleOpenTerm $ transTerms tr
+
+-- | Build a tuple of the terms contained in a translation. This is "strict" in
+-- that it always makes a tuple, even for a single type, unlike
+-- 'transTupleTerm'.  If @ttrans@ is a 'TypeTrans' describing the SAW types
+-- associated with a @tr@ translation, then this function returns an element of
+-- the type @'strictTupleTypeTrans' ttrans@.
+strictTransTupleTerm :: IsTermTrans tr => tr -> OpenTerm
+strictTransTupleTerm tr = tupleOpenTerm $ transTerms tr
 
 -- | Like 'transTupleTerm' but raise an error if there are more than 1 terms
 transTerm1 :: HasCallStack => IsTermTrans tr => tr -> OpenTerm
@@ -895,8 +912,8 @@ data AtomicPermTrans ctx a where
 
   -- | LOwned permissions translate to a monadic function from (the translation
   -- of) the input permissions to the output permissions
-  APTrans_LOwned :: Mb ctx (PermExpr PermListType) ->
-                    Mb ctx (PermExpr PermListType) ->
+  APTrans_LOwned :: Mb ctx (LOwnedPerms ps_in) ->
+                    Mb ctx (LOwnedPerms ps_out) ->
                     OpenTerm -> AtomicPermTrans ctx LifetimeType
 
   -- | LCurrent permissions have no computational content
@@ -1644,6 +1661,14 @@ instance TransInfo info =>
          Translate info ctx (TypedDistPerms ps) (TypeTrans
                                                  (PermTransCtx ctx ps)) where
   translate = translate . mbDistPermsToValuePerms . fmap unTypeDistPerms
+
+-- LOwnedPerms translate to a single tuple type, because lowned permissions
+-- translate to functions with one argument and one return value
+instance TransInfo info =>
+         Translate info ctx (LOwnedPerms ps) (TypeTrans
+                                              (PermTransCtx ctx ps)) where
+  translate =
+    fmap strictTupleTypeTrans . translate . fmap (RL.map lownedPermPerm)
 
 -- Translate a FunPerm to a pi-abstraction (FIXME: more documentation!)
 instance TransInfo info =>
@@ -2432,19 +2457,24 @@ translateSimplImpl _ simpl@[nuP| SImpl_SplitLifetime _ f args l _ ps_in ps_out |
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
      ps_in_tp <- translate1 ps_in
      ps_out_tp <- translate1 ps_out
-     x_tp <- typeTransTupleType <$> translate (mbMap3 ltFuncApply f args l)
+     x_tp_trans <- translate (mbMap3 ltFuncApply f args l)
      withPermStackM
        (\(ns :>: x :>: _ :>: l2) -> ns :>: x :>: l2)
        (\(pctx :>: ptrans_x :>: _ :>: ptrans_l) ->
          -- The permission for x does not change type, just its lifetime; the
          -- permission for l has the (tupled) type of x added as a new input and
          -- output with tupleCompMFunBoth
+         let (f_tm,_,_) =
+               foldr (\x_tp (f_tm,f_in_tp,f_out_tp) ->
+                       ( applyOpenTermMulti
+                         (globalOpenTerm "Prelude.tupleCompMFunBoth")
+                         [f_in_tp, f_out_tp, x_tp, f_tm]
+                       , pairTypeOpenTerm x_tp f_in_tp
+                       , pairTypeOpenTerm x_tp f_out_tp))
+               (transTerm1 ptrans_l, ps_in_tp, ps_out_tp)
+               (transTerms x_tp_trans) in
          RL.append pctx $
-         typeTransF pctx_out_trans
-         (transTerms ptrans_x ++ [applyOpenTermMulti
-                                  (globalOpenTerm "Prelude.tupleCompMFunBoth")
-                                  [ps_in_tp, ps_out_tp, x_tp,
-                                   transTerm1 ptrans_l]]))
+         typeTransF pctx_out_trans (transTerms ptrans_x ++ [f_tm]))
        m
 
 translateSimplImpl _ simpl@[nuP| SImpl_SubsumeLifetime
@@ -2485,12 +2515,12 @@ translateSimplImpl ps simpl@[nuP| SImpl_MapLifetime l ps_in ps_out
                                 ps_in' ps_out' ps1 ps2 impl_in impl_out |] m =
   -- First, translate the output permissions and all of the perm lists
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
-     ps_in_tp <- typeTransTupleType <$> translate ps_in
-     ps_out_tp <- typeTransTupleType <$> translate ps_out
-     ps_in'_tp <- typeTransTupleType <$> translate ps_in'
-     ps_out'_tp <- typeTransTupleType <$> translate ps_out'
-     ps1_tp <- typeTransTupleType <$> translate ps1
-     ps2_tp <- typeTransTupleType <$> translate ps2
+     ps_in_trans <- translate ps_in
+     ps_out_trans <- translate ps_out
+     ps_in'_trans <- translate ps_in'
+     ps_out'_trans <- translate ps_out'
+     ps1_trans <- translate ps1
+     ps2_trans <- translate ps2
 
      -- Next, split out the various input permissions from the rest of the pctx
      let prxs1 = mbRAssignProxies ps1
@@ -2508,34 +2538,41 @@ translateSimplImpl ps simpl@[nuP| SImpl_MapLifetime l ps_in ps_out
 
      -- Now build the output lowned function by composing the input lowned
      -- function with the translations of the implications on inputs and outputs
+     let fromJustOrError (Just x) = x
+         fromJustOrError Nothing = error "translateSimplImpl: SImpl_MapLifetime"
+         ps_in'_vars =
+           RL.map (translateVar . getCompose) $ mbRAssign $ 
+           fmap (fromJustOrError . lownedPermsVars) ps_in'
+         ps_out_vars =
+           RL.map (translateVar . getCompose) $ mbRAssign $ 
+           fmap (fromJustOrError . lownedPermsVars) ps_out
      impl_in_tm <-
        translateCurryLocalPermImpl "Error mapping lifetime input perms:" impl_in
-       pctx1 vars1 (fmap unTypeDistPerms ps_in') (fmap unTypeDistPerms ps_in)
+       pctx1 vars1 ps_in'_trans ps_in'_vars ps_in_trans
      impl_out_tm <-
        translateCurryLocalPermImpl "Error mapping lifetime output perms:" impl_out
-       pctx2 vars2 (fmap unTypeDistPerms ps_out) (fmap unTypeDistPerms ps_out')
+       pctx2 vars2 ps_out_trans ps_out_vars ps_out'_trans
      let l_res_tm =
            applyOpenTermMulti
            (globalOpenTerm "Prelude.composeM")
-           [ps_in'_tp, ps_in_tp, ps_out'_tp, impl_in_tm,
+           [transTerm1 ps_in'_trans, transTerm1 ps_in_trans,
+            transTerm1 ps_out'_trans, impl_in_tm,
             applyOpenTermMulti
             (globalOpenTerm "Prelude.composeM")
-            [ps_in_tp, ps_out_tp, ps_out'_tp, transTerm1 ptrans_l, impl_in_tm]]
+            [transTerm1 ps_in_trans, transTerm1 ps_out_trans,
+             transTerm1 ps_out'_trans, transTerm1 ptrans_l, impl_out_tm]]
 
      -- Finally, update the permissions
      withPermStackM
        (\_ -> vars_out)
-       (\_ ->
-         RL.append pctx_ps $
-         typeTransF (tupleTypeTrans pctx_out_trans) [l_res_tm])
+       (\_ -> RL.append pctx_ps $ typeTransF pctx_out_trans [l_res_tm])
        m
 
 translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime _ ps_in ps_out |] m =
   -- First, translate the output permissions and the input and output types of
   -- the monadic function for the lifeime ownership permission
   do pctx_out_trans <- translate $ fmap simplImplOut simpl
-     ps_in_tp <- translate1 ps_in
-     ps_out_tp <- translate1 ps_out
+     ps_out_trans <- translate ps_out
      let prxs_in = mbRAssignProxies ps_in :>: Proxy
 
      -- Next, split out the ps_in permissions from the rest of the pctx
@@ -2545,23 +2582,22 @@ translateSimplImpl ps simpl@[nuP| SImpl_EndLifetime _ ps_in ps_out |] m =
      -- Also split out the ps_in variables and replace them with the ps_out vars
      pctx_vars <- itiPermStackVars <$> ask
      let (ps_vars, _ :>: _) = RL.split ps prxs_in pctx_vars
+     let fromJustHelper (Just x) = x
+         fromJustHelper _ = error "translateSimplImpl: SImpl_EndLifetime"
      let vars_out =
-           RL.append ps_vars $
-           RL.map (translateVar
-                   . fmap (\(Typed _ (VarAndPerm x _)) -> x) . getCompose) $
-           mbRAssign ps_out
+           RL.append ps_vars $ RL.map (translateVar . getCompose) $
+           mbRAssign $ fmap (fromJustHelper . lownedPermsVars) ps_out
 
      -- Now we apply the lifetime ownerhip function to ps_in and bind its output
      -- in the rest of the computation
      applyMultiTransM (return $ globalOpenTerm "Prelude.bindM")
-       [return ps_out_tp, returnTypeM,
-        return (applyOpenTermMulti (transTerm1 ptrans_l) (transTerms pctx_in)),
-        lambdaOpenTermTransM "endl_ps" ps_out_tp $ \ps_out_val ->
+       [return (transTerm1 ps_out_trans), returnTypeM,
+        return (applyOpenTerm (transTerm1 ptrans_l)
+                (strictTransTupleTerm pctx_in)),
+        lambdaTransM "endl_ps" ps_out_trans $ \pctx_out ->
          withPermStackM
          (\_ -> vars_out)
-         (\_ ->
-           RL.append pctx_ps $
-           typeTransF (tupleTypeTrans pctx_out_trans) [ps_out_val])
+         (\_ -> RL.append pctx_ps pctx_out)
          m]
 
 translateSimplImpl _ [nuP| SImpl_LCurrentRefl l |] m =
@@ -3070,8 +3106,7 @@ translatePermImpl1 _ [nuP| Impl1_ElimLLVMBlockToEq _ mb_bp |] mb_impls =
 translatePermImpl1 _ [nuP| Impl1_BeginLifetime |] mb_impls =
   translatePermImplUnary mb_impls $ \m ->
   inExtTransM ETrans_Lifetime $
-  do tp_trans <-
-       translateClosed $ ValPerm_LOwned PExpr_PermListNil PExpr_PermListNil
+  do tp_trans <- translateClosed $ ValPerm_LOwned MNil MNil
      let id_fun =
            lambdaOpenTerm "ps_empty" unitTypeOpenTerm $ \x ->
            applyOpenTermMulti (globalOpenTerm "Prelude.returnM")
@@ -3249,20 +3284,20 @@ translateLocalPermImpl :: String -> Mb ctx (LocalPermImpl ps_in ps_out) ->
 translateLocalPermImpl err [nuP| LocalPermImpl impl |] =
   translate $ fmap (AnnotPermImpl err) impl
 
--- | Translate a local implication over two sequences of permissions to a
--- monadic function that takes in the second permissions by passing in the first
--- sequence of permissions
+-- | Translate a local implication over two sequences of permissions (already
+-- translated to types) to a monadic function with the first sequence of
+-- permissions as free variables and that takes in the second permissions as
+-- arguments. Note that the translations of the second input permissions and the
+-- output permissions must have exactly one type, i.e., already be tupled.
 translateCurryLocalPermImpl ::
   String -> Mb ctx (LocalPermImpl (ps1 :++: ps2) ps_out) ->
-  PermTransCtx ctx ps1 -> RAssign (Member ctx) ps1 -> Mb ctx (DistPerms ps2) ->
-  Mb ctx (DistPerms ps_out) -> ImpTransM ext blocks tops ret ps ctx OpenTerm
-translateCurryLocalPermImpl err impl pctx1 vars1 ps2 ps_out =
-  translate ps2 >>= \ps2_tp_trans ->
-  translate ps_out >>= \ps_out_trans ->
-  lambdaTupleTransM "x_local" ps2_tp_trans $ \pctx2 ->
-  local (\info -> info { itiReturnType = typeTransTupleType ps_out_trans }) $
-  let vars2 = RL.map (translateVar
-                      . getCompose) $ mbRAssign $ fmap distPermsVars ps2 in
+  PermTransCtx ctx ps1 -> RAssign (Member ctx) ps1 ->
+  TypeTrans (PermTransCtx ctx ps2) -> RAssign (Member ctx) ps2 ->
+  TypeTrans (PermTransCtx ctx ps_out) ->
+  ImpTransM ext blocks tops ret ps ctx OpenTerm
+translateCurryLocalPermImpl err impl pctx1 vars1 tp_trans2 vars2 tp_trans_out =
+  lambdaTransM "x_local" tp_trans2 $ \pctx2 ->
+  local (\info -> info { itiReturnType = transTerm1 tp_trans_out }) $
   withPermStackM
     (const (RL.append vars1 vars2))
     (const (RL.append pctx1 pctx2))

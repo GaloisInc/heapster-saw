@@ -1453,7 +1453,7 @@ data AtomicPerm (a :: CrucibleType) where
   -- these are a form of permission implication, so we write lifetime ownership
   -- permissions as @lowned(Pin -o Pout)@. Intuitively, @Pin@ must be given back
   -- before the lifetime is ended, and @Pout@ is returned afterwards.
-  Perm_LOwned :: PermExpr PermListType -> PermExpr PermListType ->
+  Perm_LOwned :: LOwnedPerms ps_in -> LOwnedPerms ps_out ->
                  AtomicPerm LifetimeType
 
   -- | Assertion that a lifetime is current during another lifetime
@@ -1535,8 +1535,7 @@ pattern ValPerm_LLVMBlock bp <- ValPerm_Conj [Perm_LLVMBlock bp]
 
 -- | A single @lowned@ permission
 pattern ValPerm_LOwned :: () => (a ~ LifetimeType) =>
-                          PermExpr PermListType -> PermExpr PermListType ->
-                          ValuePerm a
+                          LOwnedPerms ps_in -> LOwnedPerms ps_out -> ValuePerm a
 pattern ValPerm_LOwned ps_in ps_out <- ValPerm_Conj [Perm_LOwned ps_in ps_out]
   where
     ValPerm_LOwned ps_in ps_out = ValPerm_Conj [Perm_LOwned ps_in ps_out]
@@ -1714,6 +1713,94 @@ instance Eq (LLVMFieldShape w) where
   (LLVMFieldShape p1) == (LLVMFieldShape p2)
     | Just Refl <- testEquality (exprType p1) (exprType p2) = p1 == p2
   _ == _ = False
+
+
+-- | A form of permission used in lifetime ownership permissions
+data LOwnedPerm a where
+  LOwnedPermField :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
+                     PermExpr (LLVMPointerType w) -> LLVMFieldPerm w sz ->
+                     LOwnedPerm (LLVMPointerType w)
+  LOwnedPermBlock :: (1 <= w, KnownNat w) => PermExpr (LLVMPointerType w) ->
+                     LLVMBlockPerm w -> LOwnedPerm (LLVMPointerType w)
+  LOwnedPermLifetime :: PermExpr LifetimeType ->
+                        LOwnedPerms ps_in -> LOwnedPerms ps_out ->
+                        LOwnedPerm LifetimeType
+
+instance TestEquality LOwnedPerm where
+  testEquality (LOwnedPermField e1 fp1) (LOwnedPermField e2 fp2)
+    | Just Refl <- testEquality (exprType e1) (exprType e2)
+    , Just Refl <- testEquality (llvmFieldSize fp1) (llvmFieldSize fp2)
+    , e1 == e2 && fp1 == fp2
+    = Just Refl
+  testEquality (LOwnedPermField _ _) _ = Nothing
+  testEquality (LOwnedPermBlock e1 bp1) (LOwnedPermBlock e2 bp2)
+    | Just Refl <- testEquality (exprType e1) (exprType e2)
+    , e1 == e2 && bp1 == bp2
+    = Just Refl
+  testEquality (LOwnedPermBlock _ _) _ = Nothing
+  testEquality (LOwnedPermLifetime e1 ps_in1 ps_out1)
+    (LOwnedPermLifetime e2 ps_in2 ps_out2)
+    | Just Refl <- testEquality ps_in1 ps_in2
+    , Just Refl <- testEquality ps_out1 ps_out2
+    , e1 == e2
+    = Just Refl
+  testEquality (LOwnedPermLifetime _ _ _) _ = Nothing
+
+-- | Convert an 'LOwnedPerm' to the expression plus permission it represents
+lownedPermExprAndPerm :: LOwnedPerm a -> ExprAndPerm a
+lownedPermExprAndPerm (LOwnedPermField e fp) =
+  ExprAndPerm e $ ValPerm_LLVMField fp
+lownedPermExprAndPerm (LOwnedPermBlock e bp) =
+  ExprAndPerm e $ ValPerm_LLVMBlock bp
+lownedPermExprAndPerm (LOwnedPermLifetime e ps_in ps_out) =
+  ExprAndPerm e $ ValPerm_LOwned ps_in ps_out
+
+-- | Convert an 'LOwnedPerm' to a variable plus permission, if possible
+lownedPermVarAndPerm :: LOwnedPerm a -> Maybe (VarAndPerm a)
+lownedPermVarAndPerm lop
+  | ExprAndPerm (PExpr_Var x) p <- lownedPermExprAndPerm lop =
+    Just $ VarAndPerm x p
+lownedPermVarAndPerm _ = Nothing
+
+-- | Convert an expression plus permission to an 'LOwnedPerm', if possible
+varAndPermLOwnedPerm :: VarAndPerm a -> Maybe (LOwnedPerm a)
+varAndPermLOwnedPerm (VarAndPerm x (ValPerm_LLVMField fp)) =
+  Just $ LOwnedPermField (PExpr_Var x) fp
+varAndPermLOwnedPerm (VarAndPerm x (ValPerm_LLVMBlock bp)) =
+  Just $ LOwnedPermBlock (PExpr_Var x) bp
+varAndPermLOwnedPerm (VarAndPerm x (ValPerm_LOwned ps_in ps_out)) =
+  Just $ LOwnedPermLifetime (PExpr_Var x) ps_in ps_out
+varAndPermLOwnedPerm _ = Nothing
+
+-- | Get the expression part of an 'LOwnedPerm'
+lownedPermExpr :: LOwnedPerm a -> PermExpr a
+lownedPermExpr = exprAndPermExpr . lownedPermExprAndPerm
+
+-- | Convert the expression part of an 'LOwnedPerm' to a variable, if possible
+lownedPermVar :: LOwnedPerm a -> Maybe (ExprVar a)
+lownedPermVar lop | PExpr_Var x <- lownedPermExpr lop = Just x
+lownedPermVar _ = Nothing
+
+-- | Get the permission part of an 'LOwnedPerm'
+lownedPermPerm :: LOwnedPerm a -> ValuePerm a
+lownedPermPerm = exprAndPermPerm . lownedPermExprAndPerm
+
+type LOwnedPerms = RAssign LOwnedPerm
+
+-- FIXME: need a traversal function for RAssign for the following two funs
+
+-- | Convert an 'LOwnedPerms' list to a 'DistPerms'
+lownedPermsToDistPerms :: LOwnedPerms ps -> Maybe (DistPerms ps)
+lownedPermsToDistPerms MNil = Just MNil
+lownedPermsToDistPerms (lops :>: lop) =
+  (:>:) <$> lownedPermsToDistPerms lops <*> lownedPermVarAndPerm lop
+
+-- | Convert the expressions of an 'LOwnedPerms' to variables, if possible
+lownedPermsVars :: LOwnedPerms ps -> Maybe (RAssign Name ps)
+lownedPermsVars MNil = Just MNil
+lownedPermsVars (lops :>: lop) =
+  (:>:) <$> lownedPermsVars lops <*> lownedPermVar lop
+
 
 -- | A function permission is a set of input and output permissions inside a
 -- context of ghost variables, including a lifetime ghost variable. The input
@@ -2082,7 +2169,9 @@ type MbDistPerms ps = Mb ps (DistPerms ps)
 
 -- | A pair of an epxression and its permission; we give it its own datatype to
 -- make certain typeclass instances (like pretty-printing) specific to it
-data ExprAndPerm a = ExprAndPerm (PermExpr a) (ValuePerm a)
+data ExprAndPerm a =
+  ExprAndPerm { exprAndPermExpr :: PermExpr a,
+                exprAndPermPerm :: ValuePerm a }
 
 -- | A list of expressions and associated permissions; different from
 -- 'DistPerms' because the expressions need not be variables
@@ -2215,8 +2304,8 @@ data LifetimeCurrentPerms ps_l where
   -- | A variable @l@ that is @lowned@ is current, requiring perms
   --
   -- > l:lowned(ps_in -o ps_out)
-  LOwnedCurrentPerms :: ExprVar LifetimeType -> PermExpr PermListType ->
-                        PermExpr PermListType ->
+  LOwnedCurrentPerms :: ExprVar LifetimeType ->
+                        LOwnedPerms ps_in -> LOwnedPerms ps_out ->
                         LifetimeCurrentPerms (RNil :> LifetimeType)
 
   -- | A variable @l@ that is @lcurrent@ during another lifetime @l'@ is
@@ -2279,6 +2368,14 @@ ltFuncApply (LTFunctorField off p) (MNil :>: rw) l =
 ltFuncApply (LTFunctorBlock off len sh) (MNil :>: rw) l =
   ValPerm_LLVMBlock $ LLVMBlockPerm rw l off len sh
 
+-- | Apply a functor to its arguments to get out an 'LOwnedPerm' on a variable
+ltFuncApplyLOP :: ExprVar a -> LifetimeFunctor args a -> PermExprs args ->
+                  PermExpr LifetimeType -> LOwnedPerm a
+ltFuncApplyLOP x (LTFunctorField off p) (MNil :>: rw) l =
+  LOwnedPermField (PExpr_Var x) $ LLVMFieldPerm rw l off p
+ltFuncApplyLOP x (LTFunctorBlock off len sh) (MNil :>: rw) l =
+  LOwnedPermBlock (PExpr_Var x) $ LLVMBlockPerm rw l off len sh
+
 -- | Apply a functor to a lifetime and the "minimal" rwmodalities, i.e., with
 -- all read permissions
 ltFuncMinApply :: LifetimeFunctor args a -> PermExpr LifetimeType -> ValuePerm a
@@ -2286,6 +2383,15 @@ ltFuncMinApply (LTFunctorField off p) l =
   ValPerm_LLVMField $ LLVMFieldPerm PExpr_Read l off p
 ltFuncMinApply (LTFunctorBlock off len sh) l =
   ValPerm_LLVMBlock $ LLVMBlockPerm PExpr_Read l off len sh
+
+-- | Apply a functor to a lifetime and the "minimal" rwmodalities, i.e., with
+-- all read permissions, getting out an 'LOwnedPerm'  on a variable
+ltFuncMinApplyLOP :: ExprVar a -> LifetimeFunctor args a ->
+                     PermExpr LifetimeType -> LOwnedPerm a
+ltFuncMinApplyLOP x (LTFunctorField off p) l =
+  LOwnedPermField (PExpr_Var x) $ LLVMFieldPerm PExpr_Read l off p
+ltFuncMinApplyLOP x (LTFunctorBlock off len sh) l =
+  LOwnedPermBlock (PExpr_Var x) $ LLVMBlockPerm PExpr_Read l off len sh
 
 -- | Convert a field permission to a lifetime functor and its arguments
 fieldToLTFunc :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
@@ -2342,8 +2448,10 @@ instance Eq (AtomicPerm a) where
   (Perm_LLVMBlockShape _) == _ = False
   (Perm_LLVMFrame frame1) == (Perm_LLVMFrame frame2) = frame1 == frame2
   (Perm_LLVMFrame _) == _ = False
-  (Perm_LOwned ps_in1 ps_out1) == (Perm_LOwned ps_in2 ps_out2) =
-    ps_in1 == ps_in2 && ps_out1 == ps_out2
+  (Perm_LOwned ps_in1 ps_out1) == (Perm_LOwned ps_in2 ps_out2)
+    | Just Refl <- testEquality ps_in1 ps_in2
+    , Just Refl <- testEquality ps_out1 ps_out2
+    = True
   (Perm_LOwned _ _) == _ = False
   (Perm_LCurrent e1) == (Perm_LCurrent e2) = e1 == e2
   (Perm_LCurrent _) == _ = False
@@ -2517,6 +2625,12 @@ instance PermPretty (PermOffset a) where
     do e_pp <- permPrettyM e
        return (pretty '@' <> parens e_pp)
 
+instance PermPretty (LOwnedPerm a) where
+  permPrettyM = permPrettyM . lownedPermExprAndPerm
+
+instance PermPrettyF LOwnedPerm where
+  permPrettyMF = permPrettyM
+
 instance PermPretty (FunPerm ghosts args ret) where
   permPrettyM (FunPerm ghosts args _ mb_ps_in mb_ps_out) =
     let dps_in  = extMb $ mbValuePermsToDistPerms mb_ps_in
@@ -2613,6 +2727,7 @@ $(mkNuMatching [t| forall w . LLVMArrayIndex w |])
 $(mkNuMatching [t| forall w . LLVMArrayField w |])
 $(mkNuMatching [t| forall w . LLVMArrayBorrow w |])
 $(mkNuMatching [t| forall w . LLVMFieldShape w |])
+$(mkNuMatching [t| forall w . LOwnedPerm w |])
 $(mkNuMatching [t| forall ghosts args ret. FunPerm ghosts args ret |])
 $(mkNuMatching [t| forall args ret. SomeFunPerm args ret |])
 $(mkNuMatching [t| forall ns. NameSortRepr ns |])
@@ -2628,6 +2743,9 @@ $(mkNuMatching [t| forall b args a. DefinedPerm b args a |])
 $(mkNuMatching [t| forall args a. LifetimeFunctor args a |])
 $(mkNuMatching [t| forall ps. LifetimeCurrentPerms ps |])
 
+
+instance NuMatchingAny1 LOwnedPerm where
+  nuMatchingAny1Proof = nuMatchingProof
 
 instance NuMatchingAny1 DistPerms where
   nuMatchingAny1Proof = nuMatchingProof
@@ -4200,9 +4318,7 @@ instance FreeVars (BVProp w) where
 instance FreeVars (AtomicPerm tp) where
   freeVars (Perm_LLVMField fp) = freeVars fp
   freeVars (Perm_LLVMArray ap) = freeVars ap
-  freeVars (Perm_LLVMBlock (LLVMBlockPerm rw l off len sh)) =
-    NameSet.unions [freeVars rw, freeVars l, freeVars off,
-                    freeVars len, freeVars sh]
+  freeVars (Perm_LLVMBlock bp) = freeVars bp
   freeVars (Perm_LLVMFree e) = freeVars e
   freeVars (Perm_LLVMFunPtr _ fun_perm) = freeVars fun_perm
   freeVars Perm_IsLLVMPtr = NameSet.empty
@@ -4253,9 +4369,25 @@ instance FreeVars (LLVMArrayBorrow w) where
   freeVars (FieldBorrow ix) = freeVars ix
   freeVars (RangeBorrow rng) = freeVars rng
 
+instance FreeVars (LLVMBlockPerm w) where
+  freeVars (LLVMBlockPerm rw l off len sh) =
+    NameSet.unions [freeVars rw, freeVars l, freeVars off,
+                    freeVars len, freeVars sh]
+
 instance FreeVars (PermOffset tp) where
   freeVars NoPermOffset = NameSet.empty
   freeVars (LLVMPermOffset e) = freeVars e
+
+instance FreeVars (LOwnedPerm a) where
+  freeVars (LOwnedPermField e fp) =
+    NameSet.unions [freeVars e, freeVars fp]
+  freeVars (LOwnedPermBlock e bp) =
+    NameSet.unions [freeVars e, freeVars bp]
+  freeVars (LOwnedPermLifetime e ps_in ps_out) =
+    NameSet.unions [freeVars e, freeVars ps_in, freeVars ps_out]
+
+instance FreeVars (LOwnedPerms ps) where
+  freeVars = NameSet.unions . RL.mapToList freeVars
 
 instance FreeVars (FunPerm ghosts args ret) where
   freeVars (FunPerm _ _ _ perms_in perms_out) =
@@ -4838,6 +4970,18 @@ instance SubstVar s m => Substable s (LLVMBlockPerm w) m where
 instance SubstVar s m => Substable s (LLVMFieldShape w) m where
   genSubst s [nuP| LLVMFieldShape p |] =
     LLVMFieldShape <$> genSubst s p
+
+instance SubstVar s m => Substable s (LOwnedPerm a) m where
+  genSubst s [nuP| LOwnedPermField e fp |] =
+    LOwnedPermField <$> genSubst s e <*> genSubst s fp
+  genSubst s [nuP| LOwnedPermBlock e bp |] =
+    LOwnedPermBlock <$> genSubst s e <*> genSubst s bp
+  genSubst s [nuP| LOwnedPermLifetime e ps_in ps_out |] =
+    LOwnedPermLifetime <$> genSubst s e <*> genSubst s ps_in
+    <*> genSubst s ps_out
+
+instance SubstVar s m => Substable1 s LOwnedPerm m where
+  genSubst1 = genSubst
 
 instance SubstVar s m => Substable s (FunPerm ghosts args ret) m where
   genSubst s [nuP| FunPerm ghosts args ret perms_in perms_out |] =
@@ -5600,6 +5744,29 @@ instance AbstractVars (DistPerms ps) where
     absVarsReturnH ns1 ns2 $(mkClosed [| DistPermsCons |])
     `clMbMbApplyM` abstractPEVars ns1 ns2 perms
     `clMbMbApplyM` abstractPEVars ns1 ns2 x `clMbMbApplyM` abstractPEVars ns1 ns2 p
+
+instance AbstractVars (LOwnedPerm a) where
+  abstractPEVars ns1 ns2 (LOwnedPermField e fp) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| LOwnedPermField |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e
+    `clMbMbApplyM` abstractPEVars ns1 ns2 fp
+  abstractPEVars ns1 ns2 (LOwnedPermBlock e bp) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| LOwnedPermBlock |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e
+    `clMbMbApplyM` abstractPEVars ns1 ns2 bp
+  abstractPEVars ns1 ns2 (LOwnedPermLifetime e ps_in ps_out) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| LOwnedPermLifetime |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 e
+    `clMbMbApplyM` abstractPEVars ns1 ns2 ps_in
+    `clMbMbApplyM` abstractPEVars ns1 ns2 ps_out
+
+instance AbstractVars (LOwnedPerms ps) where
+  abstractPEVars ns1 ns2 MNil =
+    absVarsReturnH ns1 ns2 $(mkClosed [| MNil |])
+  abstractPEVars ns1 ns2 (ps :>: p) =
+    absVarsReturnH ns1 ns2 $(mkClosed [| (:>:) |])
+    `clMbMbApplyM` abstractPEVars ns1 ns2 ps
+    `clMbMbApplyM` abstractPEVars ns1 ns2 p
 
 instance AbstractVars (FunPerm ghosts args ret) where
   abstractPEVars ns1 ns2 (FunPerm ghosts args ret perms_in perms_out) =
