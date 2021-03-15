@@ -2147,19 +2147,33 @@ tcExpr (ExtensionApp e_ext :: App ext RegWithVal tp)
 
 -- Equality expressions --
 
+-- For equalities, we can definitely return True if the values of the two
+-- expressions being compared are equal, but we can only return False if we know
+-- for sure that the two values are unequal. If, e.g., one is a variable with
+-- unknown value, it could equal anything, so we know nothing about the result
+-- of the equality test.
+tcExpr (BoolEq (RegWithVal _ (PExpr_Bool b1))
+        (RegWithVal _ (PExpr_Bool b2))) =
+  greturn $ Just $ PExpr_Bool (b1 == b2)
+tcExpr (BoolEq rwv1 rwv2)
+  | regWithValExpr rwv1 == regWithValExpr rwv2 =
+    greturn $ Just $ PExpr_Bool True
+tcExpr (NatEq (RegWithVal _ (PExpr_Nat i1))
+        (RegWithVal _ (PExpr_Nat i2))) =
+  greturn $ Just $ PExpr_Bool (i1 == i2)
+tcExpr (NatEq rwv1 rwv2)
+  | regWithValExpr rwv1 == regWithValExpr rwv2 =
+    greturn $ Just $ PExpr_Bool True
+tcExpr (BVEq _ (RegWithVal _ bv1) (RegWithVal _ bv2))
+  | bvEq bv1 bv2 = greturn $ Just $ PExpr_Bool True
+tcExpr (BVEq _ (RegWithVal _ bv1) (RegWithVal _ bv2))
+  | not (bvCouldEqual bv1 bv2) = greturn $ Just $ PExpr_Bool False
+tcExpr (BVEq _ rwv1 rwv2)
+  | regWithValExpr rwv1 == regWithValExpr rwv2 =
+    greturn $ Just $ PExpr_Bool True
 tcExpr (BaseIsEq _ rwv1 rwv2)
   | regWithValExpr rwv1 == regWithValExpr rwv2 =
     greturn $ Just $ PExpr_Bool True
-tcExpr (BaseIsEq _ (RegWithVal _ (PExpr_Bool b1))
-        (RegWithVal _ (PExpr_Bool b2))) =
-  greturn $ Just $ PExpr_Bool (b1 == b2)
-tcExpr (BaseIsEq _ (RegWithVal _ (PExpr_Nat i1))
-        (RegWithVal _ (PExpr_Nat i2))) =
-  greturn $ Just $ PExpr_Bool (i1 == i2)
-tcExpr (BaseIsEq (BaseBVRepr _) (RegWithVal _ bv1) (RegWithVal _ bv2))
-  | bvEq bv1 bv2 = greturn $ Just $ PExpr_Bool True
-tcExpr (BaseIsEq (BaseBVRepr _) (RegWithVal _ bv1) (RegWithVal _ bv2))
-  | not (bvCouldEqual bv1 bv2) = greturn $ Just $ PExpr_Bool False
 
 -- Boolean expressions --
 
