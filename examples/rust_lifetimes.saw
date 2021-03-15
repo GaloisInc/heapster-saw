@@ -35,7 +35,7 @@ heapster_assume_fun env "llvm.expect.i1" "().arg0:int1<>, arg1:int1<> -o ret:int
 
 // mux_mut_refs_u64
 mux_mut_refs_u64_sym <- heapster_find_symbol env "16mux_mut_refs_u64";
-heapster_typecheck_fun_rename env mux_mut_refs_u64_sym "mux_mut_refs_u64" "(l:lifetime,ps:lowned_perm).l:lowned ps, arg0:[l]memblock(W,0,8,u64<>), arg1:[l]memblock(W,0,8,u64<>), arg2:int1<> -o l:lowned ps, ret:[l]memblock(W,0,8,u64<>)";
+heapster_typecheck_fun_rename env mux_mut_refs_u64_sym "mux_mut_refs_u64" "(l:lifetime,l1:lifetime,l2:lifetime).l:lowned (arg0:[l]memblock(R,0,8,u64<>), arg1:[l]memblock(R,0,8,u64<>) -o arg0:[l1]memblock(W,0,8,u64<>), arg1:[l2]memblock(W,0,8,u64<>)), arg0:[l]memblock(W,0,8,u64<>), arg1:[l]memblock(W,0,8,u64<>), arg2:int1<> -o l:lowned (ret:[l]memblock(R,0,8,u64<>) -o arg0:[l1]memblock(W,0,8,u64<>), arg1:[l2]memblock(W,0,8,u64<>)), ret:[l]memblock(W,0,8,u64<>)";
 
 // use_mux_mut_refs
 use_mux_mut_refs_sym <- heapster_find_symbol env "16use_mux_mut_refs";
