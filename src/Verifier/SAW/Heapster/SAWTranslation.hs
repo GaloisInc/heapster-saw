@@ -905,6 +905,14 @@ data AtomicPermTrans ctx a where
                        Mb ctx (PermOffset a) -> OpenTerm ->
                        AtomicPermTrans ctx a
 
+  -- | Defined Perm_NamedConj permissions are just a wrapper around the
+  -- translation of the permission definition
+  APTrans_DefinedNamedConj :: NamedPermName (DefinedSort True) args a ->
+                              Mb ctx (PermExprs args) ->
+                              Mb ctx (PermOffset a) ->
+                              PermTrans ctx a ->
+                              AtomicPermTrans ctx a
+
   -- | LLVM frame permissions have no computational content
   APTrans_LLVMFrame :: (1 <= w, KnownNat w) =>
                        Mb ctx (LLVMFramePerm w) ->
@@ -1074,6 +1082,7 @@ instance IsTermTrans (AtomicPermTrans ctx a) where
   transTerms APTrans_IsLLVMPtr = []
   transTerms (APTrans_LLVMBlockShape _ t) = [t]
   transTerms (APTrans_NamedConj _ _ _ t) = [t]
+  transTerms (APTrans_DefinedNamedConj _ _ _ ptrans) = transTerms ptrans
   transTerms (APTrans_LLVMFrame _) = []
   transTerms (APTrans_LOwned _ _ t) = [t]
   transTerms (APTrans_LCurrent _) = []
@@ -1126,6 +1135,8 @@ atomicPermTransPerm prxs APTrans_IsLLVMPtr = nuMulti prxs $ const Perm_IsLLVMPtr
 atomicPermTransPerm _ (APTrans_LLVMBlockShape mb_sh _) =
   fmap Perm_LLVMBlockShape mb_sh
 atomicPermTransPerm _ (APTrans_NamedConj npn args off _) =
+  mbMap2 (Perm_NamedConj npn) args off
+atomicPermTransPerm _ (APTrans_DefinedNamedConj npn args off _) =
   mbMap2 (Perm_NamedConj npn) args off
 atomicPermTransPerm _ (APTrans_LLVMFrame fp) = fmap Perm_LLVMFrame fp
 atomicPermTransPerm _ (APTrans_LOwned ps_in ps_out _) =
@@ -1184,6 +1195,8 @@ instance ExtPermTrans AtomicPermTrans where
     APTrans_LLVMBlockShape (extMb mb_sh) t
   extPermTrans (APTrans_NamedConj npn args off t) =
     APTrans_NamedConj npn (extMb args) (extMb off) t
+  extPermTrans (APTrans_DefinedNamedConj npn args off ptrans) =
+    APTrans_DefinedNamedConj npn (extMb args) (extMb off) (extPermTrans ptrans)
   extPermTrans (APTrans_LLVMFrame fp) = APTrans_LLVMFrame $ extMb fp
   extPermTrans (APTrans_LOwned ps_in ps_out t) =
     APTrans_LOwned (extMb ps_in) (extMb ps_out) t
@@ -1244,6 +1257,10 @@ offsetLLVMAtomicPermTrans _ p@APTrans_IsLLVMPtr = Just p
 offsetLLVMAtomicPermTrans off (APTrans_NamedConj npn args off' t) =
   Just $ APTrans_NamedConj npn args (mbMap2 addPermOffsets off' $
                                      fmap mkLLVMPermOffset off) t
+offsetLLVMAtomicPermTrans off (APTrans_DefinedNamedConj npn args off' ptrans) =
+  Just $ APTrans_DefinedNamedConj npn args (mbMap2 addPermOffsets off' $
+                                            fmap mkLLVMPermOffset off)
+  (offsetLLVMPermTrans off ptrans)
 
 -- | Apply 'offsetLLVMPerm' to the permissions associated with a permission
 -- translation
@@ -1570,6 +1587,12 @@ instance TransInfo info =>
   translate [nuP| Perm_LLVMBlockShape sh |] =
     do tp <- translate1 sh
        return $ mkTypeTrans1 tp (APTrans_LLVMBlockShape sh)
+  translate p@[nuP| Perm_NamedConj npn args off |]
+    | [nuP| DefinedSortRepr _ |] <- fmap namedPermNameSort npn =
+      -- To translate P<args>@off as an atomic permission, we translate it as a
+      -- normal permission and map the resulting PermTrans to an AtomicPermTrans
+      do tptrans <- translate $ mbMap2 (ValPerm_Named $ mbLift npn) args off
+         return $ fmap (APTrans_DefinedNamedConj (mbLift npn) args off) tptrans
   translate p@[nuP| Perm_NamedConj npn args off |] =
     -- To translate P<args>@off as an atomic permission, we translate it as a
     -- normal permission and map the resulting PermTrans to an AtomicPermTrans
@@ -2797,40 +2820,41 @@ translateSimplImpl _ [nuP| SImpl_Mu _ _ _ _ |] m =
   error "FIXME HERE: SImpl_Mu: translation not yet implemented"
 -}
 
-translateSimplImpl _ [nuP| SImpl_NamedToConj x npn args off |] m =
-  withPermStackM id
-  (\(pctx :>: ptrans) ->
-    pctx :>: PTrans_Conj [APTrans_NamedConj (mbLift npn) args off $
-                          transTerm1 ptrans]) m
+translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedToConj _ _ _ _ |] m =
+  do tp_trans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF tp_trans (transTerms ptrans)) m
 
-translateSimplImpl _ [nuP| SImpl_NamedFromConj x npn args off |] m =
-  withPermStackM id
-  (\(pctx :>: PTrans_Conj [APTrans_NamedConj _ _ _ t]) ->
-    pctx :>: PTrans_Term (mbMap2 (ValPerm_Named $ mbLift npn) args off) t) m
+translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedFromConj _ _ _ _ |] m =
+  do tp_trans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF tp_trans (transTerms ptrans)) m
 
 translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedArgAlways _ _ _ _ _ _ |] m =
-  withPermStackM id
-  (\(pctx :>: PTrans_Term _ t) ->
-    pctx :>: PTrans_Term (fmap (distPermsHeadPerm . simplImplOut) mb_simpl) t)
-  m
+  do tp_trans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF tp_trans (transTerms ptrans)) m
 
 translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedArgCurrent _ _ _ _ _ _ |] m =
-  withPermStackM RL.tail
-  (\(pctx :>: PTrans_Term _ t :>: _) ->
-    pctx :>: PTrans_Term (fmap (distPermsHeadPerm . simplImplOut) mb_simpl) t)
-  m
+  do tp_trans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
+     withPermStackM RL.tail
+       (\(pctx :>: ptrans :>: _) ->
+         pctx :>: typeTransF tp_trans (transTerms ptrans)) m
 
 translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedArgWrite _ _ _ _ _ _ |] m =
-  withPermStackM id
-  (\(pctx :>: PTrans_Term _ t) ->
-    pctx :>: PTrans_Term (fmap (distPermsHeadPerm . simplImplOut) mb_simpl) t)
-  m
+  do tp_trans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF tp_trans (transTerms ptrans)) m
 
 translateSimplImpl _ mb_simpl@[nuP| SImpl_NamedArgRead _ _ _ _ _ |] m =
-  withPermStackM id
-  (\(pctx :>: PTrans_Term _ t) ->
-    pctx :>: PTrans_Term (fmap (distPermsHeadPerm . simplImplOut) mb_simpl) t)
-  m
+  do tp_trans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) ->
+         pctx :>: typeTransF tp_trans (transTerms ptrans)) m
 
 translateSimplImpl _ simpl@[nuP| SImpl_ReachabilityTrans _ rp args _ _ p |] m =
   do args_trans <- translate $ mbMap2 PExprs_Cons args $ fmap PExpr_ValPerm p
