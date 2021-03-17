@@ -2790,6 +2790,12 @@ instance Liftable (ReachMethods args a reach) where
     (mbLift transIdent)
   mbLift [nuP| NoReachMethods |] = NoReachMethods
 
+-- | Embed a 'ValuePerm' in a 'PermExpr' - like 'PExpr_ValPerm' but maps
+-- 'ValPerm_Var's to 'PExpr_Var's
+permToExpr :: ValuePerm a -> PermExpr (ValuePermType a)
+permToExpr (ValPerm_Var n NoPermOffset) = PExpr_Var n
+permToExpr a = PExpr_ValPerm a
+
 -- | Extract @p1@ from a permission of the form @p1 \/ p2@
 orPermLeft :: ValuePerm a -> ValuePerm a
 orPermLeft (ValPerm_Or p _) = p

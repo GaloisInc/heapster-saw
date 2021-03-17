@@ -49,6 +49,7 @@ import Control.Monad.Fail
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
+import Control.Monad.Except
 import Control.Monad.Cont
 import Control.Monad.Trans.Maybe
 import Data.Vector (Vector)
@@ -4278,75 +4279,57 @@ listSortOpenTerm (tp:tps) =
   ctorOpenTerm "Prelude.LS_Cons" [tp, listSortOpenTerm tps]
 
 ----------------------------------------------------------------------
--- ** The IRT translation monad
+-- ** The monad for translating IRT type variables
 
-data IRTRecPerm args ctx where
-  IRTRecPerm :: { irtRecPermName :: NamedPermName ns args a,
-                  irtRecPermArgs :: Maybe (Mb ctx (PermExprs args)),
-                  irtRecPermOff  :: Mb ctx (PermOffset a)
-                } -> IRTRecPerm args ctx
+data IRTTyVarsTransCtx args ext where
+  IRTTyVarsTransCtx :: { irtTRecPerm :: NamedPermName ns args tp
+                       , irtTArgsCtx :: RAssign Proxy args
+                       , irtTExtCtx  :: RAssign Proxy ext } ->
+                       IRTTyVarsTransCtx args ext
 
-extIRTRecPerm :: IRTRecPerm args ctx -> IRTRecPerm args (ctx :> tp)
-extIRTRecPerm (IRTRecPerm npn_rec args_rec off_rec) = 
-  IRTRecPerm npn_rec (fmap extMb args_rec) (extMb off_rec)
+-- | The monad for translating IRT type variables
+type IRTTyVarsTransM args ext = ReaderT (IRTTyVarsTransCtx args ext)
+                                        (ExceptT String (TypeTransM args))
 
--- | Contextual info for an IRT translation
-data IRTTransInfo tyVarsTp args ctx =
-  IRTTransInfo { irtExprCtx :: ExprTransCtx ctx,
-                 irtPermEnv :: PermEnv,
-                 irtRecPerm :: IRTRecPerm args ctx,
-                 irtTyVars  :: tyVarsTp
-               }
+runIRTTyVarsTransM :: NamedPermName ns args tp -> CruCtx args ->
+                      IRTTyVarsTransM args RNil a ->
+                      TypeTransM args (Either String a)
+runIRTTyVarsTransM npn_rec args m = runExceptT (runReaderT m ctx)
+  where ctx = IRTTyVarsTransCtx npn_rec (cruCtxProxies args) MNil
 
-type IRTTyVarsTransInfo = IRTTransInfo ()
-type IRTDescTransInfo   = IRTTransInfo Ident
+-- | Run a regular translation computation in an IRT type variables
+-- translation computation
+liftIRTTyVarsTransM :: TypeTransM args a -> IRTTyVarsTransM args ext a
+liftIRTTyVarsTransM = lift . lift
 
-instance TransInfo (IRTTransInfo tyVarsTp args) where
-  infoCtx = irtExprCtx
-  infoEnv = irtPermEnv
-  extTransInfo etrans (IRTTransInfo {..}) =
-    IRTTransInfo
-    { irtExprCtx = irtExprCtx :>: etrans
-    , irtRecPerm = extIRTRecPerm irtRecPerm
-    , .. }
+-- | Run an IRT type variables translation computation in an extended context
+inExtIRTTyVarsTransM :: IRTTyVarsTransM args (ext :> tp) a ->
+                        IRTTyVarsTransM args ext a
+inExtIRTTyVarsTransM = withReaderT $
+  \ctx -> ctx { irtTExtCtx = irtTExtCtx ctx :>: Proxy }
 
--- | Build an empty 'IRTTransInfo' from a 'PermEnv' and a recursive
--- permission name, where 'irtRecPermArgs' of 'irtRecPerm' is set to 'Nothing'
--- and 'irtRecPermOff' of 'irtRecPerm' is set to 'NoPermOffset'.
-emptyIRTTransInfo :: PermEnv -> NamedPermName ns args tp -> tyVarsTp ->
-                     IRTTransInfo tyVarsTp args RNil
-emptyIRTTransInfo env npn_rec = 
-  IRTTransInfo MNil env (IRTRecPerm npn_rec Nothing (emptyMb NoPermOffset))
+-- | Combine a binding inside an @args :++: ext@ binding into a single
+-- @args :++: ext'@ binding
+irtTMbCombine :: forall args ext ctx a.
+                Mb (args :++: ext) (Mb ctx a) ->
+                IRTTyVarsTransM args ext (Mb (args :++: (ext :++: ctx)) a)
+irtTMbCombine x =
+  do ext <- irtTExtCtx <$> ask
+     return $ mbCombine (fmap mbCombine (mbSeparate @_ @args ext x))
 
--- | When we're in our argument context, set 'irtRecPermArgs' of 'irtRecPerm'
-setIRTRecPermArgs :: CruCtx args ->
-                     IRTTransInfo tyVarsTp args args ->
-                     IRTTransInfo tyVarsTp args args
-setIRTRecPermArgs args (IRTTransInfo {..}) =
-  IRTTransInfo
-  { irtRecPerm = irtRecPerm {
-      irtRecPermArgs = Just (nus (cruCtxProxies args) namesToExprs) }
-  , .. }
-
--- | The monad for IRT translation
-type IRTTransM tyVarsTp args = TransM (IRTTransInfo tyVarsTp args)
-
-type IRTTyVarsTransM args = IRTTransM () args
-type IRTDescTransM   args = IRTTransM Ident args
-
--- | When we're in our argument context, set 'irtRecPermArgs' of 'irtRecPerm'
-inIRTArgsCtx :: CruCtx args ->
-                IRTTransM tyVarsTp args args a ->
-                IRTTransM tyVarsTp args args a
-inIRTArgsCtx args = local (setIRTRecPermArgs args)
-
--- | Run a translation computation in an extended context, where if the
--- translation of the new addition to the context is ever looked up using
--- 'infoCtx', error!
-inExtIRTTransM :: IRTTransM tyVarsTp args (ctx :> tp) a ->
-                  IRTTransM tyVarsTp args ctx a
-inExtIRTTransM =
-  inExtTransM (error "non-argument variable in an IRT translation!")
+-- | Turn an @args :++: ext@ binding into just an @args@ binding using
+-- 'partialSubst'
+irtTSubstExt :: (Substable PartialSubst a Maybe, NuMatching a) =>
+                Mb (args :++: ext) a ->
+                IRTTyVarsTransM args ext (Mb args a)
+irtTSubstExt x =
+  do ext <- irtTExtCtx <$> ask
+     let x' = mbSwap (mbSeparate ext x)
+         emptyPS = PartialSubst $ RL.map (\_ -> PSubstElem Nothing) ext
+     case partialSubst emptyPS x' of
+       Just x'' -> return x''
+       Nothing -> throwError $ "non-array permission in a recursive perm body"
+                               ++ " depends on an existential variable!"
 
 ----------------------------------------------------------------------
 -- ** Translating IRT type variables
@@ -4360,21 +4343,36 @@ translateCompleteIRTTyVars :: SharedContext -> PermEnv ->
                               IO TypedTerm
 translateCompleteIRTTyVars sc env npn_rec args p =
   completeOpenTermTyped sc $
-  runTransM (lambdaExprCtx args . inIRTArgsCtx args $
-               listSortOpenTerm <$> valuePermIRTTyVars p)
-            (emptyIRTTransInfo env npn_rec ())
+  runNilTypeTransM (lambdaExprCtx args $
+                      either failOpenTerm listSortOpenTerm <$> m) env
+  where m = runIRTTyVarsTransM npn_rec args (valuePermIRTTyVars p)
+        failOpenTerm s = OpenTerm $ fail s
 
--- | Map the 'typeTransTypes' field of a 'TypeTrans' to the empty list if it's
+-- | ...
+-- Map the 'typeTransTypes' field of a 'TypeTrans' to the empty list if it's
 -- an empty list, or a singleton list consisting of it applied 'tupleOfTypes'
 -- otherwise. This avoids adding unnecessary @unit@s to the list of type
 -- variables.
-typeTransIRTTyVar :: TypeTrans tr -> [OpenTerm]
-typeTransIRTTyVar (TypeTrans [] _) = []
-typeTransIRTTyVar (TypeTrans ts _) = [tupleOfTypes ts]
+irtTTranslate :: (Translate TypeTransInfo args a (TypeTrans tr),
+                  Substable PartialSubst a Maybe, NuMatching a) =>
+                 Mb (args :++: ext) a ->
+                 IRTTyVarsTransM args ext [OpenTerm]
+irtTTranslate x =
+  do x' <- irtTSubstExt x
+     x_trans <- liftIRTTyVarsTransM (translate x')
+     case x_trans of
+       TypeTrans [] _ -> return []
+       TypeTrans ts _ -> return [tupleOfTypes ts]
+
+-- | ...
+irtTTranslateSigmaType :: TypeRepr tp ->
+                          IRTTyVarsTransM args ext OpenTerm
+irtTTranslateSigmaType tp =
+  typeTransTupleType <$> liftIRTTyVarsTransM (translateClosed tp)
 
 -- | Get all IRT type variables in a value perm
-valuePermIRTTyVars :: Mb ctx (ValuePerm a) ->
-                      IRTTyVarsTransM args ctx [OpenTerm]
+valuePermIRTTyVars :: Mb (args :++: ext) (ValuePerm a) ->
+                      IRTTyVarsTransM args ext [OpenTerm]
 valuePermIRTTyVars [nuP| ValPerm_Eq _ |] = return []
 valuePermIRTTyVars [nuP| ValPerm_Or p1 p2 |] =
   do tps1 <- valuePermIRTTyVars p1
@@ -4382,18 +4380,14 @@ valuePermIRTTyVars [nuP| ValPerm_Or p1 p2 |] =
      return $ tps1 ++ tps2
 valuePermIRTTyVars [nuP| ValPerm_Exists p |] =
   do let tp = mbBindingType p
-     tp_trans <- typeTransTupleType <$> translateClosed tp
-     tps <- inExtIRTTransM (valuePermIRTTyVars (mbCombine p))
+     tp_trans <- irtTTranslateSigmaType tp
+     pCbn <- irtTMbCombine p
+     tps <- inExtIRTTyVarsTransM (valuePermIRTTyVars pCbn)
      return $ tp_trans : tps
 valuePermIRTTyVars p@[nuP| ValPerm_Named npn args off |] =
-  -- because of the 'error' in 'inExtIRTTransM', the only vars that can
-  --  appear in this term are arguments
   namedPermIRTTyVars p npn args off
 valuePermIRTTyVars p@[nuP| ValPerm_Var _ _ |] =
-  do -- because of the 'error' in 'inExtIRTTransM', the only vars that
-     --  can appear in this term are arguments
-     tp_trans <- typeTransIRTTyVar <$> translate p
-     return tp_trans
+  irtTTranslate p
 valuePermIRTTyVars [nuP| ValPerm_Conj ps |] =
   do tps <- mapM atomicPermIRTTyVars (mbList ps)
      return $ concat tps
@@ -4401,25 +4395,27 @@ valuePermIRTTyVars [nuP| ValPerm_Conj ps |] =
 -- | Get all IRT type variables in a named permission application. The first
 -- argument must be either 'ValPerm_Named' or 'Perm_NamedConj' applied to the
 -- remaining arguments.
-namedPermIRTTyVars :: Translate (IRTTyVarsTransInfo args) ctx t (TypeTrans tr) =>
-                      Mb ctx t -> Mb ctx (NamedPermName ns args' a) ->
-                                  Mb ctx (PermExprs args') ->
-                                  Mb ctx (PermOffset a) ->
-                      IRTTyVarsTransM args ctx [OpenTerm]
+namedPermIRTTyVars :: (Translate TypeTransInfo args a (TypeTrans tr),
+                       Substable PartialSubst a Maybe, NuMatching a) =>
+                      Mb (args :++: ext) a ->
+                      Mb (args :++: ext) (NamedPermName ns args' tp) ->
+                      Mb (args :++: ext) (PermExprs args') ->
+                      Mb (args :++: ext) (PermOffset tp) ->
+                      IRTTyVarsTransM args ext [OpenTerm]
 namedPermIRTTyVars p npn args off =
-  do IRTRecPerm npn_rec args_rec off_rec <- irtRecPerm <$> ask
+  do IRTTyVarsTransCtx npn_rec argsCtx extCtx <- ask
      case testNamedPermNameEq npn_rec <$> npn of
        [nuP| Just (Refl, Refl, Refl) |] ->
-         -- TODO Why does this equality check not work?
-         if {- args_rec == Just args && -} off_rec == off then return []
-         else error $ "recursive perm in IRT not applied to the correct arguments!\n"
-                      ++ permPrettyString emptyPPInfo args ++ " /= " ++ permPrettyString emptyPPInfo (fromJust args_rec) ++ "\n"
-                      ++ permPrettyString emptyPPInfo off  ++ " / =" ++ permPrettyString emptyPPInfo off_rec
-       _ -> typeTransIRTTyVar <$> translate p
+         if mbCombine (nus argsCtx (mbPure extCtx . namesToExprs)) == args &&
+            mbCombine (mbPure argsCtx (mbPure extCtx NoPermOffset)) == off
+         then return []
+         else throwError $ "recursive permission applied to different"
+                           ++ " arguments in its definition!"
+       _ -> irtTTranslate p
 
 -- | Get all IRT type variables in an atomic perm
-atomicPermIRTTyVars :: Mb ctx (AtomicPerm a) ->
-                       IRTTyVarsTransM args ctx [OpenTerm]
+atomicPermIRTTyVars :: Mb (args :++: ext) (AtomicPerm a) ->
+                       IRTTyVarsTransM args ext [OpenTerm]
 atomicPermIRTTyVars [nuP| Perm_LLVMField fld |] =
   valuePermIRTTyVars (fmap llvmFieldContents fld)
 atomicPermIRTTyVars [nuP| Perm_LLVMArray mb_ap |] =
@@ -4448,8 +4444,8 @@ atomicPermIRTTyVars [nuP| Perm_Fun fun_perm |] =
 atomicPermIRTTyVars [nuP| Perm_BVProp prop |] = return []
 
 -- | Get all IRT type variables in a shape expression
-shapeExprIRTTyVars :: Mb ctx (PermExpr (LLVMShapeType w)) ->
-                      IRTTyVarsTransM args ctx [OpenTerm]
+shapeExprIRTTyVars :: Mb (args :++: ext) (PermExpr (LLVMShapeType w)) ->
+                      IRTTyVarsTransM args ext [OpenTerm]
 shapeExprIRTTyVars [nuP| PExpr_EmptyShape |] = return []
 shapeExprIRTTyVars [nuP| PExpr_EqShape _ |] = return []
 shapeExprIRTTyVars [nuP| PExpr_PtrShape _ _ sh |] =
@@ -4468,19 +4464,19 @@ shapeExprIRTTyVars [nuP| PExpr_OrShape sh1 sh2 |] =
      return $ tps1 ++ tps2
 shapeExprIRTTyVars [nuP| PExpr_ExShape mb_sh |] =
   do let tp = mbBindingType mb_sh
-     tp_trans <- typeTransTupleType <$> translateClosed tp
-     tps <- inExtIRTTransM (shapeExprIRTTyVars (mbCombine mb_sh))
+     tp_trans <- irtTTranslateSigmaType tp
+     shCbn <- irtTMbCombine mb_sh
+     tps <- inExtIRTTyVarsTransM (shapeExprIRTTyVars shCbn)
      return $ tp_trans : tps
 
 -- | Get all IRT type variables in a field shape
-fieldShapeIRTTyVars :: Mb ctx (LLVMFieldShape w) ->
-                       IRTTyVarsTransM args ctx [OpenTerm]
+fieldShapeIRTTyVars :: Mb (args :++: ext) (LLVMFieldShape w) ->
+                       IRTTyVarsTransM args ext [OpenTerm]
 fieldShapeIRTTyVars [nuP| LLVMFieldShape p |] = valuePermIRTTyVars p
 
--- TODO Fix this
 -- | Get all IRT type variables in a set of value perms
-valuePermsIRTTyVars :: Mb ctx (ValuePerms ps) ->
-                       IRTTyVarsTransM args ctx [OpenTerm]
+valuePermsIRTTyVars :: Mb (args :++: ext) (ValuePerms ps) ->
+                       IRTTyVarsTransM args ext [OpenTerm]
 valuePermsIRTTyVars [nuP| ValPerms_Nil |] = return []
 valuePermsIRTTyVars [nuP| ValPerms_Cons ps p |] =
   do tps <- valuePermsIRTTyVars ps
@@ -4488,123 +4484,135 @@ valuePermsIRTTyVars [nuP| ValPerms_Cons ps p |] =
      return $ tps ++ tp
 
 ----------------------------------------------------------------------
--- ** Getting IRT type indices
+-- ** Getting IRT type variable indices
 
-data IRTTyVarIdxs = IRTTyVarIdxsNil
-                  | IRTTyVarIdxsCons Natural IRTTyVarIdxs
-                  | IRTTyVarIdxsApp IRTTyVarIdxs IRTTyVarIdxs
-                  | IRTTyVarIdxsConcat [IRTTyVarIdxs]
+data IRTVarIdxs = IRTVarIdxsNil
+                | IRTVarIdxsCons Natural IRTVarIdxs
+                | IRTVarIdxsAppend IRTVarIdxs IRTVarIdxs
+                | IRTVarIdxsConcat [IRTVarIdxs]
+                | IRTVarRec -- the recursive case
 
-pattern IRTTyVarIdx ix =  IRTTyVarIdxsCons ix IRTTyVarIdxsNil
+pattern IRTVarIdx ix =  IRTVarIdxsCons ix IRTVarIdxsNil
 
--- type IRTTyVarIdxsM args ctx = StateT Natural (IRTTyVarsTransM args ctx)
+-- | The monad for translating IRT type indices
+type IRTVarIdxsTransM args ext = ReaderT (IRTTyVarsTransCtx args ext)
+
+-- type IRTVarIdxsM args ctx = StateT Natural (IRTTyVarsTransM args ctx)
 -- 
 -- mapStateT' :: Monad m => (m a -> m b) -> StateT s m a -> StateT s m b
 -- mapStateT' f (StateT g) = StateT $ \s -> g s >>= \(a,s) -> fmap (,s) (f a)
 -- 
--- getIRTNextIdx :: IRTTyVarIdxsM Natural
+-- getIRTNextIdx :: IRTVarIdxsM Natural
 -- getIRTNextIdx = state (\i -> (i, i+1))
 -- 
--- typeTransIRTTyVarIdx :: TypeTrans tr -> IRTTyVarIdxsM IRTTyVarIdxs
+-- typeTransIRTTyVarIdx :: TypeTrans tr -> IRTVarIdxsM IRTVarIdxs
 -- typeTransIRTTyVarIdx (TypeTrans [] _) = IRTTyVarNil
 -- typeTransIRTTyVarIdx (TypeTrans ts _) = IRTTyVarIdx <$> getIRTNextIdx
 -- 
--- valuePermIRTTyVarIdxs :: Mb ctx (ValuePerm a) ->
---                          IRTTyVarIdxsM args ctx IRTTyVarIdxs
--- valuePermIRTTyVarIdxs [nuP| ValPerm_Eq _ |] = return IRTTyVarNil
--- valuePermIRTTyVarIdxs [nuP| ValPerm_Or p1 p2 |] =
---   do idxs1 <- valuePermIRTTyVarIdxs p1
---      idxs2 <- valuePermIRTTyVarIdxs p2
---      return $ IRTTyVarIdxsApp idxs1 idxs2
--- valuePermIRTTyVarIdxs [nuP| ValPerm_Exists p |] =
+-- valuePermIRTVarIdxs :: Mb ctx (ValuePerm a) ->
+--                          IRTVarIdxsM args ctx IRTVarIdxs
+-- valuePermIRTVarIdxs [nuP| ValPerm_Eq _ |] = return IRTTyVarNil
+-- valuePermIRTVarIdxs [nuP| ValPerm_Or p1 p2 |] =
+--   do idxs1 <- valuePermIRTVarIdxs p1
+--      idxs2 <- valuePermIRTVarIdxs p2
+--      return $ IRTVarIdxsAppend idxs1 idxs2
+-- valuePermIRTVarIdxs [nuP| ValPerm_Exists p |] =
 --   do let tp = mbBindingType p
 --      idx <- typeTransIRTTyVarIdx <$> lift (translateClosed tp)
---      idxs <- mapStateT' inExtIRTTransM (valuePermIRTTyVarIdxs (mbCombine p))
---      return $ IRTTyVarIdxsApp idx idxs
--- valuePermIRTTyVarIdxs p@[nuP| ValPerm_Named npn args off |] =
+--      idxs <- mapStateT' inExtIRTTransM (valuePermIRTVarIdxs (mbCombine p))
+--      return $ IRTVarIdxsAppend idx idxs
+-- valuePermIRTVarIdxs p@[nuP| ValPerm_Named npn args off |] =
 --   -- because of the 'error' in 'inExtIRTTransM', the only vars that can
 --   --  appear in this term are arguments
 --   namedPermIRTTyVars p npn args off
--- valuePermIRTTyVarIdxs p@[nuP| ValPerm_Var _ _ |] =
+-- valuePermIRTVarIdxs p@[nuP| ValPerm_Var _ _ |] =
 --   do -- because of the 'error' in 'inExtIRTTransM', the only vars that
 --      --  can appear in this term are arguments
 --      tp_trans <- typeTransIRTTyVar <$> translate p
 --      return tp_trans
--- valuePermIRTTyVarIdxs [nuP| ValPerm_Conj ps |] =
+-- valuePermIRTVarIdxs [nuP| ValPerm_Conj ps |] =
 --   do tps <- mapM atomicPermIRTTyVars (mbList ps)
 --      return $ concat tps
 
 ----------------------------------------------------------------------
+-- ** The IRTDesc translation monad
+
+-- | Contextual info for translating IRT type descriptions
+data IRTDescTransInfo ctx =
+  IRTDescTransInfo { irtDExprCtx :: ExprTransCtx ctx,
+                     irtDPermEnv :: PermEnv,
+                     irtDTyVars  :: Ident
+                   }
+
+instance TransInfo IRTDescTransInfo where
+  infoCtx = irtDExprCtx
+  infoEnv = irtDPermEnv
+  extTransInfo etrans (IRTDescTransInfo {..}) =
+    IRTDescTransInfo
+    { irtDExprCtx = irtDExprCtx :>: etrans
+    , .. }
+
+-- | The monad for translating IRT type descriptions
+type IRTDescTransM = TransM IRTDescTransInfo
+
+----------------------------------------------------------------------
 -- ** Translating IRT type descriptions
 
-irtCtorOpenTerm :: Ident -> [OpenTerm] -> IRTDescTransM args ctx OpenTerm
+irtCtorOpenTerm :: Ident -> [OpenTerm] -> IRTDescTransM ctx OpenTerm
 irtCtorOpenTerm c all_args =
-  do tyVarsIdent <- irtTyVars <$> ask
+  do tyVarsIdent <- irtDTyVars <$> ask
      return $ ctorOpenTerm c (globalOpenTerm tyVarsIdent : all_args)
 
-irtUnitOpenTerm :: IRTDescTransM args ctx OpenTerm
+irtUnitOpenTerm :: IRTDescTransM ctx OpenTerm
 irtUnitOpenTerm = irtCtorOpenTerm "Prelude.IRT_unit" []
 
-irtVarTOpenTerm :: IRTTyVarIdxs -> IRTDescTransM args ctx OpenTerm
-irtVarTOpenTerm IRTTyVarIdxsNil = irtUnitOpenTerm
-irtVarTOpenTerm (IRTTyVarIdx ix) = irtCtorOpenTerm "Prelude.IRT_varT" [natOpenTerm ix]
-irtVarTOpenTerm _ = error "malformed IRTTyVarIdxs"
+irtVarTOpenTerm :: IRTVarIdxs -> IRTDescTransM ctx OpenTerm
+irtVarTOpenTerm IRTVarIdxsNil = irtUnitOpenTerm
+irtVarTOpenTerm (IRTVarIdx ix) = irtCtorOpenTerm "Prelude.IRT_varT" [natOpenTerm ix]
+irtVarTOpenTerm _ = error "malformed IRTVarIdxs"
 
 -- TODO Fix the two functions below
 
 -- | Like 'tupleOfTypes' but with @IRT_prod@
-irtProdOfTypes :: [OpenTerm] -> IRTDescTransM args ctx OpenTerm
+irtProdOfTypes :: [OpenTerm] -> IRTDescTransM ctx OpenTerm
 irtProdOfTypes [x] = return x
 irtProdOfTypes xs = irtProdOpenTerm xs
 
 -- | Like 'tupleTypeOpenTerm' but with @IRT_prod@
-irtProdOpenTerm :: [OpenTerm] -> IRTDescTransM args ctx OpenTerm
+irtProdOpenTerm :: [OpenTerm] -> IRTDescTransM ctx OpenTerm
 irtProdOpenTerm [] = irtUnitOpenTerm
 irtProdOpenTerm (x:xs) =
   do xs' <- irtProdOpenTerm xs
      irtCtorOpenTerm "Prelude.IRT_prod" [x, xs']
 
-valuePermIRTDesc :: Mb ctx (ValuePerm a) -> IRTTyVarIdxs ->
-                    IRTDescTransM args ctx OpenTerm
+valuePermIRTDesc :: Mb ctx (ValuePerm a) -> IRTVarIdxs ->
+                    IRTDescTransM ctx OpenTerm
 valuePermIRTDesc [nuP| ValPerm_Eq _ |] _ = irtUnitOpenTerm
-valuePermIRTDesc [nuP| ValPerm_Or p1 p2 |] (IRTTyVarIdxsApp ixs1 ixs2) =
+valuePermIRTDesc [nuP| ValPerm_Or p1 p2 |] (IRTVarIdxsAppend ixs1 ixs2) =
   do x1 <- valuePermIRTDesc p1 ixs1
      x2 <- valuePermIRTDesc p2 ixs2
      irtCtorOpenTerm "Prelude.IRT_Either" [x1, x2]
-valuePermIRTDesc [nuP| ValPerm_Exists p |] (IRTTyVarIdxsCons ix ixs) =
+valuePermIRTDesc [nuP| ValPerm_Exists p |] (IRTVarIdxsCons ix ixs) =
   do let tp = mbBindingType p
      tp_trans <- tupleTypeTrans <$> translateClosed tp
      xf <- lambdaTransM "x_irt" tp_trans (\x ->
              inExtTransM x $ valuePermIRTDesc (mbCombine p) ixs)
      irtCtorOpenTerm "Prelude.IRT_sigT" [natOpenTerm ix, xf]
-valuePermIRTDesc p@[nuP| ValPerm_Named npn args off |] ix =
-  namedPermIRTDesc p npn args off ix
-valuePermIRTDesc [nuP| ValPerm_Var _ _ |] ix = irtVarTOpenTerm ix
-valuePermIRTDesc [nuP| ValPerm_Conj ps |] (IRTTyVarIdxsConcat ixss) =
+valuePermIRTDesc [nuP| ValPerm_Named _ _ _ |] IRTVarRec =
+  irtCtorOpenTerm "Prelude.IRT_varD" [natOpenTerm 0]
+valuePermIRTDesc [nuP| ValPerm_Named _ _ _ |] ix =
+  irtVarTOpenTerm ix
+valuePermIRTDesc [nuP| ValPerm_Var _ _ |] ix =
+  irtVarTOpenTerm ix
+valuePermIRTDesc [nuP| ValPerm_Conj ps |] (IRTVarIdxsConcat ixss) =
   do xs <- zipWithM atomicPermIRTDesc (mbList ps) ixss
      irtProdOfTypes xs
 
-namedPermIRTDesc :: Translate (IRTDescTransInfo args) ctx t (TypeTrans tr) =>
-                    Mb ctx t -> Mb ctx (NamedPermName ns args' a) ->
-                                Mb ctx (PermExprs args') ->
-                                Mb ctx (PermOffset a) -> IRTTyVarIdxs ->
-                    IRTDescTransM args ctx OpenTerm
-namedPermIRTDesc p npn args off ix =
-  do IRTRecPerm npn_rec args_rec off_rec <- irtRecPerm <$> ask
-     case testNamedPermNameEq npn_rec <$> npn of
-       [nuP| Just (Refl, Refl, Refl) |] ->
-         if {- args_rec == Just args && -} off_rec == off
-         then irtCtorOpenTerm "Prelude.IRT_varD" [natOpenTerm 0]
-         else error $ "recursive perm in IRT not applied to the correct arguments!\n"
-                      ++ permPrettyString emptyPPInfo args ++ " /= " ++ permPrettyString emptyPPInfo (fromJust args_rec) ++ "\n"
-                      ++ permPrettyString emptyPPInfo off  ++ " / =" ++ permPrettyString emptyPPInfo off_rec
-       _ -> irtVarTOpenTerm ix
-
-atomicPermIRTDesc :: Mb ctx (AtomicPerm a) -> IRTTyVarIdxs ->
-                     IRTDescTransM args ctx OpenTerm
+atomicPermIRTDesc :: Mb ctx (AtomicPerm a) -> IRTVarIdxs ->
+                     IRTDescTransM ctx OpenTerm
 atomicPermIRTDesc [nuP| Perm_LLVMField fld |] ixs =
   valuePermIRTDesc (fmap llvmFieldContents fld) ixs
-atomicPermIRTDesc [nuP| Perm_LLVMArray mb_ap |] (IRTTyVarIdxsConcat ixss) =
+atomicPermIRTDesc [nuP| Perm_LLVMArray mb_ap |] (IRTVarIdxsConcat ixss) =
   do let w = natVal2 mb_ap
          w_term = natOpenTerm w
          mb_len = fmap llvmArrayLen mb_ap
@@ -4622,8 +4630,10 @@ atomicPermIRTDesc [nuP| Perm_LLVMFunPtr _ p |] ixs =
 atomicPermIRTDesc [nuP| Perm_IsLLVMPtr |] _ = irtUnitOpenTerm
 atomicPermIRTDesc [nuP| Perm_LLVMBlockShape sh |] ixs =
   shapeExprIRTDesc sh ixs
-atomicPermIRTDesc p@[nuP| Perm_NamedConj npn args off |] ixs =
-  namedPermIRTDesc p npn args off ixs
+atomicPermIRTDesc [nuP| Perm_NamedConj _ _ _ |] IRTVarRec =
+  irtCtorOpenTerm "Prelude.IRT_varD" [natOpenTerm 0]
+atomicPermIRTDesc [nuP| Perm_NamedConj _ _ _ |] ix =
+  irtVarTOpenTerm ix
 atomicPermIRTDesc [nuP| Perm_LLVMFrame _ |] _ = irtUnitOpenTerm
 atomicPermIRTDesc [nuP| Perm_LOwned _ _ |] _ =
   error "lowned permission in an IRT definition!"
@@ -4633,45 +4643,45 @@ atomicPermIRTDesc [nuP| Perm_Fun fun_perm |] _ =
   error "fun perm in an IRT definition!"
 atomicPermIRTDesc [nuP| Perm_BVProp prop |] _ = irtUnitOpenTerm
 
-shapeExprIRTDesc :: Mb ctx (PermExpr (LLVMShapeType w)) -> IRTTyVarIdxs ->
-                    IRTDescTransM args ctx OpenTerm
+shapeExprIRTDesc :: Mb ctx (PermExpr (LLVMShapeType w)) -> IRTVarIdxs ->
+                    IRTDescTransM ctx OpenTerm
 shapeExprIRTDesc [nuP| PExpr_EmptyShape |] _ = irtUnitOpenTerm
 shapeExprIRTDesc [nuP| PExpr_EqShape _ |] _ = irtUnitOpenTerm
 shapeExprIRTDesc [nuP| PExpr_PtrShape _ _ sh |] ixs =
   shapeExprIRTDesc sh ixs
 shapeExprIRTDesc [nuP| PExpr_FieldShape fsh |] ixs =
   fieldShapeIRTDesc fsh ixs
-shapeExprIRTDesc [nuP| PExpr_ArrayShape mb_len _ mb_fshs |] (IRTTyVarIdxsConcat ixss) =
+shapeExprIRTDesc [nuP| PExpr_ArrayShape mb_len _ mb_fshs |] (IRTVarIdxsConcat ixss) =
   do let w = natVal4 mb_len
      let w_term = natOpenTerm w
      len_term <- translate1 mb_len
      xs <- zipWithM fieldShapeIRTDesc (mbList mb_fshs) ixss
      xs_term <- irtProdOfTypes xs
      irtCtorOpenTerm "Prelude.IRT_BVVec" [w_term, len_term, xs_term]
-shapeExprIRTDesc [nuP| PExpr_SeqShape sh1 sh2 |] (IRTTyVarIdxsApp ixs1 ixs2) =
+shapeExprIRTDesc [nuP| PExpr_SeqShape sh1 sh2 |] (IRTVarIdxsAppend ixs1 ixs2) =
   do x1 <- shapeExprIRTDesc sh1 ixs1
      x2 <- shapeExprIRTDesc sh2 ixs2
      irtCtorOpenTerm "Prelude.IRT_prod" [x1, x2]
-shapeExprIRTDesc [nuP| PExpr_OrShape sh1 sh2 |] (IRTTyVarIdxsApp ixs1 ixs2) =
+shapeExprIRTDesc [nuP| PExpr_OrShape sh1 sh2 |] (IRTVarIdxsAppend ixs1 ixs2) =
   do x1 <- shapeExprIRTDesc sh1 ixs1
      x2 <- shapeExprIRTDesc sh2 ixs2
      irtCtorOpenTerm "Prelude.IRT_Either" [x1, x2]
-shapeExprIRTDesc [nuP| PExpr_ExShape mb_sh |] (IRTTyVarIdxsCons ix ixs) =
+shapeExprIRTDesc [nuP| PExpr_ExShape mb_sh |] (IRTVarIdxsCons ix ixs) =
   do let tp = mbBindingType mb_sh
      tp_trans <- tupleTypeTrans <$> translateClosed tp
      xf <- lambdaTransM "x_irt" tp_trans (\x ->
              inExtTransM x $ shapeExprIRTDesc (mbCombine mb_sh) ixs)
      irtCtorOpenTerm "Prelude.IRT_sigT" [natOpenTerm ix, xf]
 
-fieldShapeIRTDesc :: Mb ctx (LLVMFieldShape w) -> IRTTyVarIdxs ->
-                     IRTDescTransM args ctx OpenTerm
+fieldShapeIRTDesc :: Mb ctx (LLVMFieldShape w) -> IRTVarIdxs ->
+                     IRTDescTransM ctx OpenTerm
 fieldShapeIRTDesc [nuP| LLVMFieldShape p |] ixs = valuePermIRTDesc p ixs
 
 -- TODO Fix this
-valuePermsIRTDesc :: Mb ctx (ValuePerms ps) -> IRTTyVarIdxs ->
-                     IRTDescTransM args ctx OpenTerm
+valuePermsIRTDesc :: Mb ctx (ValuePerms ps) -> IRTVarIdxs ->
+                     IRTDescTransM ctx OpenTerm
 valuePermsIRTDesc [nuP| ValPerms_Nil |] _ = irtUnitOpenTerm
-valuePermsIRTDesc [nuP| ValPerms_Cons ps p |] (IRTTyVarIdxsApp ixs1 ixs2) =
+valuePermsIRTDesc [nuP| ValPerms_Cons ps p |] (IRTVarIdxsAppend ixs1 ixs2) =
   do xs <- valuePermsIRTDesc ps ixs1
      x  <- valuePermIRTDesc p ixs2
      irtCtorOpenTerm "Prelude.IRT_prod" [xs, x]

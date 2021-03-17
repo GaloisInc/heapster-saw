@@ -494,7 +494,7 @@ parseExpr RWModalityRepr =
   (string "R" >> return PExpr_Read) <|> (string "W" >> return PExpr_Write) <|>
   (PExpr_Var <$> parseExprVarOfType knownRepr) <?>
   "rwmodality expression"
-parseExpr (ValuePermRepr tp) = PExpr_ValPerm <$> parseValPerm tp
+parseExpr (ValuePermRepr tp) = permToExpr <$> parseValPerm tp
 parseExpr tp@(LLVMShapeRepr w) =
   withKnownNat w $
   do spaces
