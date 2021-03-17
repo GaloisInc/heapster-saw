@@ -688,6 +688,8 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     NatLt <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| NatLe e1 e2 |] =
     NatLe <$> genSubst1 s e1 <*> genSubst1 s e2
+  genSubst s [nuP| NatEq e1 e2 |] =
+    NatEq <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| NatAdd e1 e2 |] =
     NatAdd <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| NatSub e1 e2 |] =
@@ -2789,6 +2791,84 @@ tcEmitLLVMStmt arch ctx loc (LLVM_ResolveGlobal w _ gsym) =
       stmtFailM (const $ pretty ("LLVM_ResolveGlobal: no perms for global "
                                  ++ globalSymbolName gsym))
 
+{-
+tcEmitLLVMStmt arch ctx loc (LLVM_PtrLe _ r1 r2) =
+  let x1 = tcReg ctx r1
+      x2 = tcReg ctx r2 in
+  getRegEqualsExpr x1 >>>= \e1 ->
+  getRegEqualsExpr x2 >>>= \e2 ->
+  case (e1, e2) of
+
+    -- If both variables equal words, then compare the words
+    --
+    -- FIXME: if we have bvEq e1' e2' or not (bvCouldEqual e1' e2') then we
+    -- should return a known Boolean value in place of the Nothing
+    (PExpr_LLVMWord e1', PExpr_LLVMWord e2') ->
+      emitStmt knownRepr loc (TypedSetRegPermExpr
+                              knownRepr e1') >>>= \(_ :>: n1) ->
+      stmtRecombinePerms >>>
+      emitStmt knownRepr loc (TypedSetRegPermExpr
+                              knownRepr e2') >>>= \(_ :>: n2) ->
+      stmtRecombinePerms >>>
+      emitStmt knownRepr loc (TypedSetReg knownRepr $
+                              TypedExpr (BVUle knownRepr
+                                         (RegWithVal (TypedReg n1) e1')
+                                         (RegWithVal (TypedReg n1) e2'))
+                              Nothing) >>>= \(_ :>: ret) ->
+      stmtRecombinePerms >>>
+      greturn (addCtxName ctx ret)
+
+    -- If both variables equal x+off for the same x, compare the offsets
+    --
+    -- FIXME: test off1 == off2 like above
+    (asLLVMOffset -> Just (x1', off1), asLLVMOffset -> Just (x2', off2))
+      | x1' == x2' ->
+        emitStmt knownRepr loc (TypedSetRegPermExpr
+                                knownRepr off1) >>>= \(_ :>: n1) ->
+        stmtRecombinePerms >>>
+        emitStmt knownRepr loc (TypedSetRegPermExpr
+                                knownRepr off2) >>>= \(_ :>: n2) ->
+        stmtRecombinePerms >>>
+        emitStmt knownRepr loc (TypedSetReg knownRepr $
+                                TypedExpr (BVUle knownRepr
+                                         (RegWithVal (TypedReg n1) off1)
+                                         (RegWithVal (TypedReg n1) off2))
+                                Nothing) >>>= \(_ :>: ret) ->
+        stmtRecombinePerms >>>
+        greturn (addCtxName ctx ret)
+
+    -- If one variable is a word and the other is not known to be a word, then
+    -- that other has to be a pointer, in which case the comparison will
+    -- definitely fail. Otherwise we cannot compare them and we fail.
+    (PExpr_LLVMWord e, asLLVMOffset -> Just (x', _)) ->
+      let r' = TypedReg x' in
+      stmtProvePerm r' (emptyMb $ ValPerm_Conj1 Perm_IsLLVMPtr) >>>
+      emitLLVMStmt knownRepr loc (AssertLLVMPtr r') >>>
+      emitStmt knownRepr loc (TypedSetReg knownRepr $
+                              TypedExpr (BoolLit False)
+                              Nothing) >>>= \(_ :>: ret) ->
+      stmtRecombinePerms >>>
+      greturn (addCtxName ctx ret)
+
+    -- Symmetrical version of the above case
+    (asLLVMOffset -> Just (x', _), PExpr_LLVMWord e) ->
+      let r' = TypedReg x' in
+      stmtProvePerm r' (emptyMb $ ValPerm_Conj1 Perm_IsLLVMPtr) >>>
+      emitLLVMStmt knownRepr loc (AssertLLVMPtr r') >>>
+      emitStmt knownRepr loc (TypedSetReg knownRepr $
+                              TypedExpr (BoolLit False)
+                              Nothing) >>>= \(_ :>: ret) ->
+      stmtRecombinePerms >>>
+      greturn (addCtxName ctx ret)
+
+    -- If we don't know any relationship between the two registers, then we
+    -- fail, because there is no way to compare pointers in the translation
+    _ ->
+      stmtFailM (\i ->
+                  sep [pretty "Could not compare LLVM pointer values",
+                       permPretty i x1, pretty "and", permPretty i x2])
+-}
+
 tcEmitLLVMStmt arch ctx loc (LLVM_PtrEq _ r1 r2) =
   let x1 = tcReg ctx r1
       x2 = tcReg ctx r2 in
@@ -2865,9 +2945,8 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PtrEq _ r1 r2) =
                   sep [pretty "Could not compare LLVM pointer values",
                        permPretty i x1, pretty "and", permPretty i x2])
 
-
-tcEmitLLVMStmt _arch _ctx _loc _stmt =
-  error "tcEmitLLVMStmt: unimplemented statement"
+tcEmitLLVMStmt _arch _ctx _loc stmt =
+  error ("tcEmitLLVMStmt: unimplemented statement - " ++ show (ppApp (\_ -> mempty) stmt))
 
 -- FIXME HERE: need to handle PtrEq, PtrLe, and PtrSubtract
 

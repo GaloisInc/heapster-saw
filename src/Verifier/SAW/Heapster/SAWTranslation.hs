@@ -36,7 +36,7 @@ import Data.Int
 import Data.List
 import Data.List.NonEmpty (toList)
 import Data.Kind
-import Data.Text (unpack)
+import Data.Text (pack, unpack)
 import Data.IORef
 import GHC.TypeLits
 import Data.BitVector.Sized (BV(..))
@@ -100,6 +100,15 @@ import Verifier.SAW.Heapster.TypedCrucible
 import GHC.Stack
 import Debug.Trace
 
+scInsertDef :: SharedContext -> ModuleName -> Ident -> Term -> Term -> IO ()
+scInsertDef sc mnm ident def_tp def_tm =
+  do t <- scConstant' sc (ModuleIdentifier ident) def_tm def_tp
+     scRegisterGlobal sc ident t
+     scModifyModule sc mnm $ \m ->
+       insDef m $ Def { defIdent = ident,
+                        defQualifier = NoQualifier,
+                        defType = def_tp,
+                        defBody = Just def_tm }
 
 ----------------------------------------------------------------------
 -- * Translation Monads
@@ -355,7 +364,7 @@ lambdaOpenTermTransM :: String -> OpenTerm ->
                         TransM info ctx OpenTerm
 lambdaOpenTermTransM x tp body_f =
   ask >>= \info ->
-  return (lambdaOpenTerm x tp $ \t -> runTransM (body_f t) info)
+  return (lambdaOpenTerm (pack x) tp $ \t -> runTransM (body_f t) info)
 
 -- | Build a nested lambda-abstraction
 --
@@ -366,7 +375,7 @@ lambdaOpenTermTransM x tp body_f =
 lambdaTrans :: String -> TypeTrans tr -> (tr -> OpenTerm) -> OpenTerm
 lambdaTrans x tps body_f =
   lambdaOpenTermMulti
-  (zipWith (\i tp -> (x ++ show i, tp)) [0..] $ typeTransTypes tps)
+  (zipWith (\i tp -> (pack (x ++ show i), tp)) [0..] $ typeTransTypes tps)
   (body_f . typeTransF tps)
 
 -- | Build a nested lambda-abstraction
@@ -380,7 +389,7 @@ lambdaTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
 lambdaTransM x tps body_f =
   ask >>= \info ->
   return (lambdaOpenTermMulti
-          (zipWith (\i tp -> (x ++ show i, tp)) [0..] $ typeTransTypes tps)
+          (zipWith (\i tp -> (pack (x ++ show i), tp)) [0..] $ typeTransTypes tps)
           (\ts -> runTransM (body_f $ typeTransF tps ts) info))
 
 -- | Build a lambda-abstraction
@@ -401,7 +410,7 @@ piTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
 piTransM x tps body_f =
   ask >>= \info ->
   return (piOpenTermMulti
-          (zipWith (\i tp -> (x ++ show i, tp)) [0..] $ typeTransTypes tps)
+          (zipWith (\i tp -> (pack (x ++ show i), tp)) [0..] $ typeTransTypes tps)
           (\ts -> runTransM (body_f $ typeTransF tps ts) info))
 
 -- | Build a let-binding in a translation monad
@@ -411,7 +420,7 @@ letTransM :: String -> OpenTerm -> TransM info ctx OpenTerm ->
 letTransM x tp rhs_m body_m =
   do r <- ask
      return $
-       letOpenTerm x tp (runTransM rhs_m r) (\x -> runTransM (body_m x) r)
+       letOpenTerm (pack x) tp (runTransM rhs_m r) (\x -> runTransM (body_m x) r)
 
 -- | Build an @Either@ type in SAW from the 'typeTransTupleType's of the left
 -- and right types
@@ -1984,7 +1993,7 @@ compReturnTypeTransM =
 mkErrorCompM :: String -> ImpTransM ext blocks tops ret ps_out ctx OpenTerm
 mkErrorCompM msg =
   applyMultiTransM (return $ globalOpenTerm "Prelude.errorM")
-  [returnTypeM, return $ stringLitOpenTerm msg]
+  [returnTypeM, return $ stringLitOpenTerm $ pack msg]
 
 -- | The typeclass for the implication translation of a functor at any
 -- permission set inside any binding to an 'OpenTerm'
@@ -2909,7 +2918,7 @@ forceImplTrans Nothing (ImplFailContTerm errM) = return errM
 forceImplTrans Nothing (ImplFailContMsg str) =
   returnTypeM >>= \tp ->
   return (applyOpenTermMulti (globalOpenTerm "Prelude.errorM")
-          [tp, stringLitOpenTerm str])
+          [tp, stringLitOpenTerm (pack str)])
 
 -- | Perform a failure by jumping to a failure continuation or signaling an
 -- error, using an alternate error message in the latter case
@@ -2919,7 +2928,7 @@ implTransAltErr _ (ImplFailContTerm errM) = return errM
 implTransAltErr str (ImplFailContMsg _) =
   returnTypeM >>= \tp ->
   return (applyOpenTermMulti (globalOpenTerm "Prelude.errorM")
-          [tp, stringLitOpenTerm str])
+          [tp, stringLitOpenTerm (pack str)])
 
 -- | Translate a normal unary 'PermImpl1' rule that succeeds and applies the
 -- translation function if the argument succeeds and fails if the translation of
@@ -3360,10 +3369,10 @@ instance (PermCheckExtC ext, TransInfo info) =>
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.boolEq")
     [translateRWV e1, translateRWV e2]
-  translate [nuP| BaseIsEq BaseNatRepr e1 e2 |] =
-    ETrans_Term <$>
-    applyMultiTransM (return $ globalOpenTerm "Prelude.equalNat")
-    [translateRWV e1, translateRWV e2]
+--  translate [nuP| BaseIsEq BaseNatRepr e1 e2 |] =
+--    ETrans_Term <$>
+--    applyMultiTransM (return $ globalOpenTerm "Prelude.equalNat")
+--    [translateRWV e1, translateRWV e2]
   translate [nuP| BaseIsEq (BaseBVRepr w) e1 e2 |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.bvEq")
@@ -3401,6 +3410,10 @@ instance (PermCheckExtC ext, TransInfo info) =>
     applyMultiTransM (return $ globalOpenTerm "Prelude.ltNat")
     [translateRWV e1, translateRWV e2]
   -- translate [nuP| NatLe _ _ |] =
+  translate [nuP| NatEq e1 e2 |] =
+    ETrans_Term <$>
+    applyMultiTransM (return $ globalOpenTerm "Prelude.equalNat")
+    [translateRWV e1, translateRWV e2]
   translate [nuP| NatAdd e1 e2 |] =
     ETrans_Term <$>
     applyMultiTransM (return $ globalOpenTerm "Prelude.addNat")
@@ -3566,7 +3579,7 @@ instance (PermCheckExtC ext, TransInfo info) =>
   -- Strings
   translate [nuP| Expr.StringLit (UnicodeLiteral text) |] =
     return $ ETrans_Term $ stringLitOpenTerm $
-    mbLift $ fmap unpack text
+    mbLift text
 
   -- Everything else is an error
   translate mb_e =
@@ -4169,7 +4182,7 @@ tcTranslateCFGTupleFun w env endianness cfgs_and_perms =
         lrts in
   (lrts_tm ,) $
   lambdaOpenTermMulti (zip
-                       (map someCFGAndPermToName cfgs_and_perms)
+                       (map (pack . someCFGAndPermToName) cfgs_and_perms)
                        (map (applyOpenTerm
                              (globalOpenTerm
                               "Prelude.lrtToType")) lrts)) $ \funs ->
@@ -4227,11 +4240,7 @@ tcTranslateAddCFGs sc mod_name w env endianness cfgs_and_perms =
        applyOpenTerm (globalOpenTerm "Prelude.lrtTupleType") lrts
      tup_fun_tm <- completeOpenTerm sc $
        applyOpenTermMulti (globalOpenTerm "Prelude.multiFixM") [lrts, tup_fun]
-     scModifyModule sc mod_name $ flip insDef $
-       Def { defIdent = tup_fun_ident,
-             defQualifier = NoQualifier,
-             defType = tup_fun_tp,
-             defBody = Just tup_fun_tm }
+     scInsertDef sc mod_name tup_fun_ident tup_fun_tp tup_fun_tm 
      new_entries <-
        zipWithM
        (\cfg_and_perm i ->
@@ -4241,11 +4250,7 @@ tcTranslateAddCFGs sc mod_name w env endianness cfgs_and_perms =
             tm <- completeOpenTerm sc $
               projTupleOpenTerm i (globalOpenTerm tup_fun_ident)
             let ident = mkSafeIdent mod_name (someCFGAndPermToName cfg_and_perm)
-            scModifyModule sc mod_name $ flip insDef $
-              Def { defIdent = ident,
-                    defQualifier = NoQualifier,
-                    defType = tp,
-                    defBody = Just tm }
+            scInsertDef sc mod_name ident tp tm
             return $ PermEnvGlobalEntry
               (someCFGAndPermSym cfg_and_perm)
               (someCFGAndPermPtrPerm w cfg_and_perm)
