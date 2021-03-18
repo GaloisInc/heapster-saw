@@ -2248,12 +2248,12 @@ translateSimplImpl _ [nuP| SImpl_IntroLLVMFieldContents x _ mb_fld |] m =
     pctx :>: PTrans_Conj [APTrans_LLVMField mb_fld ptrans])
   m
 
-translateSimplImpl _ [nuP| SImpl_DemoteLLVMFieldWrite _ _ |] m =
+translateSimplImpl _ [nuP| SImpl_DemoteLLVMFieldRW _ _ |] m =
   withPermStackM id
   (\(pctx :>: ptrans) ->
     let (mb_fld,ptrans') =
           unPTransLLVMField
-          "translateSimplImpl: SImpl_DemoteLLVMFieldWrite"
+          "translateSimplImpl: SImpl_DemoteLLVMFieldRW"
           knownNat ptrans in
     pctx :>: PTrans_Conj [APTrans_LLVMField
                           (fmap (\fld -> fld { llvmFieldRW = PExpr_Read }) mb_fld)
@@ -2644,6 +2644,12 @@ translateSimplImpl _ [nuP| SImpl_LCurrentTrans l1 l2 l3 |] m =
   ((:>: PTrans_Conj [APTrans_LCurrent l3]) .
    RL.tail . RL.tail)
   m
+
+translateSimplImpl _ simpl@[nuP| SImpl_DemoteLLVMBlockRW _ _ |] m =
+  do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+     withPermStackM id
+       (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans (transTerms ptrans))
+       m
 
 translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockEmpty x _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl

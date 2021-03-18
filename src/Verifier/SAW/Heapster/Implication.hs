@@ -461,10 +461,10 @@ data SimplImpl ps_in ps_out where
     SimplImpl (RNil :> LLVMPointerType w :> LLVMPointerType sz)
     (RNil :> LLVMPointerType w)
 
-  -- | Demote an LLVM field permission from write to read:
+  -- | Demote an LLVM field permission to read:
   --
   -- > x:[ls]ptr((W,off) |-> p) -o [ls]x:ptr((R,off) |-> p)
-  SImpl_DemoteLLVMFieldWrite ::
+  SImpl_DemoteLLVMFieldRW ::
     (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
     ExprVar (LLVMPointerType w) -> LLVMFieldPerm w sz ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
@@ -721,6 +721,14 @@ data SimplImpl ps_in ps_out where
                          PermExpr LifetimeType ->
                          SimplImpl (RNil :> LifetimeType :> LifetimeType)
                          (RNil :> LifetimeType)
+
+  -- | Demote the modality of an LLVM block permission to read:
+  --
+  -- > x:[l]memblock(rw,off,len,sh) -o x:[l]memblock(R,off,len,sh)
+  SImpl_DemoteLLVMBlockRW ::
+    (1 <= w, KnownNat w) =>
+    ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Prove an empty memblock permission of length 0:
   --
@@ -1432,7 +1440,7 @@ simplImplIn (SImpl_IntroLLVMFieldContents x y fld) =
                               fld { llvmFieldContents =
                                     ValPerm_Eq (PExpr_Var y)}])
   y (llvmFieldContents fld)
-simplImplIn (SImpl_DemoteLLVMFieldWrite x fld) =
+simplImplIn (SImpl_DemoteLLVMFieldRW x fld) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMField fld])
 simplImplIn (SImpl_LLVMArrayCopy x ap sub_ap) =
   if isJust (llvmArrayIsOffsetArray ap sub_ap) &&
@@ -1544,6 +1552,8 @@ simplImplIn (SImpl_LCurrentRefl _) = DistPermsNil
 simplImplIn (SImpl_LCurrentTrans l1 l2 l3) =
   distPerms2 l1 (ValPerm_LCurrent $ PExpr_Var l2) l2 (ValPerm_LCurrent l3)
 simplImplIn (SImpl_IntroLLVMBlockEmpty x bp) = DistPermsNil
+simplImplIn (SImpl_DemoteLLVMBlockRW x bp) =
+  distPerms1 x $ ValPerm_LLVMBlock bp
 simplImplIn (SImpl_CoerceLLVMBlockEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplIn (SImpl_ElimLLVMBlockToBytes x bp) =
@@ -1710,7 +1720,7 @@ simplImplOut (SImpl_CastLLVMFieldOffset x fld off') =
   distPerms1 x (ValPerm_Conj [Perm_LLVMField $ fld { llvmFieldOffset = off' }])
 simplImplOut (SImpl_IntroLLVMFieldContents x _ fld) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMField fld])
-simplImplOut (SImpl_DemoteLLVMFieldWrite x fld) =
+simplImplOut (SImpl_DemoteLLVMFieldRW x fld) =
   distPerms1 x (ValPerm_Conj [Perm_LLVMField $
                               fld { llvmFieldRW = PExpr_Read }])
 simplImplOut (SImpl_LLVMArrayCopy x ap sub_ap) =
@@ -1844,6 +1854,8 @@ simplImplOut (SImpl_LCurrentRefl l) =
   distPerms1 l (ValPerm_LCurrent $ PExpr_Var l)
 simplImplOut (SImpl_LCurrentTrans l1 _ l3) =
   distPerms1 l1 (ValPerm_LCurrent l3)
+simplImplOut (SImpl_DemoteLLVMBlockRW x bp) =
+  distPerms1 x $ ValPerm_LLVMBlock (bp { llvmBlockRW = PExpr_Read })
 simplImplOut (SImpl_IntroLLVMBlockEmpty x bp) =
   case llvmBlockShape bp of
     PExpr_EmptyShape -> distPerms1 x $ ValPerm_Conj1 $ Perm_LLVMBlock bp
@@ -2169,8 +2181,8 @@ instance SubstVar PermVarSubst m =>
   genSubst s [nuP| SImpl_IntroLLVMFieldContents x y fld |] =
     SImpl_IntroLLVMFieldContents <$> genSubst s x <*> genSubst s y <*>
     genSubst s fld
-  genSubst s [nuP| SImpl_DemoteLLVMFieldWrite x fld |] =
-    SImpl_DemoteLLVMFieldWrite <$> genSubst s x <*> genSubst s fld
+  genSubst s [nuP| SImpl_DemoteLLVMFieldRW x fld |] =
+    SImpl_DemoteLLVMFieldRW <$> genSubst s x <*> genSubst s fld
   genSubst s [nuP| SImpl_LLVMArrayCopy x ap rng |] =
     SImpl_LLVMArrayCopy <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
   genSubst s [nuP| SImpl_LLVMArrayBorrow x ap rng |] =
@@ -2229,6 +2241,8 @@ instance SubstVar PermVarSubst m =>
     SImpl_LCurrentRefl <$> genSubst s l
   genSubst s [nuP| SImpl_LCurrentTrans l1 l2 l3 |] =
     SImpl_LCurrentTrans <$> genSubst s l1 <*> genSubst s l2 <*> genSubst s l3
+  genSubst s [nuP| SImpl_DemoteLLVMBlockRW x bp |] =
+    SImpl_DemoteLLVMBlockRW <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_IntroLLVMBlockEmpty x bp |] =
     SImpl_IntroLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_CoerceLLVMBlockEmpty x bp |] =
@@ -4871,7 +4885,7 @@ extractNeededLLVMFieldPerm x p@(Perm_LLVMField fp) off' _ mb_fp
   , PExpr_Read /= llvmFieldRW fp
   , [nuP| PExpr_Read |] <- fmap llvmFieldRW mb_fp
   = let fp' = fp in
-    implSimplM Proxy (SImpl_DemoteLLVMFieldWrite x fp') >>>
+    implSimplM Proxy (SImpl_DemoteLLVMFieldRW x fp') >>>
     let fp'' = fp' { llvmFieldRW = PExpr_Read } in
     implCopyConjM x [Perm_LLVMField fp''] 0 >>>
     greturn (fp'', Just (Perm_LLVMField fp''))
@@ -5372,8 +5386,14 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
        implExtractSwapConjM x ps i >>> greturn (deleteNth i ps)) >>>= \ps' ->
 
     -- Cast it to have the correct RW modality
-    proveEqCast x (\rw -> ValPerm_LLVMBlock $ bp { llvmBlockRW = rw })
-    (llvmBlockRW bp) (fmap llvmBlockRW mb_bp) >>>
+    (case (llvmBlockRW bp, fmap llvmBlockRW mb_bp) of
+        -- If the modalities are already equal, do nothing
+        (rw, mb_rw) | mbLift (fmap (== rw) mb_rw) -> greturn ()
+        (_, [nuP| PExpr_Read |]) ->
+          implSimplM Proxy (SImpl_DemoteLLVMBlockRW x bp)
+        _ ->
+          proveEqCast x (\rw -> ValPerm_LLVMBlock $ bp { llvmBlockRW = rw })
+          (llvmBlockRW bp) (fmap llvmBlockRW mb_bp)) >>>
     getTopDistPerm x >>>= \(ValPerm_LLVMBlock bp') ->
 
     -- Get the lifetime correct
