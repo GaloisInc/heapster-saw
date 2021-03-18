@@ -3306,7 +3306,7 @@ instance ImplTranslateF r ext blocks tops ret =>
 -- We translate a LocalImplRet to a term that returns all current permissions
 instance ImplTranslateF (LocalImplRet ps) ext blocks ps_in ret where
   translateF _ =
-    do pctx <- itiPermCtx <$> ask
+    do pctx <- itiPermStack <$> ask
        ret_tp <- returnTypeM
        return $ applyOpenTermMulti (globalOpenTerm "Prelude.returnM")
          [ret_tp, transTupleTerm pctx]
