@@ -86,6 +86,13 @@ instance (MonadStrongBind m) => MonadStrongBind (StateT (Closed s) m) where
     strongMbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
     return (fmap fst mb_as, mbLift (fmap snd mb_as))
 
+-- | Prove that @'RNil' :++: ctx@ equals @ctx@
+--
+-- FIXME: move to Hobbits
+prependRNilEq :: RAssign f ctx -> RNil :++: ctx :~: ctx
+prependRNilEq MNil = Refl
+prependRNilEq (ctx :>: _) | Refl <- prependRNilEq ctx = Refl
+
 
 ----------------------------------------------------------------------
 -- * Equality Proofs
@@ -3753,6 +3760,18 @@ implBeginLifetimeM =
   implPopM l (ValPerm_LOwned MNil MNil) >>>
   greturn l
 
+-- | End a lifetime, assuming the top of the stack is of the form
+--
+-- > ps, ps_in, l:lowned(ps_in -o ps_out)
+--
+-- Pop all the returned permissions @ps_out@, leaving just @ps@ on the stack.
+implEndLifetimeM :: NuMatchingAny1 r => Proxy ps -> ExprVar LifetimeType ->
+                    LOwnedPerms ps_in -> LOwnedPerms ps_out ->
+                    ImplM vars s r ps (ps :++: ps_in :> LifetimeType) ()
+implEndLifetimeM ps l ps_in ps_out@(lownedPermsToDistPerms -> Just dps_out) =
+  implSimplM ps (SImpl_EndLifetime l ps_in ps_out) >>>
+  recombinePermsPartial ps dps_out
+
 -- | Save a permission for later by splitting it into part that is in the
 -- current lifetime and part that is saved in the lifetime for later. Assume
 -- permissions
@@ -3774,6 +3793,22 @@ implSplitLifetimeM x f args l l2 ps_in ps_out =
                     permPretty i (ltFuncMinApply f l)]) >>>
   implSimplM Proxy (SImpl_SplitLifetime x f args l l2 ps_in ps_out) >>>
   getTopDistPerm l2 >>>= implPopM l2
+
+-- | Find all lifetimes that we currently own which could, if ended, help prove
+-- the specified permissions, and return them with their @lowned@ permissions
+lifetimesThatCouldProve :: NuMatchingAny1 r => Mb vars (DistPerms ps') ->
+                           ImplM vars s r ps ps [(ExprVar LifetimeType,
+                                                  AtomicPerm LifetimeType)]
+lifetimesThatCouldProve mb_ps =
+  (permSetAllVarPerms <$> getPerms) >>>= \(Some all_perms) ->
+  return (RL.foldr
+          (\case
+              VarAndPerm l (ValPerm_LOwned ps_in ps_out)
+                | mbLift $ fmap (lownedPermsCouldProve ps_out) mb_ps ->
+                  ((l, Perm_LOwned ps_in ps_out) :)
+              _ -> id)
+          []
+          all_perms)
 
 -- | Combine proofs of @x:ptr(pps,(off,spl) |-> eq(y))@ and @y:p@ on the top of
 -- the permission stack into a proof of @x:ptr(pps,(off,spl |-> p))@
@@ -3968,7 +4003,7 @@ implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
   -- SImpl_IntroLLVMBlockFromEq, and then recursively eliminate the resulting
   -- memblock permission
   mbVarsM () >>>= \mb_unit ->
-  withExtVarsM (proveVarImpl y $ mbCombine $ flip fmap mb_unit $ const $
+  withExtVarsM (proveVarImplInt y $ mbCombine $ flip fmap mb_unit $ const $
                 nu $ \sh -> ValPerm_Conj1 $
                             Perm_LLVMBlockShape $ PExpr_Var sh) >>>= \(_, sh) ->
   let bp' = bp { llvmBlockShape = sh } in
@@ -4226,6 +4261,13 @@ recombinePerms :: NuMatchingAny1 r => DistPerms ps -> ImplM vars s r RNil ps ()
 recombinePerms DistPermsNil = greturn ()
 recombinePerms (DistPermsCons ps' x p) =
   recombinePerm x p >>> recombinePerms ps'
+
+-- | Recombine some of the permissions on the stack back into the permission set
+recombinePermsPartial :: NuMatchingAny1 r => f ps -> DistPerms ps' ->
+                         ImplM vars s r ps (ps :++: ps') ()
+recombinePermsPartial _ DistPermsNil = greturn ()
+recombinePermsPartial ps (DistPermsCons ps' x p) =
+  recombinePerm x p >>> recombinePermsPartial ps ps'
 
 -- | Recombine the permissions for a 'LifetimeCurrentPerms' list
 recombineLifetimeCurrentPerms :: NuMatchingAny1 r =>
@@ -4590,14 +4632,14 @@ proveVarLifetimeFunctor' x f args l [nuP| PExpr_Var mb_z |] psubst
       -- split the lifetime
       ValPerm_LOwned ps_in ps_out ->
         let (l',l'_p) = lcurrentPerm l l2 in
-        proveVarImpl l' (fmap (const l'_p) mb_z) >>>
+        proveVarImplInt l' (fmap (const l'_p) mb_z) >>>
         implPushM l2 (ValPerm_LOwned ps_in ps_out) >>>
         implSplitLifetimeM x f args l l2 ps_in ps_out
 
       -- Otherwise, prove l:[l2]lcurrent and weaken the lifetime
       _ ->
         let (l',l'_p) = lcurrentPerm l l2 in
-        proveVarImpl l' (fmap (const l'_p) mb_z) >>>
+        proveVarImplInt l' (fmap (const l'_p) mb_z) >>>
         implSimplM Proxy (SImpl_WeakenLifetime x f args l l2)
 
 -- Otherwise, fail; this should only include the case where the RHS is always
@@ -4759,7 +4801,7 @@ proveVarLLVMField x ps i _ mb_fp
   | Perm_LLVMBlock bp <- ps!!i =
     implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
     implElimPopLLVMBlock x bp >>>
-    proveVarImpl x (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)
+    proveVarImplInt x (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)
 
 proveVarLLVMField x ps i off mb_fp =
   (if i < length ps then greturn () else
@@ -4800,7 +4842,7 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
      greturn (fp' { llvmFieldOffset = off' })) >>>= \fp'' ->
 
   -- Step 3: prove the contents
-  proveVarImpl y (fmap llvmFieldContents mb_fp) >>>
+  proveVarImplInt y (fmap llvmFieldContents mb_fp) >>>
   partialSubstForceM (fmap llvmFieldContents mb_fp)
   "proveVarLLVMFieldFromField" >>>= \p_y ->
   let fp''' = fp'' { llvmFieldContents = p_y } in
@@ -5006,13 +5048,13 @@ proveVarLLVMArrayH x _ ps ap
   , Perm_LLVMBlock bp <- ps!!i =
     implGetPopConjM x ps i >>> implElimPopLLVMBlock x bp >>>
     mbVarsM (ValPerm_LLVMArray ap) >>>= \mb_p ->
-    proveVarImpl x mb_p
+    proveVarImplInt x mb_p
 
 -- If the required array permission ap is equivalent to a sequence of field
 -- permissions that we have all of, then prove it by proving those field
 -- permissions. This is accomplished by first proving the array with the
 -- un-borrowed cell that is allowed by 'implLLVMArrayOneCell' and then
--- recursively proving the desired array permission by calling proveVarImpl,
+-- recursively proving the desired array permission by calling proveVarImplInt,
 -- which will remove the necessary borrows.
 proveVarLLVMArrayH x _ ps ap
   | Just (flds1, flds2) <- llvmArrayAsFields ap
@@ -5022,14 +5064,14 @@ proveVarLLVMArrayH x _ ps ap
     implPopM x (ValPerm_Conj ps) >>>
     mbVarsM (ValPerm_Conj $
              map llvmArrayFieldToAtomicPerm flds1) >>>= \mb_p_flds ->
-    proveVarImpl x mb_p_flds >>>
+    proveVarImplInt x mb_p_flds >>>
     let ap' = llvmArrayAddBorrows (map (fromJust
                                         . offsetToLLVMArrayBorrow ap
                                         . llvmArrayFieldOffset) flds2) ap in
     implLLVMArrayOneCell x ap' >>>
     implPopM x (ValPerm_Conj1 $ Perm_LLVMArray ap') >>>
     mbVarsM (ValPerm_Conj1 $ Perm_LLVMArray ap) >>>= \mb_p ->
-    proveVarImpl x mb_p
+    proveVarImplInt x mb_p
 
 -- Otherwise, choose the best-matching array permission and copy, borrow, or use
 -- it directly (beg, borrow, or steal it)
@@ -5086,7 +5128,7 @@ proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
     -- Prove the borrowed perm
     let p = permForLLVMArrayBorrow ap b in
     mbVarsM p >>>= \mb_p ->
-    proveVarImpl x mb_p >>>
+    proveVarImplInt x mb_p >>>
     implSwapM x (ValPerm_Conj1 $ Perm_LLVMArray ap') x p >>>
 
     -- Return the borrowed perm to ap' to get ap
@@ -5242,7 +5284,7 @@ proveNamedArg x npn args off memb _ arg@[nuP| PExpr_Var z |]
   , LifetimeRepr <- cruCtxLookup (namedPermNameArgs npn) memb
   , PExpr_Var l2 <- nthPermExpr args memb
   , l1 /= l2 =
-    proveVarImpl l1 (fmap (const $ ValPerm_LCurrent $ PExpr_Var l2) arg) >>>
+    proveVarImplInt l1 (fmap (const $ ValPerm_LCurrent $ PExpr_Var l2) arg) >>>
     implSimplM Proxy (SImpl_NamedArgCurrent x npn args off memb (PExpr_Var l2))
 
 -- Prove P<args1,W,args2> -o P<args1,rw,args2> for any variable rw
@@ -5552,10 +5594,10 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
                             _ -> False) ps
   , Perm_LLVMBlock bp <- ps!!i =
     implGetPopConjM x ps i >>> implElimPopLLVMBlock x bp >>>
-    proveVarImpl x (fmap ValPerm_Conj $
-                    mbMap2 (++)
-                    (fmap (map Perm_LLVMBlock) $ mbMap2 (:) mb_bp mb_bps)
-                    mb_ps)
+    proveVarImplInt x (fmap ValPerm_Conj $
+                       mbMap2 (++)
+                       (fmap (map Perm_LLVMBlock) $ mbMap2 (:) mb_bp mb_bps)
+                       mb_ps)
 
 -- If proving a pointer shape, prove the required permission by adding it to ps;
 -- this requires the pointed-to shape to have a well-defined length
@@ -5876,7 +5918,7 @@ proveVarImplUnfoldLeft x (ValPerm_Named npn args off) mb_p Nothing
         _ -> greturn ()) >>>
     implUnfoldNamedM x npn args off >>>= \p' ->
     implPopM x p' >>>
-    proveVarImpl x mb_p
+    proveVarImplInt x mb_p
 
 proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
   | i < length ps
@@ -5889,7 +5931,7 @@ proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
     implNamedFromConjM x npn args off >>>
     implUnfoldNamedM x npn args off >>>= \p' ->
     recombinePerm x p' >>>
-    proveVarImpl x mb_p
+    proveVarImplInt x mb_p
 
 proveVarImplUnfoldLeft _ _ _ _ =
   error ("proveVarImplUnfoldLeft: malformed inputs")
@@ -5908,7 +5950,7 @@ proveVarImplFoldRight x p [nuP| ValPerm_Named mb_npn mb_args mb_off |]
         _ -> greturn ()) >>>
     implLookupNamedPerm npn >>>= \np ->
     implPopM x p >>>
-    proveVarImpl x (mbMap2 (unfoldPerm np) mb_args mb_off) >>>
+    proveVarImplInt x (mbMap2 (unfoldPerm np) mb_args mb_off) >>>
     partialSubstForceM (mbMap2 (,) mb_args mb_off)
     "proveVarImplFoldRight" >>>= \(args,off) ->
     implFoldNamedM x npn args off
@@ -6052,7 +6094,7 @@ proveVarAtomicImpl x ps@[Perm_LOwned
       _ -> implFailM "proveVarAtomicImpl: neededPermsToExDistPerms")
   >>>= \(mb_ps1,mb_ps2) ->
   getDistPerms >>>= \before_ps ->
-  proveVarsImplAppend (mbMap2 RL.append mb_ps1 mb_ps2) >>>
+  proveVarsImplAppendInt (mbMap2 RL.append mb_ps1 mb_ps2) >>>
   getDistPerms >>>= \top_ps ->
   let ps12 = snd $ RL.split before_ps (RL.append neededs1 neededs2) top_ps
       (ps1,ps2) = RL.split neededs1 neededs2 ps12 in
@@ -6077,7 +6119,7 @@ proveVarAtomicImpl x ps p@[nuP| Perm_LCurrent mb_l' |] =
         implSimplM Proxy (SImpl_LCurrentRefl x)
     [Perm_LCurrent l] | l == l' -> greturn ()
     [Perm_LCurrent (PExpr_Var l)] ->
-      proveVarImpl l (fmap ValPerm_Conj1 p) >>>
+      proveVarImplInt l (fmap ValPerm_Conj1 p) >>>
       implSimplM Proxy (SImpl_LCurrentTrans x l l')
 
 -- If we have a struct permission on the left, eliminate it to a sequence of
@@ -6087,7 +6129,7 @@ proveVarAtomicImpl x ps p@[nuP| Perm_Struct mb_str_ps |]
   , Perm_Struct str_ps <- ps!!i =
     getDistPerms >>>= \perms ->
     implGetPopConjM x ps i >>> implElimStructAllFields x str_ps >>>= \ys ->
-    proveVarsImplAppend (fmap (valuePermsToDistPerms ys) mb_str_ps) >>>
+    proveVarsImplAppendInt (fmap (valuePermsToDistPerms ys) mb_str_ps) >>>
     partialSubstForceM mb_str_ps "proveVarAtomicImpl" >>>= \str_ps' ->
     implMoveUpM (distPermsSnoc perms) str_ps' x MNil >>>
     implIntroStructAllFields x
@@ -6181,7 +6223,7 @@ proveVarConjImpl x ps mb_ps =
       let mb_p = fmap (!!i) mb_ps in
       let mb_ps' = fmap (deleteNth i) mb_ps in
       proveVarAtomicImpl x ps mb_p >>>
-      proveVarImpl x (fmap ValPerm_Conj mb_ps') >>>
+      proveVarImplInt x (fmap ValPerm_Conj mb_ps') >>>
       (partialSubstForceM (mbMap2 (,)
                            mb_ps' mb_p) "proveVarConjImpl") >>>= \(ps',p) ->
       implInsertConjM x p ps' i
@@ -6198,10 +6240,13 @@ proveVarConjImpl x ps mb_ps =
 -- * Proving Permission Implications
 ----------------------------------------------------------------------
 
--- | Prove @x:p'@, where @p@ may have existentially-quantified variables in it
-proveVarImpl :: NuMatchingAny1 r => ExprVar a -> Mb vars (ValuePerm a) ->
-                ImplM vars s r (ps :> a) ps ()
-proveVarImpl x mb_p =
+-- | Prove @x:p'@, where @p@ may have existentially-quantified variables in
+-- it. The "@Int@" suffix indicates that this call is internal to the
+-- implication prover, similar to 'proveVarsImplAppendInt', meaning that this
+-- version will not end lifetimes, which must be done at the top level.
+proveVarImplInt :: NuMatchingAny1 r => ExprVar a -> Mb vars (ValuePerm a) ->
+                   ImplM vars s r (ps :> a) ps ()
+proveVarImplInt x mb_p =
   getPerm x >>>= \ !p ->
   implPushM x p >>>
   implTraceM (\i -> pretty "proveVarImpl:" <> softline <> ppImpl i x p mb_p) >>>
@@ -6245,14 +6290,14 @@ proveVarImplH x (ValPerm_Exists _) mb_p =
 proveVarImplH x p@(ValPerm_Eq (PExpr_Var y)) mb_p =
   introEqCopyM x (PExpr_Var y) >>>
   implPopM x p >>>
-  proveVarImpl y mb_p >>>
+  proveVarImplInt y mb_p >>>
   partialSubstForceM mb_p "proveVarImpl" >>>= \p' ->
   introCastM x y p'
 
 -- Prove x:eq(y &+ off) |- x:p by proving y:p@off and then casting
 proveVarImplH x p@(ValPerm_Eq e@(PExpr_LLVMOffset y off)) mb_p =
     introEqCopyM x e >>> implPopM x p >>>
-    proveVarImpl y (fmap (offsetLLVMPerm off) mb_p) >>>
+    proveVarImplInt y (fmap (offsetLLVMPerm off) mb_p) >>>
     partialSubstForceM mb_p "proveVarImpl" >>>= \p_r ->
     castLLVMPtrM y (offsetLLVMPerm off p_r) off x
 
@@ -6260,11 +6305,11 @@ proveVarImplH x p@(ValPerm_Eq e@(PExpr_LLVMOffset y off)) mb_p =
 proveVarImplH x p [nuP| ValPerm_Or mb_p1 mb_p2 |] =
   implPopM x p >>>
   implCatchM
-  (proveVarImpl x mb_p1 >>>
+  (proveVarImplInt x mb_p1 >>>
    partialSubstForceM mb_p1 "proveVarImpl" >>>= \p1 ->
     partialSubstForceM mb_p2 "proveVarImpl"  >>>= \p2 ->
     introOrLM x p1 p2)
-  (proveVarImpl x mb_p2 >>>
+  (proveVarImplInt x mb_p2 >>>
    partialSubstForceM mb_p1 "proveVarImpl" >>>= \p1 ->
     partialSubstForceM mb_p2 "proveVarImpl"  >>>= \p2 ->
     introOrRM x p1 p2)
@@ -6287,14 +6332,14 @@ proveVarImplH x p@(ValPerm_Named npn args off) mb_p@[nuP| ValPerm_Named
   , NameReachConstr <- namedPermNameReachConstr npn
   , [nuP| PExprs_Cons mb_args' (PExpr_ValPerm mb_p') |] <- mb_args =
     implCatchM
-    (implPopM x p >>> proveVarImpl x mb_p' >>>
+    (implPopM x p >>> proveVarImplInt x mb_p' >>>
      partialSubstForceM mb_args "proveVarImpl" >>>= \args' ->
       implReachabilityReflM x npn args' off)
     ((if permIsCopyable p then implCopyM x p >>> implPopM x p
       else greturn ()) >>>
      implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
      implElimReachabilityPermM x npn args off >>>= \y ->
-     proveVarImpl y mb_p >>>
+     proveVarImplInt y mb_p >>>
      partialSubstForceM mb_args "proveVarImpl" >>>= \args' ->
      implReachabilityTransM x npn args' off y)
 
@@ -6302,7 +6347,7 @@ proveVarImplH x p@(ValPerm_Named npn args off) mb_p@[nuP| ValPerm_Named
 -- If proving P<args1> |- P<args2> for the same named permission, try to
 -- equalize the arguments and the offsets using proveNamedArgs. Note that we
 -- currently are *not* solving for offsets on the right, meaning that
--- proveVarImpl will fail for offsets with existential variables in them.
+-- proveVarImplInt will fail for offsets with existential variables in them.
 proveVarImplH x p@(ValPerm_Named npn args off) [nuP| ValPerm_Named
                                                    mb_npn mb_args mb_off |]
   | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn)
@@ -6408,7 +6453,7 @@ proveVarImplH x (ValPerm_Eq (PExpr_Struct exprs)) mb_p@[nuP| ValPerm_Conj _ |] =
   implSimplM Proxy (SImpl_StructEqToPerm x exprs) >>>
   implPopM x (ValPerm_Conj1 $ Perm_Struct $
               RL.map ValPerm_Eq $ exprsToRAssign exprs) >>>
-  proveVarImpl x mb_p
+  proveVarImplInt x mb_p
 
 -- If proving a function permission for an x we know equals a constant function
 -- handle f, look up the function permission for f
@@ -6478,7 +6523,7 @@ proveExVarImpl :: NuMatchingAny1 r => PartialSubst vars -> Mb vars (Name tp) ->
 -- If the variable is instantiated to another variable, just call proveVarImpl
 proveExVarImpl psubst mb_x mb_p
   | Just (PExpr_Var n) <- partialSubst psubst (fmap PExpr_Var mb_x)
-  = proveVarImpl n mb_p >>> greturn n
+  = proveVarImplInt n mb_p >>> greturn n
 
 -- If the variable is instantiated to a non-variable expression, bind a fresh
 -- variable for it and then call proveVarImpl
@@ -6489,7 +6534,7 @@ proveExVarImpl psubst mb_x mb_p
         Right x -> implGetVarType x) >>>= \tp ->
     implLetBindVar tp e >>>= \n ->
     implPopM n (ValPerm_Eq e) >>>
-    proveVarImpl n mb_p >>> greturn n
+    proveVarImplInt n mb_p >>> greturn n
 
 -- Special case: if proving an LLVM frame permission, look for an LLVM frame in
 -- the current context and use it
@@ -6498,7 +6543,8 @@ proveExVarImpl _ mb_x mb_p@[nuP| ValPerm_Conj [Perm_LLVMFrame mb_fperms] |]
     getExVarType memb >>>= \x_tp ->
     implFindVarOfType x_tp >>>= \maybe_n ->
     case maybe_n of
-      Just n -> setVarM memb (PExpr_Var n) >>> proveVarImpl n mb_p >>> greturn n
+      Just n ->
+        setVarM memb (PExpr_Var n) >>> proveVarImplInt n mb_p >>> greturn n
       Nothing ->
         implFailMsgM "proveExVarImpl: No LLVM frame pointer in scope"
 
@@ -6648,22 +6694,20 @@ instantiateLifetimeVars' psubst [nuP| DistPermsCons mb_ps _ _ |] =
   instantiateLifetimeVars' psubst mb_ps
 
 
--- | Prove a list of existentially-quantified distinguished permissions, adding
--- those proofs to the top of the stack. In the case that a the variable itself
--- whose permissions are being proved is existentially-quantified --- that is,
--- if we are proving @x:p@ for existentially-quantified @x@ --- then the
--- resulting permission on top of the stack will be @y:[e/x]p@, where @y@ is a
--- fresh variable and @e@ is the expression used to instantiate @x@.
-proveVarsImplAppend :: NuMatchingAny1 r => ExDistPerms vars ps ->
-                       ImplM vars s r (ps_in :++: ps) ps_in ()
-proveVarsImplAppend [nuP| DistPermsNil |] = return ()
-proveVarsImplAppend ps =
+-- | Internal-only version of 'proveVarsImplAppend' that is called recursively
+-- by the implication prover. The distinction is that this version does not end
+-- any lifetimes, because lifetimes are only ended at the top level, by
+-- 'proveVarsImplAppend'.
+proveVarsImplAppendInt :: NuMatchingAny1 r => ExDistPerms vars ps ->
+                          ImplM vars s r (ps_in :++: ps) ps_in ()
+proveVarsImplAppendInt [nuP| DistPermsNil |] = return ()
+proveVarsImplAppendInt ps =
   getPSubst >>>= \psubst ->
   getPerms >>>= \cur_perms ->
   case findProvablePerm (psubstMbUnsetVars psubst) ps of
     ((> 0) -> True, ExDistPermsSplit ps1 mb_x mb_p ps2) ->
       proveExVarImpl psubst mb_x mb_p >>>= \x ->
-      proveVarsImplAppend (mbMap2 appendDistPerms ps1 ps2) >>>
+      proveVarsImplAppendInt (mbMap2 appendDistPerms ps1 ps2) >>>
       implMoveUpM cur_perms (mbDistPermsToProxies ps1) x (mbDistPermsToProxies ps2)
     _ ->
       implTraceM
@@ -6673,20 +6717,15 @@ proveVarsImplAppend ps =
              permPretty i ps]]) >>>=
       implFailM
 
-
--- | Prove that @'RNil' :++: ctx@ equals @ctx@
---
--- FIXME: move to Hobbits
-prependRNilEq :: RAssign f ctx -> RNil :++: ctx :~: ctx
-prependRNilEq MNil = Refl
-prependRNilEq (ctx :>: _) | Refl <- prependRNilEq ctx = Refl
-
--- | Prove a list of existentially-quantified distinguished permissions
-proveVarsImpl :: NuMatchingAny1 r => ExDistPerms vars as ->
-                 ImplM vars s r as RNil ()
-proveVarsImpl ps
+-- | Prove a list of existentially-quantified distinguished permissions and put
+-- those proofs onto the stack. This is the same as 'proveVarsImplAppendInt'
+-- except that the stack starts out empty and is replaced by the proofs, rather
+-- than appending the proofs to the stack that is already there.
+proveVarsImplInt :: NuMatchingAny1 r => ExDistPerms vars as ->
+                    ImplM vars s r as RNil ()
+proveVarsImplInt ps
   | Refl <- mbLift (fmap prependRNilEq $ mbDistPermsToValuePerms ps) =
-    proveVarsImplAppend ps
+    proveVarsImplAppendInt ps
 
 -- | Prove one sequence of permissions from another and capture the proof as a
 -- 'LocalPermImpl'
@@ -6697,5 +6736,55 @@ localProveVars ps_in ps_out =
                          pretty "-o", permPretty i ps_out]) >>>
   LocalPermImpl <$>
   embedImplM ps_in (recombinePerms ps_in >>>
-                    proveVarsImpl (emptyMb ps_out) >>>
+                    proveVarsImplInt (emptyMb ps_out) >>>
                     greturn (LocalImplRet Refl))
+
+----------------------------------------------------------------------
+-- * External Entrypoints to the Implication Prover
+----------------------------------------------------------------------
+
+-- | Prove a list of existentially-quantified distinguished permissions, adding
+-- those proofs to the top of the stack. In the case that a the variable itself
+-- whose permissions are being proved is existentially-quantified --- that is,
+-- if we are proving @x:p@ for existentially-quantified @x@ --- then the
+-- resulting permission on top of the stack will be @y:[e/x]p@, where @y@ is a
+-- fresh variable and @e@ is the expression used to instantiate @x@.
+proveVarsImplAppend :: NuMatchingAny1 r => ExDistPerms vars ps ->
+                       ImplM vars s r (ps_in :++: ps) ps_in ()
+proveVarsImplAppend mb_ps =
+  getPerms >>>= \(_ :: PermSet ps_in) ->
+  let prx :: Proxy ps_in = Proxy in
+  lifetimesThatCouldProve mb_ps >>>= \ls_ps ->
+  implTraceM (\i -> pretty "Lifetimes that could help in this proof:"
+                    <+> tupled (map (permPretty i . fst) ls_ps)) >>>
+  foldr1 implCatchM
+  ((proveVarsImplAppendInt mb_ps)
+   :
+   flip map ls_ps
+   (\case
+       (l,l_p@(Perm_LOwned ps_in@(lownedPermsToDistPerms ->
+                                  Just dps_in) ps_out)) ->
+         implTraceM (\i -> pretty "Attempting to end lifetime"
+                           <+> permPretty i l) >>>
+         proveVarsImplAppendInt (fmap (const dps_in) mb_ps) >>>
+         implPushM l (ValPerm_Conj1 l_p) >>>
+         implEndLifetimeM prx l ps_in ps_out >>>
+         implTraceM (\i -> pretty "Lifetime" <+> permPretty i l
+                           <+> pretty "ended") >>>
+         proveVarsImplAppend mb_ps
+       _ -> error "proveVarsImplAppend: unexpected lifetimesThatCouldProve result"))
+
+-- | Prove a list of existentially-quantified distinguished permissions and put
+-- those proofs onto the stack. This is the same as 'proveVarsImplAppend' except
+-- that the stack starts out empty and is replaced by the proofs, rather than
+-- appending the proofs to the stack that is already there.
+proveVarsImpl :: NuMatchingAny1 r => ExDistPerms vars as ->
+                 ImplM vars s r as RNil ()
+proveVarsImpl ps
+  | Refl <- mbLift (fmap prependRNilEq $ mbDistPermsToValuePerms ps) =
+    proveVarsImplAppend ps
+
+-- | Prove @x:p'@, where @p@ may have existentially-quantified variables in it.
+proveVarImpl :: NuMatchingAny1 r => ExprVar a -> Mb vars (ValuePerm a) ->
+                ImplM vars s r (ps :> a) ps ()
+proveVarImpl x mb_p = proveVarsImplAppend $ fmap (distPerms1 x) mb_p

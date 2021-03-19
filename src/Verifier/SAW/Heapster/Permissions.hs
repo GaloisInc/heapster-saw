@@ -1726,6 +1726,9 @@ data LOwnedPerm a where
                         LOwnedPerms ps_in -> LOwnedPerms ps_out ->
                         LOwnedPerm LifetimeType
 
+-- | A sequence of 'LOwnedPerm's
+type LOwnedPerms = RAssign LOwnedPerm
+
 instance TestEquality LOwnedPerm where
   testEquality (LOwnedPermField e1 fp1) (LOwnedPermField e2 fp2)
     | Just Refl <- testEquality (exprType e1) (exprType e2)
@@ -1745,6 +1748,7 @@ instance TestEquality LOwnedPerm where
     , e1 == e2
     = Just Refl
   testEquality (LOwnedPermLifetime _ _ _) _ = Nothing
+
 
 -- | Convert an 'LOwnedPerm' to the expression plus permission it represents
 lownedPermExprAndPerm :: LOwnedPerm a -> ExprAndPerm a
@@ -1784,22 +1788,6 @@ lownedPermVar _ = Nothing
 -- | Get the permission part of an 'LOwnedPerm'
 lownedPermPerm :: LOwnedPerm a -> ValuePerm a
 lownedPermPerm = exprAndPermPerm . lownedPermExprAndPerm
-
-type LOwnedPerms = RAssign LOwnedPerm
-
--- FIXME: need a traversal function for RAssign for the following two funs
-
--- | Convert an 'LOwnedPerms' list to a 'DistPerms'
-lownedPermsToDistPerms :: LOwnedPerms ps -> Maybe (DistPerms ps)
-lownedPermsToDistPerms MNil = Just MNil
-lownedPermsToDistPerms (lops :>: lop) =
-  (:>:) <$> lownedPermsToDistPerms lops <*> lownedPermVarAndPerm lop
-
--- | Convert the expressions of an 'LOwnedPerms' to variables, if possible
-lownedPermsVars :: LOwnedPerms ps -> Maybe (RAssign Name ps)
-lownedPermsVars MNil = Just MNil
-lownedPermsVars (lops :>: lop) =
-  (:>:) <$> lownedPermsVars lops <*> lownedPermVar lop
 
 
 -- | A function permission is a set of input and output permissions inside a
@@ -2196,6 +2184,21 @@ foldDistPerms :: (forall a. b -> ExprVar a -> ValuePerm a -> b) ->
                  b -> DistPerms as -> b
 foldDistPerms _ b DistPermsNil = b
 foldDistPerms f b (DistPermsCons ps x p) = f (foldDistPerms f b ps) x p
+
+-- | Find all permissions in a 'DistPerms' on a specific variable
+varPermsInDistPerms :: ExprVar a -> DistPerms ps -> [ValuePerm a]
+varPermsInDistPerms x =
+  RL.foldr (\case (VarAndPerm y p) | Just Refl <- testEquality x y -> (p:)
+                  _ -> id)
+  []
+
+-- | Find all atomic permissions in a 'DistPerms' on a specific variable
+varAtomicPermsInDistPerms :: ExprVar a -> DistPerms ps -> [AtomicPerm a]
+varAtomicPermsInDistPerms x =
+  RL.foldr (\case (VarAndPerm y (ValPerm_Conj ps))
+                    | Just Refl <- testEquality x y -> (ps ++)
+                  _ -> id)
+  []
 
 -- | Combine a list of variable names and a list of permissions into a list of
 -- distinguished permissions
@@ -4185,6 +4188,43 @@ shapeIsCopyable rw (PExpr_OrShape sh1 sh2) =
   shapeIsCopyable rw sh1 && shapeIsCopyable rw sh2
 shapeIsCopyable rw (PExpr_ExShape mb_sh) =
   mbLift $ fmap (shapeIsCopyable rw) mb_sh
+
+
+-- FIXME: need a traversal function for RAssign for the following two funs
+
+-- | Convert an 'LOwnedPerms' list to a 'DistPerms'
+lownedPermsToDistPerms :: LOwnedPerms ps -> Maybe (DistPerms ps)
+lownedPermsToDistPerms MNil = Just MNil
+lownedPermsToDistPerms (lops :>: lop) =
+  (:>:) <$> lownedPermsToDistPerms lops <*> lownedPermVarAndPerm lop
+
+-- | Convert the expressions of an 'LOwnedPerms' to variables, if possible
+lownedPermsVars :: LOwnedPerms ps -> Maybe (RAssign Name ps)
+lownedPermsVars MNil = Just MNil
+lownedPermsVars (lops :>: lop) =
+  (:>:) <$> lownedPermsVars lops <*> lownedPermVar lop
+
+-- | Test if an 'LOwnedPerm' could help prove any of a list of permissions
+lownedPermCouldProve :: LOwnedPerm a -> DistPerms ps -> Bool
+lownedPermCouldProve (LOwnedPermField (PExpr_Var x) fp) ps =
+  any (\case (llvmAtomicPermRange -> Just rng) ->
+               bvCouldBeInRange (llvmFieldOffset fp) rng
+             _ -> False) $
+  varAtomicPermsInDistPerms x ps
+lownedPermCouldProve (LOwnedPermBlock (PExpr_Var x) bp) ps =
+  any (\case (llvmAtomicPermRange -> Just rng) ->
+               bvRangesCouldOverlap (llvmBlockRange bp) rng
+             _ -> False) $
+  varAtomicPermsInDistPerms x ps
+lownedPermCouldProve (LOwnedPermLifetime (PExpr_Var l) _ ps_out) ps =
+  any (\case Perm_LOwned _ _ -> True
+             _ -> False) (varAtomicPermsInDistPerms l ps) ||
+  lownedPermsCouldProve ps_out ps
+
+-- | Test if an 'LOwnedPerms' list could help prove any of a list of permissions
+lownedPermsCouldProve :: LOwnedPerms ps -> DistPerms ps' -> Bool
+lownedPermsCouldProve lops ps =
+  RL.foldr (\lop rest -> lownedPermCouldProve lop ps || rest) False lops
 
 
 -- | Convert a 'FunPerm' in a name-binding to a 'FunPerm' that takes those bound
