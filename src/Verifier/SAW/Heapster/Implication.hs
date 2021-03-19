@@ -6755,8 +6755,6 @@ proveVarsImplAppend mb_ps =
   getPerms >>>= \(_ :: PermSet ps_in) ->
   let prx :: Proxy ps_in = Proxy in
   lifetimesThatCouldProve mb_ps >>>= \ls_ps ->
-  implTraceM (\i -> pretty "Lifetimes that could help in this proof:"
-                    <+> tupled (map (permPretty i . fst) ls_ps)) >>>
   foldr1 implCatchM
   ((proveVarsImplAppendInt mb_ps)
    :
@@ -6764,8 +6762,10 @@ proveVarsImplAppend mb_ps =
    (\case
        (l,l_p@(Perm_LOwned ps_in@(lownedPermsToDistPerms ->
                                   Just dps_in) ps_out)) ->
-         implTraceM (\i -> pretty "Attempting to end lifetime"
-                           <+> permPretty i l) >>>
+         implTraceM (\i ->
+                      sep [pretty "Ending lifetime" <+> permPretty i l,
+                           pretty "in order to prove:",
+                           permPretty i mb_ps]) >>>
          proveVarsImplAppendInt (fmap (const dps_in) mb_ps) >>>
          implPushM l (ValPerm_Conj1 l_p) >>>
          implEndLifetimeM prx l ps_in ps_out >>>
