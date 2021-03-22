@@ -15,7 +15,14 @@
 
 module Verifier.SAW.Heapster.IRTTranslation (
   translateCompleteIRTTyVars,
-  translateCompleteIRTDesc
+  translateCompleteIRTDesc,
+  translateCompleteIRTDef,
+  translateCompleteIRTFoldFun,
+  translateCompleteIRTUnfoldFun,
+  -- * Useful functions
+  completeOpenTermTyped,
+  listSortOpenTerm,
+  askExprCtxTerms
   ) where
 
 import Numeric.Natural
@@ -42,16 +49,24 @@ import Verifier.SAW.Heapster.SAWTranslation
 
 -- | "Complete" an 'OpenTerm' to a closed 'TypedTerm' or 'fail' on
 -- type-checking error
+-- TODO Move this to OpenTerm.hs?
 completeOpenTermTyped :: SharedContext -> OpenTerm -> IO TypedTerm
 completeOpenTermTyped sc (OpenTerm termM) =
   either (fail . show) return =<<
   runTCM termM sc Nothing []
 
 -- | Build an element of type ListSort from a list of types
+-- TODO Move this to OpenTerm.hs?
 listSortOpenTerm :: [OpenTerm] -> OpenTerm
 listSortOpenTerm [] = ctorOpenTerm "Prelude.LS_Nil" []
 listSortOpenTerm (tp:tps) =
   ctorOpenTerm "Prelude.LS_Cons" [tp, listSortOpenTerm tps]
+
+-- | Get the result of applying 'exprCtxToTerms' to the current expression
+-- translation context
+-- TODO Move this to SAWTranslation.hs?
+askExprCtxTerms :: TransInfo info => TransM info ctx [OpenTerm]
+askExprCtxTerms = exprCtxToTerms <$> infoCtx <$> ask
 
 
 ----------------------------------------------------------------------
@@ -311,7 +326,7 @@ emptyIRTDescTransInfo env tyVarsIdent =
 -- | ...
 irtDInArgsCtx :: IRTDescTransM args OpenTerm -> IRTDescTransM args OpenTerm
 irtDInArgsCtx m =
-  do args <- exprCtxToTerms <$> infoCtx <$> ask
+  do args <- askExprCtxTerms
      flip local m $ \info ->
        info { irtDTyVars = applyOpenTermMulti (irtDTyVars info) args }
 
@@ -478,3 +493,66 @@ valuePermsIRTDesc [nuP| ValPerms_Cons ps p |] (IRTVarIdxsAppend ixs1 ixs2) =
   do xs <- valuePermsIRTDesc ps ixs1
      x  <- valuePermIRTDesc p ixs2
      irtCtorOpenTerm "Prelude.IRT_prod" [xs, x]
+
+
+----------------------------------------------------------------------
+-- Translating IRT definitions
+----------------------------------------------------------------------
+
+-- | ...
+translateCompleteIRTDef :: SharedContext -> PermEnv -> 
+                           Ident -> Ident -> CruCtx args ->
+                           IO TypedTerm
+translateCompleteIRTDef sc env tyVarsIdent descIdent args =
+  completeOpenTermTyped sc $
+  runNilTypeTransM (lambdaExprCtx args $
+                     irtDefinition tyVarsIdent descIdent) env
+
+-- | ...
+translateCompleteIRTFoldFun :: SharedContext -> PermEnv -> 
+                               Ident -> Ident -> Ident -> CruCtx args ->
+                               IO Term
+translateCompleteIRTFoldFun sc env tyVarsIdent descIdent defIdent args =
+  completeOpenTerm sc $
+  runNilTypeTransM (lambdaExprCtx args $
+                     irtFoldFun tyVarsIdent descIdent defIdent) env
+
+-- | ...
+translateCompleteIRTUnfoldFun :: SharedContext -> PermEnv -> 
+                                 Ident -> Ident -> Ident -> CruCtx args ->
+                                 IO Term
+translateCompleteIRTUnfoldFun sc env tyVarsIdent descIdent defIdent args =
+  completeOpenTerm sc $
+  runNilTypeTransM (lambdaExprCtx args $
+                     irtUnfoldFun tyVarsIdent descIdent defIdent) env
+
+-- | ...
+irtDefArgs :: Ident -> Ident -> TypeTransM args (OpenTerm, OpenTerm, OpenTerm)
+irtDefArgs tyVarsIdent descIdent = 
+  do args <- askExprCtxTerms
+     let tyVars = applyOpenTermMulti (globalOpenTerm tyVarsIdent) args
+         subst  = ctorOpenTerm "Prelude.IRTs_Nil" [tyVars]
+         desc   = applyOpenTermMulti (globalOpenTerm descIdent) args
+     return (tyVars, subst, desc)
+
+-- | ...
+irtDefinition :: Ident -> Ident -> TypeTransM args OpenTerm
+irtDefinition tyVarsIdent descIdent = 
+  do (tyVars, subst, desc) <- irtDefArgs tyVarsIdent descIdent
+     return $ dataTypeOpenTerm "Prelude.IRT" [tyVars, subst, desc]
+
+-- | ...
+irtFoldFun :: Ident -> Ident -> Ident -> TypeTransM args OpenTerm
+irtFoldFun tyVarsIdent descIdent defIdent = 
+  do (tyVars, subst, desc) <- irtDefArgs tyVarsIdent descIdent
+     -- def <- applyOpenTermMulti (globalOpenTerm defIdent) <$> askExprCtxTerms
+     return $ applyOpenTermMulti (globalOpenTerm "Prelude.foldIRT")
+                                 [tyVars, subst, desc]
+
+-- | ...
+irtUnfoldFun :: Ident -> Ident -> Ident -> TypeTransM args OpenTerm
+irtUnfoldFun tyVarsIdent descIdent defIdent = 
+  do (tyVars, subst, desc) <- irtDefArgs tyVarsIdent descIdent
+     -- def <- applyOpenTermMulti (globalOpenTerm defIdent) <$> askExprCtxTerms
+     return $ applyOpenTermMulti (globalOpenTerm "Prelude.unfoldIRT")
+                                 [tyVars, subst, desc]
