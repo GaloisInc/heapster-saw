@@ -3,23 +3,23 @@ module iso_recursive where
 
 import Prelude;
 
-listLS : (a:sort 0) -> ListSort;
-listLS a = LS_Cons a LS_Nil;
+ListIRTTyVars : (a:sort 0) -> ListSort;
+ListIRTTyVars a = LS_Cons a LS_Nil;
 
-listIRTDesc : (a:sort 0) -> IRTDesc (listLS a);
-listIRTDesc a =
-  IRT_mu (listLS a) (
-    IRT_Either (listLS a)
-               (IRT_unit (listLS a))
-               (IRT_prod (listLS a) (IRT_varT (listLS a) 0) (
-                 IRT_prod (listLS a) (IRT_varD (listLS a) 0) (
-                  IRT_unit (listLS a)))));
+ListIRTDesc : (a:sort 0) -> IRTDesc (ListIRTTyVars a);
+ListIRTDesc a =
+  IRT_mu (ListIRTTyVars a) (
+    IRT_Either (ListIRTTyVars a)
+               (IRT_unit (ListIRTTyVars a))
+               (IRT_prod (ListIRTTyVars a) (IRT_varT (ListIRTTyVars a) 0) (
+                 IRT_prod (ListIRTTyVars a) (IRT_varD (ListIRTTyVars a) 0) (
+                  IRT_unit (ListIRTTyVars a)))));
 
-listIRT : (a:sort 0) -> sort 0;
-listIRT a = IRT (listLS a) (IRTs_Nil (listLS a)) (listIRTDesc a);
+ListIRT : (a:sort 0) -> sort 0;
+ListIRT a = IRT (ListIRTTyVars a) (IRTs_Nil (ListIRTTyVars a)) (ListIRTDesc a);
 
-unfoldListIRT : (a:sort 0) -> listIRT a -> Either #() (a * listIRT a * #());
-unfoldListIRT a = unfoldIRT (listLS a) (IRTs_Nil (listLS a)) (listIRTDesc a);
+unfoldListIRT : (a:sort 0) -> ListIRT a -> Either #() (a * ListIRT a * #());
+unfoldListIRT a = unfoldIRT (ListIRTTyVars a) (IRTs_Nil (ListIRTTyVars a)) (ListIRTDesc a);
 
-foldListIRT : (a:sort 0) -> Either #() (a * listIRT a * #()) -> listIRT a;
-foldListIRT a = foldIRT (listLS a) (IRTs_Nil (listLS a)) (listIRTDesc a);
+foldListIRT : (a:sort 0) -> Either #() (a * ListIRT a * #()) -> ListIRT a;
+foldListIRT a = foldIRT (ListIRTTyVars a) (IRTs_Nil (ListIRTTyVars a)) (ListIRTDesc a);
