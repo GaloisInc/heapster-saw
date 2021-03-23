@@ -13,6 +13,8 @@ Import rust_data.
 
 Import SAWCorePrelude.
 
+Print bool_and__tuple_fun.
+
 Print test_result__tuple_fun.
 
 Print test_sum_impl__tuple_fun.

@@ -34,6 +34,7 @@ import Data.Functor.Constant
 import Data.Functor.Product
 import Control.Monad.Reader
 import Control.Monad.Except
+import Control.Monad.Trans.Maybe
 
 import Data.Parameterized.Some
 
@@ -85,6 +86,7 @@ newtype RustConvM a =
 instance MonadFail RustConvM where
   fail = RustConvM . throwError
 
+-- FIXME: move this to Hobbits
 instance (MonadBind m, Liftable e) => MonadBind (ExceptT e m) where
   mbM mb_m =
     ExceptT $
@@ -92,6 +94,15 @@ instance (MonadBind m, Liftable e) => MonadBind (ExceptT e m) where
        case mb_eith of
          [nuP| Right mb_a |] -> return $ Right mb_a
          [nuP| Left mb_e |] -> return $ Left $ mbLift mb_e
+
+-- FIXME: move this to Hobbits
+mbMaybe :: NuMatching a => Mb ctx (Maybe a) -> Maybe (Mb ctx a)
+mbMaybe [nuP| Just mb_a |] = Just mb_a
+mbMaybe [nuP| Nothing |] = Nothing
+
+-- FIXME: move this to Hobbits
+instance MonadBind m => MonadBind (MaybeT m) where
+  mbM mb_m = MaybeT $ fmap mbMaybe $ mbM $ fmap runMaybeT mb_m
 
 instance MonadBind RustConvM where
   mbM mb_m = RustConvM $ mbM $ fmap unRustConvM mb_m
@@ -331,40 +342,63 @@ instance RsConvert w (Arg Span) (PermExpr (LLVMShapeType w)) where
 
 -- | An argument layout is a sequence of Crucible types for 0 or more function
 -- arguments along with permissions on them, which could be existential in some
--- number of ghost arguments
+-- number of ghost arguments. The ghost arguments cannot have permissions on
+-- them, so that we can create struct permissions from just the arg perms.
 data ArgLayout where
-  ArgLayout :: CruCtx ghosts -> CruCtx args ->
-               Mb ghosts (ValuePerms (ghosts :++: args)) ->
-               ArgLayout
+  ArgLayout :: KnownCruCtx ghosts -> KnownCruCtx args ->
+               Mb ghosts (ValuePerms args) -> ArgLayout
 
 instance Semigroup ArgLayout where
-  (<>) = error "FIXME HERE"
+  ArgLayout ghosts1 args1 mb_ps1 <> ArgLayout ghosts2 args2 mb_ps2 =
+    ArgLayout (RL.append ghosts1 ghosts2) (RL.append args1 args2) $
+    mbCombine $ fmap (\ps1 -> fmap (\ps2 -> RL.append ps1 ps2) mb_ps2) mb_ps1
 
 instance Monoid ArgLayout where
-  mempty = error "FIXME HERE"
+  mempty = ArgLayout MNil MNil (emptyMb $ MNil)
 
 -- | Construct an 'ArgLayout' for a single argument with no ghost variables
 argLayout1 :: KnownRepr TypeRepr a => ValuePerm a -> ArgLayout
 argLayout1 p =
-  ArgLayout CruCtxNil (CruCtxCons CruCtxNil knownRepr) $ emptyMb (MNil :>: p)
+  ArgLayout MNil (MNil :>: KnownReprObj) $ emptyMb (MNil :>: p)
+
+-- | Convert an 'ArgLayout' in a name-binding into an 'ArgLayout' with an
+-- additional ghost argument for the bound name
+mbArgLayout :: KnownRepr TypeRepr a => Binding a ArgLayout -> ArgLayout
+mbArgLayout [nuP| ArgLayout ghosts args mb_ps |] =
+  ArgLayout (mbLift ghosts :>: KnownReprObj) (mbLift args) (mbCombine $
+                                                            mbSwap mb_ps)
 
 -- | Convert an 'ArgLayout' to a permission on a @struct@ of its arguments
 argLayoutStructPerm :: ArgLayout -> Some (Typed ValuePerm)
-argLayoutStructPerm (ArgLayout ghosts args mb_perms) =
-  error "FIXME HERE: requires a valPermExistsMulti combinator"
+argLayoutStructPerm (ArgLayout ghosts args@(MNil :>: KnownReprObj) mb_perms) =
+  Some $ Typed knownRepr $
+  valPermExistsMulti ghosts $ fmap (\(_ :>: perm) -> perm) mb_perms
+argLayoutStructPerm (ArgLayout ghosts args mb_perms)
+  | args_repr <- cruCtxToRepr (knownCtxToCruCtx args)
+  , Refl <- cruCtxToReprEq (knownCtxToCruCtx args) =
+    Some $ Typed (StructRepr args_repr) $
+    valPermExistsMulti ghosts $ fmap (ValPerm_Conj1 . Perm_Struct) mb_perms
 
 -- | Convert a shape to a writeable block permission with that shape, or fail if
 -- the length of the shape is not defined
 --
 -- FIXME: maybe this goes in the 'Permissions' module?
-shapeToBlockPerm :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
-                    Maybe (ValuePerm (LLVMPointerType w))
-shapeToBlockPerm sh
+shapeToBlock :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
+                Maybe (LLVMBlockPerm w)
+shapeToBlock sh
   | Just len <- llvmShapeLength sh =
-    Just $ ValPerm_LLVMBlock $ LLVMBlockPerm
+    Just $ LLVMBlockPerm
     { llvmBlockRW = PExpr_Write, llvmBlockLifetime = PExpr_Always,
       llvmBlockOffset = bvInt 0, llvmBlockLen = len, llvmBlockShape = sh }
-shapeToBlockPerm _ = Nothing
+shapeToBlock _ = Nothing
+
+-- | Convert a shape to a writeable @memblock@ permission with that shape, or
+-- fail if the length of the shape is not defined
+--
+-- FIXME: maybe this goes in the 'Permissions' module?
+shapeToBlockPerm :: (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
+                    Maybe (ValuePerm (LLVMPointerType w))
+shapeToBlockPerm = fmap ValPerm_LLVMBlock . shapeToBlock
 
 -- | Function permission that is existential over all types
 data Some3FunPerm =
@@ -372,31 +406,152 @@ data Some3FunPerm =
 
 -- | Try to convert a 'Some3FunPerm' to a 'SomeFunPerm' at a specific type
 un3SomeFunPerm :: CruCtx args -> TypeRepr ret -> Some3FunPerm ->
-                  Maybe (SomeFunPerm args ret)
+                  RustConvM (SomeFunPerm args ret)
 un3SomeFunPerm args ret (Some3FunPerm fun_perm)
   | Just Refl <- testEquality args (funPermArgs fun_perm)
   , Just Refl <- testEquality ret (funPermRet fun_perm) =
-    Just $ SomeFunPerm fun_perm
-un3SomeFunPerm _ _ _ = Nothing
+    return $ SomeFunPerm fun_perm
+un3SomeFunPerm args ret (Some3FunPerm fun_perm) =
+  fail $ renderDoc $ fillSep
+  [pretty "Incorrect LLVM type for function permission:",
+   permPretty emptyPPInfo fun_perm,
+   pretty "Expected type:"
+   <+> permPretty emptyPPInfo args <+> pretty "=>"
+   <+> permPretty emptyPPInfo ret,
+   pretty "Actual type:"
+   <+> permPretty emptyPPInfo (funPermArgs fun_perm)
+   <+> pretty "=>" <+> permPretty emptyPPInfo (funPermRet fun_perm)
+   ]
+
+-- | Build a function permission from an 'ArgLayout' plus return permission
+funPerm3FromArgLayout :: ArgLayout -> TypeRepr ret -> ValuePerm ret ->
+                         Some3FunPerm
+funPerm3FromArgLayout (ArgLayout ghosts args mb_arg_perms) ret_tp ret_perm =
+  let gs_args_prxs = RL.map (const Proxy) (RL.append ghosts args) in
+  Some3FunPerm $ FunPerm (knownCtxToCruCtx ghosts) (knownCtxToCruCtx args)
+  ret_tp
+  (extMbMulti args $
+   fmap (RL.append $ RL.map (const ValPerm_True) ghosts) mb_arg_perms)
+  (nuMulti (gs_args_prxs :>: Proxy) $ const
+   (RL.map (const ValPerm_True) gs_args_prxs :>: ret_perm))
+
+-- | Extend a name binding by adding a name in the middle
+extMbMiddle :: prx1 ctx1 -> RAssign prx2 ctx2 -> prxb b ->
+               Mb (ctx1 :++: ctx2) a ->
+               Mb (ctx1 :++: ((RNil :> b) :++: ctx2)) a
+extMbMiddle (_ :: prx1 ctx1) ctx2 (_ :: prxb b) mb_a =
+  mbCombine $ fmap (mbCombine . nu @_ @b . const) $
+  mbSeparate @_ @ctx1 ctx2 mb_a
+
+-- | Insert an object into the middle of an 'RAssign'
+rassignInsertMiddle :: prx1 ctx1 -> RAssign prx2 ctx2 -> f b ->
+                       RAssign f (ctx1 :++: ctx2) ->
+                       RAssign f (ctx1 :++: ((RNil :> b) :++: ctx2))
+rassignInsertMiddle ctx1 ctx2 fb fs =
+  let (fs1, fs2) = RL.split ctx1 ctx2 fs in
+  RL.append fs1 (RL.append (MNil :>: fb) fs2)
+
+-- | Prepend an argument with input and output perms to a 'Some3FunPerm'
+funPerm3PrependArg :: TypeRepr arg -> ValuePerm arg -> ValuePerm arg ->
+                      Some3FunPerm -> Some3FunPerm
+funPerm3PrependArg arg_tp arg_in arg_out (Some3FunPerm
+                                          (FunPerm ghosts args ret
+                                           ps_in ps_out)) =
+  let args_prxs = cruCtxProxies args in
+  Some3FunPerm $ FunPerm ghosts (appendCruCtx (singletonCruCtx arg_tp) args) ret
+  (extMbMiddle ghosts args_prxs arg_tp $
+   fmap (rassignInsertMiddle ghosts args_prxs arg_in) ps_in)
+  (extMbMiddle ghosts (args_prxs :>: Proxy) arg_tp $
+   fmap (rassignInsertMiddle ghosts (args_prxs :>: Proxy) arg_out) ps_out)
+
 
 -- | Try to compute the layout of a structure of the given shape as a value,
 -- over 1 or more registers, if this is possible
 layoutArgShapeByVal :: (1 <= w, KnownNat w) => Abi ->
-                       PermExpr (LLVMShapeType w) -> Maybe ArgLayout
-layoutArgShapeByVal = error "FIXME HERE"
+                       PermExpr (LLVMShapeType w) ->
+                       MaybeT RustConvM ArgLayout
+
+-- The empty shape --> no values
+layoutArgShapeByVal Rust PExpr_EmptyShape = return mempty
+
+-- The ptr shape --> a single pointer value, if we know its length
+layoutArgShapeByVal Rust (PExpr_PtrShape maybe_rw maybe_l sh)
+  | Just bp <- llvmBlockAdjustModalities maybe_rw maybe_l <$> shapeToBlock sh =
+    return $ argLayout1 $ llvmBlockPtrPerm bp
+
+-- If we don't know the length of our pointer, we can't lay it out at all
+layoutArgShapeByVal Rust (PExpr_PtrShape _ _ sh) =
+  lift $ fail $ renderDoc $ fillSep
+  [pretty "layoutArgShapeByVal: Shape with unknown length:",
+   permPretty emptyPPInfo sh]
+
+-- A field shape --> the contents of the field
+layoutArgShapeByVal Rust (PExpr_FieldShape (LLVMFieldShape p)) =
+  return $ argLayout1 p
+
+-- Array shapes have unknown length, and so are never passed by value
+layoutArgShapeByVal Rust (PExpr_ArrayShape _ _ _) = mzero
+
+-- Sequence shapes are only laid out as values in the Rust ABI if the result has
+-- at most two fields
+layoutArgShapeByVal Rust (PExpr_SeqShape sh1 sh2) =
+  do layout1 <- layoutArgShapeByVal Rust sh1
+     layout2 <- layoutArgShapeByVal Rust sh2
+     case (mappend layout1 layout2) of
+       layout@(ArgLayout _ args _)
+         | length (RL.mapToList (const Proxy) args) <= 2 -> return layout
+       _ -> mzero
+
+-- Disjunctive shapes are only laid out as values in the Rust ABI if both sides
+-- have the same number and sizes of arguments. Note that Heapster currently
+-- cannot handle this optimization, and so this is an error, but if the shape
+-- cannot be laid out as values then we return Nothing without an error.
+layoutArgShapeByVal Rust sh@(PExpr_OrShape sh1 sh2) =
+  do layout1 <- layoutArgShapeByVal Rust sh1
+     layout2 <- layoutArgShapeByVal Rust sh2
+     case (layout1, layout2) of
+       (ArgLayout _ args1 _, ArgLayout _ args2 _)
+         | Just Refl <-
+           testEquality (knownCtxToCruCtx args1) (knownCtxToCruCtx args2) ->
+           lift $ fail $ renderDoc $ fillSep
+           [pretty "layoutArgShapeByVal: Optimizing disjunctive shapes not yet supported for shape:",
+            permPretty emptyPPInfo sh]
+       _ -> mzero
+
+-- For existential shapes, just add the existential variable to the ghosts
+layoutArgShapeByVal Rust (PExpr_ExShape mb_sh) =
+  mbArgLayout <$> mbM (fmap (layoutArgShapeByVal Rust) mb_sh)
+
+layoutArgShapeByVal Rust sh =
+  lift $ fail $ renderDoc $ fillSep
+  [pretty "layoutArgShapeByVal: Unsupported shape:", permPretty emptyPPInfo sh]
+layoutArgShapeByVal abi _ =
+  lift $ fail ("layoutArgShapeByVal: Unsupported ABI: " ++ show abi)
+
+
+-- | Try to compute the layout of a structure of the given shape as a value,
+-- over 1 or more registers, if this is possible. Otherwise convert the shape to
+-- an LLVM block permission.
+layoutArgShapeOrBlock :: (1 <= w, KnownNat w) => Abi ->
+                         PermExpr (LLVMShapeType w) ->
+                         RustConvM (Either (LLVMBlockPerm w) ArgLayout)
+layoutArgShapeOrBlock abi sh =
+  runMaybeT (layoutArgShapeByVal abi sh) >>= \case
+  Just layout -> return $ Right layout
+  Nothing | Just bp <- shapeToBlock sh -> return $ Left bp
+  _ ->
+    fail $ renderDoc $ fillSep
+    [pretty "layoutArgShapeOrBlock: Could not layout shape with unknown size:",
+     permPretty emptyPPInfo sh]
 
 -- | Compute the layout of an argument with the given shape as 1 or more
 -- register arguments of a function
 layoutArgShape :: (1 <= w, KnownNat w) => Abi ->
                   PermExpr (LLVMShapeType w) -> RustConvM ArgLayout
-layoutArgShape abi sh
-  | Just layout <- layoutArgShapeByVal abi sh = return layout
-layoutArgShape _ sh
-  | Just p <- shapeToBlockPerm sh = return $ argLayout1 p
-layoutArgShape _ sh =
-  fail $ renderDoc $ fillSep
-  [pretty "Could not layout shape with unknown size:",
-   permPretty emptyPPInfo sh]
+layoutArgShape abi sh =
+  layoutArgShapeOrBlock abi sh >>= \case
+  Right layout -> return layout
+  Left bp -> return $ argLayout1 $ ValPerm_LLVMBlock bp
 
 -- | Compute the layout for the inputs and outputs of a function with the given
 -- shapes as arguments and return value as a function permission
@@ -405,16 +560,17 @@ layoutFun :: (1 <= w, KnownNat w) => Abi ->
              RustConvM Some3FunPerm
 layoutFun abi arg_shs ret_sh =
   do args_layout <- mconcat <$> mapM (layoutArgShape abi) arg_shs
-     case (args_layout, layoutArgShapeByVal abi ret_sh) of
-       (ArgLayout ghosts args arg_perms, Just ret_layout) ->
-         error "FIXME HERE"
-       (ArgLayout ghosts args arg_perms, Nothing)
-         | Just p <- shapeToBlockPerm ret_sh ->
-           error "FIXME HERE"
-       _ ->
-         fail $ renderDoc $ fillSep
-         [pretty "Could not layout return shape with unknown size:",
-          permPretty emptyPPInfo ret_sh]
+     ret_layout_eith <- layoutArgShapeOrBlock abi ret_sh
+     case ret_layout_eith of
+       Right ret_layout
+         | Some (Typed ret_tp ret_p) <- argLayoutStructPerm ret_layout ->
+           return $ funPerm3FromArgLayout args_layout ret_tp ret_p
+       Left bp ->
+         return $
+         funPerm3PrependArg knownRepr
+         (ValPerm_LLVMBlock $ bp { llvmBlockShape = PExpr_EmptyShape})
+         (ValPerm_LLVMBlock bp) $
+         funPerm3FromArgLayout args_layout UnitRepr ValPerm_True
 
 
 ----------------------------------------------------------------------
@@ -431,15 +587,14 @@ rsConvertMonoFun w span abi ls fn_tp =
 -- | Convert a Rust polymorphic function type to a Heapster function permission
 rsConvertFun :: (1 <= w, KnownNat w) => prx w ->
                 Abi -> Generics Span -> FnDecl Span -> RustConvM Some3FunPerm
-rsConvertFun w abi (Generics rust_ls rust_tps
+rsConvertFun w abi (Generics rust_ls@[] rust_tps@[]
                     (WhereClause [] _) _) (FnDecl args (Just ret_tp) False _) =
-  do ret_shape <- rsConvert w ret_tp
-     arg_shapes <- mapM (rsConvert w) args
-     error ("FIXME HERE:\n" ++
-            renderDoc (sep [pretty "Arg types:",
-                            tupled (map (permPretty emptyPPInfo) arg_shapes),
-                            pretty "Ret type:",
-                            permPretty emptyPPInfo ret_shape]))
+  do arg_shapes <- mapM (rsConvert w) args
+     ret_shape <- rsConvert w ret_tp
+     fun_perm3@(Some3FunPerm fp) <- layoutFun abi arg_shapes ret_shape
+     () <- tracePretty (pretty "rsConvertFun returning:" <+>
+                        permPretty emptyPPInfo fp) (return ())
+     return fun_perm3
 
 
 ----------------------------------------------------------------------
@@ -465,10 +620,7 @@ parseFunPermFromRust env w args ret str
     do some_fun_perm <-
          rsConvertFun w abi (Generics
                              (rust_ls1 ++ rust_ls2) rust_tvars wc span) fn_tp
-       case un3SomeFunPerm args ret some_fun_perm of
-         Just fun_perm -> return fun_perm
-         Nothing ->
-           error "Wrong type of function (FIXME: better error message)"
+       un3SomeFunPerm args ret some_fun_perm
 
   | Just i <- findIndex (== '>') str
   , (gen_str, _) <- splitAt (i+1) str
@@ -482,3 +634,7 @@ parseFunPermFromRust env w args ret str
 
   | Nothing <- findIndex (== '>') str =
     fail ("Malformed Rust type: " ++ str)
+
+
+$(mkNuMatching [t| ArgLayout |])
+$(mkNuMatching [t| Some3FunPerm |])

@@ -51,6 +51,10 @@ heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:
  *** Type-Checked Functions
  ***/
 
+// bool_and
+bool_and_sym <- heapster_find_symbol env "8bool_and";
+heapster_typecheck_fun_rename env bool_and_sym "bool_and" "<> fn (bool,bool) -> bool";
+
 // test_result
 test_result_sym <- heapster_find_symbol env "11test_result";
 heapster_typecheck_fun_rename env test_result_sym "test_result" "().arg0:memblock(R,0,16,Result<fieldsh(int64<>),fieldsh(int64<>)>) -o ret:int1<>";

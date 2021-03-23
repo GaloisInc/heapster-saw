@@ -18,6 +18,55 @@ pub fn bool_and_struct (xy:BoolStruct) -> bool {
     xy.fst_bool & xy.snd_bool
 }
 
+/* A struct containing 2 32-bit values, to test how structs that fit into 1
+ * 64-bit value are represented */
+pub struct TwoValues(u32,u32);
+
+pub fn mk_two_values (x1:u32,x2:u32) -> TwoValues {
+    TwoValues(x1,x2)
+}
+
+pub extern fn mk_two_values_extern (x1:u32,x2:u32) -> TwoValues {
+    TwoValues(x1,x2)
+}
+
+pub fn two_values_proj1 (x:TwoValues) -> u32 {
+    match x {
+        TwoValues(x1,_) => x1
+    }
+}
+
+pub extern fn two_values_proj1_extern (x:TwoValues) -> u32 {
+    match x {
+        TwoValues(x1,_) => x1
+    }
+}
+
+/* A struct containing 3 32-bit values, to test how structs that fit but don't
+ * fill up 2 64-bit values are represented */
+pub struct ThreeValues(u32,u32,u32);
+
+pub fn mk_three_values (x1:u32,x2:u32,x3:u32) -> ThreeValues {
+    ThreeValues(x1,x2,x3)
+}
+
+pub extern fn mk_three_values_extern (x1:u32,x2:u32,x3:u32) -> ThreeValues {
+    ThreeValues(x1,x2,x3)
+}
+
+pub fn three_values_proj1 (x:ThreeValues) -> u32 {
+    match x {
+        ThreeValues(x1,_,_) => x1
+    }
+}
+
+pub extern fn three_values_proj1_extern (x:ThreeValues) -> u32 {
+    match x {
+        ThreeValues(x1,_,_) => x1
+    }
+}
+
+
 /* A struct containing 4 32-bit values, to test how structs that fit into 2
  * 64-bit values are represented */
 pub struct FourValues(u32,u32,u32,u32);
@@ -107,6 +156,14 @@ pub extern fn mk_sum_sum_left_extern (x:Sum<u64,u64>) -> Sum<Sum<u64,u64>,u64> {
     Sum::Left (x)
 }
 
+pub fn mk_sum_sum_left_asym (x:Sum<u32,u64>) -> Sum<Sum<u32,u64>,u64> {
+    Sum::Left (x)
+}
+
+pub extern fn mk_sum_sum_left_asym_extern (x:Sum<u32,u64>) -> Sum<Sum<u32,u64>,u64> {
+    Sum::Left (x)
+}
+
 
 /* A struct containing a string */
 pub struct StrStruct(String);
@@ -129,6 +186,19 @@ impl StrStruct {
     pub extern fn name_extern(&self) -> String {
         match self {
             StrStruct(s) => s.to_string(),
+        }
+    }
+
+    /* Version of name that maps to &str */
+    pub fn name_str (&self) -> &str {
+        match self {
+            StrStruct(s) => s.as_str(),
+        }
+    }
+
+    pub extern fn name_str_extern (&self) -> &str {
+        match self {
+            StrStruct(s) => s.as_str(),
         }
     }
 }

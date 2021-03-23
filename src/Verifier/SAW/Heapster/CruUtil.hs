@@ -533,6 +533,17 @@ mkKnownReprObj _ = KnownReprObj
 unKnownReprObj :: KnownReprObj f a -> f a
 unKnownReprObj (KnownReprObj :: KnownReprObj f a) = knownRepr :: f a
 
+$(mkNuMatching [t| forall f a. KnownReprObj f a |])
+
+instance NuMatchingAny1 (KnownReprObj f) where
+  nuMatchingAny1Proof = nuMatchingProof
+
+instance Liftable (KnownReprObj f a) where
+  mbLift [nuP| KnownReprObj |] = KnownReprObj
+
+instance LiftableAny1 (KnownReprObj f) where
+  mbLiftAny1 = mbLift
+
 -- FIXME: this change for issue #28 requires ClosableAny1 to be exported from
 -- Hobbits
 {-

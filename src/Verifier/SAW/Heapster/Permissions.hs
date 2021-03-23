@@ -2813,6 +2813,26 @@ exPermBody tp (ValPerm_Exists (p :: Binding tp' (ValuePerm a)))
   | Just Refl <- testEquality tp (knownRepr :: TypeRepr tp') = p
 exPermBody _ _ = error "exPermBody"
 
+-- | A representation of a context of types as a sequence of 'KnownRepr'
+-- instances
+--
+-- FIXME: this can go away when existentials take explicit 'TypeRepr's instead
+-- of 'KnownRepr TypeRepr' instances, as per issue #79
+type KnownCruCtx = RAssign (KnownReprObj TypeRepr)
+
+-- | Convert a 'KnownCruCtx' to a 'CruCtx'
+knownCtxToCruCtx :: KnownCruCtx ctx -> CruCtx ctx
+knownCtxToCruCtx MNil = CruCtxNil
+knownCtxToCruCtx (ctx :>: KnownReprObj) =
+  CruCtxCons (knownCtxToCruCtx ctx) knownRepr
+
+-- | Construct 0 or more nested existential permissions
+valPermExistsMulti :: KnownCruCtx ctx -> Mb ctx (ValuePerm a) -> ValuePerm a
+valPermExistsMulti MNil mb_p = elimEmptyMb mb_p
+valPermExistsMulti (ctx :>: KnownReprObj) mb_p =
+  valPermExistsMulti ctx (fmap ValPerm_Exists $
+                          mbSeparate (MNil :>: Proxy) mb_p)
+
 -- | Test if an 'AtomicPerm' is a field permission
 isLLVMFieldPerm :: AtomicPerm a -> Bool
 isLLVMFieldPerm (Perm_LLVMField _) = True
