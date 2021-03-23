@@ -1,13 +1,13 @@
+cabal-version:      2.4
 Name:               heapster-saw
 Version:            0.1
-License:            BSD3
+License:            BSD-3-Clause
 License-file:       LICENSE
 Author:             Galois, Inc.
 Maintainer:         westbrook@galois.com
 Copyright:          (c) 2020 Galois Inc.
 Category:           Formal Methods
 Build-type:         Simple
-cabal-version:      >= 1.8
 Synopsis:           Program verification in SAW using Heapster
 Description:
   A type system for binaries based on separation logic, along with a translation
@@ -16,6 +16,7 @@ Description:
 library
   build-depends:
     base == 4.*,
+    array ^>= 0.5.4,
     saw-core,
     crucible,
     crucible-llvm,
@@ -37,6 +38,9 @@ library
     language-rust,
     hobbits >= 1.3.1
   hs-source-dirs: src
+  build-tool-depends:
+    alex:alex,
+    happy:happy,
   exposed-modules:
      Verifier.SAW.Heapster.MultiBindM
      Verifier.SAW.Heapster.CruUtil
@@ -47,4 +51,11 @@ library
      Verifier.SAW.Heapster.TypedCrucible
      Verifier.SAW.Heapster.SAWTranslation
      Verifier.SAW.Heapster.IRTTranslation
+     Verifier.SAW.Heapster.Parser
+     Verifier.SAW.Heapster.Lexer
+     Verifier.SAW.Heapster.UntypedAST
+     Verifier.SAW.Heapster.Located
+     Verifier.SAW.Heapster.Token
+     Verifier.SAW.Heapster.TypeChecker
   GHC-options: -Wall
+  default-language: Haskell2010
