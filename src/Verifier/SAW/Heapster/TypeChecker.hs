@@ -33,6 +33,7 @@ import Verifier.SAW.Heapster.Permissions
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Located
 import Verifier.SAW.Heapster.UntypedAST
+import Verifier.SAW.Heapster.ParsedCtx
 
 
 ----------------------------------------------------------------------
@@ -312,13 +313,17 @@ tcLLVMShape (ExArraySh _ len stride flds) =
   <*> traverse (uncurry tcLLVMFieldShape_) flds
 tcLLVMShape e = tcError (pos e) "expected llvmshape"
 
-tcLLVMFieldShape_ :: forall w. (KnownNat w, 1 <= w) => Maybe AstExpr -> AstExpr -> Tc (LLVMFieldShape w)
+tcLLVMFieldShape_ ::
+  forall w. (KnownNat w, 1 <= w) => Maybe AstExpr -> AstExpr -> Tc (LLVMFieldShape w)
 tcLLVMFieldShape_ Nothing e = tcLLVMFieldShape (knownNat :: NatRepr w) e
 tcLLVMFieldShape_ (Just w) e =
-  do n <- tcNatural w
-     withPositive (pos w) "field size must be positive" n \nr -> tcLLVMFieldShape nr e
+  do Some (Pair nr LeqProof) <- tcPositive w
+     withKnownNat nr (tcLLVMFieldShape nr e)
 
-tcLLVMFieldShape :: forall (w :: Nat) (v :: Nat). (KnownNat w, 1 <= w) => NatRepr w -> AstExpr -> Tc (LLVMFieldShape v)
+tcLLVMFieldShape ::
+  forall (w :: Nat) (v :: Nat).
+  (KnownNat w, 1 <= w) =>
+  NatRepr w -> AstExpr -> Tc (LLVMFieldShape v)
 tcLLVMFieldShape nr e = LLVMFieldShape <$> tcValPerm (LLVMPointerRepr nr) e
 
 tcLLVMPointer :: (KnownNat w, 1 <= w) => NatRepr w -> AstExpr -> Tc (PermExpr (LLVMPointerType w))
@@ -482,3 +487,7 @@ tcPositive :: AstExpr -> Tc (Some (Product NatRepr (LeqProof 1)))
 tcPositive e =
   do i <- tcNatural e
      withPositive (pos e) "positive required" i \w -> pure (Some (Pair w LeqProof))
+
+tcCtx :: [(String, AstType)] -> Tc (Some ParsedCtx)
+tcCtx []         = pure (Some emptyParsedCtx)
+tcCtx ((n,t):xs) = preconsSomeParsedCtx n <$> tcType t <*> tcCtx xs

@@ -57,5 +57,6 @@ library
      Verifier.SAW.Heapster.Located
      Verifier.SAW.Heapster.Token
      Verifier.SAW.Heapster.TypeChecker
+     Verifier.SAW.Heapster.ParsedCtx
   GHC-options: -Wall
   default-language: Haskell2010
