@@ -1,8 +1,6 @@
 {
 module Verifier.SAW.Heapster.Lexer (lexer) where
 
-import GHC.Natural
-
 import Verifier.SAW.Heapster.Located
 import Verifier.SAW.Heapster.Token
 
@@ -85,10 +83,10 @@ mkPos :: AlexPosn -> Pos
 mkPos (AlexPn x y z) = Pos x y z
 
 token :: (String -> Token) -> AlexPosn -> String -> Located Token
-token tok pos str = Located (mkPos pos) (tok str)
+token tok p str = Located (mkPos p) (tok str)
 
 token_ :: Token -> AlexPosn -> String -> Located Token
-token_ tok pos _ = Located (mkPos pos) tok
+token_ tok p _ = Located (mkPos p) tok
 
 lexer :: String -> [Located Token]
 lexer = alexScanTokens

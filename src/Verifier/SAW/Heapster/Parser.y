@@ -128,10 +128,11 @@ astExpr ::                                      { AstExpr }
   | 'eqsh' '(' astExpr ')'                      { ExEqSh (pos $1) $3 }
 
   | lifetimePrefix 'ptrsh' '(' astExpr ',' astExpr ')'
-                                                { ExPtrSh (pos $2) $1 $4 (Just $6) }
-  | lifetimePrefix 'ptrsh' '(' astExpr ')'      { ExPtrSh (pos $2) $1 $4 Nothing }
+                                                { ExPtrSh (pos $2) $1 (Just $4) $6 }
+  | lifetimePrefix 'ptrsh' '(' astExpr ')'      { ExPtrSh (pos $2) $1 Nothing $4 }
 
-  | 'fieldsh' '(' astExpr ',' astExpr ')'       { ExFieldSh (pos $1) $3 $5 }
+  | 'fieldsh' '(' astExpr ',' astExpr ')'       { ExFieldSh (pos $1) (Just $3) $5 }
+  | 'fieldsh' '('             astExpr ')'       { ExFieldSh (pos $1) Nothing $3 }
   | 'arraysh' '(' astExpr ',' astExpr ',' '[' list(shape) ']' ')'
                                                 { ExArraySh (pos $1) $3 $5 $8 }
   | 'exsh' IDENT ':' astType '.' astExpr        { ExExSh (pos $1) (locThing $2) $4 $6 }
@@ -152,6 +153,7 @@ astExpr ::                                      { AstExpr }
   | 'free' '(' astExpr ')'                      { ExFree (pos $1) $3 }
   | 'llvmfunptr' '{' astExpr ',' astExpr '}' '(' funPerm ')'
                                                 { ExLlvmFunPtr (pos $1) $3 $5 $8 }
+  | 'llvmframe' '[' list(frameEntry) ']'        { ExLlvmFrame (pos $1) $3 }
   | lifetimePrefix 'ptr' '(' '(' astExpr ',' astExpr ',' astExpr ')' '|->' astExpr ')'
                                                 { ExPtr (pos $2) $1 $5 $7 (Just $9) $12 }
   | lifetimePrefix 'ptr' '(' '(' astExpr ',' astExpr             ')' '|->' astExpr ')'
@@ -160,26 +162,29 @@ astExpr ::                                      { AstExpr }
   | 'shape' '(' astExpr ')'                     { ExShape (pos $1) $3}
   | 'lowned' '(' list(varExpr) '-o' list1(varExpr) ')'
                                                 { ExLOwned (pos $1) $3 $5}
-  | 'lcurrent'                                  { ExLCurrent (pos $1)}
+  | lifetimePrefix 'lcurrent'                   { ExLCurrent (pos $2) $1 }
 
   | astExpr '=='  astExpr                       { ExEqual (pos $2) $1 $3}
   | astExpr '/='  astExpr                       { ExNotEqual (pos $2) $1 $3}
   | astExpr '<u'  astExpr                       { ExLessThan (pos $2) $1 $3}
   | astExpr '<=u' astExpr                       { ExLessEqual (pos $2) $1 $3}
 
+frameEntry ::                                   { (AstExpr, Natural) }
+  : astExpr ':' NAT                             { ($1, locThing $3) }
+
 shape ::                                        { (Maybe AstExpr, AstExpr) }
   :  astExpr                                    { (Nothing, $1)         }
   |  '(' astExpr ',' astExpr ')'                { (Just $2, $4)         }
 
-identArgs ::                                    { [AstExpr]             }
-  :                                             { []                    }
-  | '<' list(astExpr) '>'                       { $2                    }
+identArgs ::                                    { Maybe [AstExpr]       }
+  :                                             { Nothing               }
+  | '<' list(astExpr) '>'                       { Just $2               }
 
 permOffset ::                                   { Maybe AstExpr         }
   :                                             { Nothing               }
   | '@' '(' astExpr ')'                         { Just $3               }
   | '@' NAT                                     { Just (ExNat (pos $2) (locThing $2)) }
-  | '@' IDENT                                   { Just (ExVar (pos $2) (locThing $2) [] Nothing) }
+  | '@' IDENT                                   { Just (ExVar (pos $2) (locThing $2) Nothing Nothing) }
 
 funPerm ::                                      { FunPerm }
   : '(' ctx ')' '.' funPermList '-o' funPermList
@@ -201,9 +206,9 @@ lifetimePrefix ::                               { Maybe AstExpr         }
 
 llvmFieldPermArray ::                           { ArrayPerm             }
   : lifetimePrefix '(' astExpr ',' astExpr ',' astExpr ')' '|->' astExpr
-                                                { ArrayPerm (pos $9) $1 $3 $5 (Just $7) }
+                                                { ArrayPerm (pos $9) $1 $3 $5 (Just $7) $10 }
   | lifetimePrefix '(' astExpr ',' astExpr             ')' '|->' astExpr
-                                                { ArrayPerm (pos $7) $1 $3 $5 Nothing }
+                                                { ArrayPerm (pos $7) $1 $3 $5 Nothing $8 }
 
 list(p) ::                                      { [p]                   }
   :                                             { []                    }

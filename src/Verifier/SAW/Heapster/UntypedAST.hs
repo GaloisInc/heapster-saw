@@ -7,7 +7,7 @@ import Verifier.SAW.Heapster.Located
 data FunPerm = FunPerm Pos [(String, AstType)] [(String, AstExpr)] [(String, AstExpr)]
   deriving Show
 
-data ArrayPerm = ArrayPerm Pos (Maybe AstExpr) AstExpr AstExpr (Maybe AstExpr)
+data ArrayPerm = ArrayPerm Pos (Maybe AstExpr) AstExpr AstExpr (Maybe AstExpr) AstExpr
   deriving Show
 
 data AstType
@@ -30,14 +30,13 @@ data AstExpr
   = ExUnit Pos
   | ExAlways Pos
   | ExNat Pos Natural
-  | ExVar Pos String [AstExpr] (Maybe AstExpr)
+  | ExVar Pos String (Maybe [AstExpr]) (Maybe AstExpr)
   | ExAdd Pos AstExpr AstExpr
   | ExMul Pos AstExpr AstExpr
   | ExRead Pos
   | ExWrite Pos
   | ExStruct Pos [AstExpr]
   | ExLlvmWord Pos AstExpr
-  | ExPermList Pos [AstPerm]
 
   | ExEmptySh Pos
   | ExEqSh Pos AstExpr
@@ -48,8 +47,8 @@ data AstExpr
   | ExSeqSh Pos AstExpr AstExpr
   | ExOrSh Pos AstExpr AstExpr
   | ExExSh Pos String AstType AstExpr
-  | ExFieldSh Pos AstExpr AstExpr
-  | ExPtrSh Pos (Maybe AstExpr) AstExpr (Maybe AstExpr)
+  | ExFieldSh Pos (Maybe AstExpr) AstExpr
+  | ExPtrSh Pos (Maybe AstExpr) (Maybe AstExpr) AstExpr
 
   | ExEqual Pos AstExpr AstExpr
   | ExNotEqual Pos AstExpr AstExpr
@@ -57,16 +56,15 @@ data AstExpr
   | ExLessEqual Pos AstExpr AstExpr
 
   | ExLOwned Pos [(String, AstExpr)] [(String, AstExpr)]
-  | ExLCurrent Pos
+  | ExLCurrent Pos (Maybe AstExpr)
   | ExShape Pos AstExpr
   | ExFree Pos AstExpr
   | ExPtr Pos (Maybe AstExpr) AstExpr AstExpr (Maybe AstExpr) AstExpr
   | ExMemblock Pos (Maybe AstExpr) AstExpr AstExpr AstExpr AstExpr
   | ExLlvmFunPtr Pos AstExpr AstExpr FunPerm
+  | ExLlvmFrame Pos [(AstExpr, Natural)]
   | ExArray Pos AstExpr AstExpr AstExpr [ArrayPerm]
   | ExArraySh Pos AstExpr AstExpr [(Maybe AstExpr, AstExpr)]
   deriving Show
 
-data AstPerm = AstPerm
-  deriving Show
-
+instance HasPos AstExpr
