@@ -2,24 +2,3 @@
 module iso_recursive where
 
 import Prelude;
-
-listLS : (a:sort 0) -> ListSort;
-listLS a = LS_Cons a LS_Nil;
-
-listIRTDesc : (a:sort 0) -> IRTDesc (listLS a);
-listIRTDesc a =
-  IRT_mu (listLS a) (
-    IRT_Either (listLS a)
-               (IRT_unit (listLS a))
-               (IRT_prod (listLS a) (IRT_varT (listLS a) 0) (
-                 IRT_prod (listLS a) (IRT_varD (listLS a) 0) (
-                  IRT_unit (listLS a)))));
-
-listIRT : (a:sort 0) -> sort 0;
-listIRT a = IRT (listLS a) (IRTs_Nil (listLS a)) (listIRTDesc a);
-
-unfoldListIRT : (a:sort 0) -> listIRT a -> Either #() (a * listIRT a * #());
-unfoldListIRT a = unfoldIRT (listLS a) (IRTs_Nil (listLS a)) (listIRTDesc a);
-
-foldListIRT : (a:sort 0) -> Either #() (a * listIRT a * #()) -> listIRT a;
-foldListIRT a = foldIRT (listLS a) (IRTs_Nil (listLS a)) (listIRTDesc a);

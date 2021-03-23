@@ -46,4 +46,5 @@ library
      Verifier.SAW.Heapster.Implication
      Verifier.SAW.Heapster.TypedCrucible
      Verifier.SAW.Heapster.SAWTranslation
+     Verifier.SAW.Heapster.IRTTranslation
   GHC-options: -Wall
