@@ -153,7 +153,7 @@ pattern IRTVar ix = IRTVarsCons ix IRTVarsNil
 type IRTVarTreeShape = IRTVarTree ()
 type IRTVarIdxs      = IRTVarTree Natural
 
--- | ...
+-- | Fill in all the leaves of an 'IRTVarTree' with sequential indices
 setIRTVarIdxs :: IRTVarTreeShape -> IRTVarIdxs
 setIRTVarIdxs tree = evalState (mapM (\_ -> nextIdx) tree) 0
   where nextIdx :: State Natural Natural
@@ -164,9 +164,10 @@ setIRTVarIdxs tree = evalState (mapM (\_ -> nextIdx) tree) 0
 -- Translating IRT type variables
 ----------------------------------------------------------------------
 
--- | Translate a recursive permission's body to a SAW core list of its IRT
--- type variables given the name of the recursive permission being defined
--- and its argument context
+-- | Given the name of a recursive permission being defined and its argument
+-- content, translate the permission's body to a SAW core list of its IRT type
+-- variables and an 'IRTVarIdxs', which is used to get indices into the list
+-- when calling 'translateCompleteIRTDesc'
 translateCompleteIRTTyVars :: SharedContext -> PermEnv ->
                               NamedPermName ns args tp -> CruCtx args ->
                               Mb args (ValuePerm a) ->
@@ -225,9 +226,13 @@ namedPermIRTTyVars p npn args off =
          then return ([], IRTRecVar)
          else throwError $ "recursive permission applied to different"
                            ++ " arguments in its definition!"
-       _ -> do p' <- irtTSubstExt p
-               let p_trans = typeTransTupleType <$> translate p'
-               return ([p_trans], IRTVar ())
+       _ -> do env <- irtTPermEnv <$> ask
+               case lookupNamedPerm env (mbLift npn) of
+                 Just (NamedPerm_Defined dp) ->
+                   valuePermIRTTyVars (mbMap2 (unfoldDefinedPerm dp) args off)
+                 _ -> do p' <- irtTSubstExt p
+                         let p_trans = typeTransTupleType <$> translate p'
+                         return ([p_trans], IRTVar ())
 
 -- | Return a singleton list with the type corresponding to the given variable
 -- if the variable has a type translation - otherwise this function returns
@@ -343,12 +348,21 @@ data IRTDescTransInfo ctx =
                      irtDTyVars  :: OpenTerm
                    }
 
--- | Build an empty 'IRTDescTransInfo' from a 'PermEnv' and type var 'Ident'
+-- | Build an empty 'IRTDescTransInfo' from a 'PermEnv' and type var 'Ident',
+-- setting 'irtDTyVars' to 'globalOpenTerm' of the given 'Ident'
 emptyIRTDescTransInfo :: PermEnv -> Ident -> IRTDescTransInfo RNil
 emptyIRTDescTransInfo env tyVarsIdent =
   IRTDescTransInfo MNil env (globalOpenTerm tyVarsIdent)
 
--- | ...
+-- | Apply the current 'irtDTyVars' to the current context using
+-- 'applyOpenTermMulti' - intended to be used only in the args context and
+-- when the trans info is 'emptyIRTDescTransInfo' (see its usage in
+-- 'translateCompleteIRTDesc').
+-- The result of calling this function appropriately is that 'irtDTyVars' now
+-- contains a term which is the type variables identifier applied to its
+-- arguments, no matter how much 'IRTDescTransM's context is extended. This
+-- term is then used whenever an IRTDesc constructor is applied, see
+-- 'irtCtorOpenTerm' and 'irtCtor'.
 irtDInArgsCtx :: IRTDescTransM args OpenTerm -> IRTDescTransM args OpenTerm
 irtDInArgsCtx m =
   do args <- askExprCtxTerms
@@ -366,7 +380,9 @@ instance TransInfo IRTDescTransInfo where
 -- | The monad for translating IRT type descriptions
 type IRTDescTransM = TransM IRTDescTransInfo
 
--- | ...
+-- | Apply the given IRT constructor to the given arguments, using the
+-- type variable identifier applied to its arguments from the current
+-- 'IRTDescTransInfo' for the first argument
 irtCtorOpenTerm :: Ident -> [OpenTerm] -> IRTDescTransM ctx OpenTerm
 irtCtorOpenTerm c all_args =
   do tyVarsTm <- irtDTyVars <$> ask
@@ -380,7 +396,7 @@ irtProd xs =
      foldrM (\x xs' -> irtCtorOpenTerm "Prelude.IRT_prod" [x, xs'])
             irtUnit xs
 
--- | ...
+-- | A singleton list containing the result of 'irtCtorOpenTerm'
 irtCtor :: Ident -> [OpenTerm] -> IRTDescTransM ctx [OpenTerm]
 irtCtor c all_args =
   do tm <- irtCtorOpenTerm c all_args
@@ -391,7 +407,11 @@ irtCtor c all_args =
 -- Translating IRT type descriptions
 ----------------------------------------------------------------------
 
--- | ...
+-- | Given an identifier whose definition in the shared context is the first
+-- result of calling 'translateCompleteIRTTyVars' on the same argument context
+-- and recursive permission body given here, and an 'IRTVarIdxs' which is the
+-- second result of the same call to 'translateCompleteIRTTyVars', translate
+-- the given recursive permission body to an IRT type description
 translateCompleteIRTDesc :: SharedContext -> PermEnv -> 
                             Ident -> CruCtx args ->
                             Mb args (ValuePerm a) -> IRTVarIdxs ->
@@ -402,6 +422,7 @@ translateCompleteIRTDesc sc env tyVarsIdent args p ixs =
                         do in_mu <- valuePermIRTDesc p ixs >>= irtProd
                            irtCtorOpenTerm "Prelude.IRT_mu" [in_mu])
                      (emptyIRTDescTransInfo env tyVarsIdent)
+     -- we manually give the type because we want to keep 'tyVarsIdent' folded
      let irtDescOpenTerm ectx = return $
            dataTypeOpenTerm "Prelude.IRTDesc"
              [ applyOpenTermMulti (globalOpenTerm tyVarsIdent)
@@ -411,6 +432,8 @@ translateCompleteIRTDesc sc env tyVarsIdent args p ixs =
                               piTransM "e" tptrans irtDescOpenTerm) env
      return $ TypedTerm tm tp
 
+-- | Get the IRTDescs associated to a value perm. Apply 'irtProd' to
+-- the results to get the single IRTDesc to which the input corresponds.
 valuePermIRTDesc :: Mb ctx (ValuePerm a) -> IRTVarIdxs ->
                     IRTDescTransM ctx [OpenTerm]
 valuePermIRTDesc [nuP| ValPerm_Eq _ |] _ = return []
@@ -424,19 +447,38 @@ valuePermIRTDesc [nuP| ValPerm_Exists p |] (IRTVarsCons ix ixs) =
      xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
              valuePermIRTDesc (mbCombine p) ixs >>= irtProd)
      irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
-valuePermIRTDesc [nuP| ValPerm_Named _ _ _ |] IRTRecVar =
-  irtCtor "Prelude.IRT_varD" [natOpenTerm 0]
-valuePermIRTDesc [nuP| ValPerm_Named _ _ _ |] ix = irtVarT ix
+valuePermIRTDesc [nuP| ValPerm_Named npn args off |] ix =
+  namedPermIRTDesc npn args off ix
 valuePermIRTDesc [nuP| ValPerm_Var _ _ |] ix = irtVarT ix
 valuePermIRTDesc [nuP| ValPerm_Conj ps |] (IRTVarsConcat ixss) =
   concat <$> zipWithM atomicPermIRTDesc (mbList ps) ixss
 valuePermIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
 
+-- | Get the IRTDescs associated to a named perm. Apply 'irtProd' to
+-- the results to get the single IRTDesc to which the input corresponds.
+namedPermIRTDesc :: Mb ctx (NamedPermName ns args tp) ->
+                    Mb ctx (PermExprs args) ->
+                    Mb ctx (PermOffset tp) -> IRTVarIdxs ->
+                    IRTDescTransM ctx [OpenTerm]
+namedPermIRTDesc _ _ _ IRTRecVar =
+  irtCtor "Prelude.IRT_varD" [natOpenTerm 0]
+namedPermIRTDesc npn args off ixs =
+  do env <- infoEnv <$> ask
+     case (lookupNamedPerm env (mbLift npn), ixs) of
+       (Just (NamedPerm_Defined dp), _) ->
+         valuePermIRTDesc (mbMap2 (unfoldDefinedPerm dp) args off) ixs
+       (_, IRTVar ix) -> irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
+       _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
+
+-- | Get the IRTDescs associated to a variable. Apply 'irtProd' to
+-- the results to get the single IRTDesc to which the input corresponds.
 irtVarT :: IRTVarIdxs -> IRTDescTransM ctx [OpenTerm]
 irtVarT IRTVarsNil = return []
 irtVarT (IRTVar ix) = irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
 irtVarT ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
 
+-- | Get the IRTDescs associated to an atomic perm. Apply 'irtProd' to
+-- the results to get the single IRTDesc to which the input corresponds.
 atomicPermIRTDesc :: Mb ctx (AtomicPerm a) -> IRTVarIdxs ->
                      IRTDescTransM ctx [OpenTerm]
 atomicPermIRTDesc [nuP| Perm_LLVMField fld |] ixs =
@@ -459,9 +501,8 @@ atomicPermIRTDesc [nuP| Perm_LLVMFunPtr _ p |] ixs =
 atomicPermIRTDesc [nuP| Perm_IsLLVMPtr |] _ = return []
 atomicPermIRTDesc [nuP| Perm_LLVMBlockShape sh |] ixs =
   shapeExprIRTDesc sh ixs
-atomicPermIRTDesc [nuP| Perm_NamedConj _ _ _ |] IRTRecVar =
-  irtCtor "Prelude.IRT_varD" [natOpenTerm 0]
-atomicPermIRTDesc [nuP| Perm_NamedConj _ _ _ |] ix = irtVarT ix
+atomicPermIRTDesc [nuP| Perm_NamedConj npn args off |] ix =
+  namedPermIRTDesc npn args off ix
 atomicPermIRTDesc [nuP| Perm_LLVMFrame _ |] _ = return []
 atomicPermIRTDesc [nuP| Perm_LOwned _ _ |] _ =
   error "lowned permission made it to IRTDesc translation"
@@ -474,6 +515,8 @@ atomicPermIRTDesc [nuP| Perm_BVProp _ |] _ =
   error "BVProp made it to IRTDesc translation"
 atomicPermIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
 
+-- | Get the IRTDescs associated to a shape expression. Apply 'irtProd' to
+-- the results to get the single IRTDesc to which the input corresponds.
 shapeExprIRTDesc :: Mb ctx (PermExpr (LLVMShapeType w)) -> IRTVarIdxs ->
                     IRTDescTransM ctx [OpenTerm]
 shapeExprIRTDesc [nuP| PExpr_EmptyShape |] _ = return []
@@ -505,10 +548,14 @@ shapeExprIRTDesc [nuP| PExpr_ExShape mb_sh |] (IRTVarsCons ix ixs) =
      irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
 shapeExprIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
 
+-- | Get the IRTDescs associated to a field shape. Apply 'irtProd' to
+-- the results to get the single IRTDesc to which the input corresponds.
 fieldShapeIRTDesc :: Mb ctx (LLVMFieldShape w) -> IRTVarIdxs ->
                      IRTDescTransM ctx [OpenTerm]
 fieldShapeIRTDesc [nuP| LLVMFieldShape p |] ixs = valuePermIRTDesc p ixs
 
+-- | Get the IRTDescs associated to a set of value perms. Apply 'irtProd' to
+-- the results to get the single IRTDesc to which the input corresponds.
 valuePermsIRTDesc :: Mb ctx (ValuePerms ps) -> IRTVarIdxs ->
                      IRTDescTransM ctx [OpenTerm]
 valuePermsIRTDesc [nuP| ValPerms_Nil |] _ = return []
@@ -523,7 +570,10 @@ valuePermsIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
 -- Translating IRT definitions
 ----------------------------------------------------------------------
 
--- | ...
+-- | Given identifiers whose definitions in the shared context are the results
+-- of corresponding calls to 'translateCompleteIRTTyVars' and
+-- 'translateCompleteIRTDesc', return a term which is @IRT@ applied to these
+-- identifiers
 translateCompleteIRTDef :: SharedContext -> PermEnv -> 
                            Ident -> Ident -> CruCtx args ->
                            IO TypedTerm
@@ -532,7 +582,10 @@ translateCompleteIRTDef sc env tyVarsIdent descIdent args =
   runNilTypeTransM (lambdaExprCtx args $
                      irtDefinition tyVarsIdent descIdent) env
 
--- | ...
+-- | Given identifiers whose definitions in the shared context are the results
+-- of corresponding calls to 'translateCompleteIRTTyVars',
+-- 'translateCompleteIRTDesc', and 'translateCompleteIRTDef', return a term
+-- which is @foldIRT@ applied to these identifiers
 translateCompleteIRTFoldFun :: SharedContext -> PermEnv -> 
                                Ident -> Ident -> Ident -> CruCtx args ->
                                IO Term
@@ -541,7 +594,10 @@ translateCompleteIRTFoldFun sc env tyVarsIdent descIdent _ args =
   runNilTypeTransM (lambdaExprCtx args $
                      irtFoldFun tyVarsIdent descIdent) env
 
--- | ...
+-- | Given identifiers whose definitions in the shared context are the results
+-- of corresponding calls to 'translateCompleteIRTTyVars',
+-- 'translateCompleteIRTDesc', and 'translateCompleteIRTDef', return a term
+-- which is @foldIRT@ applied to these identifiers
 translateCompleteIRTUnfoldFun :: SharedContext -> PermEnv -> 
                                  Ident -> Ident -> Ident -> CruCtx args ->
                                  IO Term
@@ -550,7 +606,8 @@ translateCompleteIRTUnfoldFun sc env tyVarsIdent descIdent _ args =
   runNilTypeTransM (lambdaExprCtx args $
                      irtUnfoldFun tyVarsIdent descIdent) env
 
--- | ...
+-- | Get the terms for the arguments to @IRT@, @foldIRT@, and @unfoldIRT@
+-- given the appropriate identifiers
 irtDefArgs :: Ident -> Ident -> TypeTransM args (OpenTerm, OpenTerm, OpenTerm)
 irtDefArgs tyVarsIdent descIdent = 
   do args <- askExprCtxTerms
@@ -559,20 +616,17 @@ irtDefArgs tyVarsIdent descIdent =
          desc   = applyOpenTermMulti (globalOpenTerm descIdent) args
      return (tyVars, substs, desc)
 
--- | ...
 irtDefinition :: Ident -> Ident -> TypeTransM args OpenTerm
 irtDefinition tyVarsIdent descIdent = 
   do (tyVars, substs, desc) <- irtDefArgs tyVarsIdent descIdent
      return $ dataTypeOpenTerm "Prelude.IRT" [tyVars, substs, desc]
 
--- | ...
 irtFoldFun :: Ident -> Ident -> TypeTransM args OpenTerm
 irtFoldFun tyVarsIdent descIdent = 
   do (tyVars, substs, desc) <- irtDefArgs tyVarsIdent descIdent
      return $ applyOpenTermMulti (globalOpenTerm "Prelude.foldIRT")
                                  [tyVars, substs, desc]
 
--- | ...
 irtUnfoldFun :: Ident -> Ident -> TypeTransM args OpenTerm
 irtUnfoldFun tyVarsIdent descIdent = 
   do (tyVars, substs, desc) <- irtDefArgs tyVarsIdent descIdent
