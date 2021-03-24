@@ -1,9 +1,13 @@
 {-# Language DeriveTraversable #-}
+{-# Language TemplateHaskell #-}
+{-# Options_GHC -Wno-unused-foralls #-}
 module Verifier.SAW.Heapster.Located
   ( Located(..),
     Pos(..),
     HasPos(..),
   )where
+
+import Data.Binding.Hobbits
 
 data Located a = Located
   { locPos :: !Pos
@@ -22,3 +26,5 @@ instance HasPos (Located a) where
 
 instance HasPos Pos where
   pos = id
+
+mkNuMatching [t| Pos |]

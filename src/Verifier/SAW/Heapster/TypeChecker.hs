@@ -4,13 +4,17 @@
 {-# Language BlockArguments #-}
 {-# Language RankNTypes #-}
 {-# Language TemplateHaskell #-}
+{-# Language QuasiQuotes #-}
 {-# Language TypeOperators #-}
 {-# Language DataKinds #-}
+{-# Language ViewPatterns #-}
 {-# Language ImportQualifiedPost #-}
 {-# Language ScopedTypeVariables #-}
 {-# Language KindSignatures #-}
+{-# Options_GHC -Wno-unused-foralls #-}
 module Verifier.SAW.Heapster.TypeChecker where
 
+import Control.Monad
 import Data.Functor.Product
 import Data.Functor.Constant
 import GHC.TypeLits (Nat, KnownNat)
@@ -21,6 +25,7 @@ import Data.Binding.Hobbits.MonadBind
 
 import Prettyprinter hiding (comma, space)
 
+import Data.Type.RList qualified as RL
 import Data.Parameterized.Some (Some(Some), mapSome)
 import Data.Parameterized.Context qualified as Ctx
 import Data.Parameterized.BoolRepr (BoolRepr(TrueRepr))
@@ -35,6 +40,8 @@ import Verifier.SAW.Heapster.Located
 import Verifier.SAW.Heapster.UntypedAST
 import Verifier.SAW.Heapster.ParsedCtx
 
+import Debug.Trace
+
 
 ----------------------------------------------------------------------
 -- * Type-checking environment
@@ -45,9 +52,6 @@ data TcEnv = TcEnv {
   tcEnvPermEnv :: PermEnv
 }
 
-lookupExprVar :: String -> TcEnv -> Maybe TypedName
-lookupExprVar str = lookup str . tcEnvExprVars
-
 mkTcEnv :: PermEnv -> TcEnv
 mkTcEnv = TcEnv []
 
@@ -56,13 +60,34 @@ mkTcEnv = TcEnv []
 ----------------------------------------------------------------------
 
 data TypeError = TypeError Pos String
+  deriving Show
 
-newtype Tc a = Tc (TcEnv -> Either TypeError a)
+$(mkNuMatching [t| TypeError |])
+instance Closable TypeError where
+  toClosed = unsafeClose
+instance Liftable TypeError where
+  mbLift = unClosed . mbLift . fmap toClosed
 
-instance Functor     Tc
-instance Applicative Tc
-instance Monad       Tc
-instance MonadBind   Tc
+newtype Tc a = Tc { runTc :: TcEnv -> Either TypeError a }
+
+instance Functor Tc where
+  fmap = liftM
+
+instance Applicative Tc where
+  pure x = Tc \_ -> Right x
+  (<*>) = ap
+
+instance Monad Tc where
+  Tc f >>= g = Tc \env ->
+    do x <- f env
+       runTc (g x) env
+
+instance MonadBind Tc where
+  mbM m = Tc \env ->
+    case fmap (`runTc` env) m of
+      [nuP| Left e  |] -> Left (mbLift e)
+      [nuP| Right x |] -> Right x
+      _ -> error "panic: MonadBind.Tc"
 
 tcLocal :: (TcEnv -> TcEnv) -> Tc a -> Tc a
 tcLocal f (Tc k) = Tc (k . f)
@@ -169,10 +194,15 @@ structAdd (Some acc@KnownReprObj) (Some x@KnownReprObj) =
 
 tcVar :: TypeRepr a -> Pos -> String -> Tc (ExprVar a)
 tcVar ty p name =
+  do Some tn <- tcTypedName p name
+     tcCastTyped p ty tn
+
+tcTypedName :: Pos -> String -> Tc TypedName
+tcTypedName p name =
   do env <- tcAsk
-     case lookupExprVar name env of
+     case lookup name (tcEnvExprVars env) of
        Nothing -> tcError p "unknown variable"
-       Just (Some tn) -> tcCastTyped p ty tn
+       Just stn -> pure stn
 
 tcExpr :: TypeRepr a -> AstExpr -> Tc (PermExpr a)
 tcExpr ty (ExVar p name Nothing Nothing) = PExpr_Var <$> tcVar ty p name
@@ -182,7 +212,8 @@ tcExpr tp@LLVMShapeRepr{} (ExVar p name (Just args) Nothing) =
      case lookupNamedShape (tcEnvPermEnv env) name of
        Just (SomeNamedShape _ arg_ctx mb_sh)
          | Just Refl <- testEquality (mbLift (fmap exprType mb_sh)) tp ->
-           do sub <- tcStructFields p arg_ctx args
+           do traceM (show name)
+              sub <- tcStructFields p arg_ctx args
               pure (subst (substOfExprs sub) mb_sh)
        Just (SomeNamedShape _ _ mb_sh) ->
          tcError p $ renderDoc $ sep
@@ -249,33 +280,30 @@ tcBV e             = tcBVFactor e
 tcBVFactor :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (BVType w))
 tcBVFactor (ExNat _ i) = pure (bvInt (fromIntegral i))
 tcBVFactor (ExMul _ (ExNat _ i) (ExVar p name Nothing Nothing)) =
-  do env <- tcAsk
-     case lookupExprVar name env of
-       Nothing -> tcError p "unknown variable"
-       Just (Some tn) -> bvMult i . PExpr_Var <$> tcCastTyped p knownRepr tn
+  do Some tn <- tcTypedName p name
+     bvMult i . PExpr_Var <$> tcCastTyped p knownRepr tn
 tcBVFactor (ExMul _ (ExVar p name Nothing Nothing) (ExNat _ i)) =
-  do env <- tcAsk
-     case lookupExprVar name env of
-       Nothing -> tcError p "unknown variable"
-       Just (Some tn) -> bvMult i . PExpr_Var <$> tcCastTyped p knownRepr tn
+  do Some tn <- tcTypedName p name
+     bvMult i . PExpr_Var <$> tcCastTyped p knownRepr tn
 tcBVFactor (ExVar p name Nothing Nothing) =
-  do env <- tcAsk
-     case lookupExprVar name env of
-       Nothing -> tcError p "unknown variable"
-       Just (Some tn) -> PExpr_Var <$> tcCastTyped p knownRepr tn
+  do Some tn <- tcTypedName p name
+     PExpr_Var <$> tcCastTyped p knownRepr tn
 tcBVFactor e = tcError (pos e) "expected bv factor"
 
 tcStruct :: CtxRepr fs -> AstExpr -> Tc (PermExpr (StructType fs))
-tcStruct ts (ExStruct p es) = PExpr_Struct <$> tcStructFields p (mkCruCtx ts) (reverse es)
+tcStruct ts (ExStruct p es) = PExpr_Struct <$> tcStructFields p (mkCruCtx ts) es
 tcStruct _ e = tcError (pos e) "expected struct type"
 
 tcStructFields :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
-tcStructFields _ CruCtxNil [] = pure PExprs_Nil
-tcStructFields p (CruCtxCons xs x) (y:ys) =
-  do zs <- tcStructFields p xs ys
+tcStructFields p tys es = tcStructFields' p tys (reverse es)
+
+tcStructFields' :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
+tcStructFields' _ CruCtxNil [] = pure PExprs_Nil
+tcStructFields' p (CruCtxCons xs x) (y:ys) =
+  do zs <- tcStructFields' p xs ys
      z  <- tcExpr x y
      pure (zs :>: z)
-tcStructFields p _ _ = tcError p "bad arity"
+tcStructFields' p _ _ = tcError p "bad arity"
 
 tcValuePerms :: Pos -> RAssign TypeRepr tys -> [AstExpr] -> Tc (RAssign ValuePerm tys)
 tcValuePerms p tys es = tcValuePerms' p tys (reverse es)
@@ -398,11 +426,22 @@ tcPointerAtomic (ExPtr p l rw off sz c) =
 tcPointerAtomic (ExArray _ x y z w) = Perm_LLVMArray <$> tcArrayAtomic x y z w
 tcPointerAtomic (ExMemblock _ l rw off len sh) = Perm_LLVMBlock <$> tcMemblock l rw off len sh
 tcPointerAtomic (ExFree      _ x  ) = Perm_LLVMFree <$> tcBV x
+tcPointerAtomic (ExLlvmFunPtr _ n w f) = tcFunPtrAtomic n w f
 tcPointerAtomic (ExEqual     _ x y) = Perm_BVProp <$> (BVProp_Eq   <$> tcBV x <*> tcBV y)
 tcPointerAtomic (ExNotEqual  _ x y) = Perm_BVProp <$> (BVProp_Neq  <$> tcBV x <*> tcBV y)
 tcPointerAtomic (ExLessThan  _ x y) = Perm_BVProp <$> (BVProp_ULt  <$> tcBV x <*> tcBV y)
 tcPointerAtomic (ExLessEqual _ x y) = Perm_BVProp <$> (BVProp_ULeq <$> tcBV x <*> tcBV y)
-tcPointerAtomic e = tcError (pos e) "expected atomic pointer perm"
+tcPointerAtomic e = tcError (pos e) ("expected atomic pointer perm, got: " ++ show e)
+
+tcFunPtrAtomic ::
+  (KnownNat w, 1 <= w) =>
+  AstExpr -> AstExpr -> AstFunPerm -> Tc (AtomicPerm (LLVMPointerType w))
+tcFunPtrAtomic x y fun =
+  do Some args_no <- mkNatRepr <$> tcNatural x
+     Some (Pair w' LeqProof) <- tcPositive y
+     Some args <- pure (cruCtxReplicate args_no (LLVMPointerRepr w'))
+     SomeFunPerm fun_perm <- tcFunPerm args (LLVMPointerRepr w') fun
+     pure (mkPermLLVMFunPtr knownNat fun_perm)
 
 tcMemblock ::
   (KnownNat w, 1 <= w) =>
@@ -462,10 +501,7 @@ tcLifetimeAtomic e = tcError (pos e) "expected liftime atomic perm"
 tcLOwnedPerms :: [(String,AstExpr)] -> Tc (Some LOwnedPerms)
 tcLOwnedPerms [] = pure (Some MNil)
 tcLOwnedPerms ((n,e):xs) =
-  do env <- tcAsk
-     Some (Typed tp x) <- case lookupExprVar n env of
-                            Nothing -> tcError (pos e) "unknown variable"
-                            Just x -> pure x
+  do Some (Typed tp x) <- tcTypedName (pos e) n
      p <- tcValPerm tp e
      lop <- case varAndPermLOwnedPerm (VarAndPerm x p) of
               Just lop -> return lop
@@ -491,3 +527,79 @@ tcPositive e =
 tcCtx :: [(String, AstType)] -> Tc (Some ParsedCtx)
 tcCtx []         = pure (Some emptyParsedCtx)
 tcCtx ((n,t):xs) = preconsSomeParsedCtx n <$> tcType t <*> tcCtx xs
+
+tcSortedValuePerms ::
+  VarPermSpecs ctx -> [(String, AstExpr)] -> Tc (ValuePerms ctx)
+tcSortedValuePerms var_specs [] = pure (varSpecsToPerms var_specs)
+tcSortedValuePerms var_specs ((var, x):xs) =
+  do Some (Typed tp n) <- tcTypedName (pos x) var
+     p <- tcValPerm tp x
+     var_specs' <- tcSetVarSpecs (pos x) var n p var_specs
+     tcSortedValuePerms var_specs' xs
+
+tcSortedMbValuePerms ::
+  ParsedCtx ctx -> [(String, AstExpr)] -> Tc (MbValuePerms ctx)
+tcSortedMbValuePerms ctx perms =
+  inParsedCtxM ctx $ \ns ->
+  tcSortedValuePerms (mkVarPermSpecs ns) perms
+
+tcFunPerm :: CruCtx args -> TypeRepr ret -> AstFunPerm -> Tc (SomeFunPerm args ret)
+tcFunPerm args ret (AstFunPerm _ untyCtx ins outs) =
+  do Some ghosts_ctx@(ParsedCtx _ ghosts) <- tcCtx untyCtx
+     let args_ctx = mkArgsParsedCtx args
+         ghosts_args_ctx = appendParsedCtx ghosts_ctx args_ctx
+     perms_in  <- tcSortedMbValuePerms ghosts_args_ctx ins
+     perms_out <- tcSortedMbValuePerms (consParsedCtx "ret" ret ghosts_args_ctx) outs
+     pure (SomeFunPerm (FunPerm ghosts args ret perms_in perms_out))
+
+-- | Helper type for 'parseValuePerms' that represents whether a pair @x:p@ has
+-- been parsed yet for a specific variable @x@ and, if so, contains that @p@
+data VarPermSpec a = VarPermSpec (Name a) (Maybe (ValuePerm a))
+
+-- | A sequence of variables @x@ and what pairs @x:p@ have been parsed so far
+type VarPermSpecs = RAssign VarPermSpec
+
+-- | Build a 'VarPermSpecs' from a list of names
+mkVarPermSpecs :: RAssign Name ctx -> VarPermSpecs ctx
+mkVarPermSpecs = RL.map (\n -> VarPermSpec n Nothing)
+
+-- | Find a 'VarPermSpec' for a particular variable
+findVarPermSpec :: Name (a :: CrucibleType) ->
+                   VarPermSpecs ctx -> Maybe (Member ctx a)
+findVarPermSpec _ MNil = Nothing
+findVarPermSpec n (_ :>: VarPermSpec n' _)
+  | Just Refl <- testEquality n n'
+  = Just Member_Base
+findVarPermSpec n (specs :>: _) = Member_Step <$> findVarPermSpec n specs
+
+-- | Try to set the permission for a variable in a 'VarPermSpecs' list, raising
+-- a parse error if the variable already has a permission or is one of the
+-- expected variables
+tcSetVarSpecs ::
+  Pos -> String -> Name tp -> ValuePerm tp -> VarPermSpecs ctx ->
+  Tc (VarPermSpecs ctx)
+tcSetVarSpecs p var n perm var_specs =
+  case findVarPermSpec n var_specs of
+    Nothing -> tcError p ("Unknown variable: " ++ var)
+    Just memb ->
+      case RL.get memb var_specs of
+        VarPermSpec _ Nothing ->
+          pure (RL.modify memb (const (VarPermSpec n (Just perm))) var_specs)
+        _ -> tcError p ("Variable " ++ var ++ " occurs more than once!")
+
+-- | Convert a 'VarPermSpecs' sequence to a sequence of permissions, using the
+-- @true@ permission for any variables without permissions
+varSpecsToPerms :: VarPermSpecs ctx -> ValuePerms ctx
+varSpecsToPerms MNil = ValPerms_Nil
+varSpecsToPerms (var_specs :>: VarPermSpec _ (Just p)) =
+  ValPerms_Cons (varSpecsToPerms var_specs) p
+varSpecsToPerms (var_specs :>: VarPermSpec _ Nothing) =
+  ValPerms_Cons (varSpecsToPerms var_specs) ValPerm_True
+
+-- | Run a parsing computation inside a name-binding for expressions variables
+-- given by a 'ParsedCtx'. Returning the results inside a name-binding.
+inParsedCtxM ::
+  NuMatching a =>
+  ParsedCtx ctx -> (RAssign Name ctx -> Tc a) -> Tc (Mb ctx a)
+inParsedCtxM (ParsedCtx ids tps) f =
+  mbM (nuMulti (cruCtxProxies tps) \ns -> withExprVars ids tps ns (f ns))

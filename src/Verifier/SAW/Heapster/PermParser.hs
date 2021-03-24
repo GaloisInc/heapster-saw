@@ -53,6 +53,10 @@ import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
 import Verifier.SAW.Heapster.RustTypes
 
+import Verifier.SAW.Heapster.Lexer (lexer)
+import Verifier.SAW.Heapster.Parser (parseFunPerm)
+import Verifier.SAW.Heapster.TypeChecker (runTc, mkTcEnv, tcFunPerm)
+
 
 -- FIXME: maybe some of these should use unsafeMbTypeRepr for efficiency?
 $(mkNuMatching [t| SourcePos |])
@@ -1101,6 +1105,14 @@ runPermParseM obj env m str =
     Left err -> Fail.fail ("Error parsing " ++ obj ++ ": " ++ show err)
     Right a -> return a
 
+runNewParser obj env parser checker str =
+  case parser (lexer str) of
+    Left e -> fail ("Error parsing " ++ obj ++ ": " ++ show e)
+    Right ast ->
+      case runTc (checker ast) (mkTcEnv env) of
+        Left e -> fail ("Error checking " ++ obj ++ ": " ++ show e)
+        Right x -> pure x
+
 -- | Parse a permission set @x1:p1, x2:p2, ...@ for the variables in the
 -- supplied context
 parsePermsString :: MonadFail m => String -> PermEnv -> ParsedCtx ctx ->
@@ -1126,7 +1138,8 @@ parseAtomicPermsInCtxString nm env ctx tp =
 parseFunPermString :: MonadFail m => String -> PermEnv -> CruCtx args ->
                       TypeRepr ret -> String -> m (SomeFunPerm args ret)
 parseFunPermString nm env args ret str =
-  runPermParseM nm env (parseFunPermM args ret) str
+  -- runPermParseM nm env (parseFunPermM args ret) str
+  runNewParser nm env parseFunPerm (tcFunPerm args ret) str
 
 -- | Parse a type context @x1:tp1, x2:tp2, ...@ named by the first 'String' from
 -- the second 'String' and return a 'ParsedCtx', which contains both the

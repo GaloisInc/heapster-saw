@@ -120,7 +120,7 @@ astExpr ::                                      { AstExpr }
   | astExpr '+' astExpr                         { ExAdd (pos $2) $1 $3 }
   | astExpr '*' astExpr                         { ExMul (pos $2) $1 $3 }
   | 'R'                                         { ExRead (pos $1) }
-  | 'W'                                         { ExRead (pos $1) }
+  | 'W'                                         { ExWrite (pos $1) }
   | 'struct' '(' list(astExpr) ')'              { ExStruct (pos $1) $3 }
   | 'llvmword' '(' astExpr ')'                  { ExLlvmWord (pos $1) $3 }
 
@@ -186,9 +186,9 @@ permOffset ::                                   { Maybe AstExpr         }
   | '@' NAT                                     { Just (ExNat (pos $2) (locThing $2)) }
   | '@' IDENT                                   { Just (ExVar (pos $2) (locThing $2) Nothing Nothing) }
 
-funPerm ::                                      { FunPerm }
+funPerm ::                                      { AstFunPerm }
   : '(' ctx ')' '.' funPermList '-o' funPermList
-                                                { FunPerm (pos $6) $2 $5 $7 }
+                                                { AstFunPerm (pos $6) $2 $5 $7 }
 
 funPermList ::                                  { [(String, AstExpr)]   }
   : 'empty'                                     { []                    }
