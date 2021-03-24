@@ -241,6 +241,21 @@ tcExpr tp@LLVMShapeRepr{} (ExVar p name (Just args) Nothing) =
            permPretty emptyPPInfo (mbLift (fmap exprType mb_sh)) ]
        Nothing -> tcError p ("Unknown shape name: " ++ name)
 
+tcExpr tp@(ValuePermRepr sub_tp) (ExVar p name (Just args) Nothing) =
+  do env <- tcAsk
+     case lookupNamedPermName (tcEnvPermEnv env) name of
+       Just (SomeNamedPermName npn)
+         | Just Refl <- testEquality (namedPermNameType npn) sub_tp ->
+           do arg_exprs <- tcExprs p (namedPermNameArgs npn) args
+              pure (PExpr_ValPerm $ ValPerm_Named npn arg_exprs NoPermOffset)
+       Just (SomeNamedPermName npn) ->
+         tcError p $ renderDoc $ sep
+         [ pretty "Named permission" <+> pretty (namedPermNameName npn) <+>
+           pretty "is of incorrect type"
+         , pretty "Expected:" <+> permPretty emptyPPInfo tp
+         , pretty "Found:" <+> permPretty emptyPPInfo (namedPermNameType npn) ]
+       Nothing -> tcError p ("Unknown shape name: " ++ name)
+
 tcExpr _ (ExVar p _ Just{} _) = tcError p "Unexpected variable instantiation"
 tcExpr _ (ExVar p _ _ Just{}) = tcError p "Unexpected variable offset"
 
