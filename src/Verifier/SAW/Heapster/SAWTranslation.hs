@@ -3321,7 +3321,7 @@ instance ImplTranslateF (LocalImplRet ps) ext blocks ps_in ret where
 translateLocalPermImpl :: String -> Mb ctx (LocalPermImpl ps_in ps_out) ->
                           ImpTransM ext blocks tops ret ps_in ctx OpenTerm
 translateLocalPermImpl err [nuP| LocalPermImpl impl |] =
-  translate $ fmap (AnnotPermImpl err) impl
+  clearVarPermsM $ translate $ fmap (AnnotPermImpl err) impl
 
 -- | Translate a local implication over two sequences of permissions (already
 -- translated to types) to a monadic function with the first sequence of
