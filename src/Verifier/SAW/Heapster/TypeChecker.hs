@@ -1,5 +1,6 @@
 {-# Language GADTs #-}
 {-# Language RecordWildCards #-}
+{-# Language FlexibleContexts #-}
 {-# Language LambdaCase #-}
 {-# Language BlockArguments #-}
 {-# Language RankNTypes #-}
@@ -23,6 +24,7 @@ module Verifier.SAW.Heapster.TypeChecker (
   tcCtx,
   tcType,
   tcExpr,
+  tcValPerm,
   inParsedCtxM,
   tcAtomicPerms,
   tcValPermInCtx,
@@ -217,6 +219,9 @@ tcTypedName p name =
        Nothing -> tcError p "unknown variable"
        Just stn -> pure stn
 
+tcKExpr :: KnownRepr TypeRepr a => AstExpr -> Tc (PermExpr a)
+tcKExpr = tcExpr knownRepr
+
 tcExpr :: TypeRepr a -> AstExpr -> Tc (PermExpr a)
 tcExpr ty (ExVar p name Nothing Nothing) = PExpr_Var <$> tcVar ty p name
 
@@ -225,7 +230,7 @@ tcExpr tp@LLVMShapeRepr{} (ExVar p name (Just args) Nothing) =
      case lookupNamedShape (tcEnvPermEnv env) name of
        Just (SomeNamedShape _ arg_ctx mb_sh)
          | Just Refl <- testEquality (mbLift (fmap exprType mb_sh)) tp ->
-           do sub <- tcStructFields p arg_ctx args
+           do sub <- tcExprs p arg_ctx args
               pure (subst (substOfExprs sub) mb_sh)
        Just (SomeNamedShape _ _ mb_sh) ->
          tcError p $ renderDoc $ sep
@@ -244,7 +249,7 @@ tcExpr _ (ExVar p _ _ Just{}) = tcError p "Unexpected variable offset"
 
 tcExpr UnitRepr         e = tcUnit e
 tcExpr NatRepr          e = tcNat e
-tcExpr (BVRepr w)       e = withKnownNat w (tcBV e)
+tcExpr (BVRepr w)       e = withKnownNat w (normalizeBVExpr <$> tcBV e)
 tcExpr (StructRepr fs)  e = tcStruct fs e
 tcExpr LifetimeRepr     e = tcLifetime e
 tcExpr (LLVMPointerRepr w) e = withKnownNat w (tcLLVMPointer w e)
@@ -306,19 +311,19 @@ tcBVFactor (ExVar p name Nothing Nothing) =
 tcBVFactor e = tcError (pos e) "expected bv factor"
 
 tcStruct :: CtxRepr fs -> AstExpr -> Tc (PermExpr (StructType fs))
-tcStruct ts (ExStruct p es) = PExpr_Struct <$> tcStructFields p (mkCruCtx ts) es
+tcStruct ts (ExStruct p es) = PExpr_Struct <$> tcExprs p (mkCruCtx ts) es
 tcStruct _ e = tcError (pos e) "expected struct type"
 
-tcStructFields :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
-tcStructFields p tys es = tcStructFields' p tys (reverse es)
+tcExprs :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
+tcExprs p tys es = tcExprs' p tys (reverse es)
 
-tcStructFields' :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
-tcStructFields' _ CruCtxNil [] = pure PExprs_Nil
-tcStructFields' p (CruCtxCons xs x) (y:ys) =
-  do zs <- tcStructFields' p xs ys
+tcExprs' :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
+tcExprs' _ CruCtxNil [] = pure PExprs_Nil
+tcExprs' p (CruCtxCons xs x) (y:ys) =
+  do zs <- tcExprs' p xs ys
      z  <- tcExpr x y
      pure (zs :>: z)
-tcStructFields' p _ _ = tcError p "bad arity"
+tcExprs' p _ _ = tcError p "bad arity"
 
 tcValuePerms :: Pos -> RAssign TypeRepr tys -> [AstExpr] -> Tc (RAssign ValuePerm tys)
 tcValuePerms p tys es = tcValuePerms' p tys (reverse es)
@@ -341,19 +346,19 @@ tcLifetime ExAlways{} = pure PExpr_Always
 tcLifetime e          = tcError (pos e) "expected lifetime"
 
 tcLLVMShape :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (LLVMShapeType w))
-tcLLVMShape (ExOrSh _ x y) = PExpr_OrShape <$> tcExpr knownRepr x <*> tcExpr knownRepr y
-tcLLVMShape (ExSeqSh _ x y) = PExpr_SeqShape <$> tcExpr knownRepr x <*> tcExpr knownRepr y
+tcLLVMShape (ExOrSh _ x y) = PExpr_OrShape <$> tcKExpr x <*> tcKExpr y
+tcLLVMShape (ExSeqSh _ x y) = PExpr_SeqShape <$> tcKExpr x <*> tcKExpr y
 tcLLVMShape ExEmptySh{} = pure PExpr_EmptyShape
-tcLLVMShape (ExEqSh _ v) = PExpr_EqShape <$> tcExpr knownRepr v
+tcLLVMShape (ExEqSh _ v) = PExpr_EqShape <$> tcKExpr v
 tcLLVMShape (ExPtrSh _ maybe_l maybe_rw sh) =
   PExpr_PtrShape
-  <$> traverse (tcExpr knownRepr) maybe_l
-  <*> traverse (tcExpr knownRepr) maybe_rw
-  <*> tcExpr knownRepr sh
+  <$> traverse tcKExpr maybe_l
+  <*> traverse tcKExpr maybe_rw
+  <*> tcKExpr sh
 tcLLVMShape (ExFieldSh _ w fld) = PExpr_FieldShape <$> tcLLVMFieldShape_ w fld
 tcLLVMShape (ExArraySh _ len stride flds) =
   PExpr_ArrayShape
-  <$> tcExpr knownRepr len
+  <$> tcKExpr len
   <*> (Bytes . fromIntegral <$> tcNatural stride)
   <*> traverse (uncurry tcLLVMFieldShape_) flds
 tcLLVMShape e = tcError (pos e) "expected llvmshape"
@@ -372,8 +377,8 @@ tcLLVMFieldShape ::
 tcLLVMFieldShape nr e = LLVMFieldShape <$> tcValPerm (LLVMPointerRepr nr) e
 
 tcLLVMPointer :: (KnownNat w, 1 <= w) => NatRepr w -> AstExpr -> Tc (PermExpr (LLVMPointerType w))
-tcLLVMPointer _ (ExLlvmWord _ e) = PExpr_LLVMWord <$> tcBV e
-tcLLVMPointer w (ExAdd _ (ExVar p name Nothing Nothing) off) = PExpr_LLVMOffset <$> tcVar (LLVMPointerRepr w) p name <*> tcBV off
+tcLLVMPointer _ (ExLlvmWord _ e) = PExpr_LLVMWord <$> tcKExpr e
+tcLLVMPointer w (ExAdd _ (ExVar p name Nothing Nothing) off) = PExpr_LLVMOffset <$> tcVar (LLVMPointerRepr w) p name <*> tcKExpr off
 tcLLVMPointer _ e = tcError (pos e) "expected llvmpointer"
 
 -- | Check a value permission of a known type in a given context
@@ -393,7 +398,7 @@ tcValPerm ty (ExVar p n (Just argEs) maybe_off) =
      case lookupNamedPermName env n of
        Just (SomeNamedPermName rpn)
          | Just Refl <- testEquality (namedPermNameType rpn) ty ->
-           do args <- tcStructFields p (namedPermNameArgs rpn) argEs
+           do args <- tcExprs p (namedPermNameArgs rpn) argEs
               off <- tcPermOffset ty p maybe_off
               pure (ValPerm_Named rpn args off)
        Just (SomeNamedPermName rpn) ->
@@ -421,7 +426,7 @@ tcAtomicPerm ty (ExVar p n (Just argEs) maybe_off) =
        Just (SomeNamedPermName npn)
          | Just Refl <- testEquality (namedPermNameType npn) ty
          , TrueRepr <- nameIsConjRepr npn ->
-             do args <- tcStructFields p (namedPermNameArgs npn) argEs
+             do args <- tcExprs p (namedPermNameArgs npn) argEs
                 off <- tcPermOffset ty p maybe_off
                 return (Perm_NamedConj npn args off)
        Just (SomeNamedPermName npn)
@@ -445,22 +450,22 @@ tcPointerAtomic (ExPtr p l rw off sz c) =
   llvmArrayFieldToAtomicPerm <$> tcArrayPerm (ArrayPerm p l rw off sz c)
 tcPointerAtomic (ExArray _ x y z w) = Perm_LLVMArray <$> tcArrayAtomic x y z w
 tcPointerAtomic (ExMemblock _ l rw off len sh) = Perm_LLVMBlock <$> tcMemblock l rw off len sh
-tcPointerAtomic (ExFree      _ x  ) = Perm_LLVMFree <$> tcBV x
+tcPointerAtomic (ExFree      _ x  ) = Perm_LLVMFree <$> tcKExpr x
 tcPointerAtomic (ExLlvmFunPtr _ n w f) = tcFunPtrAtomic n w f
-tcPointerAtomic (ExEqual     _ x y) = Perm_BVProp <$> (BVProp_Eq   <$> tcBV x <*> tcBV y)
-tcPointerAtomic (ExNotEqual  _ x y) = Perm_BVProp <$> (BVProp_Neq  <$> tcBV x <*> tcBV y)
-tcPointerAtomic (ExLessThan  _ x y) = Perm_BVProp <$> (BVProp_ULt  <$> tcBV x <*> tcBV y)
-tcPointerAtomic (ExLessEqual _ x y) = Perm_BVProp <$> (BVProp_ULeq <$> tcBV x <*> tcBV y)
+tcPointerAtomic (ExEqual     _ x y) = Perm_BVProp <$> (BVProp_Eq   <$> tcKExpr x <*> tcKExpr y)
+tcPointerAtomic (ExNotEqual  _ x y) = Perm_BVProp <$> (BVProp_Neq  <$> tcKExpr x <*> tcKExpr y)
+tcPointerAtomic (ExLessThan  _ x y) = Perm_BVProp <$> (BVProp_ULt  <$> tcKExpr x <*> tcKExpr y)
+tcPointerAtomic (ExLessEqual _ x y) = Perm_BVProp <$> (BVProp_ULeq <$> tcKExpr x <*> tcKExpr y)
 tcPointerAtomic e = tcError (pos e) ("expected atomic pointer perm, got: " ++ show e)
 
 tcFunPtrAtomic ::
   (KnownNat w, 1 <= w) =>
   AstExpr -> AstExpr -> AstFunPerm -> Tc (AtomicPerm (LLVMPointerType w))
 tcFunPtrAtomic x y fun =
-  do Some args_no <- mkNatRepr <$> tcNatural x
+  do Some args_no            <- mkNatRepr <$> tcNatural x
      Some (Pair w' LeqProof) <- tcPositive y
-     Some args <- pure (cruCtxReplicate args_no (LLVMPointerRepr w'))
-     SomeFunPerm fun_perm <- tcFunPerm args (LLVMPointerRepr w') fun
+     Some args               <- pure (cruCtxReplicate args_no (LLVMPointerRepr w'))
+     SomeFunPerm fun_perm    <- tcFunPerm args (LLVMPointerRepr w') fun
      pure (mkPermLLVMFunPtr knownNat fun_perm)
 
 tcMemblock ::
@@ -468,28 +473,28 @@ tcMemblock ::
   Maybe AstExpr ->
   AstExpr -> AstExpr -> AstExpr -> AstExpr -> Tc (LLVMBlockPerm w)
 tcMemblock l rw off len sh =
-  do llvmBlockLifetime <- maybe (pure PExpr_Always) (tcExpr knownRepr) l
-     llvmBlockRW       <- tcExpr knownRepr rw
-     llvmBlockOffset   <- tcBV off
-     llvmBlockLen      <- tcBV len
-     llvmBlockShape    <- tcExpr knownRepr sh
+  do llvmBlockLifetime <- maybe (pure PExpr_Always) tcKExpr l
+     llvmBlockRW       <- tcKExpr rw
+     llvmBlockOffset   <- tcKExpr off
+     llvmBlockLen      <- tcKExpr len
+     llvmBlockShape    <- tcKExpr sh
      pure LLVMBlockPerm{..}
 
 tcArrayAtomic ::
   (KnownNat w, 1 <= w) => AstExpr -> AstExpr -> AstExpr -> [ArrayPerm] -> Tc (LLVMArrayPerm w)
 tcArrayAtomic off len stride fields =
   LLVMArrayPerm
-  <$> tcBV off
-  <*> tcBV len
+  <$> tcKExpr off
+  <*> tcKExpr len
   <*> (Bytes . fromIntegral <$> tcNatural stride)
   <*> traverse tcArrayPerm fields
   <*> pure []
 
 tcArrayPerm :: forall w. (KnownNat w, 1 <= w) => ArrayPerm -> Tc (LLVMArrayField w)
 tcArrayPerm (ArrayPerm _ l rw off sz c) =
-  do llvmFieldLifetime <- maybe (pure PExpr_Always) (tcExpr LifetimeRepr) l
+  do llvmFieldLifetime <- maybe (pure PExpr_Always) tcKExpr l
      llvmFieldRW <- tcExpr RWModalityRepr rw
-     llvmFieldOffset <- tcBV off :: Tc (PermExpr (BVType w))
+     llvmFieldOffset <- tcKExpr off :: Tc (PermExpr (BVType w))
      Some (Pair w LeqProof) <- maybe (pure (Some (Pair (knownNat :: NatRepr w) LeqProof)))
                                tcPositive sz
      withKnownNat w do
@@ -498,7 +503,7 @@ tcArrayPerm (ArrayPerm _ l rw off sz c) =
 
 tcFrameAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMFrameType w))
 tcFrameAtomic (ExLlvmFrame _ xs) =
-  Perm_LLVMFrame <$> traverse (\(e,i) -> (,) <$> tcExpr knownRepr e <*> pure (fromIntegral i)) xs
+  Perm_LLVMFrame <$> traverse (\(e,i) -> (,) <$> tcKExpr e <*> pure (fromIntegral i)) xs
 tcFrameAtomic e = tcError (pos e) "expected atomic llvmframe"
 
 tcStructAtomic :: CtxRepr tys -> AstExpr -> Tc (AtomicPerm (StructType tys))
@@ -506,7 +511,7 @@ tcStructAtomic tys (ExStruct p es) = Perm_Struct <$> tcValuePerms p (assignToRLi
 tcStructAtomic _ e = tcError (pos e) "expected atomic struct perm"
 
 tcBlockAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMBlockType w))
-tcBlockAtomic (ExShape _ e) = Perm_LLVMBlockShape <$> tcExpr knownRepr e
+tcBlockAtomic (ExShape _ e) = Perm_LLVMBlockShape <$> tcKExpr e
 tcBlockAtomic e = tcError (pos e) "expected llvmblock atomicperm"
 
 tcLifetimeAtomic :: AstExpr -> Tc (AtomicPerm LifetimeType)
@@ -515,7 +520,7 @@ tcLifetimeAtomic (ExLOwned _ x y) =
      Some y' <- tcLOwnedPerms y
      pure (Perm_LOwned x' y')
 tcLifetimeAtomic (ExLCurrent _ l) =
-  Perm_LCurrent <$> maybe (pure PExpr_Always) (tcExpr knownRepr) l
+  Perm_LCurrent <$> maybe (pure PExpr_Always) tcKExpr l
 tcLifetimeAtomic e = tcError (pos e) "expected liftime atomic perm"
 
 tcLOwnedPerms :: [(String,AstExpr)] -> Tc (Some LOwnedPerms)
@@ -532,7 +537,7 @@ tcLOwnedPerms ((n,e):xs) =
 
 tcPermOffset :: TypeRepr a -> Pos -> Maybe AstExpr -> Tc (PermOffset a)
 tcPermOffset _ _ Nothing = pure NoPermOffset
-tcPermOffset (LLVMPointerRepr w) _ (Just i) = withKnownNat w (LLVMPermOffset <$> tcBV i)
+tcPermOffset (LLVMPointerRepr w) _ (Just i) = withKnownNat w (LLVMPermOffset <$> tcKExpr i)
 tcPermOffset _ p _ = tcError p "Unexpected variable offset"
 
 tcNatural :: AstExpr -> Tc Natural
@@ -553,14 +558,14 @@ tcSortedValuePerms ::
 tcSortedValuePerms var_specs [] = pure (varSpecsToPerms var_specs)
 tcSortedValuePerms var_specs ((var, x):xs) =
   do Some (Typed tp n) <- tcTypedName (pos x) var
-     p <- tcValPerm tp x
-     var_specs' <- tcSetVarSpecs (pos x) var n p var_specs
+     p                 <- tcValPerm tp x
+     var_specs'        <- tcSetVarSpecs (pos x) var n p var_specs
      tcSortedValuePerms var_specs' xs
 
 tcSortedMbValuePerms ::
   ParsedCtx ctx -> [(String, AstExpr)] -> Tc (MbValuePerms ctx)
 tcSortedMbValuePerms ctx perms =
-  inParsedCtxM ctx $ \ns ->
+  inParsedCtxM ctx \ns ->
   tcSortedValuePerms (mkVarPermSpecs ns) perms
 
 tcFunPerm :: CruCtx args -> TypeRepr ret -> AstFunPerm -> Tc (SomeFunPerm args ret)

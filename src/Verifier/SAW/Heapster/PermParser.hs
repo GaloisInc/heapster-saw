@@ -20,8 +20,6 @@ import Data.List
 import GHC.TypeLits
 import Data.Binding.Hobbits
 
-import Prettyprinter hiding (comma, space)
-
 import Data.Parameterized.Some
 import Data.Parameterized.TraversableF
 
@@ -35,8 +33,8 @@ import Verifier.SAW.Heapster.Lexer (lexer)
 import Verifier.SAW.Heapster.Located (Pos(..), Located(..))
 import Verifier.SAW.Heapster.Token (Token(TEndOfInput), describeToken)
 import Verifier.SAW.Heapster.Parser (parseFunPerm, parseCtx, parseType, parseExpr, parseValuePerms)
-import Verifier.SAW.Heapster.TypeChecker (Tc, TypeError(..), startTc, tcFunPerm, tcCtx, tcType, tcExpr, inParsedCtxM, tcAtomicPerms, tcValPermInCtx, tcSortedMbValuePerms)
-import Verifier.SAW.Heapster.ParsedCtx
+import Verifier.SAW.Heapster.TypeChecker (Tc, TypeError(..), startTc, tcFunPerm, tcCtx, tcType, tcExpr, inParsedCtxM, tcAtomicPerms, tcSortedMbValuePerms, tcValPerm)
+import Verifier.SAW.Heapster.ParsedCtx (ParsedCtx, parsedCtxCtx)
 
 ----------------------------------------------------------------------
 -- * Top-level Entrypoints for Parsing Things
@@ -74,6 +72,7 @@ runParser obj env parser checker str =
             ]
         Right x -> pure x
 
+-- | Human-readable rendering of error location
 renderPos :: Pos -> String
 renderPos p = "line " ++ show (posLine p) ++ " column " ++ show (posCol p)
 
@@ -83,6 +82,7 @@ point p str =
   lines str !! (posLine p - 1) ++ "\n" ++
   Data.List.replicate (posCol p - 1) ' ' ++ "^"
 
+-- | Point to the end of the file
 pointEnd :: String -> String
 pointEnd "" = "<<empty input>>"
 pointEnd str = end ++ "\n" ++ (' ' <$ end) ++ "^"
@@ -101,7 +101,7 @@ parsePermsString nm env ctx =
 parsePermInCtxString :: MonadFail m => String -> PermEnv -> ParsedCtx ctx ->
                         TypeRepr a -> String -> m (Mb ctx (ValuePerm a))
 parsePermInCtxString nm env ctx tp =
-  runParser nm env parseExpr (tcValPermInCtx ctx tp)
+  runParser nm env parseExpr (inParsedCtxM ctx . const . tcValPerm tp)
 
 -- | Parse a sequence of atomic permissions within the given context and with
 -- the given named permission variables in scope

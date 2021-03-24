@@ -21,7 +21,6 @@ import Verifier.SAW.Heapster.UntypedAST
 '<'             { Located $$ TOpenAngle                 }
 '>'             { Located $$ TCloseAngle                }
 ':'             { Located $$ TColon                     }
-'::'            { Located $$ TDoubleColon               }
 ';'             { Located $$ TSemicolon                 }
 '.'             { Located $$ TDot                       }
 ','             { Located $$ TComma                     }

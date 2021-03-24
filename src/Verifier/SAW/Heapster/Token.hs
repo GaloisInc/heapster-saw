@@ -17,7 +17,6 @@ data Token
   | TOpenAngle
   | TCloseAngle
   | TColon
-  | TDoubleColon
   | TSemicolon
   | TDot
   | TComma
@@ -93,7 +92,6 @@ describeToken t =
     TOpenAngle          -> "'<'"
     TCloseAngle         -> "'>'"
     TColon              -> "':'"
-    TDoubleColon        -> "'::'"
     TDot                -> "'.'"
     TComma              -> "','"
     TSemicolon          -> "';'"
@@ -145,5 +143,5 @@ describeToken t =
     TW                  -> "keyword 'W'"
     TIdent  ident       -> "identifier " ++ ident
     TNatLit n           -> "literal " ++ show n
-    TError  str         -> "lexical error"
+    TError  _           -> "lexical error"
     TEndOfInput         -> "end of input"

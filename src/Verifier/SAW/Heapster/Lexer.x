@@ -1,8 +1,8 @@
 {
 module Verifier.SAW.Heapster.Lexer (lexer) where
 
-import Verifier.SAW.Heapster.Located
-import Verifier.SAW.Heapster.Token
+import Verifier.SAW.Heapster.Located (Located(..), Pos(..))
+import Verifier.SAW.Heapster.Token (Token(..))
 
 }
 
@@ -23,7 +23,6 @@ $white+                         ;
 "<"                             { token_ TOpenAngle     }
 ">"                             { token_ TCloseAngle    }
 ":"                             { token_ TColon         }
-"::"                            { token_ TDoubleColon   }
 ";"                             { token_ TSemicolon     }
 "."                             { token_ TDot           }
 ","                             { token_ TComma         }
