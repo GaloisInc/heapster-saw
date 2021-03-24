@@ -81,7 +81,8 @@ NAT             { (traverse tokenNat   -> Just $$)      }
 %name parseCtx          ctx
 %name parseType         astType
 %name parseFunPerm      funPerm
-%name parseAstExpr      astExpr
+%name parseExpr         astExpr
+%name parseValuePerms   funPermList
 
 %right    '.'
 %left     'orsh'
@@ -224,5 +225,5 @@ list1R(p) ::                                    { [p]                   }
 {
 errorP :: [Located Token] -> Either (Located Token) a
 errorP (t:_) = Left t
-errorP _ = error "Unexpected end of file" -- XXX
+errorP []    = Left (Located (Pos 0 0 0) TEndOfInput)
 }

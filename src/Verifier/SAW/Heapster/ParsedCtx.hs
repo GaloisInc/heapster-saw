@@ -37,6 +37,11 @@ consParsedCtx x tp (ParsedCtx xs ctx) =
 emptyParsedCtx :: ParsedCtx RNil
 emptyParsedCtx = ParsedCtx MNil CruCtxNil
 
+-- | A 'ParsedCtx' with a single element
+singletonParsedCtx :: String -> TypeRepr tp -> ParsedCtx (RNil :> tp)
+singletonParsedCtx x tp =
+  ParsedCtx (MNil :>: Constant x) (CruCtxCons CruCtxNil tp)
+
 -- | Append two 'ParsedCtx's
 appendParsedCtx :: ParsedCtx ctx1 -> ParsedCtx ctx2 ->
                    ParsedCtx (ctx1 :++: ctx2)

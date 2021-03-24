@@ -12,7 +12,22 @@
 {-# Language ScopedTypeVariables #-}
 {-# Language KindSignatures #-}
 {-# Options_GHC -Wno-unused-foralls #-}
-module Verifier.SAW.Heapster.TypeChecker where
+module Verifier.SAW.Heapster.TypeChecker (
+  -- * Checker type
+  Tc, startTc,
+
+  -- * Checker errors
+  TypeError(..),
+
+  tcFunPerm,
+  tcCtx,
+  tcType,
+  tcExpr,
+  inParsedCtxM,
+  tcAtomicPerms,
+  tcValPermInCtx,
+  tcSortedMbValuePerms,
+  ) where
 
 import Control.Monad
 import Data.Functor.Product
@@ -40,9 +55,6 @@ import Verifier.SAW.Heapster.Located
 import Verifier.SAW.Heapster.UntypedAST
 import Verifier.SAW.Heapster.ParsedCtx
 
-import Debug.Trace
-
-
 ----------------------------------------------------------------------
 -- * Type-checking environment
 ----------------------------------------------------------------------
@@ -52,9 +64,6 @@ data TcEnv = TcEnv {
   tcEnvPermEnv :: PermEnv
 }
 
-mkTcEnv :: PermEnv -> TcEnv
-mkTcEnv = TcEnv []
-
 ----------------------------------------------------------------------
 -- * Type-checking type
 ----------------------------------------------------------------------
@@ -63,12 +72,16 @@ data TypeError = TypeError Pos String
   deriving Show
 
 $(mkNuMatching [t| TypeError |])
+
 instance Closable TypeError where
   toClosed = unsafeClose
 instance Liftable TypeError where
   mbLift = unClosed . mbLift . fmap toClosed
 
 newtype Tc a = Tc { runTc :: TcEnv -> Either TypeError a }
+
+startTc :: Tc a -> PermEnv -> Either TypeError a
+startTc tc env = runTc tc (TcEnv [] env)
 
 instance Functor Tc where
   fmap = liftM
@@ -160,7 +173,7 @@ tcTypeKnown t =
         pure (Some (mkKnownReprObj (BVRepr w)))
     TyLlvmPtr p n ->
       withPositive p "Zero LLVM Ptr width not allowed" n \w ->
-        pure (Some (mkKnownReprObj (LLVMBlockRepr w)))
+        pure (Some (mkKnownReprObj (LLVMPointerRepr w)))
     TyLlvmFrame p n ->
       withPositive p "Zero LLVM Frame width not allowed" n \w ->
         pure (Some (mkKnownReprObj (LLVMFrameRepr w)))
@@ -212,8 +225,7 @@ tcExpr tp@LLVMShapeRepr{} (ExVar p name (Just args) Nothing) =
      case lookupNamedShape (tcEnvPermEnv env) name of
        Just (SomeNamedShape _ arg_ctx mb_sh)
          | Just Refl <- testEquality (mbLift (fmap exprType mb_sh)) tp ->
-           do traceM (show name)
-              sub <- tcStructFields p arg_ctx args
+           do sub <- tcStructFields p arg_ctx args
               pure (subst (substOfExprs sub) mb_sh)
        Just (SomeNamedShape _ _ mb_sh) ->
          tcError p $ renderDoc $ sep
@@ -242,13 +254,16 @@ tcExpr RWModalityRepr   e = tcRWModality e
 tcExpr (ValuePermRepr t) e = permToExpr <$> tcValPerm t e
 tcExpr (LLVMShapeRepr w) e = withKnownNat w (tcLLVMShape e)
 
+
+tcExpr (IntrinsicRepr s _) e =
+  tcError (pos e) ("expected intrinsic type: " ++ show s)
+
 -- reprs that we explicitly do not support
 tcExpr BoolRepr         e = tcError (pos e) "expected boolean"
 tcExpr IntegerRepr      e = tcError (pos e) "expected integerl"
 tcExpr AnyRepr          e = tcError (pos e) "expected any type"
 tcExpr RealValRepr      e = tcError (pos e) "expected realval type"
 tcExpr ComplexRealRepr  e = tcError (pos e) "expected realval type"
-tcExpr IntrinsicRepr{}  e = tcError (pos e) "unknown intrinsic type"
 tcExpr RecursiveRepr{}  e = tcError (pos e) "expected recursive type"
 tcExpr FloatRepr{}      e = tcError (pos e) "expected float type"
 tcExpr IEEEFloatRepr{}  e = tcError (pos e) "expected ieeefloat type"
@@ -326,6 +341,8 @@ tcLifetime ExAlways{} = pure PExpr_Always
 tcLifetime e          = tcError (pos e) "expected lifetime"
 
 tcLLVMShape :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (LLVMShapeType w))
+tcLLVMShape (ExOrSh _ x y) = PExpr_OrShape <$> tcExpr knownRepr x <*> tcExpr knownRepr y
+tcLLVMShape (ExSeqSh _ x y) = PExpr_SeqShape <$> tcExpr knownRepr x <*> tcExpr knownRepr y
 tcLLVMShape ExEmptySh{} = pure PExpr_EmptyShape
 tcLLVMShape (ExEqSh _ v) = PExpr_EqShape <$> tcExpr knownRepr v
 tcLLVMShape (ExPtrSh _ maybe_l maybe_rw sh) =
@@ -359,6 +376,10 @@ tcLLVMPointer _ (ExLlvmWord _ e) = PExpr_LLVMWord <$> tcBV e
 tcLLVMPointer w (ExAdd _ (ExVar p name Nothing Nothing) off) = PExpr_LLVMOffset <$> tcVar (LLVMPointerRepr w) p name <*> tcBV off
 tcLLVMPointer _ e = tcError (pos e) "expected llvmpointer"
 
+-- | Check a value permission of a known type in a given context
+tcValPermInCtx :: ParsedCtx ctx -> TypeRepr a -> AstExpr -> Tc (Mb ctx (ValuePerm a))
+tcValPermInCtx ctx tp = inParsedCtxM ctx . const . tcValPerm tp
+
 tcValPerm :: TypeRepr a -> AstExpr -> Tc (ValuePerm a)
 tcValPerm _  ExTrue{} = pure ValPerm_True
 tcValPerm ty (ExOr _ x y) = ValPerm_Or <$> tcValPerm ty x <*> tcValPerm ty y
@@ -391,7 +412,6 @@ tcValPerm ty e = ValPerm_Conj <$> tcAtomicPerms ty e
 tcAtomicPerms :: TypeRepr a -> AstExpr -> Tc [AtomicPerm a]
 tcAtomicPerms ty (ExMul _ x y) = (++) <$> tcAtomicPerms ty x <*> tcAtomicPerms ty y
 tcAtomicPerms ty e = pure <$> tcAtomicPerm ty e
-
 
 
 tcAtomicPerm :: TypeRepr a -> AstExpr -> Tc (AtomicPerm a)
@@ -448,11 +468,11 @@ tcMemblock ::
   Maybe AstExpr ->
   AstExpr -> AstExpr -> AstExpr -> AstExpr -> Tc (LLVMBlockPerm w)
 tcMemblock l rw off len sh =
-  do llvmBlockLifetime <- maybe (pure PExpr_Always) tcLifetime l
-     llvmBlockRW       <- tcRWModality rw
+  do llvmBlockLifetime <- maybe (pure PExpr_Always) (tcExpr knownRepr) l
+     llvmBlockRW       <- tcExpr knownRepr rw
      llvmBlockOffset   <- tcBV off
      llvmBlockLen      <- tcBV len
-     llvmBlockShape    <- tcLLVMShape sh
+     llvmBlockShape    <- tcExpr knownRepr sh
      pure LLVMBlockPerm{..}
 
 tcArrayAtomic ::
@@ -467,8 +487,8 @@ tcArrayAtomic off len stride fields =
 
 tcArrayPerm :: forall w. (KnownNat w, 1 <= w) => ArrayPerm -> Tc (LLVMArrayField w)
 tcArrayPerm (ArrayPerm _ l rw off sz c) =
-  do llvmFieldLifetime <- maybe (pure PExpr_Always) tcLifetime l
-     llvmFieldRW <- tcRWModality rw
+  do llvmFieldLifetime <- maybe (pure PExpr_Always) (tcExpr LifetimeRepr) l
+     llvmFieldRW <- tcExpr RWModalityRepr rw
      llvmFieldOffset <- tcBV off :: Tc (PermExpr (BVType w))
      Some (Pair w LeqProof) <- maybe (pure (Some (Pair (knownNat :: NatRepr w) LeqProof)))
                                tcPositive sz
@@ -495,7 +515,7 @@ tcLifetimeAtomic (ExLOwned _ x y) =
      Some y' <- tcLOwnedPerms y
      pure (Perm_LOwned x' y')
 tcLifetimeAtomic (ExLCurrent _ l) =
-  Perm_LCurrent <$> maybe (pure PExpr_Always) tcLifetime l
+  Perm_LCurrent <$> maybe (pure PExpr_Always) (tcExpr knownRepr) l
 tcLifetimeAtomic e = tcError (pos e) "expected liftime atomic perm"
 
 tcLOwnedPerms :: [(String,AstExpr)] -> Tc (Some LOwnedPerms)
@@ -551,6 +571,10 @@ tcFunPerm args ret (AstFunPerm _ untyCtx ins outs) =
      perms_in  <- tcSortedMbValuePerms ghosts_args_ctx ins
      perms_out <- tcSortedMbValuePerms (consParsedCtx "ret" ret ghosts_args_ctx) outs
      pure (SomeFunPerm (FunPerm ghosts args ret perms_in perms_out))
+
+----------------------------------------------------------------------
+-- * Parsing Permission Sets and Function Permissions
+----------------------------------------------------------------------
 
 -- | Helper type for 'parseValuePerms' that represents whether a pair @x:p@ has
 -- been parsed yet for a specific variable @x@ and, if so, contains that @p@
