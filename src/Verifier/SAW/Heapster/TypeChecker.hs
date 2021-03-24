@@ -251,7 +251,7 @@ tcExpr UnitRepr         e = tcUnit e
 tcExpr NatRepr          e = tcNat e
 tcExpr (BVRepr w)       e = withKnownNat w (normalizeBVExpr <$> tcBV e)
 tcExpr (StructRepr fs)  e = tcStruct fs e
-tcExpr LifetimeRepr     e = tcLifetime e
+tcExpr LifetimeRepr     e = tcLifetimeLit e
 tcExpr (LLVMPointerRepr w) e = withKnownNat w (tcLLVMPointer w e)
 tcExpr FunctionHandleRepr{} e = tcError (pos e) "expected functionhandle type" -- no literals
 tcExpr PermListRepr     e = tcError (pos e) "expected permlist type" -- no literals
@@ -341,9 +341,13 @@ tcRWModality ExRead {} = pure PExpr_Read
 tcRWModality ExWrite{} = pure PExpr_Write
 tcRWModality e         = tcError (pos e) "expected rwmodality"
 
-tcLifetime :: AstExpr -> Tc (PermExpr LifetimeType)
-tcLifetime ExAlways{} = pure PExpr_Always
-tcLifetime e          = tcError (pos e) "expected lifetime"
+tcOptLifetime :: Maybe AstExpr -> Tc (PermExpr LifetimeType)
+tcOptLifetime Nothing = pure PExpr_Always
+tcOptLifetime (Just e) = tcKExpr e
+
+tcLifetimeLit :: AstExpr -> Tc (PermExpr LifetimeType)
+tcLifetimeLit ExAlways{} = pure PExpr_Always
+tcLifetimeLit e          = tcError (pos e) "expected lifetime"
 
 tcLLVMShape :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (LLVMShapeType w))
 tcLLVMShape (ExOrSh _ x y) = PExpr_OrShape <$> tcKExpr x <*> tcKExpr y
@@ -473,7 +477,7 @@ tcMemblock ::
   Maybe AstExpr ->
   AstExpr -> AstExpr -> AstExpr -> AstExpr -> Tc (LLVMBlockPerm w)
 tcMemblock l rw off len sh =
-  do llvmBlockLifetime <- maybe (pure PExpr_Always) tcKExpr l
+  do llvmBlockLifetime <- tcOptLifetime l
      llvmBlockRW       <- tcKExpr rw
      llvmBlockOffset   <- tcKExpr off
      llvmBlockLen      <- tcKExpr len
@@ -492,7 +496,7 @@ tcArrayAtomic off len stride fields =
 
 tcArrayPerm :: forall w. (KnownNat w, 1 <= w) => ArrayPerm -> Tc (LLVMArrayField w)
 tcArrayPerm (ArrayPerm _ l rw off sz c) =
-  do llvmFieldLifetime <- maybe (pure PExpr_Always) tcKExpr l
+  do llvmFieldLifetime <- tcOptLifetime l
      llvmFieldRW <- tcExpr RWModalityRepr rw
      llvmFieldOffset <- tcKExpr off :: Tc (PermExpr (BVType w))
      Some (Pair w LeqProof) <- maybe (pure (Some (Pair (knownNat :: NatRepr w) LeqProof)))
@@ -519,19 +523,18 @@ tcLifetimeAtomic (ExLOwned _ x y) =
   do Some x' <- tcLOwnedPerms x
      Some y' <- tcLOwnedPerms y
      pure (Perm_LOwned x' y')
-tcLifetimeAtomic (ExLCurrent _ l) =
-  Perm_LCurrent <$> maybe (pure PExpr_Always) tcKExpr l
+tcLifetimeAtomic (ExLCurrent _ l) = Perm_LCurrent <$> tcOptLifetime l
 tcLifetimeAtomic e = tcError (pos e) "expected liftime atomic perm"
 
-tcLOwnedPerms :: [(String,AstExpr)] -> Tc (Some LOwnedPerms)
+tcLOwnedPerms :: [(Located String,AstExpr)] -> Tc (Some LOwnedPerms)
 tcLOwnedPerms [] = pure (Some MNil)
-tcLOwnedPerms ((n,e):xs) =
-  do Some (Typed tp x) <- tcTypedName (pos e) n
-     p <- tcValPerm tp e
-     lop <- case varAndPermLOwnedPerm (VarAndPerm x p) of
+tcLOwnedPerms ((Located p n,e):xs) =
+  do Some (Typed tp x) <- tcTypedName p n
+     perm <- tcValPerm tp e
+     lop <- case varAndPermLOwnedPerm (VarAndPerm x perm) of
               Just lop -> return lop
               Nothing -> tcError (pos e) ("Not a valid lifetime ownership permission: "
-                                         ++ permPrettyString emptyPPInfo p)
+                                         ++ permPrettyString emptyPPInfo perm)
      Some lops <- tcLOwnedPerms xs
      pure (Some (lops :>: lop))
 
@@ -549,21 +552,21 @@ tcPositive e =
   do i <- tcNatural e
      withPositive (pos e) "positive required" i \w -> pure (Some (Pair w LeqProof))
 
-tcCtx :: [(String, AstType)] -> Tc (Some ParsedCtx)
+tcCtx :: [(Located String, AstType)] -> Tc (Some ParsedCtx)
 tcCtx []         = pure (Some emptyParsedCtx)
-tcCtx ((n,t):xs) = preconsSomeParsedCtx n <$> tcType t <*> tcCtx xs
+tcCtx ((n,t):xs) = preconsSomeParsedCtx (locThing n) <$> tcType t <*> tcCtx xs
 
 tcSortedValuePerms ::
-  VarPermSpecs ctx -> [(String, AstExpr)] -> Tc (ValuePerms ctx)
+  VarPermSpecs ctx -> [(Located String, AstExpr)] -> Tc (ValuePerms ctx)
 tcSortedValuePerms var_specs [] = pure (varSpecsToPerms var_specs)
-tcSortedValuePerms var_specs ((var, x):xs) =
-  do Some (Typed tp n) <- tcTypedName (pos x) var
-     p                 <- tcValPerm tp x
-     var_specs'        <- tcSetVarSpecs (pos x) var n p var_specs
+tcSortedValuePerms var_specs ((Located p var, x):xs) =
+  do Some (Typed tp n) <- tcTypedName p var
+     perm              <- tcValPerm tp x
+     var_specs'        <- tcSetVarSpecs p var n perm var_specs
      tcSortedValuePerms var_specs' xs
 
 tcSortedMbValuePerms ::
-  ParsedCtx ctx -> [(String, AstExpr)] -> Tc (MbValuePerms ctx)
+  ParsedCtx ctx -> [(Located String, AstExpr)] -> Tc (MbValuePerms ctx)
 tcSortedMbValuePerms ctx perms =
   inParsedCtxM ctx \ns ->
   tcSortedValuePerms (mkVarPermSpecs ns) perms

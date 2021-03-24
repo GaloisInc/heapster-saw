@@ -93,7 +93,7 @@ NAT             { (traverse tokenNat   -> Just $$)      }
 
 %%
 
-ctx ::                                          {[(String, AstType)]}
+ctx ::                                          {[(Located String, AstType)]}
   : list(varType)                               { $1 }
 
 type ::                                         { AstType }
@@ -199,15 +199,15 @@ funPerm ::                                      { AstFunPerm }
   : '(' ctx ')' '.' funPermList '-o' funPermList
                                                 { AstFunPerm (pos $6) $2 $5 $7 }
 
-funPermList ::                                  { [(String, AstExpr)]   }
+funPermList ::                                  { [(Located String, AstExpr)] }
   : 'empty'                                     { []                    }
   | list1(varExpr)                              { $1                    }
 
-varExpr ::                                      { (String, AstExpr)     }
-  : IDENT ':' expr                              { (locThing $1, $3)     }
+varExpr ::                                      { (Located String, AstExpr) }
+  : IDENT ':' expr                              { ($1, $3)              }
 
-varType ::                                      { (String, AstType)     }
-  : IDENT ':' type                              { (locThing $1, $3)     }
+varType ::                                      { (Located String, AstType) }
+  : IDENT ':' type                              { ($1, $3)              }
 
 lifetime ::                                     { Maybe AstExpr         }
   :                                             { Nothing               }

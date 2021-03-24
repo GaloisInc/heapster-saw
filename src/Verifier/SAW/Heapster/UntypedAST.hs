@@ -4,7 +4,11 @@ import GHC.Natural
 
 import Verifier.SAW.Heapster.Located
 
-data AstFunPerm = AstFunPerm Pos [(String, AstType)] [(String, AstExpr)] [(String, AstExpr)]
+data AstFunPerm = AstFunPerm
+  Pos
+  [(Located String, AstType)]
+  [(Located String, AstExpr)]
+  [(Located String, AstExpr)]
   deriving Show
 
 data ArrayPerm = ArrayPerm Pos (Maybe AstExpr) AstExpr AstExpr (Maybe AstExpr) AstExpr
@@ -55,7 +59,7 @@ data AstExpr
   | ExLessThan Pos AstExpr AstExpr
   | ExLessEqual Pos AstExpr AstExpr
 
-  | ExLOwned Pos [(String, AstExpr)] [(String, AstExpr)]
+  | ExLOwned Pos [(Located String, AstExpr)] [(Located String, AstExpr)]
   | ExLCurrent Pos (Maybe AstExpr)
   | ExShape Pos AstExpr
   | ExFree Pos AstExpr
