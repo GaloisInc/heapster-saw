@@ -416,6 +416,9 @@ shapeToBlockPerm = fmap ValPerm_LLVMBlock . shapeToBlock
 data Some3FunPerm =
   forall ghosts args ret. Some3FunPerm (FunPerm ghosts args ret)
 
+instance PermPretty Some3FunPerm where
+  permPrettyM (Some3FunPerm fun_perm) = permPrettyM fun_perm
+
 -- | Try to convert a 'Some3FunPerm' to a 'SomeFunPerm' at a specific type
 un3SomeFunPerm :: CruCtx args -> TypeRepr ret -> Some3FunPerm ->
                   RustConvM (SomeFunPerm args ret)
@@ -761,13 +764,13 @@ rsConvertFun :: (1 <= w, KnownNat w) => prx w ->
                 Abi -> Generics Span -> FnDecl Span -> RustConvM Some3FunPerm
 rsConvertFun w abi (Generics ldefs tparams@[]
                     (WhereClause [] _) _) (FnDecl args (Just ret_tp) False _) =
+  fmap (\ret ->
+         tracePretty (pretty "rsConvertFun returning:" <+>
+                      permPretty emptyPPInfo ret) ret) $
   withLifetimes ldefs $
   do arg_shapes <- mapM (rsConvert w) args
      ret_shape <- rsConvert w ret_tp
-     fun_perm3@(Some3FunPerm fp) <- layoutFun abi arg_shapes ret_shape
-     () <- tracePretty (pretty "rsConvertFun returning:" <+>
-                        permPretty emptyPPInfo fp) (return ())
-     return fun_perm3
+     layoutFun abi arg_shapes ret_shape
 
 
 ----------------------------------------------------------------------
