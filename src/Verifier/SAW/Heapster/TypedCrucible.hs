@@ -18,6 +18,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE ConstraintKinds #-}
 -- {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
@@ -27,24 +28,20 @@ module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
 import qualified Data.Text as Text
-import Data.List (findIndex, maximumBy, filter)
+import Data.List (findIndex)
 import Data.List.NonEmpty (NonEmpty(..))
-import qualified Data.List.NonEmpty as NonEmpty
 import Data.Type.Equality
-import Data.Functor.Identity
-import Data.Functor.Compose
-import Data.Functor.Constant
 import Data.Kind
 import qualified Data.BitVector.Sized as BV
 import GHC.TypeLits
 
 import What4.ProgramLoc
 import What4.FunctionName
-import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
+import What4.Interface (StringLiteral(..))
 
-import Control.Lens hiding ((:>),Index)
-import Control.Monad.State.Strict
-import Control.Monad.Reader
+import Control.Lens hiding ((:>), Index, ix)
+import Control.Monad.State.Strict hiding (ap)
+import Control.Monad.Reader hiding (ap)
 
 import Prettyprinter as PP
 
@@ -53,28 +50,22 @@ import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
 import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..))
 import qualified Data.Binding.Hobbits.NameSet as NameSet
-import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
+import Data.Binding.Hobbits.NameMap (NameMap)
 import qualified Data.Binding.Hobbits.NameMap as NameMap
-import Data.Binding.Hobbits.Mb (mbMap2)
 
 import Data.Parameterized.Context hiding ((:>), empty, take, view, last, drop)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
-import Data.Parameterized.TraversableF
 
 
 
--- import Data.Parameterized.TraversableFC
 import Lang.Crucible.FunctionHandle
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.Bytes
 import Lang.Crucible.LLVM.Extension
-import Lang.Crucible.LLVM.Errors
 import Lang.Crucible.LLVM.MemModel
-import Lang.Crucible.LLVM.Arch.X86
 import Lang.Crucible.CFG.Expr
 import Lang.Crucible.CFG.Core
-import Lang.Crucible.CFG.Extension
 import Lang.Crucible.Analysis.Fixpoint.Components
 import Lang.Crucible.LLVM.DataLayout
 import Lang.Crucible.LLVM.Errors.UndefinedBehavior as UB
@@ -505,10 +496,10 @@ typedLLVMStmtOut :: TypedLLVMStmt w ret ps_in ps_out -> Name ret ->
                     DistPerms ps_out
 typedLLVMStmtOut (ConstructLLVMWord (TypedReg x)) ret =
   distPerms1 ret (ValPerm_Eq $ PExpr_LLVMWord $ PExpr_Var x)
-typedLLVMStmtOut (AssertLLVMWord (TypedReg x) _) ret =
+typedLLVMStmtOut (AssertLLVMWord (TypedReg _) _) ret =
   distPerms1 ret (ValPerm_Eq $ PExpr_Nat 0)
 typedLLVMStmtOut (AssertLLVMPtr _) _ = DistPermsNil
-typedLLVMStmtOut (DestructLLVMWord (TypedReg x) e) ret =
+typedLLVMStmtOut (DestructLLVMWord (TypedReg _) e) ret =
   distPerms1 ret (ValPerm_Eq e)
 typedLLVMStmtOut (OffsetLLVMValue (TypedReg x) off) ret =
   distPerms1 ret (ValPerm_Eq $ PExpr_LLVMOffset x off)
@@ -668,12 +659,12 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
           SubstVar PermVarSubst m, Substable1 PermVarSubst f m,
           Substable PermVarSubst (f BoolType) m) =>
          Substable PermVarSubst (App ext f a) m where
-  genSubst s [nuP| ExtensionApp _ |] =
+  genSubst _ [nuP| ExtensionApp _ |] =
     error "genSubst: unexpected ExtensionApp"
   genSubst s [nuP| BaseIsEq tp e1 e2 |] =
     BaseIsEq (mbLift tp) <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| EmptyApp |] = return EmptyApp
-  genSubst s [nuP| BoolLit b |] = return $ BoolLit $ mbLift b
+  genSubst _ [nuP| EmptyApp |] = return EmptyApp
+  genSubst _ [nuP| BoolLit b |] = return $ BoolLit $ mbLift b
   genSubst s [nuP| Not e |] =
     Not <$> genSubst1 s e
   genSubst s [nuP| And e1 e2 |] =
@@ -682,7 +673,7 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     Or <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| BoolXor e1 e2 |] =
     BoolXor <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatLit n |] =
+  genSubst _ [nuP| NatLit n |] =
     return $ NatLit $ mbLift n
   genSubst s [nuP| NatLt e1 e2 |] =
     NatLt <$> genSubst1 s e1 <*> genSubst1 s e2
@@ -700,7 +691,7 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
     NatDiv <$> genSubst1 s e1 <*> genSubst1 s e2
   genSubst s [nuP| NatMod e1 e2 |] =
     NatMod <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| HandleLit h |] =
+  genSubst _ [nuP| HandleLit h |] =
     return $ HandleLit $ mbLift h
   genSubst s [nuP| BVUndef w |] =
     BVUndef <$> genSubst s w
@@ -1197,8 +1188,8 @@ blockInfoMapIxs =
 -- | Build an empty 'BlockInfoMap' from an assignment
 emptyBlockInfoMap :: Assignment f blocks ->
                      BlockInfoMap ext (CtxCtxToRList blocks) tops ret
-emptyBlockInfoMap asgn =
-  RL.map (\memb -> BlockInfo memb [] Nothing) (helper asgn)
+emptyBlockInfoMap =
+  RL.map (\memb -> BlockInfo memb [] Nothing) . helper
   where
     helper :: Assignment f ctx ->
               RAssign (Member (CtxCtxToRList ctx)) (CtxCtxToRList ctx)
@@ -1426,7 +1417,7 @@ runPermCheckM :: KnownRepr ExtRepr ext =>
                  PermCheckM ext cblocks blocks tops ret () ps_out r ps_in () ->
                  InnerPermCheckM ext cblocks blocks tops ret r
 runPermCheckM topVars perms m =
-  do top_st <- ask
+  do -- top_st <- ask
      let st = PermCheckState {
            stCurPerms  = perms,
            stExtState  = emptyPermCheckExtState knownRepr,
@@ -1585,10 +1576,10 @@ getAtomicOrWordLLVMPerms r =
       (introEqCopyM x e >>> recombinePerm x p) >>>
       getAtomicOrWordLLVMPerms (TypedReg y) >>>= \eith ->
       case eith of
-        Left e ->
+        Left e' ->
           pcmEmbedImplM TypedImplStmt emptyCruCtx (offsetLLVMWordM
-                                                   y e off x) >>>
-          greturn (Left $ bvAdd e off)
+                                                   y e' off x) >>>
+          greturn (Left $ bvAdd e' off)
         Right ps ->
           pcmEmbedImplM TypedImplStmt emptyCruCtx (castLLVMPtrM
                                                    y (ValPerm_Conj ps) off x) >>>
@@ -1649,9 +1640,9 @@ ppCruRegAndPerms :: CtxTrans ctx -> Reg ctx a ->
                     PermCheckM ext cblocks blocks tops ret r ps r ps (Doc ())
 ppCruRegAndPerms ctx r =
   permGetPPInfo >>>= \ppInfo ->
-  ppRelevantPerms (tcReg ctx r) >>>= \pp ->
+  ppRelevantPerms (tcReg ctx r) >>>= \doc ->
   greturn (PP.group (pretty r <+> pretty '=' <+> permPretty ppInfo (tcReg ctx r)
-                     <> comma <+> pp))
+                     <> comma <+> doc))
 
 -- | Get the permissions on the variables in the input set, the variables in
 -- their permissions, the variables in those permissions etc., as in
@@ -2004,8 +1995,8 @@ convertRegType _ loc reg (BVRepr w1) tp2@(BVRepr w2)
 convertRegType ExtRepr_LLVM loc reg (LLVMPointerRepr w1) (BVRepr w2)
   | Just Refl <- testEquality w1 w2 =
     withKnownNat w1 $
-    stmtProvePerm reg (llvmExEqWord w1) >>>= \subst ->
-    let e = substLookup subst Member_Base in
+    stmtProvePerm reg (llvmExEqWord w1) >>>= \sbst ->
+    let e = substLookup sbst Member_Base in
     emitLLVMStmt knownRepr loc (DestructLLVMWord reg e) >>>= \x ->
     stmtRecombinePerms >>>
     greturn (TypedReg x)
@@ -2079,7 +2070,7 @@ emitStmt :: CruCtx rets -> ProgramLoc ->
 emitStmt tps loc stmt =
   gopenBinding
   ((TypedConsStmt loc stmt <$>) . strongMbM)
-  (nuMulti (cruCtxProxies tps) $ \vars -> ()) >>>= \(ns, ()) ->
+  (mbPure (cruCtxProxies tps) ()) >>>= \(ns, ()) ->
   setVarTypes "x" ns tps >>>
   gmodify (modifySTCurPerms $ applyTypedStmt stmt ns) >>>
   greturn ns
@@ -2126,7 +2117,7 @@ tcRegWithVal ctx r_untyped =
 
 -- | Type-check a sequence of Crucible registers
 tcRegs :: CtxTrans ctx -> Assignment (Reg ctx) tps -> TypedRegs (CtxToRList tps)
-tcRegs ctx (viewAssign -> AssignEmpty) = TypedRegsNil
+tcRegs _ctx (viewAssign -> AssignEmpty) = TypedRegsNil
 tcRegs ctx (viewAssign -> AssignExtend regs reg) =
   TypedRegsCons (tcRegs ctx regs) (tcReg ctx reg)
 
@@ -2143,7 +2134,7 @@ tcBlockID blkID = stLookupBlockID blkID <$> top_get
 tcExpr :: PermCheckExtC ext => App ext RegWithVal tp ->
           StmtPermCheckM ext cblocks blocks tops ret ps ps
           (Maybe (PermExpr tp))
-tcExpr (ExtensionApp e_ext :: App ext RegWithVal tp)
+tcExpr (ExtensionApp _e_ext :: App ext RegWithVal tp)
   | ExtRepr_LLVM <- knownRepr :: ExtRepr ext
   = error "tcExpr: unexpected LLVM expression"
 
@@ -2216,7 +2207,7 @@ tcExpr (NatLit i) = greturn $ Just $ PExpr_Nat i
 
 -- Bitvector expressions --
 
-tcExpr (BVUndef w) =
+tcExpr (BVUndef _w) =
   -- "Undefined" bitvectors are translated to 0 as a stand-in but we don't
   -- return any equality permissions about them
   greturn Nothing
@@ -2239,13 +2230,13 @@ tcExpr (BoolToBV w (RegWithVal _ (PExpr_Bool True))) =
 tcExpr (BoolToBV w (RegWithVal _ (PExpr_Bool False))) =
   withKnownNat w $ greturn $ Just $ bvInt 0
 
-tcExpr (BVUlt w (RegWithVal _ e1) (RegWithVal _ e2))
+tcExpr (BVUlt _ (RegWithVal _ e1) (RegWithVal _ e2))
   | bvLt e1 e2 = greturn $ Just $ PExpr_Bool True
-tcExpr (BVUlt w (RegWithVal _ e1) (RegWithVal _ e2))
+tcExpr (BVUlt _ (RegWithVal _ e1) (RegWithVal _ e2))
   | not (bvCouldBeLt e1 e2) = greturn $ Just $ PExpr_Bool False
-tcExpr (BVUle w (RegWithVal _ e1) (RegWithVal _ e2))
+tcExpr (BVUle _ (RegWithVal _ e1) (RegWithVal _ e2))
   | bvLt e2 e1 = greturn $ Just $ PExpr_Bool False
-tcExpr (BVUle w (RegWithVal _ e1) (RegWithVal _ e2))
+tcExpr (BVUle _ (RegWithVal _ e1) (RegWithVal _ e2))
   | not (bvCouldBeLt e2 e1) = greturn $ Just $ PExpr_Bool True
 
 tcExpr (BVSlt w (RegWithVal _ e1) (RegWithVal _ e2))
@@ -2263,7 +2254,7 @@ tcExpr (BVSle w (RegWithVal _ e1) (RegWithVal _ e2))
 
 tcExpr (BVNonzero w (RegWithVal _ bv))
   | bvEq bv (withKnownNat w $ bvInt 0) = greturn $ Just $ PExpr_Bool False
-tcExpr (BVNonzero w (RegWithVal _ bv))
+tcExpr (BVNonzero _ (RegWithVal _ bv))
   | not (bvZeroable bv) = greturn $ Just $ PExpr_Bool True
 
 -- String expressions --
@@ -2280,14 +2271,14 @@ tcExpr (MkStruct _ vars) =
 
 -- For GetStruct x ix, if x has a value it will have been eta-expanded to a
 -- struct expression, so simply get out the required field of that struct
-tcExpr (GetStruct (RegWithVal r (PExpr_Struct es)) ix tp) =
+tcExpr (GetStruct (RegWithVal r (PExpr_Struct es)) ix _) =
   getVarType (typedRegVar r) >>>= \(StructRepr tps) ->
   let memb = indexToMember (Ctx.size tps) ix in
   greturn $ Just $ RL.get memb (exprsToRAssign es)
 
 -- For SetStruct x ix y, if x has a value it will have been eta-expanded to a
 -- struct expression, so simply replace required field of that struct with y
-tcExpr (SetStruct tps (RegWithVal r (PExpr_Struct es)) ix r') =
+tcExpr (SetStruct tps (RegWithVal _ (PExpr_Struct es)) ix r') =
   let memb = indexToMember (Ctx.size tps) ix in
   greturn $ Just $ PExpr_Struct $ rassignToExprs $
   RL.set memb (PExpr_Var $ typedRegVar $ regWithValReg r') $
@@ -2337,14 +2328,14 @@ tcEmitStmt :: PermCheckExtC ext => CtxTrans ctx -> ProgramLoc ->
 tcEmitStmt ctx loc stmt =
   stmtTraceM (const (pretty "Type-checking statement:" <+>
                      ppStmt (size ctx) stmt)) >>>
-  permGetPPInfo >>>= \(!ppInfo) ->
+  permGetPPInfo >>>= \(!_ppInfo) ->
   mapM (\(Some r) -> ppCruRegAndPerms ctx r) (stmtInputRegs stmt) >>>= \(!pps) ->
   stmtTraceM (const (pretty "Input perms:" <> softline <> ppCommaSep pps)) >>>= \(!_) ->
   tcEmitStmt' ctx loc stmt >>>= \(!ctx') ->
   mapM (\(Some r) -> ppCruRegAndPerms ctx' r) (stmtOutputRegs
                                                (Ctx.size ctx')
-                                               stmt) >>>= \(!pps) ->
-  stmtTraceM (const (pretty "Output perms:" <> softline <> ppCommaSep pps)) >>>
+                                               stmt) >>>= \(!pps') ->
+  stmtTraceM (const (pretty "Output perms:" <> softline <> ppCommaSep pps')) >>>
   greturn ctx'
 
 
@@ -2353,8 +2344,8 @@ tcEmitStmt' :: PermCheckExtC ext => CtxTrans ctx -> ProgramLoc ->
                StmtPermCheckM ext cblocks blocks tops ret RNil RNil
                (CtxTrans ctx')
 
-tcEmitStmt' ctx loc (SetReg tp (App (ExtensionApp e_ext
-                                     :: App ext (Reg ctx) tp)))
+tcEmitStmt' ctx loc (SetReg _ (App (ExtensionApp e_ext
+                                    :: App ext (Reg ctx) tp)))
   | ExtRepr_LLVM <- knownRepr :: ExtRepr ext
   = tcEmitLLVMSetExpr Proxy ctx loc e_ext
 
@@ -2370,11 +2361,11 @@ tcEmitStmt' ctx loc (ExtendAssign stmt_ext :: Stmt ext ctx ctx')
   | ExtRepr_LLVM <- knownRepr :: ExtRepr ext
   = tcEmitLLVMStmt Proxy ctx loc stmt_ext
 
-tcEmitStmt' ctx loc (CallHandle ret freg_untyped args_ctx args_untyped) =
+tcEmitStmt' ctx loc (CallHandle ret freg_untyped _args_ctx args_untyped) =
   let freg = tcReg ctx freg_untyped
       args = tcRegs ctx args_untyped
-      args_subst = typedRegsToVarSubst args in
-  getVarTypes (typedRegsToVars args) >>>= \argTypes ->
+      {- args_subst = typedRegsToVarSubst args -} in
+  {- getVarTypes (typedRegsToVars args) >>>= \argTypes -> -}
   getSimpleRegPerm freg >>>= \p_freg ->
   (case p_freg of
       ValPerm_Conj ps ->
@@ -2405,9 +2396,9 @@ tcEmitStmt' ctx loc (CallHandle ret freg_untyped args_ctx args_untyped) =
       stmtProvePerm freg (emptyMb $ ValPerm_Conj1 $ Perm_Fun fun_perm) >>>= \_ ->
       (emitStmt (singletonCruCtx ret) loc
        (TypedCall freg fun_perm (varsToTypedRegs
-                                 ghosts_ns) gexprs args)) >>>= \(_ :>: ret) ->
+                                 ghosts_ns) gexprs args)) >>>= \(_ :>: ret') ->
       stmtRecombinePerms >>>
-      greturn (addCtxName ctx ret)
+      greturn (addCtxName ctx ret')
 
 tcEmitStmt' ctx loc (Assert reg msg) =
   let treg = tcReg ctx reg in
@@ -2431,7 +2422,7 @@ tcEmitLLVMSetExpr ::
 
 -- Type-check a pointer-building expression, which is only valid when the block
 -- = 0, i.e., when building a word
-tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerExpr w blk_reg off_reg) =
+tcEmitLLVMSetExpr _arch ctx loc (LLVM_PointerExpr w blk_reg off_reg) =
   let toff_reg = tcReg ctx off_reg
       tblk_reg = tcReg ctx blk_reg in
   resolveConstant tblk_reg >>>= \maybe_const ->
@@ -2456,9 +2447,8 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerExpr w blk_reg off_reg) =
 -- meaningful way by mapping the return value of 'LLVM_PointerBlock' to 1 when
 -- it is applied to pointers, which is the case for all programs currently
 -- generated by Crucible from LLVM.
-tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerBlock w ptr_reg) =
-  let tptr_reg = tcReg ctx ptr_reg
-      x = typedRegVar tptr_reg in
+tcEmitLLVMSetExpr _arch ctx loc (LLVM_PointerBlock w ptr_reg) =
+  let tptr_reg = tcReg ctx ptr_reg in
   withKnownNat w $
   getAtomicOrWordLLVMPerms tptr_reg >>>= \eith ->
   case eith of
@@ -2466,7 +2456,7 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerBlock w ptr_reg) =
       emitLLVMStmt knownRepr loc (AssertLLVMWord tptr_reg e) >>>= \ret ->
       stmtRecombinePerms >>>
       greturn (addCtxName ctx ret)
-    Right ps ->
+    Right _ ->
       stmtRecombinePerms >>>
       stmtProvePerm tptr_reg (emptyMb $ ValPerm_Conj1 Perm_IsLLVMPtr) >>>
       emitLLVMStmt knownRepr loc (AssertLLVMPtr tptr_reg) >>>
@@ -2487,9 +2477,8 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerBlock w ptr_reg) =
 -- we are verifying is not altered in a meaningful way by mapping the return
 -- value of 'LLVM_PointerOffset' to 0 when it is applied to pointers, which is
 -- the case for all programs currently generated by Crucible from LLVM.
-tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerOffset w ptr_reg) =
-  let tptr_reg = tcReg ctx ptr_reg
-      x = typedRegVar tptr_reg in
+tcEmitLLVMSetExpr _arch ctx loc (LLVM_PointerOffset w ptr_reg) =
+  let tptr_reg = tcReg ctx ptr_reg in
   withKnownNat w $
   getAtomicOrWordLLVMPerms tptr_reg >>>= \eith ->
   case eith of
@@ -2498,7 +2487,7 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerOffset w ptr_reg) =
                                   tptr_reg e) >>>= \ret ->
       stmtRecombinePerms >>>
       greturn (addCtxName ctx ret)
-    Right ps ->
+    Right _ ->
       stmtRecombinePerms >>>
       stmtProvePerm tptr_reg (emptyMb $ ValPerm_Conj1 Perm_IsLLVMPtr) >>>
       emitLLVMStmt knownRepr loc (AssertLLVMPtr tptr_reg) >>>
@@ -2510,7 +2499,7 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerOffset w ptr_reg) =
 
 -- An if-then-else at pointer type is just preserved, though we propogate
 -- equality information when possible
-tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerIte w cond_reg then_reg else_reg) =
+tcEmitLLVMSetExpr _arch ctx loc (LLVM_PointerIte w cond_reg then_reg else_reg) =
   withKnownNat w $
   let tcond_reg = tcReg ctx cond_reg
       tthen_reg = tcReg ctx then_reg
@@ -2534,7 +2523,7 @@ tcEmitLLVMSetExpr arch ctx loc (LLVM_PointerIte w cond_reg then_reg else_reg) =
       greturn (addCtxName ctx ret)
 
 -- For LLVM side conditions, treat each side condition as an assert
-tcEmitLLVMSetExpr arch ctx loc (LLVM_SideConditions tp conds reg) =
+tcEmitLLVMSetExpr _arch ctx loc (LLVM_SideConditions tp conds reg) =
   let treg = tcReg ctx reg in
   foldr
   (\(LLVMSideCondition cond_reg ub) rest_m ->
@@ -2659,8 +2648,8 @@ tcEmitLLVMStmt arch ctx loc (LLVM_Store _ ptr tp storage _ val)
     let tptr = tcReg ctx ptr
         tval = tcReg ctx val in
     convertRegType knownRepr loc tval tp (LLVMPointerRepr sz) >>>= \tval' ->
-    stmtProvePerm tptr (llvmWriteTrueExLPerm sz $ bvInt 0) >>>= \subst ->
-    let l = substLookup subst Member_Base in
+    stmtProvePerm tptr (llvmWriteTrueExLPerm sz $ bvInt 0) >>>= \sbst ->
+    let l = substLookup sbst Member_Base in
     let fp = llvmFieldWriteTrueL sz (bvInt 0) l in
     emitTypedLLVMStore arch loc tptr fp
     (PExpr_Var $ typedRegVar tval') DistPermsNil >>>= \z ->
@@ -2697,8 +2686,8 @@ tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes) =
       bytes' = bytes - bitsToBytes (intValue (archWidth arch))
       off = bytesToInteger bytes' in
   stmtProvePerm tptr (llvmWriteTrueExLPerm
-                      (archWidth arch) (bvInt off)) >>>= \subst ->
-  let l = substLookup subst Member_Base in
+                      (archWidth arch) (bvInt off)) >>>= \sbst ->
+  let l = substLookup sbst Member_Base in
   let fp = llvmFieldWriteTrueL (archWidth arch) (bvInt off) l in
   emitTypedLLVMStore arch loc tptr fp (PExpr_LLVMWord $
                                        bvInt 0) DistPermsNil >>>
@@ -2706,7 +2695,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes) =
   tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes')
 
 -- Type-check an alloca instruction
-tcEmitLLVMStmt arch ctx loc (LLVM_Alloca w _ sz_reg _ _) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_Alloca _w _ sz_reg _ _) =
   let sz_treg = tcReg ctx sz_reg in
   getFramePtr >>>= \maybe_fp ->
   maybe (greturn ValPerm_True) getRegPerm maybe_fp >>>= \fp_perm ->
@@ -2728,7 +2717,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_Alloca w _ sz_reg _ _) =
       stmtFailM (const $ pretty "LLVM_Alloca: no frame pointer set")
 
 -- Type-check a push frame instruction
-tcEmitLLVMStmt arch ctx loc (LLVM_PushFrame _ _) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_PushFrame _ _) =
   emitLLVMStmt knownRepr loc TypedLLVMCreateFrame >>>= \fp ->
   setFramePtr (TypedReg fp) >>>
   stmtRecombinePerms >>>
@@ -2738,7 +2727,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PushFrame _ _) =
   greturn (addCtxName ctx y)
 
 -- Type-check a pop frame instruction
-tcEmitLLVMStmt arch ctx loc (LLVM_PopFrame _) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_PopFrame _) =
   getFramePtr >>>= \maybe_fp ->
   maybe (greturn ValPerm_True) getRegPerm maybe_fp >>>= \fp_perm ->
   case (maybe_fp, fp_perm) of
@@ -2753,7 +2742,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PopFrame _) =
     _ -> stmtFailM (const $ pretty "LLVM_PopFrame: no frame perms")
 
 -- Type-check a pointer offset instruction by emitting OffsetLLVMValue
-tcEmitLLVMStmt arch ctx loc (LLVM_PtrAddOffset w _ ptr off) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_PtrAddOffset _w _ ptr off) =
   let tptr = tcReg ctx ptr
       toff = tcReg ctx off in
   getRegEqualsExpr toff >>>= \off_expr ->
@@ -2762,7 +2751,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PtrAddOffset w _ ptr off) =
   greturn (addCtxName ctx ret)
 
 -- Type-check a LoadHandle instruction by looking for a function pointer perm
-tcEmitLLVMStmt arch ctx loc (LLVM_LoadHandle _ _ ptr args ret) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_LoadHandle _ _ ptr args ret) =
   let tptr = tcReg ctx ptr
       x = typedRegVar tptr in
   getAtomicLLVMPerms tptr >>>= \ps ->
@@ -2775,12 +2764,12 @@ tcEmitLLVMStmt arch ctx loc (LLVM_LoadHandle _ _ ptr args ret) =
         stmtEmbedImplM (implCopyConjM x ps i >>>
                         recombinePerm x (ValPerm_Conj ps)) >>>
         emitLLVMStmt (FunctionHandleRepr args ret) loc
-        (TypedLLVMLoadHandle tptr tp p) >>>= \ret ->
+        (TypedLLVMLoadHandle tptr tp p) >>>= \ret' ->
         stmtRecombinePerms >>>
-        greturn (addCtxName ctx ret)
+        greturn (addCtxName ctx ret')
 
 -- Type-check a ResolveGlobal instruction by looking up the global symbol
-tcEmitLLVMStmt arch ctx loc (LLVM_ResolveGlobal w _ gsym) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_ResolveGlobal w _ gsym) =
   (stPermEnv <$> top_get) >>>= \env ->
   case lookupGlobalSymbol env gsym w of
     Just (p, _) ->
@@ -2792,7 +2781,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_ResolveGlobal w _ gsym) =
                                  ++ globalSymbolName gsym))
 
 {-
-tcEmitLLVMStmt arch ctx loc (LLVM_PtrLe _ r1 r2) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_PtrLe _ r1 r2) =
   let x1 = tcReg ctx r1
       x2 = tcReg ctx r2 in
   getRegEqualsExpr x1 >>>= \e1 ->
@@ -2869,7 +2858,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PtrLe _ r1 r2) =
                        permPretty i x1, pretty "and", permPretty i x2])
 -}
 
-tcEmitLLVMStmt arch ctx loc (LLVM_PtrEq _ r1 r2) =
+tcEmitLLVMStmt _arch ctx loc (LLVM_PtrEq _ r1 r2) =
   let x1 = tcReg ctx r1
       x2 = tcReg ctx r2 in
   getRegEqualsExpr x1 >>>= \e1 ->
@@ -2917,7 +2906,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PtrEq _ r1 r2) =
     -- If one variable is a word and the other is not known to be a word, then
     -- that other has to be a pointer, in which case the comparison will
     -- definitely fail. Otherwise we cannot compare them and we fail.
-    (PExpr_LLVMWord e, asLLVMOffset -> Just (x', _)) ->
+    (PExpr_LLVMWord _e, asLLVMOffset -> Just (x', _)) ->
       let r' = TypedReg x' in
       stmtProvePerm r' (emptyMb $ ValPerm_Conj1 Perm_IsLLVMPtr) >>>
       emitLLVMStmt knownRepr loc (AssertLLVMPtr r') >>>
@@ -2928,7 +2917,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_PtrEq _ r1 r2) =
       greturn (addCtxName ctx ret)
 
     -- Symmetrical version of the above case
-    (asLLVMOffset -> Just (x', _), PExpr_LLVMWord e) ->
+    (asLLVMOffset -> Just (x', _), PExpr_LLVMWord _e) ->
       let r' = TypedReg x' in
       stmtProvePerm r' (emptyMb $ ValPerm_Conj1 Perm_IsLLVMPtr) >>>
       emitLLVMStmt knownRepr loc (AssertLLVMPtr r') >>>
@@ -2994,7 +2983,7 @@ simplify1PermForDetVars det_vars _ p
   | nameSetIsSubsetOf (freeVars p) det_vars = greturn ()
 
 -- Otherwise, drop p, because it is not determined
-simplify1PermForDetVars det_vars x p =
+simplify1PermForDetVars _det_vars x p =
   implPushM x p >>> implDropM x p
 
 
@@ -3021,32 +3010,32 @@ generalizeUnneededEqPerms1 ::
   ImplM vars s r ps ps ()
 
 -- For x:eq(y) for needed variable y, do nothing
-generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_Var y))
+generalizeUnneededEqPerms1 needed_vars _ (ValPerm_Eq (PExpr_Var y))
   | NameSet.member y needed_vars = greturn ()
-generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq e@(PExpr_BV _ _))
+generalizeUnneededEqPerms1 needed_vars _ (ValPerm_Eq e@(PExpr_BV _ _))
   | PExpr_Var y <- normalizeBVExpr e
   , NameSet.member y needed_vars = greturn ()
 
 -- Similarly, for x:eq(llvmword y) for needed variable y, do nothing
-generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_LLVMWord e))
+generalizeUnneededEqPerms1 needed_vars _ (ValPerm_Eq (PExpr_LLVMWord e))
   | PExpr_Var y <- normalizeBVExpr e
   , NameSet.member y needed_vars = greturn ()
-generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
+generalizeUnneededEqPerms1 _needed_vars x p@(ValPerm_Eq (PExpr_LLVMWord e)) =
   let mb_eq = nu $ \z -> ValPerm_Eq $ PExpr_LLVMWord $ PExpr_Var z in
   implPushM x p >>>
   introExistsM x e mb_eq >>>
   implPopM x (ValPerm_Exists mb_eq)
 
 -- Similarly, for x:eq(y &+ off) for needed variable y, do nothing
-generalizeUnneededEqPerms1 needed_vars x (ValPerm_Eq (PExpr_LLVMOffset y _))
+generalizeUnneededEqPerms1 needed_vars _ (ValPerm_Eq (PExpr_LLVMOffset y _))
   | NameSet.member y needed_vars = greturn ()
 
 -- For x:eq(e) where e is a literal, just drop the eq(e) permission
-generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq PExpr_Unit) =
+generalizeUnneededEqPerms1 _needed_vars x p@(ValPerm_Eq PExpr_Unit) =
   implPushM x p >>> implDropM x p
-generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_Nat _)) =
+generalizeUnneededEqPerms1 _needed_vars x p@(ValPerm_Eq (PExpr_Nat _)) =
   implPushM x p >>> implDropM x p
-generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Eq (PExpr_Bool _)) =
+generalizeUnneededEqPerms1 _needed_vars x p@(ValPerm_Eq (PExpr_Bool _)) =
   implPushM x p >>> implDropM x p
 
 -- If x:p1 * ... * pn, generalize the contents of field permissions in the pis
@@ -3065,7 +3054,6 @@ generalizeUnneededEqPerms1 needed_vars x p@(ValPerm_Conj ps)
     implPushM x (ValPerm_Conj ps') >>>
     implInsertConjM x (Perm_LLVMField fp') ps' i >>>
     implPopM x (ValPerm_Conj (take i ps' ++ Perm_LLVMField fp' : drop i ps')) >>>
-    greturn y >>>= \y ->
     generalizeUnneededEqPerms1 needed_vars y y_p
 generalizeUnneededEqPerms1 _ _ _ = greturn ()
 
@@ -3413,12 +3401,13 @@ funPermToBlockInputs fun_perm =
   appendValuePerms perms_in (eqValuePerms args_ns)
 
 -- | Type-check a Crucible CFG
-tcCFG :: PermCheckExtC ext => PermEnv -> EndianForm ->
+tcCFG :: forall ext cblocks ghosts inits ret. PermCheckExtC ext =>
+         PermEnv -> EndianForm ->
          FunPerm ghosts (CtxToRList inits) ret ->
-         CFG ext blocks inits ret ->
-         TypedCFG ext (CtxCtxToRList blocks) ghosts (CtxToRList inits) ret
+         CFG ext cblocks inits ret ->
+         TypedCFG ext (CtxCtxToRList cblocks) ghosts (CtxToRList inits) ret
 tcCFG env endianness fun_perm@(FunPerm ghosts
-                               inits _ _ _) (cfg :: CFG ext cblocks inits ret) =
+                               _inits _ _ _) (cfg :: CFG ext cblocks inits ret) =
   let h = cfgHandle cfg
       cblocks_types = fmapFC blockInputs $ cfgBlockMap cfg
       inits = mkCruCtx $ handleArgTypes h
@@ -3454,12 +3443,12 @@ tcCFG env endianness fun_perm@(FunPerm ghosts
               let h_entryID = TypedEntryID h_memb h_ghosts 0
               let h_args = mkCruCtx $ blockInputs (cfgBlockMap cfg !
                                                    blockIDIndex h_blkID)
-              let h_allargs = appendCruCtx h_ghosts h_args
+              -- let h_allargs = appendCruCtx h_ghosts h_args
               modifyBlockInfo (addBlockEntry h_memb $
                                BlockEntryInfo h_entryID EntryInDegree_One
                                tops h_args h_perms_in)
               return (Just $ Some h_blkID)
-       Some (BlockHint _ _ h_blkID (BlockEntryHintSort _ _ _)) ->
+       Some (BlockHint _ _ h_blkID _) ->
          trace ("Block entry hint for block "
                 ++ show h_blkID
                 ++ " did not match arguments, skipping") $
@@ -3479,8 +3468,8 @@ tcCFG env endianness fun_perm@(FunPerm ghosts
          nodeSuccessors Nothing = Just (cfgStart cfg) : hint_nodes
      let nodes = weakTopologicalOrdering nodeSuccessors Nothing
 
-     !(init_st) <- get
-     mapM_ (visit cfg) $ trace "visiting CFG..." nodes
+     -- !(init_st) <- get
+     mapM_ visit $ trace "visiting CFG..." nodes
      !final_st <- get
      trace "visiting complete!" $ return $ TypedCFG
        { tpcfgHandle = TypedFnHandle ghosts h
@@ -3491,20 +3480,19 @@ tcCFG env endianness fun_perm@(FunPerm ghosts
            (stBlockInfo final_st)
        , tpcfgEntryBlockID = init_entryID }
   where
-    visit :: PermCheckExtC ext => CFG ext cblocks inits ret ->
-             WTOComponent (Maybe (Some (BlockID cblocks))) ->
+    visit :: WTOComponent (Maybe (Some (BlockID cblocks))) ->
              TopPermCheckM ext cblocks blocks tops ret ()
-    visit cfg (Vertex Nothing) = return ()
-    visit cfg (Vertex (Just (Some blkID))) =
+    visit (Vertex Nothing) = return ()
+    visit (Vertex (Just (Some blkID))) =
       do blkIx <- memberLength <$> stLookupBlockID blkID <$> get
          () <- trace ("Visiting block: " ++ show blkIx
                       ++ " (" ++ show blkID ++ ")") $ return ()
          !ret <- tcEmitBlock EntryInDegree_None (getBlock blkID (cfgBlockMap cfg))
-         !s <- get
+         !_s <- get
          trace ("Visiting block " ++ show blkIx ++ " complete") $ return ret
-    visit cfg (SCC (Just (Some blkID)) comps) =
+    visit (SCC (Just (Some blkID)) comps) =
       tcEmitBlock EntryInDegree_Loop (getBlock blkID (cfgBlockMap cfg)) >>
-      mapM_ (visit cfg) comps
-    visit cfg (SCC Nothing comps) =
+      mapM_ visit comps
+    visit (SCC Nothing comps) =
       -- NOTE: this should never actually happen, as nothing jumps to Nothing
-      mapM_ (visit cfg) comps
+      mapM_ visit comps

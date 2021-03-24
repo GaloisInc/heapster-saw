@@ -27,8 +27,10 @@
 
 module Verifier.SAW.Heapster.RustTypes where
 
+import Prelude hiding (span)
+
 import Data.Maybe
-import Data.List
+import Data.List hiding (span)
 import GHC.TypeLits
 import Data.Functor.Constant
 import Data.Functor.Product
@@ -40,8 +42,6 @@ import Data.Parameterized.Some
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
-import Data.Type.RList (RList(..), RAssign(..), (:++:), append, memberElem,
-                        mapRAssign, mapToList)
 import qualified Data.Type.RList as RL
 
 import Language.Rust.Syntax
@@ -286,7 +286,7 @@ instance RsConvert w Mutability (PermExpr RWModalityType) where
   rsConvert _ Immutable = return PExpr_Read
 
 instance RsConvert w (Lifetime Span) (PermExpr LifetimeType) where
-  rsConvert _ (Lifetime "static" span) = return PExpr_Always
+  rsConvert _ (Lifetime "static" _) = return PExpr_Always
   rsConvert _ (Lifetime l span) =
     PExpr_Var <$> atSpan span (lookupName l knownRepr)
 
@@ -370,7 +370,7 @@ mbArgLayout [nuP| ArgLayout ghosts args mb_ps |] =
 
 -- | Convert an 'ArgLayout' to a permission on a @struct@ of its arguments
 argLayoutStructPerm :: ArgLayout -> Some (Typed ValuePerm)
-argLayoutStructPerm (ArgLayout ghosts args@(MNil :>: KnownReprObj) mb_perms) =
+argLayoutStructPerm (ArgLayout ghosts (MNil :>: KnownReprObj) mb_perms) =
   Some $ Typed knownRepr $
   valPermExistsMulti ghosts $ fmap (\(_ :>: perm) -> perm) mb_perms
 argLayoutStructPerm (ArgLayout ghosts args mb_perms)
@@ -587,7 +587,7 @@ rsConvertMonoFun w span abi ls fn_tp =
 -- | Convert a Rust polymorphic function type to a Heapster function permission
 rsConvertFun :: (1 <= w, KnownNat w) => prx w ->
                 Abi -> Generics Span -> FnDecl Span -> RustConvM Some3FunPerm
-rsConvertFun w abi (Generics rust_ls@[] rust_tps@[]
+rsConvertFun w abi (Generics _rust_ls@[] _rust_tps@[]
                     (WhereClause [] _) _) (FnDecl args (Just ret_tp) False _) =
   do arg_shapes <- mapM (rsConvert w) args
      ret_shape <- rsConvert w ret_tp
@@ -631,8 +631,7 @@ parseFunPermFromRust env w args ret str
   , (_, fn_str) <- splitAt (i+1) str
   , Left err <- parse @(Ty Span) (inputStreamFromString fn_str) =
     fail ("Error parsing generics: " ++ show err)
-
-  | Nothing <- findIndex (== '>') str =
+parseFunPermFromRust _ _ _ _ str =
     fail ("Malformed Rust type: " ++ str)
 
 

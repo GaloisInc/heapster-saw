@@ -13,10 +13,10 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PatternGuards #-}
 
 module Verifier.SAW.Heapster.CruUtil where
 
-import Data.Kind
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Reflection
@@ -30,13 +30,12 @@ import GHC.TypeNats
 import Data.Functor.Product
 
 import Data.Binding.Hobbits
-import Data.Binding.Hobbits.NuMatching
 
 import What4.ProgramLoc
 import What4.Partial
 import What4.InterpretedFloatingPoint (X86_80Val(..))
-import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
-import What4.Utils.Word16String (Word16String (..))
+import What4.Interface (StringLiteral(..))
+import What4.Utils.Word16String (Word16String)
 
 import Data.Parameterized.Context hiding ((:>), empty, take, view)
 import qualified Data.Parameterized.Context as Ctx
@@ -52,7 +51,6 @@ import Lang.Crucible.FunctionHandle
 import Lang.Crucible.CFG.Expr
 import Lang.Crucible.CFG.Core hiding (App)
 import qualified Lang.Crucible.CFG.Core as Core
-import Lang.Crucible.CFG.Extension
 import Lang.Crucible.LLVM.Bytes
 import Lang.Crucible.LLVM.Errors
 import Lang.Crucible.LLVM.Errors.MemoryError
@@ -589,7 +587,7 @@ instance TestEquality CruCtx where
   testEquality _ _ = Nothing
 
 instance PP.Pretty (CruCtx ctx) where
-  pretty ctx = PP.list $ helper ctx where
+  pretty = PP.list . helper where
     helper :: CruCtx ctx' -> [PP.Doc ann]
     helper CruCtxNil = []
     helper (CruCtxCons ctx tp) = helper ctx ++ [PP.pretty tp]
@@ -616,7 +614,7 @@ cruCtxToRepr (CruCtxCons ctx tp) = Ctx.extend (cruCtxToRepr ctx) tp
 -- equal types
 cruCtxToReprEq :: CruCtx ctx -> CtxToRList (RListToCtx ctx) :~: ctx
 cruCtxToReprEq CruCtxNil = Refl
-cruCtxToReprEq (CruCtxCons ctx tp) =
+cruCtxToReprEq (CruCtxCons ctx _tp) =
   case cruCtxToReprEq ctx of
     Refl -> Refl
 
@@ -705,6 +703,8 @@ stmtInputRegs (Print msg) = [Some msg]
 stmtInputRegs (ReadGlobal _) = []
 stmtInputRegs (WriteGlobal _ r) = [Some r]
 stmtInputRegs (FreshConstant _ _) = []
+stmtInputRegs (FreshFloat _ _) = []
+stmtInputRegs (FreshNat _) = []
 stmtInputRegs (NewRefCell _ r) = [Some r]
 stmtInputRegs (NewEmptyRefCell _) = []
 stmtInputRegs (ReadRefCell r) = [Some r]
@@ -723,19 +723,21 @@ stmtOutputRegs sz (ExtendAssign s') =
 stmtOutputRegs sz (CallHandle _ h _ args) =
   Some (extendReg h) : foldMapFC (\r -> [Some $ extendReg r]) args
   ++ [Some $ Reg $ Ctx.lastIndex sz]
-stmtOutputRegs sz (Print msg) = [Some msg]
-stmtOutputRegs sz (ReadGlobal _) = []
-stmtOutputRegs sz (WriteGlobal _ r) = [Some r]
-stmtOutputRegs sz (FreshConstant _ _) = []
+stmtOutputRegs _ (Print msg) = [Some msg]
+stmtOutputRegs _ (ReadGlobal _) = []
+stmtOutputRegs _ (WriteGlobal _ r) = [Some r]
+stmtOutputRegs _ (FreshConstant _ _) = []
+stmtOutputRegs _ (FreshFloat _ _) = []
+stmtOutputRegs _ (FreshNat _) = []
 stmtOutputRegs sz (NewRefCell _ r) =
   [Some $ extendReg r] ++ [Some $ Reg $ Ctx.lastIndex sz]
-stmtOutputRegs sz (NewEmptyRefCell _) = []
+stmtOutputRegs _ (NewEmptyRefCell _) = []
 stmtOutputRegs sz (ReadRefCell r) =
   [Some $ extendReg r] ++ [Some $ Reg $ Ctx.lastIndex sz]
-stmtOutputRegs sz (WriteRefCell r1 r2) = [Some r1, Some r2]
-stmtOutputRegs sz (DropRefCell r) = [Some r]
-stmtOutputRegs sz (Assert r1 r2) = [Some r1, Some r2]
-stmtOutputRegs sz (Assume r1 r2) = [Some r1, Some r2]
+stmtOutputRegs _ (WriteRefCell r1 r2) = [Some r1, Some r2]
+stmtOutputRegs _ (DropRefCell r) = [Some r]
+stmtOutputRegs _ (Assert r1 r2) = [Some r1, Some r2]
+stmtOutputRegs _ (Assume r1 r2) = [Some r1, Some r2]
 
 -- | Get all the registers used in a Crucible 'JumpTarget'
 jumpTargetRegs :: JumpTarget blocks ctx -> [Some (Reg ctx)]
