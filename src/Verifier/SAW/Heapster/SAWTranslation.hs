@@ -3315,7 +3315,7 @@ instance ImplTranslateF (LocalImplRet ps) ext blocks ps_in ret where
     do pctx <- itiPermStack <$> ask
        ret_tp <- returnTypeM
        return $ applyOpenTermMulti (globalOpenTerm "Prelude.returnM")
-         [ret_tp, transTupleTerm pctx]
+         [ret_tp, strictTransTupleTerm pctx]
 
 -- | Translate a local implication to its output, adding an error message
 translateLocalPermImpl :: String -> Mb ctx (LocalPermImpl ps_in ps_out) ->
