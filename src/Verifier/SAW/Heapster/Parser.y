@@ -78,9 +78,9 @@ NAT             { (traverse tokenNat   -> Just $$)      }
 %error          { errorP                                }
 
 %name parseCtx          ctx
-%name parseType         astType
+%name parseType         type
 %name parseFunPerm      funPerm
-%name parseExpr         astExpr
+%name parseExpr         expr
 %name parseValuePerms   funPermList
 
 %right    '.'
@@ -96,8 +96,8 @@ NAT             { (traverse tokenNat   -> Just $$)      }
 ctx ::                                          {[(String, AstType)]}
   : list(varType)                               { $1 }
 
-astType ::                                      { AstType }
-  : '(' astType ')'                             { $2 }
+type ::                                         { AstType }
+  : '(' type ')'                                { $2 }
   | 'unit'                                      { TyUnit (pos $1) }
   | 'bool'                                      { TyBool (pos $1) }
   | 'nat'                                       { TyNat (pos $1) }
@@ -109,80 +109,90 @@ astType ::                                      { AstType }
   | 'llvmframe' NAT                             { TyLlvmFrame (pos $1) (locThing $2) }
   | 'llvmblock' NAT                             { TyLlvmBlock (pos $1) (locThing $2) }
   | 'llvmshape' NAT                             { TyLlvmShape (pos $1) (locThing $2) }
-  | 'struct' '(' list(astType) ')'              { TyStruct (pos $1) $3 }
-  | 'perm'   '(' astType      ')'               { TyPerm (pos $1) $3 }
+  | 'struct' '(' list(type) ')'                 { TyStruct (pos $1) $3 }
+  | 'perm'   '(' type      ')'                  { TyPerm (pos $1) $3 }
 
-astExpr ::                                      { AstExpr }
-  : '(' astExpr ')'                             { $2 }
-  | 'always'                                    { ExAlways (pos $1) }
-  | 'unit'                                      { ExUnit (pos $1) }
-  | NAT                                         { ExNat (pos $1) (locThing $1) }
-  | astExpr '+' astExpr                         { ExAdd (pos $2) $1 $3 }
-  | astExpr '*' astExpr                         { ExMul (pos $2) $1 $3 }
-  | 'R'                                         { ExRead (pos $1) }
-  | 'W'                                         { ExWrite (pos $1) }
-  | 'struct' '(' list(astExpr) ')'              { ExStruct (pos $1) $3 }
-  | 'llvmword' '(' astExpr ')'                  { ExLlvmWord (pos $1) $3 }
-
-  | 'emptysh'                                   { ExEmptySh (pos $1) }
-  | 'eqsh' '(' astExpr ')'                      { ExEqSh (pos $1) $3 }
-
-  | lifetimePrefix 'ptrsh' '(' astExpr ',' astExpr ')'
-                                                { ExPtrSh (pos $2) $1 (Just $4) $6 }
-  | lifetimePrefix 'ptrsh' '(' astExpr ')'      { ExPtrSh (pos $2) $1 Nothing $4 }
-
-  | 'fieldsh' '(' astExpr ',' astExpr ')'       { ExFieldSh (pos $1) (Just $3) $5 }
-  | 'fieldsh' '('             astExpr ')'       { ExFieldSh (pos $1) Nothing $3 }
-  | 'arraysh' '(' astExpr ',' astExpr ',' '[' list(shape) ']' ')'
-                                                { ExArraySh (pos $1) $3 $5 $8 }
-  | 'exsh' IDENT ':' astType '.' astExpr        { ExExSh (pos $1) (locThing $2) $4 $6 }
-  | astExpr 'orsh' astExpr                      { ExOrSh (pos $2) $1 $3 }
-  | astExpr ';' astExpr                         { ExSeqSh (pos $2) $1 $3 }
-
-  | 'true'                                      { ExTrue (pos $1) }
-  | astExpr 'or' astExpr                        { ExOr (pos $2) $1 $3 }
-
-  | 'eq' '(' astExpr ')'                        { ExEq (pos $1) $3 }
-  | 'exists' IDENT ':' astType '.' astExpr      { ExExists (pos $1) (locThing $2) $4 $6 }
+expr ::                                         { AstExpr }
+  : '(' expr ')'                                { $2 }
   | IDENT identArgs permOffset                  { ExVar (pos $1) (locThing $1) $2 $3 }
-
-  | 'array' '(' astExpr ',' '<' astExpr ',' '*' astExpr ',' '[' list(llvmFieldPermArray) ']' ')'
+  | NAT                                         { ExNat (pos $1) (locThing $1) }
+  | 'unit'                                      { ExUnit (pos $1) }
+  | expr '+' expr                               { ExAdd (pos $2) $1 $3 }
+  | expr '*' expr                               { ExMul (pos $2) $1 $3 }
+  | 'struct' '(' list(expr) ')'                 { ExStruct (pos $1) $3 }
+  | 'array' '(' expr ',' '<' expr ',' '*' expr ',' '[' list(llvmFieldPermArray) ']' ')'
                                                 { ExArray (pos $1) $3 $6 $9 $12 }
-  | lifetimePrefix 'memblock' '(' astExpr ',' astExpr ',' astExpr ',' astExpr ')'
-                                                { ExMemblock (pos $2) $1 $4 $6 $8 $10 }
-  | 'free' '(' astExpr ')'                      { ExFree (pos $1) $3 }
-  | 'llvmfunptr' '{' astExpr ',' astExpr '}' '(' funPerm ')'
+  | 'llvmword' '(' expr ')'                     { ExLlvmWord (pos $1) $3 }
+  | 'llvmfunptr' '{' expr ',' expr '}' '(' funPerm ')'
                                                 { ExLlvmFunPtr (pos $1) $3 $5 $8 }
   | 'llvmframe' '[' list(frameEntry) ']'        { ExLlvmFrame (pos $1) $3 }
-  | lifetimePrefix 'ptr' '(' '(' astExpr ',' astExpr ',' astExpr ')' '|->' astExpr ')'
+
+-- Lifetimes
+
+  | 'always'                                    { ExAlways (pos $1) }
+
+-- RW Modalities
+
+  | 'R'                                         { ExRead (pos $1) }
+  | 'W'                                         { ExWrite (pos $1) }
+
+-- Shapes
+
+  | 'emptysh'                                   { ExEmptySh (pos $1) }
+  | expr 'orsh' expr                            { ExOrSh (pos $2) $1 $3 }
+  | expr ';' expr                               { ExSeqSh (pos $2) $1 $3 }
+  | 'eqsh' '(' expr ')'                         { ExEqSh (pos $1) $3 }
+  | lifetimePrefix 'ptrsh' '(' expr ',' expr ')'
+                                                { ExPtrSh (pos $2) $1 (Just $4) $6 }
+  | lifetimePrefix 'ptrsh' '(' expr ')'         { ExPtrSh (pos $2) $1 Nothing $4 }
+
+  | 'fieldsh' '(' expr ',' expr ')'             { ExFieldSh (pos $1) (Just $3) $5 }
+  | 'fieldsh' '('          expr ')'             { ExFieldSh (pos $1) Nothing $3 }
+  | 'arraysh' '(' expr ',' expr ',' '[' list(shape) ']' ')'
+                                                { ExArraySh (pos $1) $3 $5 $8 }
+  | 'exsh' IDENT ':' type '.' expr              { ExExSh (pos $1) (locThing $2) $4 $6 }
+
+-- Value Permissions
+
+  | 'true'                                      { ExTrue (pos $1) }
+  | expr 'or' expr                              { ExOr (pos $2) $1 $3 }
+  | 'eq' '(' expr ')'                           { ExEq (pos $1) $3 }
+  | 'exists' IDENT ':' type '.' expr            { ExExists (pos $1) (locThing $2) $4 $6 }
+
+  | lifetimePrefix 'memblock' '(' expr ',' expr ',' expr ',' expr ')'
+                                                { ExMemblock (pos $2) $1 $4 $6 $8 $10 }
+  | 'free' '(' expr ')'                         { ExFree (pos $1) $3 }
+  | lifetimePrefix 'ptr' '(' '(' expr ',' expr ',' expr ')' '|->' expr ')'
                                                 { ExPtr (pos $2) $1 $5 $7 (Just $9) $12 }
-  | lifetimePrefix 'ptr' '(' '(' astExpr ',' astExpr             ')' '|->' astExpr ')'
+  | lifetimePrefix 'ptr' '(' '(' expr ',' expr          ')' '|->' expr ')'
                                                 { ExPtr (pos $2) $1 $5 $7 Nothing $10 }
 
-  | 'shape' '(' astExpr ')'                     { ExShape (pos $1) $3}
+  | 'shape' '(' expr ')'                        { ExShape (pos $1) $3}
   | 'lowned' '(' list(varExpr) '-o' list1(varExpr) ')'
                                                 { ExLOwned (pos $1) $3 $5}
   | lifetimePrefix 'lcurrent'                   { ExLCurrent (pos $2) $1 }
 
-  | astExpr '=='  astExpr                       { ExEqual (pos $2) $1 $3}
-  | astExpr '/='  astExpr                       { ExNotEqual (pos $2) $1 $3}
-  | astExpr '<u'  astExpr                       { ExLessThan (pos $2) $1 $3}
-  | astExpr '<=u' astExpr                       { ExLessEqual (pos $2) $1 $3}
+-- BV Props (Value Permissions)
+
+  | expr '=='  expr                             { ExEqual (pos $2) $1 $3}
+  | expr '/='  expr                             { ExNotEqual (pos $2) $1 $3}
+  | expr '<u'  expr                             { ExLessThan (pos $2) $1 $3}
+  | expr '<=u' expr                             { ExLessEqual (pos $2) $1 $3}
 
 frameEntry ::                                   { (AstExpr, Natural) }
-  : astExpr ':' NAT                             { ($1, locThing $3) }
+  : expr ':' NAT                                { ($1, locThing $3) }
 
 shape ::                                        { (Maybe AstExpr, AstExpr) }
-  :  astExpr                                    { (Nothing, $1)         }
-  |  '(' astExpr ',' astExpr ')'                { (Just $2, $4)         }
+  :  expr                                       { (Nothing, $1)         }
+  |  '(' expr ',' expr ')'                      { (Just $2, $4)         }
 
 identArgs ::                                    { Maybe [AstExpr]       }
   :                                             { Nothing               }
-  | '<' list(astExpr) '>'                       { Just $2               }
+  | '<' list(expr) '>'                          { Just $2               }
 
 permOffset ::                                   { Maybe AstExpr         }
   :                                             { Nothing               }
-  | '@' '(' astExpr ')'                         { Just $3               }
+  | '@' '(' expr ')'                            { Just $3               }
   | '@' NAT                                     { Just (ExNat (pos $2) (locThing $2)) }
   | '@' IDENT                                   { Just (ExVar (pos $2) (locThing $2) Nothing Nothing) }
 
@@ -195,19 +205,19 @@ funPermList ::                                  { [(String, AstExpr)]   }
   | list1(varExpr)                              { $1                    }
 
 varExpr ::                                      { (String, AstExpr)     }
-  : IDENT ':' astExpr                           { (locThing $1, $3)     }
+  : IDENT ':' expr                              { (locThing $1, $3)     }
 
 varType ::                                      { (String, AstType)     }
-  : IDENT ':' astType                           { (locThing $1, $3)     }
+  : IDENT ':' type                              { (locThing $1, $3)     }
 
 lifetimePrefix ::                               { Maybe AstExpr         }
-  : '[' astExpr ']'                             { Just $2               }
+  : '[' expr ']'                                { Just $2               }
   |                                             { Nothing               }
 
 llvmFieldPermArray ::                           { ArrayPerm             }
-  : lifetimePrefix '(' astExpr ',' astExpr ',' astExpr ')' '|->' astExpr
+  : lifetimePrefix '(' expr ',' expr ',' expr ')' '|->' expr
                                                 { ArrayPerm (pos $9) $1 $3 $5 (Just $7) $10 }
-  | lifetimePrefix '(' astExpr ',' astExpr             ')' '|->' astExpr
+  | lifetimePrefix '(' expr ',' expr          ')' '|->' expr
                                                 { ArrayPerm (pos $7) $1 $3 $5 Nothing $8 }
 
 list(p) ::                                      { [p]                   }
