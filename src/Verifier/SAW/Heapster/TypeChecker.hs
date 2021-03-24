@@ -216,7 +216,7 @@ tcTypedName :: Pos -> String -> Tc TypedName
 tcTypedName p name =
   do env <- tcAsk
      case lookup name (tcEnvExprVars env) of
-       Nothing -> tcError p "unknown variable"
+       Nothing -> tcError p ("Unknown variable:" ++ name)
        Just stn -> pure stn
 
 tcKExpr :: KnownRepr TypeRepr a => AstExpr -> Tc (PermExpr a)
@@ -253,44 +253,42 @@ tcExpr (BVRepr w)       e = withKnownNat w (normalizeBVExpr <$> tcBV e)
 tcExpr (StructRepr fs)  e = tcStruct fs e
 tcExpr LifetimeRepr     e = tcLifetimeLit e
 tcExpr (LLVMPointerRepr w) e = withKnownNat w (tcLLVMPointer w e)
-tcExpr FunctionHandleRepr{} e = tcError (pos e) "expected functionhandle type" -- no literals
-tcExpr PermListRepr     e = tcError (pos e) "expected permlist type" -- no literals
+tcExpr FunctionHandleRepr{} e = tcError (pos e) "Expected functionhandle" -- no literals
+tcExpr PermListRepr     e = tcError (pos e) "Expected permlist" -- no literals
 tcExpr RWModalityRepr   e = tcRWModality e
 tcExpr (ValuePermRepr t) e = permToExpr <$> tcValPerm t e
 tcExpr (LLVMShapeRepr w) e = withKnownNat w (tcLLVMShape e)
 
-
-tcExpr (IntrinsicRepr s _) e =
-  tcError (pos e) ("expected intrinsic type: " ++ show s)
+tcExpr (IntrinsicRepr s _) e = tcError (pos e) ("Expected intrinsic type: " ++ show s)
 
 -- reprs that we explicitly do not support
-tcExpr BoolRepr         e = tcError (pos e) "expected boolean"
-tcExpr IntegerRepr      e = tcError (pos e) "expected integerl"
-tcExpr AnyRepr          e = tcError (pos e) "expected any type"
-tcExpr RealValRepr      e = tcError (pos e) "expected realval type"
-tcExpr ComplexRealRepr  e = tcError (pos e) "expected realval type"
-tcExpr RecursiveRepr{}  e = tcError (pos e) "expected recursive type"
-tcExpr FloatRepr{}      e = tcError (pos e) "expected float type"
-tcExpr IEEEFloatRepr{}  e = tcError (pos e) "expected ieeefloat type"
-tcExpr CharRepr         e = tcError (pos e) "expected char type"
-tcExpr StringRepr{}     e = tcError (pos e) "expected string type"
-tcExpr MaybeRepr{}      e = tcError (pos e) "expected maybe type"
-tcExpr VectorRepr{}     e = tcError (pos e) "expected vector type"
-tcExpr VariantRepr{}    e = tcError (pos e) "expected variant type"
-tcExpr ReferenceRepr{}  e = tcError (pos e) "expected variant type"
-tcExpr WordMapRepr{}    e = tcError (pos e) "expected wordmap type"
-tcExpr StringMapRepr{}  e = tcError (pos e) "expected stringmap type"
-tcExpr SymbolicArrayRepr{} e = tcError (pos e) "expected symbolicarray type"
-tcExpr SymbolicStructRepr{} e = tcError (pos e) "expected symbolicstruct type"
+tcExpr BoolRepr             e = tcError (pos e) "Expected boolean"
+tcExpr IntegerRepr          e = tcError (pos e) "Expected integerl"
+tcExpr AnyRepr              e = tcError (pos e) "Expected any type"
+tcExpr RealValRepr          e = tcError (pos e) "Expected realval"
+tcExpr ComplexRealRepr      e = tcError (pos e) "Expected realval"
+tcExpr CharRepr             e = tcError (pos e) "Expected char"
+tcExpr RecursiveRepr     {} e = tcError (pos e) "Expected recursive-value"
+tcExpr FloatRepr         {} e = tcError (pos e) "Expected float"
+tcExpr IEEEFloatRepr     {} e = tcError (pos e) "Expected ieeefloat"
+tcExpr StringRepr        {} e = tcError (pos e) "Expected string"
+tcExpr MaybeRepr         {} e = tcError (pos e) "Expected maybe"
+tcExpr VectorRepr        {} e = tcError (pos e) "Expected vector"
+tcExpr VariantRepr       {} e = tcError (pos e) "Expected variant"
+tcExpr ReferenceRepr     {} e = tcError (pos e) "Expected reference"
+tcExpr WordMapRepr       {} e = tcError (pos e) "Expected wordmap"
+tcExpr StringMapRepr     {} e = tcError (pos e) "Expected stringmap"
+tcExpr SymbolicArrayRepr {} e = tcError (pos e) "Expected symbolicarray"
+tcExpr SymbolicStructRepr{} e = tcError (pos e) "Expected symbolicstruct"
 
 
 tcUnit :: AstExpr -> Tc (PermExpr UnitType)
 tcUnit ExUnit{} = pure PExpr_Unit
-tcUnit e        = tcError (pos e) "expected unit type"
+tcUnit e        = tcError (pos e) "Expected unit"
 
 tcNat :: AstExpr -> Tc (PermExpr NatType)
 tcNat (ExNat _ i) = pure (PExpr_Nat i)
-tcNat e           = tcError (pos e) "expected unit type"
+tcNat e           = tcError (pos e) "Expected unit"
 
 tcBV :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (BVType w))
 tcBV (ExAdd _ x y) = bvAdd <$> tcBV x <*> tcBV y
@@ -308,11 +306,11 @@ tcBVFactor (ExMul _ (ExVar p name Nothing Nothing) (ExNat _ i)) =
 tcBVFactor (ExVar p name Nothing Nothing) =
   do Some tn <- tcTypedName p name
      PExpr_Var <$> tcCastTyped p knownRepr tn
-tcBVFactor e = tcError (pos e) "expected bv factor"
+tcBVFactor e = tcError (pos e) "Expected BV factor"
 
 tcStruct :: CtxRepr fs -> AstExpr -> Tc (PermExpr (StructType fs))
 tcStruct ts (ExStruct p es) = PExpr_Struct <$> tcExprs p (mkCruCtx ts) es
-tcStruct _ e = tcError (pos e) "expected struct type"
+tcStruct _ e = tcError (pos e) "Expected struct"
 
 tcExprs :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
 tcExprs p tys es = tcExprs' p tys (reverse es)
@@ -323,7 +321,7 @@ tcExprs' p (CruCtxCons xs x) (y:ys) =
   do zs <- tcExprs' p xs ys
      z  <- tcExpr x y
      pure (zs :>: z)
-tcExprs' p _ _ = tcError p "bad arity"
+tcExprs' p _ _ = tcError p "Bad arity"
 
 tcValuePerms :: Pos -> RAssign TypeRepr tys -> [AstExpr] -> Tc (RAssign ValuePerm tys)
 tcValuePerms p tys es = tcValuePerms' p tys (reverse es)
@@ -334,12 +332,12 @@ tcValuePerms' p (xs :>: x) (y:ys) =
   do zs <- tcValuePerms' p xs ys
      z  <- tcValPerm x y
      pure (zs :>: z)
-tcValuePerms' p _ _ = tcError p "bad arity"
+tcValuePerms' p _ _ = tcError p "Bad arity"
 
 tcRWModality :: AstExpr -> Tc (PermExpr RWModalityType)
 tcRWModality ExRead {} = pure PExpr_Read
 tcRWModality ExWrite{} = pure PExpr_Write
-tcRWModality e         = tcError (pos e) "expected rwmodality"
+tcRWModality e         = tcError (pos e) "Expected rwmodality"
 
 tcOptLifetime :: Maybe AstExpr -> Tc (PermExpr LifetimeType)
 tcOptLifetime Nothing = pure PExpr_Always
@@ -347,7 +345,7 @@ tcOptLifetime (Just e) = tcKExpr e
 
 tcLifetimeLit :: AstExpr -> Tc (PermExpr LifetimeType)
 tcLifetimeLit ExAlways{} = pure PExpr_Always
-tcLifetimeLit e          = tcError (pos e) "expected lifetime"
+tcLifetimeLit e          = tcError (pos e) "Expected lifetime"
 
 tcLLVMShape :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (LLVMShapeType w))
 tcLLVMShape (ExOrSh _ x y) = PExpr_OrShape <$> tcKExpr x <*> tcKExpr y
@@ -365,7 +363,7 @@ tcLLVMShape (ExArraySh _ len stride flds) =
   <$> tcKExpr len
   <*> (Bytes . fromIntegral <$> tcNatural stride)
   <*> traverse (uncurry tcLLVMFieldShape_) flds
-tcLLVMShape e = tcError (pos e) "expected llvmshape"
+tcLLVMShape e = tcError (pos e) "Expected shape"
 
 tcLLVMFieldShape_ ::
   forall w. (KnownNat w, 1 <= w) => Maybe AstExpr -> AstExpr -> Tc (LLVMFieldShape w)
@@ -383,7 +381,7 @@ tcLLVMFieldShape nr e = LLVMFieldShape <$> tcValPerm (LLVMPointerRepr nr) e
 tcLLVMPointer :: (KnownNat w, 1 <= w) => NatRepr w -> AstExpr -> Tc (PermExpr (LLVMPointerType w))
 tcLLVMPointer _ (ExLlvmWord _ e) = PExpr_LLVMWord <$> tcKExpr e
 tcLLVMPointer w (ExAdd _ (ExVar p name Nothing Nothing) off) = PExpr_LLVMOffset <$> tcVar (LLVMPointerRepr w) p name <*> tcKExpr off
-tcLLVMPointer _ e = tcError (pos e) "expected llvmpointer"
+tcLLVMPointer _ e = tcError (pos e) "Expected llvmpointer"
 
 -- | Check a value permission of a known type in a given context
 tcValPermInCtx :: ParsedCtx ctx -> TypeRepr a -> AstExpr -> Tc (Mb ctx (ValuePerm a))
@@ -447,7 +445,7 @@ tcAtomicPerm (LLVMFrameRepr w) e = withKnownNat w (tcFrameAtomic e)
 tcAtomicPerm (LLVMBlockRepr w) e = withKnownNat w (tcBlockAtomic e)
 tcAtomicPerm (StructRepr tys) e = tcStructAtomic tys e
 tcAtomicPerm LifetimeRepr e = tcLifetimeAtomic e
-tcAtomicPerm _ e = tcError (pos e) "expected atomic perm"
+tcAtomicPerm _ e = tcError (pos e) "Expected perm"
 
 tcPointerAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMPointerType w))
 tcPointerAtomic (ExPtr p l rw off sz c) =
@@ -460,7 +458,7 @@ tcPointerAtomic (ExEqual     _ x y) = Perm_BVProp <$> (BVProp_Eq   <$> tcKExpr x
 tcPointerAtomic (ExNotEqual  _ x y) = Perm_BVProp <$> (BVProp_Neq  <$> tcKExpr x <*> tcKExpr y)
 tcPointerAtomic (ExLessThan  _ x y) = Perm_BVProp <$> (BVProp_ULt  <$> tcKExpr x <*> tcKExpr y)
 tcPointerAtomic (ExLessEqual _ x y) = Perm_BVProp <$> (BVProp_ULeq <$> tcKExpr x <*> tcKExpr y)
-tcPointerAtomic e = tcError (pos e) ("expected atomic pointer perm, got: " ++ show e)
+tcPointerAtomic e = tcError (pos e) "Expected pointer perm"
 
 tcFunPtrAtomic ::
   (KnownNat w, 1 <= w) =>
@@ -508,15 +506,15 @@ tcArrayPerm (ArrayPerm _ l rw off sz c) =
 tcFrameAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMFrameType w))
 tcFrameAtomic (ExLlvmFrame _ xs) =
   Perm_LLVMFrame <$> traverse (\(e,i) -> (,) <$> tcKExpr e <*> pure (fromIntegral i)) xs
-tcFrameAtomic e = tcError (pos e) "expected atomic llvmframe"
+tcFrameAtomic e = tcError (pos e) "Expected llvmframe perm"
 
 tcStructAtomic :: CtxRepr tys -> AstExpr -> Tc (AtomicPerm (StructType tys))
 tcStructAtomic tys (ExStruct p es) = Perm_Struct <$> tcValuePerms p (assignToRList tys) es
-tcStructAtomic _ e = tcError (pos e) "expected atomic struct perm"
+tcStructAtomic _ e = tcError (pos e) "Expected struct perm"
 
 tcBlockAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMBlockType w))
 tcBlockAtomic (ExShape _ e) = Perm_LLVMBlockShape <$> tcKExpr e
-tcBlockAtomic e = tcError (pos e) "expected llvmblock atomicperm"
+tcBlockAtomic e = tcError (pos e) "Expected llvmblock perm"
 
 tcLifetimeAtomic :: AstExpr -> Tc (AtomicPerm LifetimeType)
 tcLifetimeAtomic (ExLOwned _ x y) =
@@ -524,7 +522,7 @@ tcLifetimeAtomic (ExLOwned _ x y) =
      Some y' <- tcLOwnedPerms y
      pure (Perm_LOwned x' y')
 tcLifetimeAtomic (ExLCurrent _ l) = Perm_LCurrent <$> tcOptLifetime l
-tcLifetimeAtomic e = tcError (pos e) "expected liftime atomic perm"
+tcLifetimeAtomic e = tcError (pos e) "Expected lifetime perm"
 
 tcLOwnedPerms :: [(Located String,AstExpr)] -> Tc (Some LOwnedPerms)
 tcLOwnedPerms [] = pure (Some MNil)
@@ -541,11 +539,11 @@ tcLOwnedPerms ((Located p n,e):xs) =
 tcPermOffset :: TypeRepr a -> Pos -> Maybe AstExpr -> Tc (PermOffset a)
 tcPermOffset _ _ Nothing = pure NoPermOffset
 tcPermOffset (LLVMPointerRepr w) _ (Just i) = withKnownNat w (LLVMPermOffset <$> tcKExpr i)
-tcPermOffset _ p _ = tcError p "Unexpected variable offset"
+tcPermOffset _ p _ = tcError p "Unexpected offset"
 
 tcNatural :: AstExpr -> Tc Natural
 tcNatural (ExNat _ i) = pure i
-tcNatural e = tcError (pos e) "integer literal required"
+tcNatural e = tcError (pos e) "Expected integer literal"
 
 tcPositive :: AstExpr -> Tc (Some (Product NatRepr (LeqProof 1)))
 tcPositive e =
