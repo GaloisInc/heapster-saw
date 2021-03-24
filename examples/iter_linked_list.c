@@ -15,6 +15,15 @@ int64_t is_elem (int64_t x, list64_t *l) {
   return 0;
 }
 
+/* Compute the length of a list */
+int64_t length (list64_t *l) {
+  int64_t len = 0;
+  for (; l != NULL; l = l->next) {
+    ++len;
+  }
+  return len;
+}
+
 /* Increment every element of a linked list */
 void incr_list (list64_t *l) {
   for (; l != NULL; l = l->next)
