@@ -142,9 +142,8 @@ expr ::                                         { AstExpr }
   | expr 'orsh' expr                            { ExOrSh (pos $2) $1 $3 }
   | expr ';' expr                               { ExSeqSh (pos $2) $1 $3 }
   | 'eqsh' '(' expr ')'                         { ExEqSh (pos $1) $3 }
-  | lifetimePrefix 'ptrsh' '(' expr ',' expr ')'
-                                                { ExPtrSh (pos $2) $1 (Just $4) $6 }
-  | lifetimePrefix 'ptrsh' '(' expr ')'         { ExPtrSh (pos $2) $1 Nothing $4 }
+  | lifetime 'ptrsh' '(' expr ',' expr ')'      { ExPtrSh (pos $2) $1 (Just $4) $6 }
+  | lifetime 'ptrsh' '('          expr ')'      { ExPtrSh (pos $2) $1 Nothing $4 }
 
   | 'fieldsh' '(' expr ',' expr ')'             { ExFieldSh (pos $1) (Just $3) $5 }
   | 'fieldsh' '('          expr ')'             { ExFieldSh (pos $1) Nothing $3 }
@@ -159,18 +158,18 @@ expr ::                                         { AstExpr }
   | 'eq' '(' expr ')'                           { ExEq (pos $1) $3 }
   | 'exists' IDENT ':' type '.' expr            { ExExists (pos $1) (locThing $2) $4 $6 }
 
-  | lifetimePrefix 'memblock' '(' expr ',' expr ',' expr ',' expr ')'
+  | lifetime 'memblock' '(' expr ',' expr ',' expr ',' expr ')'
                                                 { ExMemblock (pos $2) $1 $4 $6 $8 $10 }
   | 'free' '(' expr ')'                         { ExFree (pos $1) $3 }
-  | lifetimePrefix 'ptr' '(' '(' expr ',' expr ',' expr ')' '|->' expr ')'
+  | lifetime 'ptr' '(' '(' expr ',' expr ',' expr ')' '|->' expr ')'
                                                 { ExPtr (pos $2) $1 $5 $7 (Just $9) $12 }
-  | lifetimePrefix 'ptr' '(' '(' expr ',' expr          ')' '|->' expr ')'
+  | lifetime 'ptr' '(' '(' expr ','          expr ')' '|->' expr ')'
                                                 { ExPtr (pos $2) $1 $5 $7 Nothing $10 }
 
   | 'shape' '(' expr ')'                        { ExShape (pos $1) $3}
   | 'lowned' '(' list(varExpr) '-o' list1(varExpr) ')'
                                                 { ExLOwned (pos $1) $3 $5}
-  | lifetimePrefix 'lcurrent'                   { ExLCurrent (pos $2) $1 }
+  | lifetime 'lcurrent'                         { ExLCurrent (pos $2) $1 }
 
 -- BV Props (Value Permissions)
 
@@ -210,14 +209,14 @@ varExpr ::                                      { (String, AstExpr)     }
 varType ::                                      { (String, AstType)     }
   : IDENT ':' type                              { (locThing $1, $3)     }
 
-lifetimePrefix ::                               { Maybe AstExpr         }
-  : '[' expr ']'                                { Just $2               }
-  |                                             { Nothing               }
+lifetime ::                                     { Maybe AstExpr         }
+  :                                             { Nothing               }
+  | '[' expr ']'                                { Just $2               }
 
 llvmFieldPermArray ::                           { ArrayPerm             }
-  : lifetimePrefix '(' expr ',' expr ',' expr ')' '|->' expr
+  : lifetime '(' expr ',' expr ',' expr ')' '|->' expr
                                                 { ArrayPerm (pos $9) $1 $3 $5 (Just $7) $10 }
-  | lifetimePrefix '(' expr ',' expr          ')' '|->' expr
+  | lifetime '(' expr ','          expr ')' '|->' expr
                                                 { ArrayPerm (pos $7) $1 $3 $5 Nothing $8 }
 
 list(p) ::                                      { [p]                   }
