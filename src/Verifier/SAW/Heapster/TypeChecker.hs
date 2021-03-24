@@ -73,7 +73,7 @@ data TcEnv = TcEnv {
 data TypeError = TypeError Pos String
   deriving Show
 
-$(mkNuMatching [t| TypeError |])
+mkNuMatching [t| TypeError |]
 
 instance Closable TypeError where
   toClosed = unsafeClose

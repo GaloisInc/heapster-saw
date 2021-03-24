@@ -31,8 +31,8 @@ import Verifier.SAW.Heapster.RustTypes
 
 import Verifier.SAW.Heapster.Lexer (lexer)
 import Verifier.SAW.Heapster.Located (Pos(..), Located(..))
-import Verifier.SAW.Heapster.Token (Token(TEndOfInput), describeToken)
-import Verifier.SAW.Heapster.Parser (parseFunPerm, parseCtx, parseType, parseExpr, parseValuePerms)
+import Verifier.SAW.Heapster.Token (Token, describeToken)
+import Verifier.SAW.Heapster.Parser (ParseError(..), parseFunPerm, parseCtx, parseType, parseExpr, parseValuePerms)
 import Verifier.SAW.Heapster.TypeChecker (Tc, TypeError(..), startTc, tcFunPerm, tcCtx, tcType, tcExpr, inParsedCtxM, tcAtomicPerms, tcSortedMbValuePerms, tcValPerm)
 import Verifier.SAW.Heapster.ParsedCtx (ParsedCtx, parsedCtxCtx)
 
@@ -44,22 +44,28 @@ runParser ::
   (MonadFail m) =>
   String                                {- ^ object name                -} ->
   PermEnv                               {- ^ permission environment     -} ->
-  ([Located Token] -> Either (Located Token) p) {- ^ parser             -} ->
+  ([Located Token] -> Either ParseError p) {- ^ parser                  -} ->
   (p -> Tc a)                           {- ^ checker                    -} ->
   String                                {- ^ input                      -} ->
   m a
 runParser obj env parser checker str =
   case parser (lexer str) of
-    Left (Located _ TEndOfInput) ->
+    Left UnexpectedEnd ->
       fail $ unlines
         [ "Error parsing " ++ obj
         , "Unexpected end of input"
         , pointEnd str
         ]
-    Left (Located p t) ->
+    Left (UnexpectedToken p t) ->
       fail $ unlines
         [ "Error parsing " ++ obj ++ " at " ++ renderPos p
         , "Unexpected " ++ describeToken t
+        , point p str
+        ]
+    Left (Unclosed p) ->
+      fail $ unlines
+        [ "Error parsing " ++ obj ++ " at " ++ renderPos p
+        , "Bracket not closed"
         , point p str
         ]
     Right ast ->

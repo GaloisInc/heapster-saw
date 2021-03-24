@@ -1,6 +1,16 @@
 {
 {-# Language ViewPatterns #-}
-module Verifier.SAW.Heapster.Parser where
+module Verifier.SAW.Heapster.Parser (
+
+  parseCtx,
+  parseType,
+  parseFunPerm,
+  parseExpr,
+  parseValuePerms,
+
+  ParseError(..),
+
+  ) where
 
 import GHC.Natural
 
@@ -74,7 +84,7 @@ IDENT           { (traverse tokenIdent -> Just $$)      }
 NAT             { (traverse tokenNat   -> Just $$)      }
 
 
-%monad          { Either (Located Token)                }
+%monad          { Either ParseError                     }
 %error          { errorP                                }
 
 %name parseCtx          ctx
@@ -90,6 +100,7 @@ NAT             { (traverse tokenNat   -> Just $$)      }
 %nonassoc '==' '/=' '<u' '<=u'
 %left     '+'
 %left     '*'
+%nonassoc '@'
 
 %%
 
@@ -191,9 +202,7 @@ identArgs ::                                    { Maybe [AstExpr]       }
 
 permOffset ::                                   { Maybe AstExpr         }
   :                                             { Nothing               }
-  | '@' '(' expr ')'                            { Just $3               }
-  | '@' NAT                                     { Just (ExNat (pos $2) (locThing $2)) }
-  | '@' IDENT                                   { Just (ExVar (pos $2) (locThing $2) Nothing Nothing) }
+  | '@' expr                                    { Just $2               }
 
 funPerm ::                                      { AstFunPerm }
   : '(' ctx ')' '.' funPermList '-o' funPermList
@@ -231,7 +240,13 @@ list1R(p) ::                                    { [p]                   }
   | list1R(p) ',' p                             { $3 : $1               }
 
 {
-errorP :: [Located Token] -> Either (Located Token) a
-errorP (t:_) = Left t
-errorP []    = Left (Located (Pos 0 0 0) TEndOfInput)
+data ParseError
+  = UnexpectedToken Pos Token
+  | Unclosed Pos
+  | UnexpectedEnd
+  deriving Show
+
+errorP :: [Located Token] -> Either ParseError a
+errorP (Located p t:_) = Left (UnexpectedToken p t)
+errorP []              = Left UnexpectedEnd
 }

@@ -69,7 +69,6 @@ data Token
   | TIdent String
   | TNatLit Natural
   | TError String
-  | TEndOfInput
   deriving Show
 
 tokenNat :: Token -> Maybe Natural
@@ -144,4 +143,3 @@ describeToken t =
     TIdent  ident       -> "identifier " ++ ident
     TNatLit n           -> "literal " ++ show n
     TError  _           -> "lexical error"
-    TEndOfInput         -> "end of input"
