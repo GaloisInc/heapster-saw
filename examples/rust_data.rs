@@ -107,7 +107,7 @@ pub extern fn mk_five_values_extern (x1:u32,x2:u32,x3:u32,x4:u32,x5:u32)
 
 
 /* Test if a Result is Ok or Err */
-pub fn test_result (r:&Result<u64,u64>) -> bool {
+pub fn test_result <'a> (r:&'a Result<u64,u64>) -> bool {
     match r {
         Ok(_) => true,
         Err(_) => false

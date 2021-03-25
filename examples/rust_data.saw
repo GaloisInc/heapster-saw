@@ -7,6 +7,7 @@ env <- heapster_init_env_from_file "rust_data.sawcore" "rust_data.bc";
 
 // Integer types
 heapster_define_perm env "int64" " " "llvmptr 64" "exists x:bv 64.eq(llvmword(x))";
+heapster_define_perm env "int32" " " "llvmptr 32" "exists x:bv 32.eq(llvmword(x))";
 heapster_define_perm env "int8" " " "llvmptr 8" "exists x:bv 8.eq(llvmword(x))";
 heapster_define_perm env "int1" " " "llvmptr 1" "exists x:bv 1.eq(llvmword(x))";
 
@@ -22,6 +23,13 @@ heapster_define_recursive_perm env "ListPerm" "X:llvmshape 64, Xlen:bv 64, rw:rw
 
 // The String type
 heapster_define_llvmshape env "String" 64 "" "exsh cap:bv 64. ptrsh(arraysh(cap,1,[(8,int8<>)]));fieldsh(int64<>);fieldsh(eq(llvmword(cap)))";
+
+// The TwoValues, ThreeValues, FourValues, and FiveValues types
+heapster_define_llvmshape env "TwoValues" 64 "" "fieldsh(32,int32<>);fieldsh(32,int32<>)";
+heapster_define_llvmshape env "ThreeValues" 64 "" "fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>)";
+heapster_define_llvmshape env "FourValues" 64 "" "fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>)";
+heapster_define_llvmshape env "FiveValues" 64 "" "fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>)";
+
 
 
 /***
@@ -55,10 +63,17 @@ heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:
 bool_and_sym <- heapster_find_symbol env "8bool_and";
 heapster_typecheck_fun_rename env bool_and_sym "bool_and" "<> fn (bool,bool) -> bool";
 
+// mk_two_values
+// FIXME: this requires type-checking to split a 64-bit field into 2 32-bit fields
+/*
+mk_two_values_sym <- heapster_find_symbol env "13mk_two_values";
+heapster_typecheck_fun_rename env mk_two_values_sym "mk_two_values" "<> fn (u32,u32) -> TwoValues";
+*/
+
 // test_result
 test_result_sym <- heapster_find_symbol env "11test_result";
-heapster_typecheck_fun_rename env test_result_sym "test_result" "().arg0:memblock(R,0,16,Result<fieldsh(int64<>),fieldsh(int64<>)>) -o ret:int1<>";
-
+heapster_typecheck_fun_rename env test_result_sym "test_result" "<'a> fn (r:&'a Result<u64,u64>) -> bool";
+//heapster_typecheck_fun_rename env test_result_sym "test_result" "().arg0:memblock(R,0,16,Result<fieldsh(int64<>),fieldsh(int64<>)>) -o ret:int1<>";
 
 // test_sum_impl
 test_sum_impl_sym <- heapster_find_symbol env "13test_sum_impl";

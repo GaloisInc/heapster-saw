@@ -170,6 +170,10 @@ instance TestEquality f => TestEquality (RAssign f) where
     = Just Refl
   testEquality _ _ = Nothing
 
+-- FIXME: move to Hobbits
+instance NuMatchingAny1 f => NuMatchingAny1 (RAssign f) where
+  nuMatchingAny1Proof = nuMatchingProof
+
 -- | Typeclass for functors that allow equality testing at all types
 class Eq1 f where
   eq1 :: f a -> f a -> Bool
