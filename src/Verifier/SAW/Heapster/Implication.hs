@@ -2367,12 +2367,6 @@ instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (LocalPermImpl ps_in ps_out) m where
   genSubst s [nuP| LocalPermImpl impl |] = LocalPermImpl <$> genSubst s impl
 
-instance SubstVar s m => Substable s (a :~: b) m where
-  genSubst _ = return . mbLift
-
-instance SubstVar s m => Substable1 s ((:~:) a) m where
-  genSubst1 _ = return . mbLift
-
 instance SubstVar s m => Substable s (LocalImplRet ps ps') m where
   genSubst _ [nuP| LocalImplRet Refl |] = return $ LocalImplRet Refl
 

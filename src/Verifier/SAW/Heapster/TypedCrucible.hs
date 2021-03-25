@@ -29,7 +29,6 @@ module Verifier.SAW.Heapster.TypedCrucible where
 import Data.Maybe
 import qualified Data.Text as Text
 import Data.List (findIndex)
-import Data.List.NonEmpty (NonEmpty(..))
 import Data.Type.Equality
 import Data.Kind
 import qualified Data.BitVector.Sized as BV
@@ -766,9 +765,6 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
   genSubst _ mb_expr =
     error ("genSubst: unhandled Crucible expression construct: "
            ++ mbLift (fmap (show . ppApp (const (pretty "_"))) mb_expr))
-
-instance (NuMatching a, Substable s a m) => Substable s (NonEmpty a) m where
-  genSubst s [nuP| x :| xs |] = (:|) <$> genSubst s x <*> genSubst s xs
 
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>

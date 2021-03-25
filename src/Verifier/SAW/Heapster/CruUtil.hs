@@ -15,6 +15,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PatternGuards #-}
 
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+
 module Verifier.SAW.Heapster.CruUtil where
 
 import Data.Text (Text)

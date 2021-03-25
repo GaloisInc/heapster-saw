@@ -31,6 +31,7 @@ import Prelude hiding (pred)
 
 import Data.Maybe
 import Data.List hiding (sort)
+import Data.List.NonEmpty (NonEmpty(..))
 import Data.String
 import Data.Proxy
 import Data.Functor.Constant
@@ -4818,6 +4819,9 @@ instance SubstVar s m => Substable s Integer m where
 instance (NuMatching a, Substable s a m) => Substable s [a] m where
   genSubst s as = mapM (genSubst s) (mbList as)
 
+instance (NuMatching a, Substable s a m) => Substable s (NonEmpty a) m where
+  genSubst s [nuP| x :| xs |] = (:|) <$> genSubst s x <*> genSubst s xs
+
 instance (Substable s a m, Substable s b m) => Substable s (a,b) m where
   genSubst s ab = (,) <$> genSubst s (fmap fst ab) <*> genSubst s (fmap snd ab)
 
@@ -4858,6 +4862,12 @@ instance (NuMatchingAny1 f, Substable1 s f m) =>
       [nuP| AssignEmpty |] -> return $ Ctx.empty
       [nuP| AssignExtend asgn' x |] ->
         Ctx.extend <$> genSubst s asgn' <*> genSubst1 s x
+
+instance SubstVar s m => Substable s (a :~: b) m where
+  genSubst _ = return . mbLift
+
+instance SubstVar s m => Substable1 s ((:~:) a) m where
+  genSubst1 _ = return . mbLift
 
 -- | Helper function to substitute into 'BVFactor's
 substBVFactor :: SubstVar s m => s ctx -> Mb ctx (BVFactor w) ->
