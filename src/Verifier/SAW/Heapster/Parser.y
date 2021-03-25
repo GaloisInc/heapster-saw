@@ -2,12 +2,14 @@
 {-# Language ViewPatterns #-}
 module Verifier.SAW.Heapster.Parser (
 
+  -- * Parser entry points
   parseCtx,
   parseType,
   parseFunPerm,
   parseExpr,
   parseValuePerms,
 
+  -- * Parser errors
   ParseError(..),
 
   ) where
@@ -155,7 +157,6 @@ expr ::                                         { AstExpr }
   | 'eqsh' '(' expr ')'                         { ExEqSh (pos $1) $3 }
   | lifetime 'ptrsh' '(' expr ',' expr ')'      { ExPtrSh (pos $2) $1 (Just $4) $6 }
   | lifetime 'ptrsh' '('          expr ')'      { ExPtrSh (pos $2) $1 Nothing $4 }
-
   | 'fieldsh' '(' expr ',' expr ')'             { ExFieldSh (pos $1) (Just $3) $5 }
   | 'fieldsh' '('          expr ')'             { ExFieldSh (pos $1) Nothing $3 }
   | 'arraysh' '(' expr ',' expr ',' '[' list(shape) ']' ')'
@@ -240,12 +241,14 @@ list1R(p) ::                                    { [p]                   }
   | list1R(p) ',' p                             { $3 : $1               }
 
 {
+
+-- | Errors that can terminate parsing.
 data ParseError
-  = UnexpectedToken Pos Token
-  | Unclosed Pos
-  | UnexpectedEnd
+  = UnexpectedToken Pos Token   -- ^ Unexpected token
+  | UnexpectedEnd               -- ^ Unexpected end of input
   deriving Show
 
+-- | Generate an error message from the remaining token stream.
 errorP :: [Located Token] -> Either ParseError a
 errorP (Located p t:_) = Left (UnexpectedToken p t)
 errorP []              = Left UnexpectedEnd

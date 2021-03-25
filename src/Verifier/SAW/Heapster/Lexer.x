@@ -78,16 +78,22 @@ $digit+                         { token (TNatLit . read)}
 
 {
 
+-- | Convert alex-specific position type to public interface.
 mkPos :: AlexPosn -> Pos
 mkPos (AlexPn x y z) = Pos x y z
 
+-- | Helper for building a 'Located' 'Token'
 token :: (String -> Token) -> AlexPosn -> String -> Located Token
 token tok p str = Located (mkPos p) (tok str)
 
+-- | Helper for building a 'Located' 'Token' with no argument
 token_ :: Token -> AlexPosn -> String -> Located Token
 token_ tok p _ = Located (mkPos p) tok
 
-lexer :: String -> [Located Token]
+-- | Transform input text into a token stream. Errors are
+-- reported inline with the 'TError' token.
+lexer ::
+  String                {- ^ input text                 -} ->
+  [Located Token]       {- ^ token stream               -}
 lexer = alexScanTokens
-
 }
