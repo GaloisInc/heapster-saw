@@ -20,6 +20,7 @@ module Verifier.SAW.Heapster.TypeChecker (
   -- * Checker errors
   TypeError(..),
 
+  -- * Checker entry-points
   tcFunPerm,
   tcCtx,
   tcType,
@@ -67,27 +68,42 @@ data TcEnv = TcEnv {
 }
 
 ----------------------------------------------------------------------
--- * Type-checking type
+-- * Type errors
 ----------------------------------------------------------------------
 
 data TypeError = TypeError Pos String
   deriving Show
 
-$(mkNuMatching [t| TypeError |])
+mkNuMatching [t| TypeError |]
 
 instance Closable TypeError where
   toClosed = unsafeClose
+
 instance Liftable TypeError where
   mbLift = unClosed . mbLift . fmap toClosed
 
+----------------------------------------------------------------------
+-- * Type-checking type
+----------------------------------------------------------------------
+
+-- | Type-checking computations carrying a 'TcEnv' and which
+-- can fail. Access the environment with 'tcLocal' and 'tcAsk'
+-- and fail with 'tcError'.
 newtype Tc a = Tc { runTc :: TcEnv -> Either TypeError a }
 
-startTc :: Tc a -> PermEnv -> Either TypeError a
+-- | Run a type-checking computation given an initial permission
+-- environment.
+startTc ::
+  Tc a                  {- ^ typechecking action        -} ->
+  PermEnv               {- ^ permission environment     -} ->
+  Either TypeError a
 startTc tc env = runTc tc (TcEnv [] env)
 
+-- | 'fmap' derived from 'Monad'
 instance Functor Tc where
   fmap = liftM
 
+-- | ('<*>') derived from 'Monad'
 instance Applicative Tc where
   pure x = Tc \_ -> Right x
   (<*>) = ap
@@ -104,41 +120,50 @@ instance MonadBind Tc where
       [nuP| Right x |] -> Right x
       _ -> error "panic: MonadBind.Tc"
 
-tcLocal :: (TcEnv -> TcEnv) -> Tc a -> Tc a
+-- | Run type-checking computation with local changes to the
+-- type-checking environment.
+tcLocal ::
+  (TcEnv -> TcEnv)      {- ^ environment update         -} ->
+  Tc a -> Tc a
 tcLocal f (Tc k) = Tc (k . f)
 
+-- | Get current type-checking environment
 tcAsk :: Tc TcEnv
 tcAsk = Tc Right
 
-tcError :: Pos -> String -> Tc a
-tcError p err = Tc (\_ -> Left (TypeError p err))
-
-withPositive ::
-  Pos ->
-  String ->
-  Natural ->
-  (forall w. (1 <= w, KnownNat w) => NatRepr w -> Tc a) ->
+-- | Abort checking with an error message
+tcError ::
+  Pos                   {- ^ error location             -} ->
+  String                {- ^ error message              -} ->
   Tc a
-withPositive p err n k =
-  case someNatGeq1 n of
-    Nothing -> tcError p err
-    Just (Some (Pair w LeqProof)) -> withKnownNat w (k w)
+tcError p err = Tc (\_ -> Left (TypeError p err))
 
 ----------------------------------------------------------------------
 -- * Casting
 ----------------------------------------------------------------------
 
-tcCastTyped :: Pos -> TypeRepr a -> Typed f b -> Tc (f a)
-tcCastTyped _ tp (Typed tp' f)
-  | Just Refl <- testEquality tp tp' = pure f
-tcCastTyped p tp (Typed tp' _) =
-  tcError p ("Expected type " ++ show tp ++ ", got type " ++ show tp')
+-- | Cast a typed value to the requested type or
+-- raise an error in 'Tc'
+tcCastTyped ::
+  Pos                   {- ^ position of expression     -} ->
+  TypeRepr a            {- ^ target type                -} ->
+  Typed f b             {- ^ expression                 -} ->
+  Tc (f a)              {- ^ casted expression          -}
+tcCastTyped p tp (Typed tp' f) =
+  case testEquality tp tp' of
+    Just Refl -> pure f
+    Nothing   -> tcError p ("Expected type " ++ show tp ++ ", got type " ++ show tp')
 
 ----------------------------------------------------------------------
 -- * Extending variable environment
 ----------------------------------------------------------------------
 
-withExprVar :: String -> TypeRepr tp -> ExprVar tp -> Tc a -> Tc a
+-- | Run a parsing computation in a context extended with an expression variable
+withExprVar ::
+  String                {- ^ identifier                 -} ->
+  TypeRepr tp           {- ^ type of identifer          -} ->
+  ExprVar tp            {- ^ implementation             -} ->
+  Tc a -> Tc a
 withExprVar str tp x = tcLocal \env ->
   env { tcEnvExprVars = (str, Some (Typed tp x)) : tcEnvExprVars env }
 
@@ -157,9 +182,11 @@ withExprVars (xs :>: Constant x) (CruCtxCons ctx tp) (ns :>: n) m = withExprVars
 -- * Checking Types
 ----------------------------------------------------------------------
 
+-- | Check an 'AstType' as a 'TypeRepr'
 tcType :: AstType -> Tc (Some TypeRepr)
 tcType t = mapSome unKnownReprObj <$> tcTypeKnown t
 
+-- | Check an 'AstType' and build a @'KnownRepr' 'TypeRepr'@ instance for it
 tcTypeKnown :: AstType -> Tc (Some (KnownReprObj TypeRepr))
 tcTypeKnown t =
   case t of
@@ -196,6 +223,7 @@ tcTypeKnown t =
       do Some tp@KnownReprObj <- tcTypeKnown x
          pure (Some (mkKnownReprObj (ValuePermRepr (unKnownReprObj tp))))
 
+-- | Helper function for building struct type lists
 structAdd ::
   Some (KnownReprObj (Ctx.Assignment TypeRepr)) ->
   Some (KnownReprObj TypeRepr) ->
@@ -207,21 +235,34 @@ structAdd (Some acc@KnownReprObj) (Some x@KnownReprObj) =
 -- * Checking Expressions
 ----------------------------------------------------------------------
 
-tcVar :: TypeRepr a -> Pos -> String -> Tc (ExprVar a)
+-- | Parse an identifier as an expression variable of a specific type
+tcVar ::
+  TypeRepr a            {- ^ expected type              -} ->
+  Pos                   {- ^ identifier position        -} ->
+  String                {- ^ identifier                 -} ->
+  Tc (ExprVar a)
 tcVar ty p name =
   do Some tn <- tcTypedName p name
      tcCastTyped p ty tn
 
-tcTypedName :: Pos -> String -> Tc TypedName
+-- | Check a valid identifier string as an expression variable
+tcTypedName ::
+  Pos                   {- ^ identifier position        -} ->
+  String                {- ^ identifier                 -} ->
+  Tc TypedName
 tcTypedName p name =
   do env <- tcAsk
      case lookup name (tcEnvExprVars env) of
        Nothing -> tcError p ("Unknown variable:" ++ name)
        Just stn -> pure stn
 
+-- | Check an 'AstExpr' as a 'PermExpr' with a known type.
 tcKExpr :: KnownRepr TypeRepr a => AstExpr -> Tc (PermExpr a)
 tcKExpr = tcExpr knownRepr
 
+-- | Check an 'AstExpr' as a 'PermExpr' with a given type.
+-- This is a top-level entry-point to the checker that will
+-- resolve variables.
 tcExpr :: TypeRepr a -> AstExpr -> Tc (PermExpr a)
 tcExpr ty (ExVar p name Nothing Nothing) = PExpr_Var <$> tcVar ty p name
 
@@ -259,9 +300,6 @@ tcExpr tp@(ValuePermRepr sub_tp) (ExVar p name (Just args) Nothing) =
 tcExpr _ (ExVar p _ Just{} _) = tcError p "Unexpected variable instantiation"
 tcExpr _ (ExVar p _ _ Just{}) = tcError p "Unexpected variable offset"
 
-
-
-
 tcExpr UnitRepr         e = tcUnit e
 tcExpr NatRepr          e = tcNat e
 tcExpr (BVRepr w)       e = withKnownNat w (normalizeBVExpr <$> tcBV e)
@@ -296,20 +334,23 @@ tcExpr StringMapRepr     {} e = tcError (pos e) "Expected stringmap"
 tcExpr SymbolicArrayRepr {} e = tcError (pos e) "Expected symbolicarray"
 tcExpr SymbolicStructRepr{} e = tcError (pos e) "Expected symbolicstruct"
 
-
+-- | Check for a unit literal
 tcUnit :: AstExpr -> Tc (PermExpr UnitType)
 tcUnit ExUnit{} = pure PExpr_Unit
 tcUnit e        = tcError (pos e) "Expected unit"
 
+-- | Check for a nat literal
 tcNat :: AstExpr -> Tc (PermExpr NatType)
 tcNat (ExNat _ i) = pure (PExpr_Nat i)
-tcNat e           = tcError (pos e) "Expected unit"
+tcNat e           = tcError (pos e) "Expected integer"
 
+-- | Check for a bitvector expression
 tcBV :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (BVType w))
 tcBV (ExAdd _ x y) = bvAdd <$> tcBV x <*> tcBV y
 tcBV e             = tcBVFactor e
 
--- Note: this could be more permissive
+-- | Check for a bitvector factor. This is limited to
+-- variables, constants, and multiplication by a constant.
 tcBVFactor :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (BVType w))
 tcBVFactor (ExNat _ i) = pure (bvInt (fromIntegral i))
 tcBVFactor (ExMul _ (ExNat _ i) (ExVar p name Nothing Nothing)) =
@@ -323,13 +364,21 @@ tcBVFactor (ExVar p name Nothing Nothing) =
      PExpr_Var <$> tcCastTyped p knownRepr tn
 tcBVFactor e = tcError (pos e) "Expected BV factor"
 
+-- | Check for a struct literal
 tcStruct :: CtxRepr fs -> AstExpr -> Tc (PermExpr (StructType fs))
 tcStruct ts (ExStruct p es) = PExpr_Struct <$> tcExprs p (mkCruCtx ts) es
 tcStruct _ e = tcError (pos e) "Expected struct"
 
-tcExprs :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
+-- | Check a list of expressions. In case of arity issues
+-- an arity error is reported at the given position.
+tcExprs ::
+  Pos                   {- ^ position for arity error   -} ->
+  CruCtx fs             {- ^ expected types             -} ->
+  [AstExpr]             {- ^ expressions                -} ->
+  Tc (PermExprs fs)
 tcExprs p tys es = tcExprs' p tys (reverse es)
 
+-- | Helper for 'tcExprs'
 tcExprs' :: Pos -> CruCtx fs -> [AstExpr] -> Tc (PermExprs fs)
 tcExprs' _ CruCtxNil [] = pure PExprs_Nil
 tcExprs' p (CruCtxCons xs x) (y:ys) =
@@ -338,9 +387,11 @@ tcExprs' p (CruCtxCons xs x) (y:ys) =
      pure (zs :>: z)
 tcExprs' p _ _ = tcError p "Bad arity"
 
+-- | Parse a sequence of permissions of some given types
 tcValuePerms :: Pos -> RAssign TypeRepr tys -> [AstExpr] -> Tc (RAssign ValuePerm tys)
 tcValuePerms p tys es = tcValuePerms' p tys (reverse es)
 
+-- | Helper for 'tcValuePerms'
 tcValuePerms' :: Pos -> RAssign TypeRepr tps -> [AstExpr] -> Tc (RAssign ValuePerm tps)
 tcValuePerms' _ MNil [] = pure MNil
 tcValuePerms' p (xs :>: x) (y:ys) =
@@ -349,19 +400,23 @@ tcValuePerms' p (xs :>: x) (y:ys) =
      pure (zs :>: z)
 tcValuePerms' p _ _ = tcError p "Bad arity"
 
+-- | Check an rwmodality literal
 tcRWModality :: AstExpr -> Tc (PermExpr RWModalityType)
 tcRWModality ExRead {} = pure PExpr_Read
 tcRWModality ExWrite{} = pure PExpr_Write
 tcRWModality e         = tcError (pos e) "Expected rwmodality"
 
+-- | Check an optional lifetime expression. Default to @always@ if missing.
 tcOptLifetime :: Maybe AstExpr -> Tc (PermExpr LifetimeType)
 tcOptLifetime Nothing = pure PExpr_Always
 tcOptLifetime (Just e) = tcKExpr e
 
+-- | Check a lifetime literal
 tcLifetimeLit :: AstExpr -> Tc (PermExpr LifetimeType)
 tcLifetimeLit ExAlways{} = pure PExpr_Always
 tcLifetimeLit e          = tcError (pos e) "Expected lifetime"
 
+-- | Check an LLVM shape expression
 tcLLVMShape :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (LLVMShapeType w))
 tcLLVMShape (ExOrSh _ x y) = PExpr_OrShape <$> tcKExpr x <*> tcKExpr y
 tcLLVMShape (ExExSh _ var vartype sh) =
@@ -384,6 +439,7 @@ tcLLVMShape (ExArraySh _ len stride flds) =
   <*> traverse (uncurry tcLLVMFieldShape_) flds
 tcLLVMShape e = tcError (pos e) "Expected shape"
 
+-- | Field and array helper for 'tcLLVMShape'
 tcLLVMFieldShape_ ::
   forall w. (KnownNat w, 1 <= w) => Maybe AstExpr -> AstExpr -> Tc (LLVMFieldShape w)
 tcLLVMFieldShape_ Nothing e = tcLLVMFieldShape (knownNat :: NatRepr w) e
@@ -391,12 +447,14 @@ tcLLVMFieldShape_ (Just w) e =
   do Some (Pair nr LeqProof) <- tcPositive w
      withKnownNat nr (tcLLVMFieldShape nr e)
 
+-- | Check a single field or array element shape
 tcLLVMFieldShape ::
   forall (w :: Nat) (v :: Nat).
   (KnownNat w, 1 <= w) =>
   NatRepr w -> AstExpr -> Tc (LLVMFieldShape v)
 tcLLVMFieldShape nr e = LLVMFieldShape <$> tcValPerm (LLVMPointerRepr nr) e
 
+-- | Check a LLVM pointer expression
 tcLLVMPointer :: (KnownNat w, 1 <= w) => NatRepr w -> AstExpr -> Tc (PermExpr (LLVMPointerType w))
 tcLLVMPointer _ (ExLlvmWord _ e) = PExpr_LLVMWord <$> tcKExpr e
 tcLLVMPointer w (ExAdd _ (ExVar p name Nothing Nothing) off) = PExpr_LLVMOffset <$> tcVar (LLVMPointerRepr w) p name <*> tcKExpr off
@@ -406,6 +464,7 @@ tcLLVMPointer _ e = tcError (pos e) "Expected llvmpointer"
 tcValPermInCtx :: ParsedCtx ctx -> TypeRepr a -> AstExpr -> Tc (Mb ctx (ValuePerm a))
 tcValPermInCtx ctx tp = inParsedCtxM ctx . const . tcValPerm tp
 
+-- | Parse a value permission of a known type
 tcValPerm :: TypeRepr a -> AstExpr -> Tc (ValuePerm a)
 tcValPerm _  ExTrue{} = pure ValPerm_True
 tcValPerm ty (ExOr _ x y) = ValPerm_Or <$> tcValPerm ty x <*> tcValPerm ty y
@@ -435,11 +494,12 @@ tcValPerm ty (ExVar p n Nothing off) =
   ValPerm_Var <$> tcVar (ValuePermRepr ty) p n <*> tcPermOffset ty p off
 tcValPerm ty e = ValPerm_Conj <$> tcAtomicPerms ty e
 
+-- | Parse a @*@-separated list of atomic permissions
 tcAtomicPerms :: TypeRepr a -> AstExpr -> Tc [AtomicPerm a]
 tcAtomicPerms ty (ExMul _ x y) = (++) <$> tcAtomicPerms ty x <*> tcAtomicPerms ty y
 tcAtomicPerms ty e = pure <$> tcAtomicPerm ty e
 
-
+-- | Parse an atomic permission of a specific type
 tcAtomicPerm :: TypeRepr a -> AstExpr -> Tc (AtomicPerm a)
 tcAtomicPerm ty (ExVar p n (Just argEs) maybe_off) =
   do env <- tcEnvPermEnv <$> tcAsk
@@ -458,7 +518,6 @@ tcAtomicPerm ty (ExVar p n (Just argEs) maybe_off) =
          tcError p ("Permission name '" ++ n ++ "' has incorrect type")
        Nothing ->
          tcError p ("Unknown permission name '" ++ n ++ "'")
-
 tcAtomicPerm (LLVMPointerRepr w) e = withKnownNat w (tcPointerAtomic e)
 tcAtomicPerm (LLVMFrameRepr w) e = withKnownNat w (tcFrameAtomic e)
 tcAtomicPerm (LLVMBlockRepr w) e = withKnownNat w (tcBlockAtomic e)
@@ -466,9 +525,10 @@ tcAtomicPerm (StructRepr tys) e = tcStructAtomic tys e
 tcAtomicPerm LifetimeRepr e = tcLifetimeAtomic e
 tcAtomicPerm _ e = tcError (pos e) "Expected perm"
 
+-- | Check an LLVM pointer atomic permission expression
 tcPointerAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMPointerType w))
 tcPointerAtomic (ExPtr p l rw off sz c) =
-  llvmArrayFieldToAtomicPerm <$> tcArrayPerm (ArrayPerm p l rw off sz c)
+  llvmArrayFieldToAtomicPerm <$> tcArrayFieldPerm (ArrayPerm p l rw off sz c)
 tcPointerAtomic (ExArray _ x y z w) = Perm_LLVMArray <$> tcArrayAtomic x y z w
 tcPointerAtomic (ExMemblock _ l rw off len sh) = Perm_LLVMBlock <$> tcMemblock l rw off len sh
 tcPointerAtomic (ExFree      _ x  ) = Perm_LLVMFree <$> tcKExpr x
@@ -479,6 +539,7 @@ tcPointerAtomic (ExLessThan  _ x y) = Perm_BVProp <$> (BVProp_ULt  <$> tcKExpr x
 tcPointerAtomic (ExLessEqual _ x y) = Perm_BVProp <$> (BVProp_ULeq <$> tcKExpr x <*> tcKExpr y)
 tcPointerAtomic e = tcError (pos e) "Expected pointer perm"
 
+-- | Check a function pointer permission literal
 tcFunPtrAtomic ::
   (KnownNat w, 1 <= w) =>
   AstExpr -> AstExpr -> AstFunPerm -> Tc (AtomicPerm (LLVMPointerType w))
@@ -489,6 +550,7 @@ tcFunPtrAtomic x y fun =
      SomeFunPerm fun_perm    <- tcFunPerm args (LLVMPointerRepr w') fun
      pure (mkPermLLVMFunPtr knownNat fun_perm)
 
+-- | Check a memblock permission literal
 tcMemblock ::
   (KnownNat w, 1 <= w) =>
   Maybe AstExpr ->
@@ -501,6 +563,7 @@ tcMemblock l rw off len sh =
      llvmBlockShape    <- tcKExpr sh
      pure LLVMBlockPerm{..}
 
+-- | Check an atomic array permission literal
 tcArrayAtomic ::
   (KnownNat w, 1 <= w) => AstExpr -> AstExpr -> AstExpr -> [ArrayPerm] -> Tc (LLVMArrayPerm w)
 tcArrayAtomic off len stride fields =
@@ -508,11 +571,12 @@ tcArrayAtomic off len stride fields =
   <$> tcKExpr off
   <*> tcKExpr len
   <*> (Bytes . fromIntegral <$> tcNatural stride)
-  <*> traverse tcArrayPerm fields
+  <*> traverse tcArrayFieldPerm fields
   <*> pure []
 
-tcArrayPerm :: forall w. (KnownNat w, 1 <= w) => ArrayPerm -> Tc (LLVMArrayField w)
-tcArrayPerm (ArrayPerm _ l rw off sz c) =
+-- | Check a single field of an array permission
+tcArrayFieldPerm :: forall w. (KnownNat w, 1 <= w) => ArrayPerm -> Tc (LLVMArrayField w)
+tcArrayFieldPerm (ArrayPerm _ l rw off sz c) =
   do llvmFieldLifetime <- tcOptLifetime l
      llvmFieldRW <- tcExpr RWModalityRepr rw
      llvmFieldOffset <- tcKExpr off :: Tc (PermExpr (BVType w))
@@ -522,19 +586,23 @@ tcArrayPerm (ArrayPerm _ l rw off sz c) =
       llvmFieldContents <- withKnownNat w (tcValPerm (LLVMPointerRepr w) c)
       pure (LLVMArrayField LLVMFieldPerm{..})
 
+-- | Check a frame permission literal
 tcFrameAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMFrameType w))
 tcFrameAtomic (ExLlvmFrame _ xs) =
   Perm_LLVMFrame <$> traverse (\(e,i) -> (,) <$> tcKExpr e <*> pure (fromIntegral i)) xs
 tcFrameAtomic e = tcError (pos e) "Expected llvmframe perm"
 
+-- | Check a struct permission literal
 tcStructAtomic :: CtxRepr tys -> AstExpr -> Tc (AtomicPerm (StructType tys))
 tcStructAtomic tys (ExStruct p es) = Perm_Struct <$> tcValuePerms p (assignToRList tys) es
 tcStructAtomic _ e = tcError (pos e) "Expected struct perm"
 
+-- | Check a block shape permission literal
 tcBlockAtomic :: (KnownNat w, 1 <= w) => AstExpr -> Tc (AtomicPerm (LLVMBlockType w))
 tcBlockAtomic (ExShape _ e) = Perm_LLVMBlockShape <$> tcKExpr e
 tcBlockAtomic e = tcError (pos e) "Expected llvmblock perm"
 
+-- | Check a lifetime permission literal
 tcLifetimeAtomic :: AstExpr -> Tc (AtomicPerm LifetimeType)
 tcLifetimeAtomic (ExLOwned _ x y) =
   do Some x' <- tcLOwnedPerms x
@@ -543,6 +611,7 @@ tcLifetimeAtomic (ExLOwned _ x y) =
 tcLifetimeAtomic (ExLCurrent _ l) = Perm_LCurrent <$> tcOptLifetime l
 tcLifetimeAtomic e = tcError (pos e) "Expected lifetime perm"
 
+-- | Helper for lowned permission checking
 tcLOwnedPerms :: [(Located String,AstExpr)] -> Tc (Some LOwnedPerms)
 tcLOwnedPerms [] = pure (Some MNil)
 tcLOwnedPerms ((Located p n,e):xs) =
@@ -555,24 +624,45 @@ tcLOwnedPerms ((Located p n,e):xs) =
      Some lops <- tcLOwnedPerms xs
      pure (Some (lops :>: lop))
 
+-- | Helper for checking permission offsets
 tcPermOffset :: TypeRepr a -> Pos -> Maybe AstExpr -> Tc (PermOffset a)
 tcPermOffset _ _ Nothing = pure NoPermOffset
 tcPermOffset (LLVMPointerRepr w) _ (Just i) = withKnownNat w (LLVMPermOffset <$> tcKExpr i)
 tcPermOffset _ p _ = tcError p "Unexpected offset"
 
+-- | Check for a number literal
 tcNatural :: AstExpr -> Tc Natural
 tcNatural (ExNat _ i) = pure i
 tcNatural e = tcError (pos e) "Expected integer literal"
 
+-- | Ensure a natural nubmer is positive
+withPositive ::
+  Pos                   {- ^ location of literal        -} ->
+  String                {- ^ error message              -} ->
+  Natural               {- ^ number                     -} ->
+  (forall w. (1 <= w, KnownNat w) => NatRepr w -> Tc a)
+                        {- ^ continuation               -} ->
+  Tc a
+withPositive p err n k =
+  case someNatGeq1 n of
+    Nothing -> tcError p err
+    Just (Some (Pair w LeqProof)) -> withKnownNat w (k w)
+
+-- | Check for a positive number literal
 tcPositive :: AstExpr -> Tc (Some (Product NatRepr (LeqProof 1)))
 tcPositive e =
   do i <- tcNatural e
      withPositive (pos e) "positive required" i \w -> pure (Some (Pair w LeqProof))
 
+-- | Check a typing context @x1:tp1, x2:tp2, ...@
 tcCtx :: [(Located String, AstType)] -> Tc (Some ParsedCtx)
 tcCtx []         = pure (Some emptyParsedCtx)
 tcCtx ((n,t):xs) = preconsSomeParsedCtx (locThing n) <$> tcType t <*> tcCtx xs
 
+-- | Check a sequence @x1:p1, x2:p2, ...@ of variables and their permissions,
+-- where each variable occurs at most once. The input list says which variables
+-- can occur and which have already been seen. Return a sequence of the
+-- permissions in the same order as the input list of variables.
 tcSortedValuePerms ::
   VarPermSpecs ctx -> [(Located String, AstExpr)] -> Tc (ValuePerms ctx)
 tcSortedValuePerms var_specs [] = pure (varSpecsToPerms var_specs)
@@ -582,12 +672,20 @@ tcSortedValuePerms var_specs ((Located p var, x):xs) =
      var_specs'        <- tcSetVarSpecs p var n perm var_specs
      tcSortedValuePerms var_specs' xs
 
+-- | Check a sequence @x1:p1, x2:p2, ...@ of variables and their permissions,
+-- and sort the result into a 'ValuePerms' in a multi-binding that is in the
+-- same order as the 'ParsedCtx' supplied on input
 tcSortedMbValuePerms ::
   ParsedCtx ctx -> [(Located String, AstExpr)] -> Tc (MbValuePerms ctx)
 tcSortedMbValuePerms ctx perms =
   inParsedCtxM ctx \ns ->
   tcSortedValuePerms (mkVarPermSpecs ns) perms
 
+-- | Check a function permission of the form
+--
+-- > (x1:tp1, ...). arg1:p1, ... -o arg1:p1', ..., argn:pn', ret:p_ret
+--
+-- for some arbitrary context @x1:tp1, ...@ of ghost variables
 tcFunPerm :: CruCtx args -> TypeRepr ret -> AstFunPerm -> Tc (SomeFunPerm args ret)
 tcFunPerm args ret (AstFunPerm _ untyCtx ins outs) =
   do Some ghosts_ctx@(ParsedCtx _ ghosts) <- tcCtx untyCtx

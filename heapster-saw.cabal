@@ -22,7 +22,6 @@ library
     crucible-llvm,
     what4,
     parameterized-utils,
-    parsec,
     lens,
     text,
     llvm-pretty >= 0.8,

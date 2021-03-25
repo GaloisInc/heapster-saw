@@ -1,6 +1,18 @@
 {
 {-# Language ViewPatterns #-}
-module Verifier.SAW.Heapster.Parser where
+module Verifier.SAW.Heapster.Parser (
+
+  -- * Parser entry points
+  parseCtx,
+  parseType,
+  parseFunPerm,
+  parseExpr,
+  parseValuePerms,
+
+  -- * Parser errors
+  ParseError(..),
+
+  ) where
 
 import GHC.Natural
 
@@ -74,7 +86,7 @@ IDENT           { (traverse tokenIdent -> Just $$)      }
 NAT             { (traverse tokenNat   -> Just $$)      }
 
 
-%monad          { Either (Located Token)                }
+%monad          { Either ParseError                     }
 %error          { errorP                                }
 
 %name parseCtx          ctx
@@ -90,6 +102,7 @@ NAT             { (traverse tokenNat   -> Just $$)      }
 %nonassoc '==' '/=' '<u' '<=u'
 %left     '+'
 %left     '*'
+%nonassoc '@'
 
 %%
 
@@ -144,7 +157,6 @@ expr ::                                         { AstExpr }
   | 'eqsh' '(' expr ')'                         { ExEqSh (pos $1) $3 }
   | lifetime 'ptrsh' '(' expr ',' expr ')'      { ExPtrSh (pos $2) $1 (Just $4) $6 }
   | lifetime 'ptrsh' '('          expr ')'      { ExPtrSh (pos $2) $1 Nothing $4 }
-
   | 'fieldsh' '(' expr ',' expr ')'             { ExFieldSh (pos $1) (Just $3) $5 }
   | 'fieldsh' '('          expr ')'             { ExFieldSh (pos $1) Nothing $3 }
   | 'arraysh' '(' expr ',' expr ',' '[' list(shape) ']' ')'
@@ -191,9 +203,7 @@ identArgs ::                                    { Maybe [AstExpr]       }
 
 permOffset ::                                   { Maybe AstExpr         }
   :                                             { Nothing               }
-  | '@' '(' expr ')'                            { Just $3               }
-  | '@' NAT                                     { Just (ExNat (pos $2) (locThing $2)) }
-  | '@' IDENT                                   { Just (ExVar (pos $2) (locThing $2) Nothing Nothing) }
+  | '@' expr                                    { Just $2               }
 
 funPerm ::                                      { AstFunPerm }
   : '(' ctx ')' '.' funPermList '-o' funPermList
@@ -231,7 +241,15 @@ list1R(p) ::                                    { [p]                   }
   | list1R(p) ',' p                             { $3 : $1               }
 
 {
-errorP :: [Located Token] -> Either (Located Token) a
-errorP (t:_) = Left t
-errorP []    = Left (Located (Pos 0 0 0) TEndOfInput)
+
+-- | Errors that can terminate parsing.
+data ParseError
+  = UnexpectedToken Pos Token   -- ^ Unexpected token
+  | UnexpectedEnd               -- ^ Unexpected end of input
+  deriving Show
+
+-- | Generate an error message from the remaining token stream.
+errorP :: [Located Token] -> Either ParseError a
+errorP (Located p t:_) = Left (UnexpectedToken p t)
+errorP []              = Left UnexpectedEnd
 }
