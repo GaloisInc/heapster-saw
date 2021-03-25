@@ -364,6 +364,10 @@ tcLifetimeLit e          = tcError (pos e) "Expected lifetime"
 
 tcLLVMShape :: (KnownNat w, 1 <= w) => AstExpr -> Tc (PermExpr (LLVMShapeType w))
 tcLLVMShape (ExOrSh _ x y) = PExpr_OrShape <$> tcKExpr x <*> tcKExpr y
+tcLLVMShape (ExExSh _ var vartype sh) =
+  do Some ktp'@KnownReprObj <- tcTypeKnown vartype
+     fmap PExpr_ExShape $ mbM $ nu \z ->
+       withExprVar var (unKnownReprObj ktp') z (tcLLVMShape sh)
 tcLLVMShape (ExSeqSh _ x y) = PExpr_SeqShape <$> tcKExpr x <*> tcKExpr y
 tcLLVMShape ExEmptySh{} = pure PExpr_EmptyShape
 tcLLVMShape (ExEqSh _ v) = PExpr_EqShape <$> tcKExpr v
