@@ -85,7 +85,7 @@ NAT             { (traverse tokenNat   -> Just $$)      }
 
 %right    '.'
 %left     'orsh'
-%left     ';'
+%right    ';'
 %left     'or'
 %nonassoc '==' '/=' '<u' '<=u'
 %left     '+'
