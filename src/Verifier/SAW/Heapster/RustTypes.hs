@@ -44,7 +44,7 @@ import Data.Parameterized.Some
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
 import qualified Data.Type.RList as RL
-import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..), toList)
+import Data.Binding.Hobbits.NameSet (SomeName(..), toList)
 import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Language.Rust.Syntax
@@ -738,7 +738,7 @@ mbLifetimeFunPerm (LifetimeDef _ _ [] _) [nuP| Some3FunPerm fun_perm |] =
                    assocAppend (MNil :>: ValPerm_LOwned lops_out lops_in_abs)
                    ghosts (args_prxs :>: Proxy) $ distPermsToValuePerms ps_out)
           mb_ps_out mb_lops_out (extMb mb_lops_in_abs))
-mbLifetimeFunPerm (LifetimeDef _ _ bounds _) [nuP| Some3FunPerm fun_perm |] =
+mbLifetimeFunPerm (LifetimeDef _ _ _bounds _) [nuP| Some3FunPerm _fun_perm |] =
   fail "Rust lifetime bounds not yet supported!"
 
 -- | Run a computation of a function permission in the context of a list of
