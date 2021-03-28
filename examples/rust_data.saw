@@ -11,6 +11,12 @@ heapster_define_perm env "int32" " " "llvmptr 32" "exists x:bv 32.eq(llvmword(x)
 heapster_define_perm env "int8" " " "llvmptr 8" "exists x:bv 8.eq(llvmword(x))";
 heapster_define_perm env "int1" " " "llvmptr 1" "exists x:bv 1.eq(llvmword(x))";
 
+heapster_define_llvmshape env "u64" 64 "" "fieldsh(int64<>)";
+heapster_define_llvmshape env "u32" 64 "" "fieldsh(32,int32<>)";
+
+// bool type
+heapster_define_llvmshape env "bool" 64 "" "fieldsh(1,int1<>)";
+
 // Result type
 heapster_define_llvmshape env "Result" 64 "X:llvmshape 64, Y:llvmshape 64" "(fieldsh(eq(llvmword(0)));X) orsh (fieldsh(eq(llvmword(1)));Y)";
 

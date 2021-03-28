@@ -773,6 +773,24 @@ data SimplImpl ps_in ps_out where
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
+  -- | Fold the body of a named shape in a @memblock@ permission:
+  --
+  -- > x:memblock(rw,l,off,len,'unfoldNamedShape' nmsh args)
+  -- >   -o x:memblock(rw,l,off,len,nmsh<args>)
+  SImpl_IntroLLVMBlockNamed ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    NamedShape 'True args w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
+  -- | Unfold the body of a named shape in a @memblock@ permission:
+  --
+  -- > x:memblock(rw,l,off,len,nmsh<args>)
+  -- >   -o x:memblock(rw,l,off,len,'unfoldNamedShape' nmsh args)
+  SImpl_ElimLLVMBlockNamed ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    NamedShape 'True args w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
   -- | Prove an llvmblock permission of shape @sh@ from one of equality shape
   -- @eqsh(y)@ and a shape permission on @y@:
   --
@@ -1571,6 +1589,15 @@ simplImplIn (SImpl_ElimLLVMBlockSeqEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
                 bp { llvmBlockShape =
                        PExpr_SeqShape (llvmBlockShape bp) PExpr_EmptyShape })
+simplImplIn (SImpl_IntroLLVMBlockNamed x bp nmsh) =
+  case llvmBlockShape bp of
+    PExpr_NamedShape rw l nmsh' args
+      | Just (Refl,Refl) <- namedShapeEq nmsh nmsh'
+      , Just sh' <- unfoldModalizeNamedShape rw l nmsh args ->
+        distPerms1 x (ValPerm_LLVMBlock $ bp { llvmBlockShape = sh' })
+    _ -> error "simplImplIn: SImpl_IntroLLVMBlockNamed: unexpected block shape"
+simplImplIn (SImpl_ElimLLVMBlockNamed x bp _) =
+  distPerms1 x $ ValPerm_LLVMBlock bp
 simplImplIn (SImpl_IntroLLVMBlockFromEq x bp y) =
   distPerms2 x (ValPerm_Conj1 $ Perm_LLVMBlock $
                 bp { llvmBlockShape = PExpr_EqShape $ PExpr_Var y })
@@ -1879,6 +1906,15 @@ simplImplOut (SImpl_IntroLLVMBlockSeqEmpty x bp) =
                        PExpr_SeqShape (llvmBlockShape bp) PExpr_EmptyShape })
 simplImplOut (SImpl_ElimLLVMBlockSeqEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+simplImplOut (SImpl_IntroLLVMBlockNamed x bp nmsh) =
+  distPerms1 x $ ValPerm_LLVMBlock bp
+simplImplOut (SImpl_ElimLLVMBlockNamed x bp nmsh) =
+  case llvmBlockShape bp of
+    PExpr_NamedShape rw l nmsh' args
+      | Just (Refl,Refl) <- namedShapeEq nmsh nmsh'
+      , Just sh' <- unfoldModalizeNamedShape rw l nmsh args ->
+        distPerms1 x (ValPerm_LLVMBlock $ bp { llvmBlockShape = sh' })
+    _ -> error "simplImplOut: SImpl_ElimLLVMBlockNamed: unexpected block shape"
 simplImplOut (SImpl_IntroLLVMBlockFromEq x bp _) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplOut (SImpl_IntroLLVMBlockPtr x maybe_rw2 maybe_l2 bp) =
@@ -2260,6 +2296,12 @@ instance SubstVar PermVarSubst m =>
     SImpl_IntroLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_ElimLLVMBlockSeqEmpty x bp |] =
     SImpl_ElimLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
+  genSubst s [nuP| SImpl_IntroLLVMBlockNamed x bp nmsh |] =
+    SImpl_IntroLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
+    <*> genSubst s nmsh
+  genSubst s [nuP| SImpl_ElimLLVMBlockNamed x bp nmsh |] =
+    SImpl_ElimLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
+    <*> genSubst s nmsh
   genSubst s [nuP| SImpl_IntroLLVMBlockFromEq x bp y |] =
     SImpl_IntroLLVMBlockFromEq <$> genSubst s x <*> genSubst s bp
     <*> genSubst s y
@@ -3981,6 +4023,18 @@ implIntroLLVMBlock x p@(Perm_LLVMArray ap)
 implIntroLLVMBlock x (Perm_LLVMBlock bp) = greturn ()
 implIntroLLVMBlock _ _ = error "implIntroLLVMBlock: malformed permission"
 
+-- | Prove a @memblock@ permission with a foldable named shape from its
+-- unfolding, assuming that unfolding is on the top of the stack
+implIntroLLVMBlockNamed :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                           ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+                           ImplM vars s r (ps :> LLVMPointerType w)
+                           (ps :> LLVMPointerType w) ()
+implIntroLLVMBlockNamed x bp
+  | PExpr_NamedShape rw l nmsh args <- llvmBlockShape bp
+  , TrueRepr <- namedShapeCanUnfoldRepr nmsh =
+    implSimplM Proxy (SImpl_IntroLLVMBlockNamed x bp nmsh)
+implIntroLLVMBlockNamed _ _ =
+  error "implIntroLLVMBlockNamed: malformed permission"
 
 -- | Eliminate a @memblock@ permission on the top of the stack, if possible,
 -- otherwise fail
@@ -3997,6 +4051,14 @@ implElimLLVMBlock x bp
     -- than its actual length, sequence with the empty shape and then eliminate
     implSimplM Proxy (SImpl_IntroLLVMBlockSeqEmpty x bp) >>>
     implSimplM Proxy (SImpl_ElimLLVMBlockSeq x bp PExpr_EmptyShape)
+implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
+                                          PExpr_NamedShape rw l nmsh args })
+  | TrueRepr <- namedShapeCanUnfoldRepr nmsh
+  , Just sh' <- unfoldModalizeNamedShape rw l nmsh args =
+    (if namedShapeIsRecursive nmsh
+     then implSetRecRecurseLeftM else greturn ()) >>>
+    implSimplM Proxy (SImpl_ElimLLVMBlockNamed x bp nmsh) >>>
+    implElimLLVMBlock x (bp { llvmBlockShape = sh' })
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
                                           PExpr_EqShape (PExpr_Var y) }) =
   -- For shape eqsh(y), prove y:block(sh) for some sh, apply
@@ -5537,6 +5599,33 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
 
     -- Finally, recombine the resulting permission with the rest of them
     implSwapInsertConjM x (Perm_LLVMBlock bp_out) ps'' 0
+
+
+-- If proving a named shape, prove its unfolding first and then fold it
+proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
+  | [nuP| PExpr_NamedShape rw l nmsh args |] <- fmap llvmBlockShape mb_bp
+  , [nuP| TrueRepr |] <- fmap namedShapeCanUnfoldRepr nmsh
+  , [nuP| Just mb_sh' |] <- (mbMap3 unfoldModalizeNamedShape rw l nmsh
+                             `mbApply` args) =
+    -- Recurse using the unfolded shape
+    let mb_bps' =
+          mbMap3 (\bp sh' bps -> (bp { llvmBlockShape = sh' } : bps))
+          mb_bp mb_sh' mb_bps in
+    proveVarLLVMBlocks' x ps psubst mb_bps' mb_ps >>>
+
+    -- Extract out the block perm we proved
+    getTopDistPerm x >>>= \(ValPerm_Conj ps_out) ->
+    let (Perm_LLVMBlock bp : ps_out') = ps_out in
+    implSplitSwapConjsM x ps_out 1 >>>
+
+    -- Fold the named shape
+    partialSubstForceM (fmap
+                        llvmBlockShape mb_bp) "proveVarLLVMBlocks" >>>= \sh ->
+    let bp' = bp { llvmBlockShape = sh } in
+    implIntroLLVMBlockNamed x bp' >>>
+
+    -- Finally, recombine the resulting permission with the rest of them
+    implSwapInsertConjM x (Perm_LLVMBlock bp') ps_out' 0
 
 
 -- If proving an equality shape eqsh(z) for evar z which has already been set,

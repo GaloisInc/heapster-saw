@@ -116,10 +116,8 @@ Definition list_head__tuple_fun : @CompM.lrtTupleType (@CompM.LRT_Cons (@CompM.L
                                                *ptr((W,8) |-> eq(ghost8)),
                ghost7:eq(LLVMword 1), ghost8:eq(ghost9), ghost9:true
   Could not prove: top1:true, top2:true, x12:memblock(W, 0, 16,
-                                                      fieldsh(eq(LLVMword 0));
-                                                          fieldsh(int64<>) orsh
-                                                        fieldsh(eq(LLVMword 1));
-                                                          emptysh)
+                                                      Result<fieldsh(int64<>),
+                                                             emptysh>)
 
   proveVarLLVMBlock: Could not prove
   ghost6:array(0, <16, *1, [(W,0,8) |-> true], [{8, 8}, {0, 8}])
@@ -152,10 +150,8 @@ Definition list_head__tuple_fun : @CompM.lrtTupleType (@CompM.LRT_Cons (@CompM.L
                         *ptr((W,8) |-> eq(ghost10)), ghost7:int64<>,
                ghost9:eq(LLVMword 0), ghost10:eq(ghost7)
   Could not prove: top1:true, top2:true, x13:memblock(W, 0, 16,
-                                                      fieldsh(eq(LLVMword 0));
-                                                          fieldsh(int64<>) orsh
-                                                        fieldsh(eq(LLVMword 1));
-                                                          emptysh)
+                                                      Result<fieldsh(int64<>),
+                                                             emptysh>)
 
   proveVarLLVMBlock: Could not prove
   ghost8:array(0, <16, *1, [(W,0,8) |-> true], [{8, 8}, {0, 8}])

@@ -74,46 +74,40 @@ Definition mux_mut_refs_u64__tuple_fun : @CompM.lrtTupleType (@CompM.LRT_Cons (@
   let var__1   := @sigT var__0 (fun (x_ex0 : var__0) => unit) in
   CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) "At internal (return $1)
   Regs: $1 = x11
-  Input perms: top1:lowned (top5:[top1]memblock(R, 0, 8,
-                                                fieldsh(int64<>)),
-                            top4:[top1]memblock(R, 0, 8, fieldsh(int64<>))
+  Input perms: top1:lowned (top5:[top1]memblock(R, 0, 8, u64<>),
+                            top4:[top1]memblock(R, 0, 8, u64<>)
                             -o
-                            top5:[top3]memblock(W, 0, 8, fieldsh(int64<>)),
-                            top4:[top2]memblock(W, 0, 8, fieldsh(int64<>))),
-               top2:true, top3:true, top4:[top1]memblock(W, 0, 8,
-                                                         fieldsh(int64<>)),
-               top5:[top1]memblock(W, 0, 8, fieldsh(int64<>)),
-               top6:eq(LLVMword ghost9), x11:eq(top4), ghost9:true
-  Could not prove: top1:lowned (x11:[top1]memblock(R, 0, 8,
-                                                   fieldsh(int64<>))
+                            top5:[top3]memblock(W, 0, 8, u64<>),
+                            top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
+               top3:true, top4:[top1]memblock(W, 0, 8, u64<>),
+               top5:[top1]memblock(W, 0, 8, u64<>), top6:eq(LLVMword ghost9),
+               x11:eq(top4), ghost9:true
+  Could not prove: top1:lowned (x11:[top1]memblock(R, 0, 8, u64<>)
                                 -o
-                                top5:[top3]memblock(W, 0, 8, fieldsh(int64<>)),
-                                top4:[top2]memblock(W, 0, 8, fieldsh(int64<>))),
-                   top2:true, top3:true, top4:true, top5:true, top6:true,
-                   x11:[top1]memblock(W, 0, 8, fieldsh(int64<>))
+                                top5:[top3]memblock(W, 0, 8, u64<>),
+                                top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
+                   top3:true, top4:true, top5:true, top6:true,
+                   x11:[top1]memblock(W, 0, 8, u64<>)
 
   proveVarAtomicImpl: Could not prove
   top4:true -o (). [top1]ptr((R,0) |-> int64<>)"%string else @errorM CompM _ (prod (forall (ps : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit), let var__0   := @SAWCorePrelude.bitvector 64 in
   let var__1   := @sigT var__0 (fun (x_ex0 : var__0) => unit) in
   CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) "At internal (return $1)
   Regs: $1 = x11
-  Input perms: top1:lowned (top5:[top1]memblock(R, 0, 8,
-                                                fieldsh(int64<>)),
-                            top4:[top1]memblock(R, 0, 8, fieldsh(int64<>))
+  Input perms: top1:lowned (top5:[top1]memblock(R, 0, 8, u64<>),
+                            top4:[top1]memblock(R, 0, 8, u64<>)
                             -o
-                            top5:[top3]memblock(W, 0, 8, fieldsh(int64<>)),
-                            top4:[top2]memblock(W, 0, 8, fieldsh(int64<>))),
-               top2:true, top3:true, top4:[top1]memblock(W, 0, 8,
-                                                         fieldsh(int64<>)),
-               top5:[top1]memblock(W, 0, 8, fieldsh(int64<>)),
-               top6:eq(LLVMword ghost9), x11:eq(top5), ghost9:true
-  Could not prove: top1:lowned (x11:[top1]memblock(R, 0, 8,
-                                                   fieldsh(int64<>))
+                            top5:[top3]memblock(W, 0, 8, u64<>),
+                            top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
+               top3:true, top4:[top1]memblock(W, 0, 8, u64<>),
+               top5:[top1]memblock(W, 0, 8, u64<>), top6:eq(LLVMword ghost9),
+               x11:eq(top5), ghost9:true
+  Could not prove: top1:lowned (x11:[top1]memblock(R, 0, 8, u64<>)
                                 -o
-                                top5:[top3]memblock(W, 0, 8, fieldsh(int64<>)),
-                                top4:[top2]memblock(W, 0, 8, fieldsh(int64<>))),
-                   top2:true, top3:true, top4:true, top5:true, top6:true,
-                   x11:[top1]memblock(W, 0, 8, fieldsh(int64<>))
+                                top5:[top3]memblock(W, 0, 8, u64<>),
+                                top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
+                   top3:true, top4:true, top5:true, top6:true,
+                   x11:[top1]memblock(W, 0, 8, u64<>)
 
   proveVarAtomicImpl: Could not prove
   top5:true -o (). [top1]ptr((R,0) |-> int64<>)"%string)) tt).
@@ -143,7 +137,7 @@ Definition use_mux_mut_refs__tuple_fun : @CompM.lrtTupleType (@CompM.LRT_Cons (@
   Regs: 
   Input perms: ghost1:llvmframe [ghost2:8, ghost5:8],
                ghost2:memblock(W, 8, 0, emptysh)*ptr((W,0) |-> eq(ghost3)),
-               ghost5:memblock(W, 0, 8, fieldsh(int64<>)), ghost3:eq(ghost4),
+               ghost5:memblock(W, 0, 8, u64<>), ghost3:eq(ghost4),
                ghost4:int64<>
   Type-checking failure:
   LLVM_ResolveGlobal: no perms for global _ZN4core9panicking5panic17hfb3ef93dcafb964cE
