@@ -3251,7 +3251,7 @@ llvmShapeLength (PExpr_OrShape sh1 sh2) =
   do len1 <- llvmShapeLength sh1
      len2 <- llvmShapeLength sh2
      if (bvLeq len1 len2) then return len2 else
-       if (bvLeq len2 len1) then return len2
+       if (bvLeq len2 len1) then return len1
        else Nothing
 llvmShapeLength (PExpr_ExShape mb_sh) =
   -- The length of an existential cannot depend on the existential variable, or
