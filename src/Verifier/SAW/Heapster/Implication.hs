@@ -5579,7 +5579,7 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
           fmap (\bp ->
                  let sh_len = fromJust (llvmShapeLength (llvmBlockShape bp)) in
                  [bp { llvmBlockLen = sh_len },
-                  bp { llvmBlockOffset = bvAdd (llvmBlockLen bp) sh_len,
+                  bp { llvmBlockOffset = bvAdd (llvmBlockOffset bp) sh_len,
                        llvmBlockLen = bvSub (llvmBlockLen bp) sh_len,
                        llvmBlockShape = PExpr_EmptyShape }]) mb_bp in
 
