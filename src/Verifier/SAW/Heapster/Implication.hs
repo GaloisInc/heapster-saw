@@ -184,6 +184,70 @@ mapEqProof2 f (SomeEqProof eqp1) (SomeEqProof eqp2) =
   eqProofTrans (fmap (flip f $ eqProofLHS eqp2) eqp1)
   (fmap (f (eqProofRHS eqp1)) eqp2)
 
+-- | Like 'mapEqProof2' but for three arguments
+mapEqProof3 :: (Substable PermSubst a Identity,
+                Substable PermSubst b Identity,
+                Substable PermSubst c Identity,
+                Substable PermSubst d Identity, Eq d) =>
+               (a -> b -> c -> d) -> SomeEqProof a -> SomeEqProof b ->
+               SomeEqProof c -> SomeEqProof d
+mapEqProof3 f (SomeEqProof eqp1) (SomeEqProof eqp2) (SomeEqProof eqp3) =
+  SomeEqProof $
+  eqProofTrans
+  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3)) eqp1) $
+  eqProofTrans
+  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3)) eqp2)
+  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c) eqp3)
+
+-- | Like 'mapEqProof2' but for four arguments
+mapEqProof4 :: (Substable PermSubst a Identity,
+                Substable PermSubst b Identity,
+                Substable PermSubst c Identity,
+                Substable PermSubst d Identity,
+                Substable PermSubst e Identity, Eq e) =>
+               (a -> b -> c -> d -> e) -> SomeEqProof a -> SomeEqProof b ->
+               SomeEqProof c -> SomeEqProof d -> SomeEqProof e
+mapEqProof4 f (SomeEqProof eqp1) (SomeEqProof eqp2)
+  (SomeEqProof eqp3) (SomeEqProof eqp4) =
+  SomeEqProof $
+  eqProofTrans
+  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3) (eqProofLHS eqp4)) eqp1) $
+  eqProofTrans
+  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3) (eqProofLHS eqp4)) eqp2) $
+  eqProofTrans
+  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c (eqProofLHS eqp4)) eqp3)
+  (fmap (\d -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3) d) eqp4)
+
+-- | Like 'mapEqProof2' but for five arguments
+--
+-- FIXME HERE: there must be some way to get this functionality without an
+-- explicit function for mapping 5-ary functions on 'SomeEqProof's
+mapEqProof5 :: (Substable PermSubst a Identity,
+                Substable PermSubst b Identity,
+                Substable PermSubst c Identity,
+                Substable PermSubst d Identity,
+                Substable PermSubst e Identity,
+                Substable PermSubst f Identity, Eq f) =>
+               (a -> b -> c -> d -> e) -> SomeEqProof a -> SomeEqProof b ->
+               SomeEqProof c -> SomeEqProof d -> SomeEqProof e -> SomeEqProof f
+mapEqProof5 f (SomeEqProof eqp1) (SomeEqProof eqp2)
+  (SomeEqProof eqp3) (SomeEqProof eqp4) (SomeEqProof eqp5) =
+  SomeEqProof $
+  eqProofTrans
+  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3)
+               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp1) $
+  eqProofTrans
+  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3)
+               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp3) $
+  eqProofTrans
+  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c
+               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp3) $
+  eqProofTrans
+  (fmap (\d -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3) d
+               (eqProofLHS eqp5)) eqp4)
+  (fmap (\e -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3)
+               (eqProofRHS eqp4) e) eqp5)
+
 -- | Construct a 'SomeEqProof' by reflexivity
 someEqProofRefl :: a -> SomeEqProof a
 someEqProofRefl = SomeEqProof . EqProofRefl
