@@ -47,7 +47,9 @@ import Prettyprinter as PP
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
-import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..))
+import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..), SomeRAssign(..),
+                                     namesListToNames, namesToNamesList,
+                                     nameSetIsSubsetOf)
 import qualified Data.Binding.Hobbits.NameSet as NameSet
 import Data.Binding.Hobbits.NameMap (NameMap)
 import qualified Data.Binding.Hobbits.NameMap as NameMap
@@ -1646,7 +1648,7 @@ ppCruRegAndPerms ctx r =
 getRelevantPerms :: [SomeName CrucibleType] ->
                     PermCheckM ext cblocks blocks tops ret r ps r ps 
                       (Some DistPerms)
-getRelevantPerms (namesListToNames -> Some ns) =
+getRelevantPerms (namesListToNames -> SomeRAssign ns) =
   stCurPerms <$> gget >>>= \perms ->
   case varPermsTransFreeVars ns perms of
     Some all_ns -> greturn (Some $ varPermsMulti (RL.append ns all_ns) perms)
@@ -3175,7 +3177,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       -- extension-specific variables as well
       getPerms >>>= \cur_perms ->
       case namesListToNames $ determinedVars cur_perms tops_args_ext_ns of
-        Some ghosts_ns' ->
+        SomeRAssign ghosts_ns' ->
           localImplM $
           let ghosts_ns = RL.append ext_ns ghosts_ns'
               tops_perms = varPermsMulti tops_ns cur_perms
@@ -3210,7 +3212,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
                 (distPermsToValuePerms perms_in) of
               Just ps -> greturn ps
               Nothing
-                | Some orig_det_vars <- namesListToNames det_vars
+                | SomeRAssign orig_det_vars <- namesListToNames det_vars
                 , orig_perms <- varPermsMulti orig_det_vars orig_cur_perms ->
                   implTraceM
                   (\i ->

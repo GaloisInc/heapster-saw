@@ -142,58 +142,6 @@ instance Closable Ident where
 instance Liftable Ident where
   mbLift = unClosed . mbLift . fmap toClosed
 
--- FIXME: this Natural instance should go into Hobbits
-instance Closable Natural where
-  toClosed = unsafeClose
-
--- FIXME: move to Hobbits
-class NuMatchingAny1 f => LiftableAny1 f where
-  mbLiftAny1 :: Mb ctx (f a) -> f a
-
--- FIXME: move to Hobbits
-instance NuMatchingAny1 Proxy where
-  nuMatchingAny1Proof = nuMatchingProof
-
--- FIXME: move to Hobbits
-instance LiftableAny1 Proxy where
-  mbLiftAny1 = mbLift
-
--- FIXME: move to Hobbits
-instance LiftableAny1 f => Liftable (RAssign f ctx) where
-  mbLift [nuP| MNil |] = MNil
-  mbLift [nuP| xs :>: x |] = mbLift xs :>: mbLiftAny1 x
-
--- FIXME: move to Hobbits
-instance TestEquality f => TestEquality (RAssign f) where
-  testEquality MNil MNil = Just Refl
-  testEquality (xs1 :>: x1) (xs2 :>: x2)
-    | Just Refl <- testEquality xs1 xs2
-    , Just Refl <- testEquality x1 x2
-    = Just Refl
-  testEquality _ _ = Nothing
-
--- FIXME: move to Hobbits
-instance NuMatchingAny1 f => NuMatchingAny1 (RAssign f) where
-  nuMatchingAny1Proof = nuMatchingProof
-
--- | Typeclass for functors that allow equality testing at all types
-class Eq1 f where
-  eq1 :: f a -> f a -> Bool
-
--- FIXME: move to Hobbits
-instance Eq1 f => Eq (RAssign f ctx) where
-  MNil == MNil = True
-  (xs1 :>: x1) == (xs2 :>: x2) = xs1 == xs2 && eq1 x1 x2
-
--- FIXME: move to Hobbits
-$(mkNuMatching [t| forall f g a. (NuMatchingAny1 f,
-                                  NuMatchingAny1 g) => Product f g a |])
-
--- FIXME: move to Hobbits
-instance (NuMatchingAny1 f,
-          NuMatchingAny1 g) => NuMatchingAny1 (Product f g) where
-  nuMatchingAny1Proof = nuMatchingProof
-
 instance NuMatching OpenTerm where
   nuMatchingProof = unsafeMbTypeRepr
 

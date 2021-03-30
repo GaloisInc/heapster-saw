@@ -35,7 +35,6 @@ import Data.List.NonEmpty (NonEmpty(..))
 import Data.String
 import Data.Proxy
 import Data.Functor.Constant
-import Data.Functor.Compose
 import qualified Data.BitVector.Sized as BV
 import Data.BitVector.Sized (BV)
 import Numeric.Natural
@@ -48,12 +47,14 @@ import Control.Monad.Reader hiding (ap)
 import Control.Lens hiding ((:>), Index, Empty, ix, op)
 
 import Data.Binding.Hobbits hiding (sym)
-import Data.Type.RList (append, memberElem, mapRAssign, mapToList)
+import Data.Type.RList (append, memberElem, mapRAssign, mapToList, Eq1(..))
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits.MonadBind as MB
 import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
-import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..), toList)
+import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..), toList,
+                                     SomeRAssign(..), namesListToNames,
+                                     nameSetIsSubsetOf)
 import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Data.Parameterized.Context (Assignment, AssignView(..),
@@ -81,84 +82,6 @@ import Debug.Trace
 ----------------------------------------------------------------------
 -- * Utility Functions
 ----------------------------------------------------------------------
-
--- | Prove that append on right-lists is associative
---
--- FIXME: move to Hobbits
-appendAssoc :: f1 ctx1 -> f2 ctx2 -> RAssign f3 ctx3 ->
-               ctx1 :++: (ctx2 :++: ctx3) :~: (ctx1 :++: ctx2) :++: ctx3
-appendAssoc _ _ MNil = Refl
-appendAssoc c1 c2 (c3 :>: _) =
-  case appendAssoc c1 c2 c3 of
-    Refl -> Refl
-
--- | Prove that appending a right-list that starts with @a@ is the same as
--- consing @a@ and then appending
---
--- FIXME: move to Hobbits
-appendRNilConsEq :: prx1 ps1 -> prx_a a -> RAssign f ps2 ->
-                    (ps1 :++: (RNil :> a :++: ps2)) :~: (ps1 :> a :++: ps2)
-appendRNilConsEq _ _ MNil = Refl
-appendRNilConsEq ps1 a (ps2 :>: _)
-  | Refl <- appendRNilConsEq ps1 a ps2 = Refl
-
--- | Convert an 'RAssign' in a binding to an 'RAssign' of bindings
---
--- FIXME: this belongs in the Hobbits library, probably next to 'mbList' in
--- @Data.Binding.Hobbits.Liftable@
-mbRAssign :: NuMatchingAny1 f => Mb ctx (RAssign f as) ->
-             RAssign (Compose (Mb ctx) f) as
-mbRAssign [nuP| MNil |] = MNil
-mbRAssign [nuP| mb_xs :>: mb_x |] = mbRAssign mb_xs :>: Compose mb_x
-
--- | Convert an 'RAssign' in a binding to an 'RAssign' of 'Proxy's
-mbRAssignProxies :: Mb ctx (RAssign f as) -> RAssign Proxy as
-mbRAssignProxies = mbLift . fmap (RL.map (const Proxy))
-
--- | Build an 'RAssign' from a 'Foldable' data structure by mapping each element
--- to 'Some' typed object
---
--- FIXME: this belongs in the Hobbits library, probably with a better name
-buildRAssign :: Foldable t => (a -> Some f) -> t a -> Some (RAssign f)
-buildRAssign f = foldl (\(Some as) (f -> Some a) -> Some (as :>: a)) (Some MNil)
-
--- | Convert a list of existentially quantified names to an existentially
--- quantified assignment of names to a context
---
--- FIXME: this belongs in the Hobbits library somewhere; actually, it should
--- probably be part of a @toRAssign@ function for 'NameSet's
-namesListToNames :: [SomeName k] -> Some (RAssign (Name :: k -> Type))
-namesListToNames =
-  foldl (\(Some ns) (SomeName n) -> Some (ns :>: n)) (Some MNil)
-
--- | Convert an existentially quantified assignment of names to a context to a
--- list of existentially quantified names
-namesToNamesList :: RAssign (Name :: k -> Type) ns -> [SomeName k]
-namesToNamesList ns = mapToList SomeName ns
-
--- FIXME: move this to Hobbits and implement using the IntSet operation
--- Also: change NameSet so that it requires k :: Type
-nameSetIsSubsetOf :: NameSet (k :: Type) -> NameSet k -> Bool
-nameSetIsSubsetOf s1 s2 = NameSet.null $ NameSet.difference s1 s2
-
--- FIXME: move this to Hobbits!
-instance Eq (SomeName k) where
-  (SomeName n1) == (SomeName n2) | Just Refl <- testEquality n1 n2 = True
-  _ == _ = False
-
--- | Existential return value from 'splitAtMember'
-data SplitAtMemberRet f ctx a where
-  SplitAtMemberRet :: RAssign f ctx1 -> f a -> RAssign f ctx2 ->
-                      SplitAtMemberRet f (ctx1 :> a :++: ctx2) a
-
--- | Split an assignment at the point specified by a 'Member' proof
---
--- FIXME: move to Hobbits
-splitAtMember :: RAssign f ctx -> Member ctx a -> SplitAtMemberRet f ctx a
-splitAtMember (ctx :>: x) Member_Base = SplitAtMemberRet ctx x MNil
-splitAtMember (ctx :>: y) (Member_Step memb) =
-  case splitAtMember ctx memb of
-    SplitAtMemberRet ctx1 x ctx2 -> SplitAtMemberRet ctx1 x (ctx2 :>: y)
 
 -- | Delete the nth element of a list
 deleteNth :: Int -> [a] -> [a]
@@ -203,24 +126,10 @@ foldr1WithDefault f def (a:as) = f a $ foldr1WithDefault f def as
 foldMapWithDefault :: (b -> b -> b) -> b -> (a -> b) -> [a] -> b
 foldMapWithDefault comb def f l = foldr1WithDefault comb def $ map f l
 
--- | Lift a trinary function function to `Mb`s
--- FIXME: move to Hobbits
-mbMap3 :: (a -> b -> c -> d) -> Mb ctx a -> Mb ctx b -> Mb ctx c -> Mb ctx d
-mbMap3 f mb1 mb2 mb3 = mbMap2 f mb1 mb2 `mbApply` mb3
-
--- | Lift a quaternary function function to `Mb`s
--- FIXME: move to Hobbits
-mbMap4 :: (a -> b -> c -> d -> e) -> Mb ctx a -> Mb ctx b -> Mb ctx c ->
-          Mb ctx d -> Mb ctx e
-mbMap4 f mb1 mb2 mb3 mb4 = mbMap3 f mb1 mb2 mb3 `mbApply` mb4
-
 
 ----------------------------------------------------------------------
 -- * Pretty-printing
 ----------------------------------------------------------------------
-
-type RNil = 'RNil
-type (:>) = '(:>)
 
 newtype StringF a = StringF { unStringF :: String }
 
@@ -4413,7 +4322,7 @@ mbFunPerm ctx mb_ps [nuP| FunPerm mb_ghosts mb_args mb_ret ps_in ps_out |] =
   let ghosts = mbLift mb_ghosts
       args = mbLift mb_args
       ctx_perms = trueValuePerms $ cruCtxToTypes ctx in
-  case appendAssoc ctx ghosts (cruCtxToTypes args) of
+  case RL.appendAssoc ctx ghosts (cruCtxToTypes args) of
     Refl ->
       FunPerm (appendCruCtx ctx ghosts) args (mbLift mb_ret)
       (mbCombine $
@@ -6606,7 +6515,7 @@ varPermsTransFreeVars =
         [] -> Some MNil
         new_ns ->
           case (namesListToNames new_ns, helper seen_vars' new_ns perms) of
-            (Some ns', Some rest) ->
+            (SomeRAssign ns', Some rest) ->
               Some $ append ns' rest
 
 -- | Initialize the primary permission of a variable to @true@ if it is not set

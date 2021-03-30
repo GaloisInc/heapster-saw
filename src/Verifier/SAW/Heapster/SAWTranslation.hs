@@ -2023,7 +2023,7 @@ translateSimplImpl (ps0
       ps2 = mkProxies mb_ps2
       prxa = Proxy :: Proxy a
       prx0a = Proxy :: Proxy (ps0 :> a) in
-  case (appendRNilConsEq ps0 prxa (RL.append ps1 ps2)) of
+  case (RL.appendRNilConsEq ps0 prxa (RL.append ps1 ps2)) of
     Refl ->
       withPermStackM
       (\xs ->

@@ -63,28 +63,6 @@ import Verifier.SAW.Heapster.Permissions
 import Debug.Trace
 
 
--- FIXME: move to Hobbits, and use BindState as in the existing instances for
--- the lazy StateT
-instance (MonadBind m) => MonadBind (StateT (Closed s) m) where
-  mbM mb_m = StateT $ \s ->
-    mbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
-    return (fmap fst mb_as, mbLift (fmap snd mb_as))
-
--- FIXME: move to Hobbits, and use BindState as in the existing instances for
--- the lazy StateT
-instance (MonadStrongBind m) => MonadStrongBind (StateT (Closed s) m) where
-  strongMbM mb_m = StateT $ \s ->
-    strongMbM (fmap (\m -> runStateT m s) mb_m) >>= \mb_as ->
-    return (fmap fst mb_as, mbLift (fmap snd mb_as))
-
--- | Prove that @'RNil' :++: ctx@ equals @ctx@
---
--- FIXME: move to Hobbits
-prependRNilEq :: RAssign f ctx -> RNil :++: ctx :~: ctx
-prependRNilEq MNil = Refl
-prependRNilEq (ctx :>: _) | Refl <- prependRNilEq ctx = Refl
-
-
 ----------------------------------------------------------------------
 -- * Equality Proofs
 ----------------------------------------------------------------------
@@ -3521,7 +3499,7 @@ implMoveUpM (ps :: prx ps) ps1 (x :: ExprVar a) ps2 =
   let (perms0x, perms12) =
         splitDistPerms (Proxy :: Proxy (ps :> a)) (RL.append ps1 ps2) perms
       (perms1, perms2) = splitDistPerms ps1 ps2 perms12 in
-  case (perms0x, appendRNilConsEq ps x (RL.append ps1 ps2)) of
+  case (perms0x, RL.appendRNilConsEq ps x (RL.append ps1 ps2)) of
     (DistPermsCons _perms0 x' p, Refl)
       | Just Refl <- testEquality x x' ->
         implSimplM (Proxy :: Proxy ps) (SImpl_MoveUp perms1 x p perms2)
@@ -6701,10 +6679,6 @@ type ExDistPerms vars ps = Mb vars (DistPerms ps)
 distPermsToExDistPerms :: DistPerms ps -> ExDistPerms RNil ps
 distPermsToExDistPerms = emptyMb
 
--- FIXME: move to Hobbits
-rlistHead :: RAssign f (ctx :> a) -> f a
-rlistHead (_ :>: x) = x
-
 -- | Combine a list of names and a sequence of permissions inside a name-binding
 -- to get an 'ExDistPerms'
 mbValuePermsToExDistPerms :: RAssign Name ps -> Mb vars (ValuePerms ps) ->
@@ -6713,7 +6687,7 @@ mbValuePermsToExDistPerms MNil mb_ps = fmap (const DistPermsNil) mb_ps
 mbValuePermsToExDistPerms (xs :>: x) mb_ps =
   mbMap2 (\ps p -> DistPermsCons ps x p)
   (mbValuePermsToExDistPerms xs (fmap RL.tail mb_ps))
-  (fmap rlistHead mb_ps)
+  (fmap RL.head mb_ps)
 
 -- | Substitute arguments into a function permission to get the existentially
 -- quantified input permissions needed on the arguments
@@ -6856,7 +6830,7 @@ proveVarsImplAppendInt ps =
 proveVarsImplInt :: NuMatchingAny1 r => ExDistPerms vars as ->
                     ImplM vars s r as RNil ()
 proveVarsImplInt ps
-  | Refl <- mbLift (fmap prependRNilEq $ mbDistPermsToValuePerms ps) =
+  | Refl <- mbLift (fmap RL.prependRNilEq $ mbDistPermsToValuePerms ps) =
     proveVarsImplAppendInt ps
 
 -- | Prove one sequence of permissions from another and capture the proof as a
@@ -6913,7 +6887,7 @@ proveVarsImplAppend mb_ps =
 proveVarsImpl :: NuMatchingAny1 r => ExDistPerms vars as ->
                  ImplM vars s r as RNil ()
 proveVarsImpl ps
-  | Refl <- mbLift (fmap prependRNilEq $ mbDistPermsToValuePerms ps) =
+  | Refl <- mbLift (fmap RL.prependRNilEq $ mbDistPermsToValuePerms ps) =
     proveVarsImplAppend ps
 
 -- | Prove @x:p'@, where @p@ may have existentially-quantified variables in it.

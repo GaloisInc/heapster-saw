@@ -45,7 +45,6 @@ import Data.Parameterized.Some
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
 import qualified Data.Type.RList as RL
-import Data.Binding.Hobbits.NameSet (SomeName(..), toList)
 import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Language.Rust.Syntax
@@ -89,24 +88,6 @@ newtype RustConvM a =
 
 instance MonadFail RustConvM where
   fail = RustConvM . throwError
-
--- FIXME: move this to Hobbits
-instance (MonadBind m, Liftable e) => MonadBind (ExceptT e m) where
-  mbM mb_m =
-    ExceptT $
-    do mb_eith <- mbM $ fmap runExceptT mb_m
-       case mb_eith of
-         [nuP| Right mb_a |] -> return $ Right mb_a
-         [nuP| Left mb_e |] -> return $ Left $ mbLift mb_e
-
--- FIXME: move this to Hobbits
-mbMaybe :: NuMatching a => Mb ctx (Maybe a) -> Maybe (Mb ctx a)
-mbMaybe [nuP| Just mb_a |] = Just mb_a
-mbMaybe [nuP| Nothing |] = Nothing
-
--- FIXME: move this to Hobbits
-instance MonadBind m => MonadBind (MaybeT m) where
-  mbM mb_m = MaybeT $ fmap mbMaybe $ mbM $ fmap runMaybeT mb_m
 
 instance MonadBind RustConvM where
   mbM mb_m = RustConvM $ mbM $ fmap unRustConvM mb_m
