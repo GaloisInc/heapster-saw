@@ -266,20 +266,20 @@ tcKExpr = tcExpr knownRepr
 tcExpr :: TypeRepr a -> AstExpr -> Tc (PermExpr a)
 tcExpr ty (ExVar p name Nothing Nothing) = PExpr_Var <$> tcVar ty p name
 
-tcExpr tp@LLVMShapeRepr{} (ExVar p name (Just args) Nothing) =
+tcExpr tp@(LLVMShapeRepr w) (ExVar p name (Just args) Nothing) =
   do env <- tcAsk
      case lookupNamedShape (tcEnvPermEnv env) name of
-       Just (SomeNamedShape _ arg_ctx mb_sh)
-         | Just Refl <- testEquality (mbLift (fmap exprType mb_sh)) tp ->
-           do sub <- tcExprs p arg_ctx args
-              pure (subst (substOfExprs sub) mb_sh)
-       Just (SomeNamedShape _ _ mb_sh) ->
+       Just (SomeNamedShape nmsh)
+         | Just Refl <- testEquality w (natRepr nmsh) ->
+           do sub <- tcExprs p (namedShapeArgs nmsh) args
+              pure (PExpr_NamedShape Nothing Nothing nmsh sub)
+       Just (SomeNamedShape nmsh) ->
          tcError p $ renderDoc $ sep
          [ pretty "Named shape" <+> pretty name <+>
            pretty "is of incorrect type"
          , pretty "Expected:" <+> permPretty emptyPPInfo tp
          , pretty "Found:" <+>
-           permPretty emptyPPInfo (mbLift (fmap exprType mb_sh)) ]
+           permPretty emptyPPInfo (LLVMShapeRepr (natRepr nmsh)) ]
        Nothing -> tcError p ("Unknown shape name: " ++ name)
 
 tcExpr tp@(ValuePermRepr sub_tp) (ExVar p name (Just args) Nothing) =

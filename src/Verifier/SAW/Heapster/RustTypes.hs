@@ -39,6 +39,7 @@ import Control.Monad.Reader
 import Control.Monad.Except
 import Control.Monad.Trans.Maybe
 
+import Data.Parameterized.BoolRepr
 import Data.Parameterized.Some
 
 import Data.Binding.Hobbits
@@ -171,6 +172,8 @@ class RsConvert w a b | w a -> b where
 -- * Converting Named Rust Types
 ----------------------------------------------------------------------
 
+-- FIXME HERE: I think we no longer need SomeShapeFun
+
 -- | A shape function with existentially quantified arguments
 data SomeShapeFun w =
   forall args. SomeShapeFun (CruCtx args) (Mb args (PermExpr (LLVMShapeType w)))
@@ -259,24 +262,16 @@ newtype RustName = RustName [Ident]
 instance Show RustName where
   show (RustName ids) = concat $ intersperse "::" $ map show ids
 
-instance RsConvert w RustName (SomeShapeFun w) where
+instance RsConvert w RustName SomeNamedShape where
   rsConvert w (RustName elems) =
     -- FIXME: figure out how to actually resolve names; for now we just look at
     -- the last string component...
-    let str = name $ last elems in
-    -- FIXME: write this in a nice monadic way...
-    case lookup str (namedTypeTable w) of
-      Just shf -> return shf
-      Nothing ->
-        do env <- rciPermEnv <$> ask
-           case lookupNamedShape env str of
-             Just (SomeNamedShape _ args mb_sh)
-               | LLVMShapeRepr w' <- mbLift $ fmap exprType mb_sh
-               , Just Refl <- testEquality (natRepr w) w' ->
-                 return $ SomeShapeFun args mb_sh
-             Just _ -> fail ("Named Rust type of wrong shape width: " ++ str)
-             Nothing ->
-               fail ("Could not find translation of Rust type name: " ++ str)
+    do let str = name $ last elems
+       env <- rciPermEnv <$> ask
+       let maybe_nmsh = lookupNamedShape env str
+       case maybe_nmsh of
+         Just nmsh -> return nmsh
+         Nothing -> fail ("Unkown Rust type name: " ++ str)
 
 -- | Get the "name" = sequence of identifiers out of a Rust path
 rsPathName :: Path a -> RustName
@@ -325,13 +320,25 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        sh <- rsConvert w tp'
        return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
   rsConvert w (PathTy Nothing path _) =
-    do sh_f <- rsConvert w (rsPathName path)
-       args <- rsConvert w (rsPathParams path)
-       case tryApplySomeShapeFun sh_f args of
-         Just sh -> return sh
-         Nothing -> fail ("Argument types for " ++
-                          show (rsPathName path)
-                          ++ "not as expected")
+    do SomeNamedShape nmsh <- rsConvert w (rsPathName path)
+       Some typed_args <- rsConvert w (rsPathParams path)
+       case (testEquality (typedPermExprsCtx typed_args) (namedShapeArgs nmsh),
+             testEquality (natRepr w) (natRepr nmsh)) of
+         (Just Refl, Just Refl) ->
+           return (PExpr_NamedShape Nothing Nothing nmsh $
+                   typedPermExprsExprs typed_args)
+         (Nothing, _) ->
+           fail $ renderDoc $ fillSep
+           [pretty "Arguments for" <+> pretty (namedShapeName nmsh)
+            <+> pretty "of incorrect type",
+            pretty "Expected:" <+> permPretty emptyPPInfo (namedShapeArgs nmsh),
+            pretty "Actual:"
+            <+> permPretty emptyPPInfo (typedPermExprsCtx typed_args)]
+         (_, Nothing) ->
+           fail $ renderDoc $ fillSep
+           [pretty "Incorrect size of shape" <+> pretty (namedShapeName nmsh),
+            pretty "Expected:" <+> pretty (intValue (natRepr w)),
+            pretty "Actual:" <+> pretty (intValue (natRepr nmsh))]
   rsConvert (w :: prx w) (BareFn _ abi rust_ls2 fn_tp span) =
     do Some3FunPerm fun_perm <- rsConvertMonoFun w span abi rust_ls2 fn_tp
        let args = funPermArgs fun_perm
@@ -529,6 +536,30 @@ layoutArgShapeByVal :: (1 <= w, KnownNat w) => Abi ->
 
 -- The empty shape --> no values
 layoutArgShapeByVal Rust PExpr_EmptyShape = return mempty
+
+-- Named shapes that unfold --> layout their unfoldings
+layoutArgShapeByVal Rust (PExpr_NamedShape rw l nmsh args)
+  | TrueRepr <- namedShapeCanUnfoldRepr nmsh
+  , Just sh' <- unfoldModalizeNamedShape rw l nmsh args =
+    layoutArgShapeByVal Rust sh'
+
+-- Opaque named shapes that are bigger than 16 bytes --> not laid out by value
+--
+-- FIXME: if an opaque named shape somehow corresponds to > 2 fields, it is also
+-- not laid out by value
+layoutArgShapeByVal Rust sh@(PExpr_NamedShape _ _ nmsh _)
+  | not (namedShapeCanUnfold nmsh)
+  , Just len <- llvmShapeLength sh
+  , bvLt (bvInt 16) len =
+    mzero
+
+-- Opaque named shapes that could potentially be laid out by value are an error,
+-- because we do not know their representation
+layoutArgShapeByVal Rust sh@(PExpr_NamedShape _ _ nmsh _)
+  | not (namedShapeCanUnfold nmsh) =
+    lift $ fail $ renderDoc
+    (pretty "layoutArgShapeByVal: Cannot lay out opaque named shape by value:"
+     <+> pretty (namedShapeName nmsh))
 
 -- The ptr shape --> a single pointer value, if we know its length
 layoutArgShapeByVal Rust (PExpr_PtrShape maybe_rw maybe_l sh)

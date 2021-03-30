@@ -175,6 +175,70 @@ mapEqProof2 f (SomeEqProof eqp1) (SomeEqProof eqp2) =
   eqProofTrans (fmap (flip f $ eqProofLHS eqp2) eqp1)
   (fmap (f (eqProofRHS eqp1)) eqp2)
 
+-- | Like 'mapEqProof2' but for three arguments
+mapEqProof3 :: (Substable PermSubst a Identity,
+                Substable PermSubst b Identity,
+                Substable PermSubst c Identity,
+                Substable PermSubst d Identity, Eq d) =>
+               (a -> b -> c -> d) -> SomeEqProof a -> SomeEqProof b ->
+               SomeEqProof c -> SomeEqProof d
+mapEqProof3 f (SomeEqProof eqp1) (SomeEqProof eqp2) (SomeEqProof eqp3) =
+  SomeEqProof $
+  eqProofTrans
+  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3)) eqp1) $
+  eqProofTrans
+  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3)) eqp2)
+  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c) eqp3)
+
+-- | Like 'mapEqProof2' but for four arguments
+mapEqProof4 :: (Substable PermSubst a Identity,
+                Substable PermSubst b Identity,
+                Substable PermSubst c Identity,
+                Substable PermSubst d Identity,
+                Substable PermSubst e Identity, Eq e) =>
+               (a -> b -> c -> d -> e) -> SomeEqProof a -> SomeEqProof b ->
+               SomeEqProof c -> SomeEqProof d -> SomeEqProof e
+mapEqProof4 f (SomeEqProof eqp1) (SomeEqProof eqp2)
+  (SomeEqProof eqp3) (SomeEqProof eqp4) =
+  SomeEqProof $
+  eqProofTrans
+  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3) (eqProofLHS eqp4)) eqp1) $
+  eqProofTrans
+  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3) (eqProofLHS eqp4)) eqp2) $
+  eqProofTrans
+  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c (eqProofLHS eqp4)) eqp3)
+  (fmap (\d -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3) d) eqp4)
+
+-- | Like 'mapEqProof2' but for five arguments
+--
+-- FIXME HERE: there must be some way to get this functionality without an
+-- explicit function for mapping 5-ary functions on 'SomeEqProof's
+mapEqProof5 :: (Substable PermSubst a Identity,
+                Substable PermSubst b Identity,
+                Substable PermSubst c Identity,
+                Substable PermSubst d Identity,
+                Substable PermSubst e Identity,
+                Substable PermSubst f Identity, Eq f) =>
+               (a -> b -> c -> d -> e -> f) -> SomeEqProof a -> SomeEqProof b ->
+               SomeEqProof c -> SomeEqProof d -> SomeEqProof e -> SomeEqProof f
+mapEqProof5 f (SomeEqProof eqp1) (SomeEqProof eqp2)
+  (SomeEqProof eqp3) (SomeEqProof eqp4) (SomeEqProof eqp5) =
+  SomeEqProof $
+  eqProofTrans
+  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3)
+               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp1) $
+  eqProofTrans
+  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3)
+               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp2) $
+  eqProofTrans
+  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c
+               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp3) $
+  eqProofTrans
+  (fmap (\d -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3) d
+               (eqProofLHS eqp5)) eqp4)
+  (fmap (\e -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3)
+               (eqProofRHS eqp4) e) eqp5)
+
 -- | Construct a 'SomeEqProof' by reflexivity
 someEqProofRefl :: a -> SomeEqProof a
 someEqProofRefl = SomeEqProof . EqProofRefl
@@ -762,6 +826,24 @@ data SimplImpl ps_in ps_out where
   -- > x:memblock(rw,l,off,len,sh;emptysh) -o x:memblock(rw,l,off,len,sh)
   SImpl_ElimLLVMBlockSeqEmpty ::
     (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
+  -- | Fold the body of a named shape in a @memblock@ permission:
+  --
+  -- > x:memblock(rw,l,off,len,'unfoldNamedShape' nmsh args)
+  -- >   -o x:memblock(rw,l,off,len,nmsh<args>)
+  SImpl_IntroLLVMBlockNamed ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    NamedShape 'True args w ->
+    SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
+
+  -- | Unfold the body of a named shape in a @memblock@ permission:
+  --
+  -- > x:memblock(rw,l,off,len,nmsh<args>)
+  -- >   -o x:memblock(rw,l,off,len,'unfoldNamedShape' nmsh args)
+  SImpl_ElimLLVMBlockNamed ::
+    (1 <= w, KnownNat w) => ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+    NamedShape 'True args w ->
     SimplImpl (RNil :> LLVMPointerType w) (RNil :> LLVMPointerType w)
 
   -- | Prove an llvmblock permission of shape @sh@ from one of equality shape
@@ -1565,6 +1647,15 @@ simplImplIn (SImpl_ElimLLVMBlockSeqEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock $
                 bp { llvmBlockShape =
                        PExpr_SeqShape (llvmBlockShape bp) PExpr_EmptyShape })
+simplImplIn (SImpl_IntroLLVMBlockNamed x bp nmsh) =
+  case llvmBlockShape bp of
+    PExpr_NamedShape rw l nmsh' args
+      | Just (Refl,Refl) <- namedShapeEq nmsh nmsh'
+      , Just sh' <- unfoldModalizeNamedShape rw l nmsh args ->
+        distPerms1 x (ValPerm_LLVMBlock $ bp { llvmBlockShape = sh' })
+    _ -> error "simplImplIn: SImpl_IntroLLVMBlockNamed: unexpected block shape"
+simplImplIn (SImpl_ElimLLVMBlockNamed x bp _) =
+  distPerms1 x $ ValPerm_LLVMBlock bp
 simplImplIn (SImpl_IntroLLVMBlockFromEq x bp y) =
   distPerms2 x (ValPerm_Conj1 $ Perm_LLVMBlock $
                 bp { llvmBlockShape = PExpr_EqShape $ PExpr_Var y })
@@ -1873,6 +1964,15 @@ simplImplOut (SImpl_IntroLLVMBlockSeqEmpty x bp) =
                        PExpr_SeqShape (llvmBlockShape bp) PExpr_EmptyShape })
 simplImplOut (SImpl_ElimLLVMBlockSeqEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
+simplImplOut (SImpl_IntroLLVMBlockNamed x bp nmsh) =
+  distPerms1 x $ ValPerm_LLVMBlock bp
+simplImplOut (SImpl_ElimLLVMBlockNamed x bp nmsh) =
+  case llvmBlockShape bp of
+    PExpr_NamedShape rw l nmsh' args
+      | Just (Refl,Refl) <- namedShapeEq nmsh nmsh'
+      , Just sh' <- unfoldModalizeNamedShape rw l nmsh args ->
+        distPerms1 x (ValPerm_LLVMBlock $ bp { llvmBlockShape = sh' })
+    _ -> error "simplImplOut: SImpl_ElimLLVMBlockNamed: unexpected block shape"
 simplImplOut (SImpl_IntroLLVMBlockFromEq x bp _) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
 simplImplOut (SImpl_IntroLLVMBlockPtr x maybe_rw2 maybe_l2 bp) =
@@ -2254,6 +2354,12 @@ instance SubstVar PermVarSubst m =>
     SImpl_IntroLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
   genSubst s [nuP| SImpl_ElimLLVMBlockSeqEmpty x bp |] =
     SImpl_ElimLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
+  genSubst s [nuP| SImpl_IntroLLVMBlockNamed x bp nmsh |] =
+    SImpl_IntroLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
+    <*> genSubst s nmsh
+  genSubst s [nuP| SImpl_ElimLLVMBlockNamed x bp nmsh |] =
+    SImpl_ElimLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
+    <*> genSubst s nmsh
   genSubst s [nuP| SImpl_IntroLLVMBlockFromEq x bp y |] =
     SImpl_IntroLLVMBlockFromEq <$> genSubst s x <*> genSubst s bp
     <*> genSubst s y
@@ -3969,6 +4075,18 @@ implIntroLLVMBlock x p@(Perm_LLVMArray ap)
 implIntroLLVMBlock _ (Perm_LLVMBlock _bp) = greturn ()
 implIntroLLVMBlock _ _ = error "implIntroLLVMBlock: malformed permission"
 
+-- | Prove a @memblock@ permission with a foldable named shape from its
+-- unfolding, assuming that unfolding is on the top of the stack
+implIntroLLVMBlockNamed :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
+                           ExprVar (LLVMPointerType w) -> LLVMBlockPerm w ->
+                           ImplM vars s r (ps :> LLVMPointerType w)
+                           (ps :> LLVMPointerType w) ()
+implIntroLLVMBlockNamed x bp
+  | PExpr_NamedShape rw l nmsh args <- llvmBlockShape bp
+  , TrueRepr <- namedShapeCanUnfoldRepr nmsh =
+    implSimplM Proxy (SImpl_IntroLLVMBlockNamed x bp nmsh)
+implIntroLLVMBlockNamed _ _ =
+  error "implIntroLLVMBlockNamed: malformed permission"
 
 -- | Eliminate a @memblock@ permission on the top of the stack, if possible,
 -- otherwise fail
@@ -3985,6 +4103,14 @@ implElimLLVMBlock x bp
     -- than its actual length, sequence with the empty shape and then eliminate
     implSimplM Proxy (SImpl_IntroLLVMBlockSeqEmpty x bp) >>>
     implSimplM Proxy (SImpl_ElimLLVMBlockSeq x bp PExpr_EmptyShape)
+implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
+                                          PExpr_NamedShape rw l nmsh args })
+  | TrueRepr <- namedShapeCanUnfoldRepr nmsh
+  , Just sh' <- unfoldModalizeNamedShape rw l nmsh args =
+    (if namedShapeIsRecursive nmsh
+     then implSetRecRecurseLeftM else greturn ()) >>>
+    implSimplM Proxy (SImpl_ElimLLVMBlockNamed x bp nmsh) >>>
+    implElimLLVMBlock x (bp { llvmBlockShape = sh' })
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
                                           PExpr_EqShape (PExpr_Var y) }) =
   -- For shape eqsh(y), prove y:block(sh) for some sh, apply
@@ -4641,26 +4767,23 @@ proveVarLifetimeFunctor' x f args l mb_l _ =
 ----------------------------------------------------------------------
 
 -- | A sequence of permissions in bindings that need to be proved
-type NeededPerms vars = Some (RAssign (Compose (Mb vars) LOwnedPerm))
+type NeededPerms vars = Some (RAssign (Compose (Mb vars) VarAndPerm))
 
 -- | Convert a 'NeededPerms' list to an 'ExDistPerms'
 neededPermsToExDistPerms :: RAssign prx vars ->
-                            RAssign (Compose (Mb vars) LOwnedPerm) ps ->
-                            Maybe (Mb vars (DistPerms ps))
-neededPermsToExDistPerms vars MNil = Just $ nuMulti vars (const MNil)
-neededPermsToExDistPerms vars (ps :>: Compose mb_lop)
-  | [nuP| Just mb_vap |] <- fmap lownedPermVarAndPerm mb_lop
-  , Just mb_perms <- neededPermsToExDistPerms vars ps
-  = Just $ mbMap2 (:>:) mb_perms mb_vap
-neededPermsToExDistPerms _ _ = Nothing
+                            RAssign (Compose (Mb vars) VarAndPerm) ps ->
+                            Mb vars (DistPerms ps)
+neededPermsToExDistPerms vars MNil = nuMulti vars (const MNil)
+neededPermsToExDistPerms vars (ps :>: Compose mb_vap) =
+  mbMap2 (:>:) (neededPermsToExDistPerms vars ps) mb_vap
 
 -- | The empty set of needed permissions
 neededPermsEmpty :: NeededPerms vars
 neededPermsEmpty = Some MNil
 
 -- | A single needed permission
-neededPerms1 :: Mb vars (LOwnedPerm a) -> NeededPerms vars
-neededPerms1 mb_lop = Some (MNil :>: Compose mb_lop)
+neededPerms1 :: Mb vars (ExprVar a) -> Mb vars (ValuePerm a) -> NeededPerms vars
+neededPerms1 mb_x mb_p = Some (MNil :>: Compose (mbMap2 VarAndPerm mb_x mb_p))
 
 -- | Combine two sets of needed permissions
 neededPermsAppend :: NeededPerms vars -> NeededPerms vars -> NeededPerms vars
@@ -4692,7 +4815,7 @@ solveForPermListImplBlock :: (NuMatchingAny1 r, 1 <= w, KnownNat w) =>
 
 -- If the LHS is empty, return the input block permission
 solveForPermListImplBlock MNil x mb_bp =
-  greturn (neededPerms1 $ fmap (LOwnedPermBlock (PExpr_Var x)) mb_bp)
+  greturn (neededPerms1 (fmap (const x) mb_bp) (fmap ValPerm_LLVMBlock mb_bp))
 
 -- If the LHS starts with a field permission, treat it like a block permission
 solveForPermListImplBlock (ps_l :>: LOwnedPermField e fp_l) x mb_bp =
@@ -4759,10 +4882,10 @@ solveForPermListImpl ps_l [nuP| mb_ps_r :>:
 
 -- If the RHS is an lowned perm not in the LHS, return the RHS
 solveForPermListImpl ps_l [nuP| mb_ps_r :>: mb_lop |]
-  | [nuP| LOwnedPermLifetime (PExpr_Var mb_l) _ _ |] <- mb_lop
-  , Right _ <- mbNameBoundP mb_l =
-    solveForPermListImpl ps_l mb_ps_r >>>= \needed ->
-    greturn (neededPermsAppend (neededPerms1 mb_lop) needed)
+  | [nuP| LOwnedPermLifetime (PExpr_Var mb_l) mb_ps_in mb_ps_out |] <- mb_lop =
+    neededPermsAppend
+    (neededPerms1 mb_l (mbMap2 ValPerm_LOwned mb_ps_in mb_ps_out)) <$>
+    solveForPermListImpl ps_l mb_ps_r
 
 -- Otherwise, we don't know what to do, so do nothing and return
 solveForPermListImpl _ _ =
@@ -5504,7 +5627,7 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
           fmap (\bp ->
                  let sh_len = fromJust (llvmShapeLength (llvmBlockShape bp)) in
                  [bp { llvmBlockLen = sh_len },
-                  bp { llvmBlockOffset = bvAdd (llvmBlockLen bp) sh_len,
+                  bp { llvmBlockOffset = bvAdd (llvmBlockOffset bp) sh_len,
                        llvmBlockLen = bvSub (llvmBlockLen bp) sh_len,
                        llvmBlockShape = PExpr_EmptyShape }]) mb_bp in
 
@@ -5524,6 +5647,33 @@ proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
 
     -- Finally, recombine the resulting permission with the rest of them
     implSwapInsertConjM x (Perm_LLVMBlock bp_out) ps'' 0
+
+
+-- If proving a named shape, prove its unfolding first and then fold it
+proveVarLLVMBlocks' x ps psubst [nuP| mb_bp : mb_bps |] mb_ps
+  | [nuP| PExpr_NamedShape rw l nmsh args |] <- fmap llvmBlockShape mb_bp
+  , [nuP| TrueRepr |] <- fmap namedShapeCanUnfoldRepr nmsh
+  , [nuP| Just mb_sh' |] <- (mbMap3 unfoldModalizeNamedShape rw l nmsh
+                             `mbApply` args) =
+    -- Recurse using the unfolded shape
+    let mb_bps' =
+          mbMap3 (\bp sh' bps -> (bp { llvmBlockShape = sh' } : bps))
+          mb_bp mb_sh' mb_bps in
+    proveVarLLVMBlocks' x ps psubst mb_bps' mb_ps >>>
+
+    -- Extract out the block perm we proved
+    getTopDistPerm x >>>= \(ValPerm_Conj ps_out) ->
+    let (Perm_LLVMBlock bp : ps_out') = ps_out in
+    implSplitSwapConjsM x ps_out 1 >>>
+
+    -- Fold the named shape
+    partialSubstForceM (fmap
+                        llvmBlockShape mb_bp) "proveVarLLVMBlocks" >>>= \sh ->
+    let bp' = bp { llvmBlockShape = sh } in
+    implIntroLLVMBlockNamed x bp' >>>
+
+    -- Finally, recombine the resulting permission with the rest of them
+    implSwapInsertConjM x (Perm_LLVMBlock bp') ps_out' 0
 
 
 -- If proving an equality shape eqsh(z) for evar z which has already been set,
@@ -6072,12 +6222,9 @@ proveVarAtomicImpl x ps@[Perm_LOwned
   let mb_ps_in = fmap (const ps_in) mb_ps_in' in
   solveForPermListImpl ps_in' mb_ps_in >>>= \(Some neededs1) ->
   solveForPermListImpl ps_out mb_ps_out' >>>= \(Some neededs2) ->
-  let prxs = mbToProxy mb_ps_in' in
-  (case (neededPermsToExDistPerms prxs neededs1,
-         neededPermsToExDistPerms prxs neededs2) of
-      (Just mb_ps1, Just mb_ps2) -> greturn (mb_ps1, mb_ps2)
-      _ -> implFailM "proveVarAtomicImpl: neededPermsToExDistPerms")
-  >>>= \(mb_ps1,mb_ps2) ->
+  let prxs = mbToProxy mb_ps_in'
+      mb_ps1 = neededPermsToExDistPerms prxs neededs1
+      mb_ps2 = neededPermsToExDistPerms prxs neededs2 in
   getDistPerms >>>= \before_ps ->
   proveVarsImplAppendInt (mbMap2 RL.append mb_ps1 mb_ps2) >>>
   getDistPerms >>>= \top_ps ->

@@ -762,6 +762,17 @@ instance TransInfo info =>
 
   -- LLVM shapes are translated to types
   translate [nuP| PExpr_EmptyShape |] = return $ ETrans_Term unitTypeOpenTerm
+  translate [nuP| PExpr_NamedShape _ _ nmsh args |]
+    | [nuP| DefinedShapeBody _ |] <- fmap namedShapeBody nmsh =
+      translate (mbMap2 unfoldNamedShape nmsh args)
+  translate [nuP| PExpr_NamedShape _ _ nmsh args |]
+    | [nuP| OpaqueShapeBody _ trans_id |] <- fmap namedShapeBody nmsh =
+      ETrans_Term <$> applyOpenTermMulti (globalOpenTerm $ mbLift trans_id) <$>
+      transTerms <$> translate args
+  translate [nuP| PExpr_NamedShape _ _ nmsh args |]
+    | [nuP| RecShapeBody _ trans_id _ _ |] <- fmap namedShapeBody nmsh =
+      ETrans_Term <$> applyOpenTermMulti (globalOpenTerm $ mbLift trans_id) <$>
+      transTerms <$> translate args
   translate [nuP| PExpr_EqShape _ |] = return $ ETrans_Term unitTypeOpenTerm
   translate [nuP| PExpr_PtrShape _ _ sh |] = translate sh
   translate [nuP| PExpr_FieldShape fsh |] =
@@ -2665,6 +2676,48 @@ translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockSeqEmpty _ _ |] m =
        (\(pctx :>: ptrans) ->
          pctx :>: typeTransF ttrans [pairLeftOpenTerm (transTerm1 ptrans)])
        m
+
+-- Intro for a recursive named shape applies the fold function
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockNamed _ bp nmsh |] m
+  | [nuP| RecShapeBody _ _ fold_id _ |] <- fmap namedShapeBody nmsh
+  , [nuP| PExpr_NamedShape _ _ _ args |] <- fmap llvmBlockShape bp =
+    do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+       args_trans <- translate args
+       let t = applyOpenTermMulti (globalOpenTerm $
+                                   mbLift fold_id) (transTerms args_trans)
+       withPermStackM id
+         (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [t])
+         m
+
+-- Intro for a defined named shape (the other case) is a no-op
+translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockNamed _ _ nmsh |] m
+  | [nuP| DefinedShapeBody _ |] <- fmap namedShapeBody nmsh =
+    do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+       withPermStackM id
+         (\(pctx :>: ptrans) ->
+           pctx :>: typeTransF ttrans [transTerm1 ptrans])
+         m
+
+-- Elim for a recursive named shape applies the fold function
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockNamed _ bp nmsh |] m
+  | [nuP| RecShapeBody _ _ _ unfold_id |] <- fmap namedShapeBody nmsh
+  , [nuP| PExpr_NamedShape _ _ _ args |] <- fmap llvmBlockShape bp =
+    do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+       args_trans <- translate args
+       let t = applyOpenTermMulti (globalOpenTerm $
+                                   mbLift unfold_id) (transTerms args_trans)
+       withPermStackM id
+         (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [t])
+         m
+
+-- Intro for a defined named shape (the other case) is a no-op
+translateSimplImpl _ simpl@[nuP| SImpl_ElimLLVMBlockNamed _ _ nmsh |] m
+  | [nuP| DefinedShapeBody _ |] <- fmap namedShapeBody nmsh =
+    do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
+       withPermStackM id
+         (\(pctx :>: ptrans) ->
+           pctx :>: typeTransF ttrans [transTerm1 ptrans])
+         m
 
 translateSimplImpl _ simpl@[nuP| SImpl_IntroLLVMBlockFromEq _ _ _ |] m =
   do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) simpl
