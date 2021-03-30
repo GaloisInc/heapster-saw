@@ -228,7 +228,7 @@ mapEqProof5 :: (Substable PermSubst a Identity,
                 Substable PermSubst d Identity,
                 Substable PermSubst e Identity,
                 Substable PermSubst f Identity, Eq f) =>
-               (a -> b -> c -> d -> e) -> SomeEqProof a -> SomeEqProof b ->
+               (a -> b -> c -> d -> e -> f) -> SomeEqProof a -> SomeEqProof b ->
                SomeEqProof c -> SomeEqProof d -> SomeEqProof e -> SomeEqProof f
 mapEqProof5 f (SomeEqProof eqp1) (SomeEqProof eqp2)
   (SomeEqProof eqp3) (SomeEqProof eqp4) (SomeEqProof eqp5) =
@@ -238,7 +238,7 @@ mapEqProof5 f (SomeEqProof eqp1) (SomeEqProof eqp2)
                (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp1) $
   eqProofTrans
   (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3)
-               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp3) $
+               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp2) $
   eqProofTrans
   (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c
                (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp3) $
@@ -4780,26 +4780,23 @@ proveVarLifetimeFunctor' x f args l mb_l _ =
 ----------------------------------------------------------------------
 
 -- | A sequence of permissions in bindings that need to be proved
-type NeededPerms vars = Some (RAssign (Compose (Mb vars) LOwnedPerm))
+type NeededPerms vars = Some (RAssign (Compose (Mb vars) VarAndPerm))
 
 -- | Convert a 'NeededPerms' list to an 'ExDistPerms'
 neededPermsToExDistPerms :: RAssign prx vars ->
-                            RAssign (Compose (Mb vars) LOwnedPerm) ps ->
-                            Maybe (Mb vars (DistPerms ps))
-neededPermsToExDistPerms vars MNil = Just $ nuMulti vars (const MNil)
-neededPermsToExDistPerms vars (ps :>: Compose mb_lop)
-  | [nuP| Just mb_vap |] <- fmap lownedPermVarAndPerm mb_lop
-  , Just mb_perms <- neededPermsToExDistPerms vars ps
-  = Just $ mbMap2 (:>:) mb_perms mb_vap
-neededPermsToExDistPerms _ _ = Nothing
+                            RAssign (Compose (Mb vars) VarAndPerm) ps ->
+                            Mb vars (DistPerms ps)
+neededPermsToExDistPerms vars MNil = nuMulti vars (const MNil)
+neededPermsToExDistPerms vars (ps :>: Compose mb_vap) =
+  mbMap2 (:>:) (neededPermsToExDistPerms vars ps) mb_vap
 
 -- | The empty set of needed permissions
 neededPermsEmpty :: NeededPerms vars
 neededPermsEmpty = Some MNil
 
 -- | A single needed permission
-neededPerms1 :: Mb vars (LOwnedPerm a) -> NeededPerms vars
-neededPerms1 mb_lop = Some (MNil :>: Compose mb_lop)
+neededPerms1 :: Mb vars (ExprVar a) -> Mb vars (ValuePerm a) -> NeededPerms vars
+neededPerms1 mb_x mb_p = Some (MNil :>: Compose (mbMap2 VarAndPerm mb_x mb_p))
 
 -- | Combine two sets of needed permissions
 neededPermsAppend :: NeededPerms vars -> NeededPerms vars -> NeededPerms vars
@@ -4831,7 +4828,7 @@ solveForPermListImplBlock :: (NuMatchingAny1 r, 1 <= w, KnownNat w) =>
 
 -- If the LHS is empty, return the input block permission
 solveForPermListImplBlock MNil x mb_bp =
-  greturn (neededPerms1 $ fmap (LOwnedPermBlock (PExpr_Var x)) mb_bp)
+  greturn (neededPerms1 (fmap (const x) mb_bp) (fmap ValPerm_LLVMBlock mb_bp))
 
 -- If the LHS starts with a field permission, treat it like a block permission
 solveForPermListImplBlock (ps_l :>: LOwnedPermField e fp_l) x mb_bp =
@@ -4898,10 +4895,10 @@ solveForPermListImpl ps_l [nuP| mb_ps_r :>:
 
 -- If the RHS is an lowned perm not in the LHS, return the RHS
 solveForPermListImpl ps_l [nuP| mb_ps_r :>: mb_lop |]
-  | [nuP| LOwnedPermLifetime (PExpr_Var mb_l) _ _ |] <- mb_lop
-  , Right l <- mbNameBoundP mb_l =
-    solveForPermListImpl ps_l mb_ps_r >>>= \needed ->
-    greturn (neededPermsAppend (neededPerms1 mb_lop) needed)
+  | [nuP| LOwnedPermLifetime (PExpr_Var mb_l) mb_ps_in mb_ps_out |] <- mb_lop =
+    neededPermsAppend
+    (neededPerms1 mb_l (mbMap2 ValPerm_LOwned mb_ps_in mb_ps_out)) <$>
+    solveForPermListImpl ps_l mb_ps_r
 
 -- Otherwise, we don't know what to do, so do nothing and return
 solveForPermListImpl _ _ =
@@ -6240,12 +6237,9 @@ proveVarAtomicImpl x ps@[Perm_LOwned
   let mb_ps_in = fmap (const ps_in) mb_ps_in' in
   solveForPermListImpl ps_in' mb_ps_in >>>= \(Some neededs1) ->
   solveForPermListImpl ps_out mb_ps_out' >>>= \(Some neededs2) ->
-  let prxs = mbToProxy mb_ps_in' in
-  (case (neededPermsToExDistPerms prxs neededs1,
-         neededPermsToExDistPerms prxs neededs2) of
-      (Just mb_ps1, Just mb_ps2) -> greturn (mb_ps1, mb_ps2)
-      _ -> implFailM "proveVarAtomicImpl: neededPermsToExDistPerms")
-  >>>= \(mb_ps1,mb_ps2) ->
+  let prxs = mbToProxy mb_ps_in'
+      mb_ps1 = neededPermsToExDistPerms prxs neededs1
+      mb_ps2 = neededPermsToExDistPerms prxs neededs2 in
   getDistPerms >>>= \before_ps ->
   proveVarsImplAppendInt (mbMap2 RL.append mb_ps1 mb_ps2) >>>
   getDistPerms >>>= \top_ps ->
