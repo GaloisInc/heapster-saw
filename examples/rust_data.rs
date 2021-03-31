@@ -225,6 +225,22 @@ impl MixedStruct {
     }
 }
 
+/* A 'true' enum */
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrueEnum {
+    Foo,
+    Bar,
+    Baz,
+}
+
+pub fn cycle_true_enum (te: &TrueEnum) -> TrueEnum {
+    match te {
+        TrueEnum::Foo => TrueEnum::Bar,
+        TrueEnum::Bar => TrueEnum::Baz,
+        TrueEnum::Baz => TrueEnum::Foo,
+    }
+}
+
 /* A linked list */
 #[derive(Clone, Debug, PartialEq)]
 #[repr(C,u64)]
