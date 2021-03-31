@@ -36,6 +36,8 @@ heapster_define_llvmshape env "ThreeValues" 64 "" "fieldsh(32,int32<>);fieldsh(3
 heapster_define_llvmshape env "FourValues" 64 "" "fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>)";
 heapster_define_llvmshape env "FiveValues" 64 "" "fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>);fieldsh(32,int32<>)";
 
+// MixedStruct type
+heapster_define_llvmshape env "MixedStruct" 64 "" "String<>;fieldsh(64,int64<>);fieldsh(64,int64<>)";
 
 
 /***
@@ -86,6 +88,18 @@ heapster_typecheck_fun_rename env test_result_sym "test_result" "<'a> fn (r:&'a 
 test_sum_impl_sym <- heapster_find_symbol env "13test_sum_impl";
 heapster_typecheck_fun_rename env test_sum_impl_sym "test_sum_impl" "().arg0:memblock(R,0,16,Sum<fieldsh(int64<>),fieldsh(int64<>)>) -o ret:int1<>";
 
+// NOTE: Fails because of `clone` in the implementation
+// MixedStruct::get_s
+// mixed_struct_get_s <- heapster_find_symbol env "11MixedStruct5get_s";
+// heapster_typecheck_fun_rename env mixed_struct_get_s "MixedStruct_get_s" "<'a> fn (m:&'a MixedStruct) -> String";
+
+// MixedStruct::get_i1
+mixed_struct_get_i1 <- heapster_find_symbol env "11MixedStruct6get_i1";
+heapster_typecheck_fun_rename env mixed_struct_get_i1 "MixedStruct_get_i1" "<'a> fn (m:&'a MixedStruct) -> u64";
+
+// MixedStruct::get_i2
+mixed_struct_get_i2 <- heapster_find_symbol env "11MixedStruct6get_i2";
+heapster_typecheck_fun_rename env mixed_struct_get_i2 "MixedStruct_get_i2" "<'a> fn (m:&'a MixedStruct) -> u64";
 
 // list_is_empty
 list_is_empty_sym <- heapster_find_symbol env "13list_is_empty";
