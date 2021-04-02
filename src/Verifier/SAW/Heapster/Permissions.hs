@@ -2336,10 +2336,11 @@ lifetimeCurrentPermsPerms (CurrentTransPerms cur_ps l) =
 -- | Build a lift of proxies for a 'LifetimeCurrentPerms'
 mbLifetimeCurrentPermsProxies :: Mb ctx (LifetimeCurrentPerms ps_l) ->
                                  RAssign Proxy ps_l
-mbLifetimeCurrentPermsProxies [nuP| AlwaysCurrentPerms |] = MNil
-mbLifetimeCurrentPermsProxies [nuP| LOwnedCurrentPerms _ _ _ |] = MNil :>: Proxy
-mbLifetimeCurrentPermsProxies [nuP| CurrentTransPerms cur_ps _ |] =
-  mbLifetimeCurrentPermsProxies cur_ps :>: Proxy
+mbLifetimeCurrentPermsProxies mb_l = case mbMatch mb_l of
+  [nuMP| AlwaysCurrentPerms |] -> MNil
+  [nuMP| LOwnedCurrentPerms _ _ _ |] -> MNil :>: Proxy
+  [nuMP| CurrentTransPerms cur_ps _ |] ->
+    mbLifetimeCurrentPermsProxies cur_ps :>: Proxy
 
 -- | A lifetime functor is a function from a lifetime plus a set of 0 or more
 -- rwmodalities to a permission that satisfies a number of properties discussed
@@ -2756,8 +2757,9 @@ instance NuMatchingAny1 DistPerms where
   nuMatchingAny1Proof = nuMatchingProof
 
 instance Liftable RWModality where
-  mbLift [nuP| Write |] = Write
-  mbLift [nuP| Read |] = Read
+  mbLift mb_rw = case mbMatch mb_rw of
+    [nuMP| Write |] -> Write
+    [nuMP| Read |] -> Read
 
 instance Closable RWModality where
   toClosed Write = $(mkClosed [| Write |])
@@ -2787,13 +2789,15 @@ instance Liftable (NamedPermName ns args a) where
     NamedPermName (mbLift n) (mbLift tp) (mbLift args) (mbLift ns) (mbLift r)
 
 instance Liftable SomeNamedPermName where
-  mbLift [nuP| SomeNamedPermName rpn |] = SomeNamedPermName $ mbLift rpn
+  mbLift [nuP| SomeNamedPermName rpn |] =
+    SomeNamedPermName $ mbLift rpn
 
 instance Liftable (ReachMethods args a reach) where
-  mbLift [nuP| ReachMethods get1Ident get2Ident putIdent transIdent |] =
-    ReachMethods (mbLift get1Ident) (mbLift get2Ident) (mbLift putIdent)
-    (mbLift transIdent)
-  mbLift [nuP| NoReachMethods |] = NoReachMethods
+  mbLift mb_x = case mbMatch mb_x of
+    [nuMP| ReachMethods get1Ident get2Ident putIdent transIdent |] ->
+      ReachMethods (mbLift get1Ident) (mbLift get2Ident) (mbLift putIdent)
+                   (mbLift transIdent)
+    [nuMP| NoReachMethods |] -> NoReachMethods
 
 -- | Embed a 'ValuePerm' in a 'PermExpr' - like 'PExpr_ValPerm' but maps
 -- 'ValPerm_Var's to 'PExpr_Var's
@@ -4117,9 +4121,10 @@ distPermsToProxies (DistPermsNil) = MNil
 distPermsToProxies (DistPermsCons ps _ _) = distPermsToProxies ps :>: Proxy
 
 mbDistPermsToProxies :: Mb ctx (DistPerms ps) -> RAssign Proxy ps
-mbDistPermsToProxies [nuP| DistPermsNil |] = MNil
-mbDistPermsToProxies [nuP| DistPermsCons ps _ _ |] =
-  mbDistPermsToProxies ps :>: Proxy
+mbDistPermsToProxies mb_ps = case mbMatch mb_ps of
+  [nuMP| DistPermsNil |] -> MNil
+  [nuMP| DistPermsCons ps _ _ |] ->
+    mbDistPermsToProxies ps :>: Proxy
 
 -- | Extract the variables in a 'DistPerms'
 distPermsVars :: DistPerms ps -> RAssign Name ps
@@ -4911,8 +4916,9 @@ instance (Substable s a m, Substable s b m,
     <*> genSubst s (fmap (\(_,_,_,d) -> d) abcd)
 
 instance (NuMatching a, Substable s a m) => Substable s (Maybe a) m where
-  genSubst s [nuP| Just a |] = Just <$> genSubst s a
-  genSubst _ [nuP| Nothing |] = return Nothing
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| Just a |] -> Just <$> genSubst s a
+    [nuMP| Nothing |] -> return Nothing
 
 instance (Substable s a m, NuMatching a) => Substable s (Mb ctx a) m where
   genSubst s mbmb = mbM $ fmap (genSubst s) (mbSwap mbmb)
@@ -4922,15 +4928,16 @@ instance SubstVar s m => Substable s (Member ctx a) m where
 
 instance (NuMatchingAny1 f, Substable1 s f m) =>
          Substable s (RAssign f ctx) m where
-  genSubst _ [nuP| MNil |] = return MNil
-  genSubst s [nuP| xs :>: x |] = (:>:) <$> genSubst s xs <*> genSubst1 s x
+  genSubst s mb_xs = case mbMatch mb_xs of
+    [nuMP| MNil |] -> return MNil
+    [nuMP| xs :>: x |] -> (:>:) <$> genSubst s xs <*> genSubst1 s x
 
 instance (NuMatchingAny1 f, Substable1 s f m) =>
          Substable s (Assignment f ctx) m where
   genSubst s mb_assign =
-    case fmap viewAssign mb_assign of
-      [nuP| AssignEmpty |] -> return $ Ctx.empty
-      [nuP| AssignExtend asgn' x |] ->
+    case mbMatch $ fmap viewAssign mb_assign of
+      [nuMP| AssignEmpty |] -> return $ Ctx.empty
+      [nuMP| AssignExtend asgn' x |] ->
         Ctx.extend <$> genSubst s asgn' <*> genSubst1 s x
 
 instance SubstVar s m => Substable s (a :~: b) m where
@@ -4954,52 +4961,53 @@ instance SubstVar PermVarSubst m =>
   genSubst s mb_x = return $ varSubstVar s mb_x
 
 instance SubstVar s m => Substable s (PermExpr a) m where
-  genSubst s [nuP| PExpr_Var x |] = substExprVar s x
-  genSubst _ [nuP| PExpr_Unit |] = return $ PExpr_Unit
-  genSubst _ [nuP| PExpr_Bool b |] = return $ PExpr_Bool $ mbLift b
-  genSubst _ [nuP| PExpr_Nat n |] = return $ PExpr_Nat $ mbLift n
-  genSubst _ [nuP| PExpr_String str |] = return $ PExpr_String $ mbLift str
-  genSubst s [nuP| PExpr_BV factors off |] =
-    foldr bvAdd (PExpr_BV [] (mbLift off)) <$>
-    mapM (substBVFactor s) (mbList factors)
-  genSubst s [nuP| PExpr_Struct args |] =
-    PExpr_Struct <$> genSubst s args
-  genSubst _ [nuP| PExpr_Always |] = return PExpr_Always
-  genSubst s [nuP| PExpr_LLVMWord e |] =
-    PExpr_LLVMWord <$> genSubst s e
-  genSubst s [nuP| PExpr_LLVMOffset x off |] =
-    addLLVMOffset <$> substExprVar s x <*> genSubst s off
-  genSubst _ [nuP| PExpr_Fun fh |] =
-    return $ PExpr_Fun $ mbLift fh
-  genSubst _ [nuP| PExpr_PermListNil |] =
-    return $ PExpr_PermListNil
-  genSubst s [nuP| PExpr_PermListCons tp e p l |] =
-    PExpr_PermListCons (mbLift tp) <$> genSubst s e <*> genSubst s p
-    <*> genSubst s l
-  genSubst _ [nuP| PExpr_RWModality rw |] =
-    return $ PExpr_RWModality $ mbLift rw
-  genSubst _ [nuP| PExpr_EmptyShape |] = return PExpr_EmptyShape
-  genSubst s [nuP| PExpr_NamedShape rw l nmsh args |] =
-    PExpr_NamedShape <$> genSubst s rw <*> genSubst s l <*> genSubst s nmsh
-    <*> genSubst s args
-  genSubst s [nuP| PExpr_EqShape b |] =
-    PExpr_EqShape <$> genSubst s b
-  genSubst s [nuP| PExpr_PtrShape maybe_rw maybe_l sh |] =
-    PExpr_PtrShape <$> genSubst s maybe_rw <*> genSubst s maybe_l
-     <*> genSubst s sh
-  genSubst s [nuP| PExpr_FieldShape sh |] =
-    PExpr_FieldShape <$> genSubst s sh
-  genSubst s [nuP| PExpr_ArrayShape len stride flds |] =
-    PExpr_ArrayShape <$> genSubst s len <*> return (mbLift stride)
-    <*> genSubst s flds
-  genSubst s [nuP| PExpr_SeqShape sh1 sh2 |] =
-    PExpr_SeqShape <$> genSubst s sh1 <*> genSubst s sh2
-  genSubst s [nuP| PExpr_OrShape sh1 sh2 |] =
-    PExpr_OrShape <$> genSubst s sh1 <*> genSubst s sh2
-  genSubst s [nuP| PExpr_ExShape mb_sh |] =
-    PExpr_ExShape <$> genSubst s mb_sh
-  genSubst s [nuP| PExpr_ValPerm p |] =
-    PExpr_ValPerm <$> genSubst s p
+  genSubst s mb_expr = case mbMatch mb_expr of
+    [nuMP| PExpr_Var x |] -> substExprVar s x
+    [nuMP| PExpr_Unit |] -> return $ PExpr_Unit
+    [nuMP| PExpr_Bool b |] -> return $ PExpr_Bool $ mbLift b
+    [nuMP| PExpr_Nat n |] -> return $ PExpr_Nat $ mbLift n
+    [nuMP| PExpr_String str |] -> return $ PExpr_String $ mbLift str
+    [nuMP| PExpr_BV factors off |] ->
+      foldr bvAdd (PExpr_BV [] (mbLift off)) <$>
+      mapM (substBVFactor s) (mbList factors)
+    [nuMP| PExpr_Struct args |] ->
+      PExpr_Struct <$> genSubst s args
+    [nuMP| PExpr_Always |] -> return PExpr_Always
+    [nuMP| PExpr_LLVMWord e |] ->
+      PExpr_LLVMWord <$> genSubst s e
+    [nuMP| PExpr_LLVMOffset x off |] ->
+      addLLVMOffset <$> substExprVar s x <*> genSubst s off
+    [nuMP| PExpr_Fun fh |] ->
+      return $ PExpr_Fun $ mbLift fh
+    [nuMP| PExpr_PermListNil |] ->
+      return $ PExpr_PermListNil
+    [nuMP| PExpr_PermListCons tp e p l |] ->
+      PExpr_PermListCons (mbLift tp) <$> genSubst s e <*> genSubst s p
+                                     <*> genSubst s l
+    [nuMP| PExpr_RWModality rw |] ->
+      return $ PExpr_RWModality $ mbLift rw
+    [nuMP| PExpr_EmptyShape |] -> return PExpr_EmptyShape
+    [nuMP| PExpr_NamedShape rw l nmsh args |] ->
+      PExpr_NamedShape <$> genSubst s rw <*> genSubst s l <*> genSubst s nmsh
+                       <*> genSubst s args
+    [nuMP| PExpr_EqShape b |] ->
+      PExpr_EqShape <$> genSubst s b
+    [nuMP| PExpr_PtrShape maybe_rw maybe_l sh |] ->
+      PExpr_PtrShape <$> genSubst s maybe_rw <*> genSubst s maybe_l
+                     <*> genSubst s sh
+    [nuMP| PExpr_FieldShape sh |] ->
+      PExpr_FieldShape <$> genSubst s sh
+    [nuMP| PExpr_ArrayShape len stride flds |] ->
+      PExpr_ArrayShape <$> genSubst s len <*> return (mbLift stride)
+                       <*> genSubst s flds
+    [nuMP| PExpr_SeqShape sh1 sh2 |] ->
+      PExpr_SeqShape <$> genSubst s sh1 <*> genSubst s sh2
+    [nuMP| PExpr_OrShape sh1 sh2 |] ->
+      PExpr_OrShape <$> genSubst s sh1 <*> genSubst s sh2
+    [nuMP| PExpr_ExShape mb_sh |] ->
+      PExpr_ExShape <$> genSubst s mb_sh
+    [nuMP| PExpr_ValPerm p |] ->
+      PExpr_ValPerm <$> genSubst s p
 
 instance SubstVar s m => Substable1 s PermExpr m where
   genSubst1 = genSubst
@@ -5009,109 +5017,117 @@ instance SubstVar s m => Substable s (BVRange w) m where
     BVRange <$> genSubst s e1 <*> genSubst s e2
 
 instance SubstVar s m => Substable s (BVProp w) m where
-  genSubst s [nuP| BVProp_Eq e1 e2 |] =
-    BVProp_Eq <$> genSubst s e1 <*> genSubst s e2
-  genSubst s [nuP| BVProp_Neq e1 e2 |] =
-    BVProp_Neq <$> genSubst s e1 <*> genSubst s e2
-  genSubst s [nuP| BVProp_ULt e1 e2 |] =
-    BVProp_ULt <$> genSubst s e1 <*> genSubst s e2
-  genSubst s [nuP| BVProp_ULeq e1 e2 |] =
-    BVProp_ULeq <$> genSubst s e1 <*> genSubst s e2
-  genSubst s [nuP| BVProp_ULeq_Diff e1 e2 e3 |] =
-    BVProp_ULeq_Diff <$> genSubst s e1 <*> genSubst s e2 <*> genSubst s e3
+  genSubst s mb_prop = case mbMatch mb_prop of
+    [nuMP| BVProp_Eq e1 e2 |] ->
+      BVProp_Eq <$> genSubst s e1 <*> genSubst s e2
+    [nuMP| BVProp_Neq e1 e2 |] ->
+      BVProp_Neq <$> genSubst s e1 <*> genSubst s e2
+    [nuMP| BVProp_ULt e1 e2 |] ->
+      BVProp_ULt <$> genSubst s e1 <*> genSubst s e2
+    [nuMP| BVProp_ULeq e1 e2 |] ->
+      BVProp_ULeq <$> genSubst s e1 <*> genSubst s e2
+    [nuMP| BVProp_ULeq_Diff e1 e2 e3 |] ->
+      BVProp_ULeq_Diff <$> genSubst s e1 <*> genSubst s e2 <*> genSubst s e3
 
 instance SubstVar s m => Substable s (AtomicPerm a) m where
-  genSubst s [nuP| Perm_LLVMField fp |] = Perm_LLVMField <$> genSubst s fp
-  genSubst s [nuP| Perm_LLVMArray ap |] = Perm_LLVMArray <$> genSubst s ap
-  genSubst s [nuP| Perm_LLVMBlock bp |] = Perm_LLVMBlock <$> genSubst s bp
-  genSubst s [nuP| Perm_LLVMFree e |] = Perm_LLVMFree <$> genSubst s e
-  genSubst s [nuP| Perm_LLVMFunPtr tp p |] =
-    Perm_LLVMFunPtr (mbLift tp) <$> genSubst s p
-  genSubst _ [nuP| Perm_IsLLVMPtr |] = return Perm_IsLLVMPtr
-  genSubst s [nuP| Perm_LLVMBlockShape sh |] =
-    Perm_LLVMBlockShape <$> genSubst s sh
-  genSubst s [nuP| Perm_LLVMFrame fp |] = Perm_LLVMFrame <$> genSubst s fp
-  genSubst s [nuP| Perm_LOwned ps_in ps_out |] =
-    Perm_LOwned <$> genSubst s ps_in <*> genSubst s ps_out
-  genSubst s [nuP| Perm_LCurrent e |] = Perm_LCurrent <$> genSubst s e
-  genSubst s [nuP| Perm_Struct tps |] = Perm_Struct <$> genSubst s tps
-  genSubst s [nuP| Perm_Fun fperm |] = Perm_Fun <$> genSubst s fperm
-  genSubst s [nuP| Perm_BVProp prop |] = Perm_BVProp <$> genSubst s prop
-  genSubst s [nuP| Perm_NamedConj n args off |] =
-    Perm_NamedConj (mbLift n) <$> genSubst s args <*> genSubst s off
+  genSubst s mb_p = case mbMatch mb_p of
+    [nuMP| Perm_LLVMField fp |] -> Perm_LLVMField <$> genSubst s fp
+    [nuMP| Perm_LLVMArray ap |] -> Perm_LLVMArray <$> genSubst s ap
+    [nuMP| Perm_LLVMBlock bp |] -> Perm_LLVMBlock <$> genSubst s bp
+    [nuMP| Perm_LLVMFree e |] -> Perm_LLVMFree <$> genSubst s e
+    [nuMP| Perm_LLVMFunPtr tp p |] ->
+      Perm_LLVMFunPtr (mbLift tp) <$> genSubst s p
+    [nuMP| Perm_IsLLVMPtr |] -> return Perm_IsLLVMPtr
+    [nuMP| Perm_LLVMBlockShape sh |] ->
+      Perm_LLVMBlockShape <$> genSubst s sh
+    [nuMP| Perm_LLVMFrame fp |] -> Perm_LLVMFrame <$> genSubst s fp
+    [nuMP| Perm_LOwned ps_in ps_out |] ->
+      Perm_LOwned <$> genSubst s ps_in <*> genSubst s ps_out
+    [nuMP| Perm_LCurrent e |] -> Perm_LCurrent <$> genSubst s e
+    [nuMP| Perm_Struct tps |] -> Perm_Struct <$> genSubst s tps
+    [nuMP| Perm_Fun fperm |] -> Perm_Fun <$> genSubst s fperm
+    [nuMP| Perm_BVProp prop |] -> Perm_BVProp <$> genSubst s prop
+    [nuMP| Perm_NamedConj n args off |] ->
+      Perm_NamedConj (mbLift n) <$> genSubst s args <*> genSubst s off
 
 instance SubstVar s m => Substable s (NamedShape b args w) m where
   genSubst s [nuP| NamedShape str args body |] =
     NamedShape (mbLift str) (mbLift args) <$> genSubst s body
 
 instance SubstVar s m => Substable s (NamedShapeBody b args w) m where
-  genSubst s [nuP| DefinedShapeBody mb_sh |] =
-    DefinedShapeBody <$> genSubst s mb_sh
-  genSubst s [nuP| OpaqueShapeBody mb_len trans_id |] =
-    OpaqueShapeBody <$> genSubst s mb_len <*> return (mbLift trans_id)
-  genSubst s [nuP| RecShapeBody mb_sh trans_id fold_id unfold_id |] =
-    RecShapeBody <$> genSubst s mb_sh <*> return (mbLift trans_id)
-    <*> return (mbLift fold_id) <*> return (mbLift unfold_id)
+  genSubst s mb_body = case mbMatch mb_body of
+    [nuMP| DefinedShapeBody mb_sh |] ->
+      DefinedShapeBody <$> genSubst s mb_sh
+    [nuMP| OpaqueShapeBody mb_len trans_id |] ->
+      OpaqueShapeBody <$> genSubst s mb_len <*> return (mbLift trans_id)
+    [nuMP| RecShapeBody mb_sh trans_id fold_id unfold_id |] ->
+      RecShapeBody <$> genSubst s mb_sh <*> return (mbLift trans_id)
+                   <*> return (mbLift fold_id) <*> return (mbLift unfold_id)
 
 instance SubstVar s m => Substable s (NamedPermName ns args a) m where
   genSubst _ mb_rpn = return $ mbLift mb_rpn
 
 instance SubstVar s m => Substable s (PermOffset a) m where
-  genSubst _ [nuP| NoPermOffset |] = return NoPermOffset
-  genSubst s [nuP| LLVMPermOffset e |] = mkLLVMPermOffset <$> genSubst s e
+  genSubst s mb_off = case mbMatch mb_off of
+    [nuMP| NoPermOffset |] -> return NoPermOffset
+    [nuMP| LLVMPermOffset e |] -> mkLLVMPermOffset <$> genSubst s e
 
 instance SubstVar s m => Substable s (NamedPerm ns args a) m where
-  genSubst s [nuP| NamedPerm_Opaque p |] = NamedPerm_Opaque <$> genSubst s p
-  genSubst s [nuP| NamedPerm_Rec p |] = NamedPerm_Rec <$> genSubst s p
-  genSubst s [nuP| NamedPerm_Defined p |] = NamedPerm_Defined <$> genSubst s p
+  genSubst s mb_np = case mbMatch mb_np of
+    [nuMP| NamedPerm_Opaque p |] -> NamedPerm_Opaque <$> genSubst s p
+    [nuMP| NamedPerm_Rec p |] -> NamedPerm_Rec <$> genSubst s p
+    [nuMP| NamedPerm_Defined p |] -> NamedPerm_Defined <$> genSubst s p
 
 instance SubstVar s m => Substable s (OpaquePerm ns args a) m where
-  genSubst _ [nuP| OpaquePerm n i |] = return $ OpaquePerm (mbLift n) (mbLift i)
+  genSubst _ [nuP| OpaquePerm n i |] =
+    return $ OpaquePerm (mbLift n) (mbLift i)
 
 instance SubstVar s m => Substable s (RecPerm ns reach args a) m where
   genSubst s [nuP| RecPerm rpn dt_i f_i u_i reachMeths cases |] =
     RecPerm (mbLift rpn) (mbLift dt_i) (mbLift f_i) (mbLift u_i)
-    (mbLift reachMeths) <$>
-    mapM (genSubst s) (mbList cases)
+            (mbLift reachMeths) <$> mapM (genSubst s) (mbList cases)
 
 instance SubstVar s m => Substable s (DefinedPerm ns args a) m where
   genSubst s [nuP| DefinedPerm n p |] =
     DefinedPerm (mbLift n) <$> genSubst s p
 
 instance SubstVar s m => Substable s (ValuePerm a) m where
-  genSubst s [nuP| ValPerm_Eq e |] = ValPerm_Eq <$> genSubst s e
-  genSubst s [nuP| ValPerm_Or p1 p2 |] =
-    ValPerm_Or <$> genSubst s p1 <*> genSubst s p2
-  genSubst s [nuP| ValPerm_Exists p |] =
-    -- FIXME: maybe we don't need extSubst at all, but can just use the
-    -- Substable instance for Mb ctx a from above
-    ValPerm_Exists <$> genSubst s p
-    -- nuM (\x -> genSubst (extSubst s x) $ mbCombine p)
-  genSubst s [nuP| ValPerm_Named n args off |] =
-    ValPerm_Named (mbLift n) <$> genSubst s args <*> genSubst s off
-  genSubst s [nuP| ValPerm_Var mb_x mb_off |] =
-    offsetPerm <$> genSubst s mb_off <*> substPermVar s mb_x
-  genSubst s [nuP| ValPerm_Conj aps |] =
-    ValPerm_Conj <$> mapM (genSubst s) (mbList aps)
+  genSubst s mb_p = case mbMatch mb_p of
+    [nuMP| ValPerm_Eq e |] -> ValPerm_Eq <$> genSubst s e
+    [nuMP| ValPerm_Or p1 p2 |] ->
+      ValPerm_Or <$> genSubst s p1 <*> genSubst s p2
+    [nuMP| ValPerm_Exists p |] ->
+      -- FIXME: maybe we don't need extSubst at all, but can just use the
+      -- Substable instance for Mb ctx a from above
+      ValPerm_Exists <$> genSubst s p
+      -- nuM (\x -> genSubst (extSubst s x) $ mbCombine p)
+    [nuMP| ValPerm_Named n args off |] ->
+      ValPerm_Named (mbLift n) <$> genSubst s args <*> genSubst s off
+    [nuMP| ValPerm_Var mb_x mb_off |] ->
+      offsetPerm <$> genSubst s mb_off <*> substPermVar s mb_x
+    [nuMP| ValPerm_Conj aps |] ->
+      ValPerm_Conj <$> mapM (genSubst s) (mbList aps)
 
 instance SubstVar s m => Substable1 s ValuePerm m where
   genSubst1 = genSubst
 
 {-
 instance SubstVar s m => Substable s (ValuePerms as) m where
-  genSubst s [nuP| ValPerms_Nil |] = return ValPerms_Nil
-  genSubst s [nuP| ValPerms_Cons ps p |] =
-    ValPerms_Cons <$> genSubst s ps <*> genSubst s p
+  genSubst s mb_ps = case mbMatch mb_ps of
+    [nuMP| ValPerms_Nil |] -> return ValPerms_Nil
+    [nuMP| ValPerms_Cons ps p |] ->
+      ValPerms_Cons <$> genSubst s ps <*> genSubst s p
 -}
 
 instance SubstVar s m => Substable s RWModality m where
-  genSubst _ [nuP| Write |] = return Write
-  genSubst _ [nuP| Read |] = return Read
+  genSubst _ mb_rw = case mbMatch mb_rw of
+    [nuMP| Write |] -> return Write
+    [nuMP| Read |] -> return Read
 
 instance SubstVar s m => Substable s (LLVMFieldPerm w sz) m where
   genSubst s [nuP| LLVMFieldPerm rw ls off p |] =
     LLVMFieldPerm <$> genSubst s rw <*> genSubst s ls <*>
-    genSubst s off <*> genSubst s p
+                      genSubst s off <*> genSubst s p
 
 instance SubstVar s m => Substable s (LLVMArrayField w) m where
   genSubst s [nuP| LLVMArrayField fp |] =
@@ -5128,8 +5144,9 @@ instance SubstVar s m => Substable s (LLVMArrayIndex w) m where
     LLVMArrayIndex <$> genSubst s ix <*> return (mbLift fld_num)
 
 instance SubstVar s m => Substable s (LLVMArrayBorrow w) m where
-  genSubst s [nuP| FieldBorrow ix |] = FieldBorrow <$> genSubst s ix
-  genSubst s [nuP| RangeBorrow r |] = RangeBorrow <$> genSubst s r
+  genSubst s mb_borrow = case mbMatch mb_borrow of
+    [nuMP| FieldBorrow ix |] -> FieldBorrow <$> genSubst s ix
+    [nuMP| RangeBorrow r |] -> RangeBorrow <$> genSubst s r
 
 instance SubstVar s m => Substable s (LLVMBlockPerm w) m where
   genSubst s [nuP| LLVMBlockPerm rw l off len sh |] =
@@ -5141,13 +5158,14 @@ instance SubstVar s m => Substable s (LLVMFieldShape w) m where
     LLVMFieldShape <$> genSubst s p
 
 instance SubstVar s m => Substable s (LOwnedPerm a) m where
-  genSubst s [nuP| LOwnedPermField e fp |] =
-    LOwnedPermField <$> genSubst s e <*> genSubst s fp
-  genSubst s [nuP| LOwnedPermBlock e bp |] =
-    LOwnedPermBlock <$> genSubst s e <*> genSubst s bp
-  genSubst s [nuP| LOwnedPermLifetime e ps_in ps_out |] =
-    LOwnedPermLifetime <$> genSubst s e <*> genSubst s ps_in
-    <*> genSubst s ps_out
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| LOwnedPermField e fp |] ->
+      LOwnedPermField <$> genSubst s e <*> genSubst s fp
+    [nuMP| LOwnedPermBlock e bp |] ->
+      LOwnedPermBlock <$> genSubst s e <*> genSubst s bp
+    [nuMP| LOwnedPermLifetime e ps_in ps_out |] ->
+      LOwnedPermLifetime <$> genSubst s e <*> genSubst s ps_in
+                         <*> genSubst s ps_out
 
 instance SubstVar s m => Substable1 s LOwnedPerm m where
   genSubst1 = genSubst
@@ -5159,12 +5177,13 @@ instance SubstVar s m => Substable s (FunPerm ghosts args ret) m where
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (LifetimeCurrentPerms ps) m where
-  genSubst _ [nuP| AlwaysCurrentPerms |] = return AlwaysCurrentPerms
-  genSubst s [nuP| LOwnedCurrentPerms l ps_in ps_out |] =
-    LOwnedCurrentPerms <$> genSubst s l <*> genSubst s ps_in
-    <*> genSubst s ps_out
-  genSubst s [nuP| CurrentTransPerms ps l |] =
-    CurrentTransPerms <$> genSubst s ps <*> genSubst s l
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| AlwaysCurrentPerms |] -> return AlwaysCurrentPerms
+    [nuMP| LOwnedCurrentPerms l ps_in ps_out |] ->
+      LOwnedCurrentPerms <$> genSubst s l <*> genSubst s ps_in
+                         <*> genSubst s ps_out
+    [nuMP| CurrentTransPerms ps l |] ->
+      CurrentTransPerms <$> genSubst s ps <*> genSubst s l
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (VarAndPerm a) m where
@@ -5182,17 +5201,19 @@ instance Substable1 s f m => Substable1 s (Typed f) m where
 {-
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (DistPerms ps) m where
-  genSubst s [nuP| DistPermsNil |] = return DistPermsNil
-  genSubst s [nuP| DistPermsCons dperms' x p |] =
-    DistPermsCons <$> genSubst s dperms' <*>
-    return (varSubstVar s x) <*> genSubst s p
+  genSubst s mb_dperms = case mbMatch mb_dperms of
+    [nuMP| DistPermsNil |] -> return DistPermsNil
+    [nuMP| DistPermsCons dperms' x p |] ->
+      DistPermsCons <$> genSubst s dperms' <*>
+      return (varSubstVar s x) <*> genSubst s p
 -}
 
 instance SubstVar s m => Substable s (LifetimeFunctor args a) m where
-  genSubst s [nuP| LTFunctorField off p |] =
-    LTFunctorField <$> genSubst s off <*> genSubst s p
-  genSubst s [nuP| LTFunctorBlock off len sh |] =
-    LTFunctorBlock <$> genSubst s off <*> genSubst s len <*> genSubst s sh
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| LTFunctorField off p |] ->
+      LTFunctorField <$> genSubst s off <*> genSubst s p
+    [nuMP| LTFunctorBlock off len sh |] ->
+      LTFunctorBlock <$> genSubst s off <*> genSubst s len <*> genSubst s sh
 
 
 ----------------------------------------------------------------------

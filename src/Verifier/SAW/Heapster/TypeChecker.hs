@@ -115,10 +115,9 @@ instance Monad Tc where
 
 instance MonadBind Tc where
   mbM m = Tc \env ->
-    case fmap (`runTc` env) m of
-      [nuP| Left e  |] -> Left (mbLift e)
-      [nuP| Right x |] -> Right x
-      _ -> error "panic: MonadBind.Tc"
+    case mbMatch $ fmap (`runTc` env) m of
+      [nuMP| Left e  |] -> Left (mbLift e)
+      [nuMP| Right x |] -> Right x
 
 -- | Run type-checking computation with local changes to the
 -- type-checking environment.

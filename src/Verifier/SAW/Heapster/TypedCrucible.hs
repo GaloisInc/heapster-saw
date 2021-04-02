@@ -636,9 +636,10 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (RegWithVal tp) m where
-  genSubst s [nuP| RegWithVal r e |] =
-    RegWithVal <$> genSubst s r <*> genSubst s e
-  genSubst s [nuP| RegNoVal r |] = RegNoVal <$> genSubst s r
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| RegWithVal r e |] ->
+      RegWithVal <$> genSubst s r <*> genSubst s e
+    [nuMP| RegNoVal r |] -> RegNoVal <$> genSubst s r
 
 instance SubstVar PermVarSubst m =>
          Substable1 PermVarSubst RegWithVal m where
@@ -646,9 +647,10 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedRegs tp) m where
-  genSubst _ [nuP| TypedRegsNil |] = return TypedRegsNil
-  genSubst s [nuP| TypedRegsCons rs r |] =
-    TypedRegsCons <$> genSubst s rs <*> genSubst s r
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| TypedRegsNil |] -> return TypedRegsNil
+    [nuMP| TypedRegsCons rs r |] ->
+      TypedRegsCons <$> genSubst s rs <*> genSubst s r
 
 instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
           Substable1 PermVarSubst r m) =>
@@ -660,113 +662,114 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
           SubstVar PermVarSubst m, Substable1 PermVarSubst f m,
           Substable PermVarSubst (f BoolType) m) =>
          Substable PermVarSubst (App ext f a) m where
-  genSubst _ [nuP| ExtensionApp _ |] =
-    error "genSubst: unexpected ExtensionApp"
-  genSubst s [nuP| BaseIsEq tp e1 e2 |] =
-    BaseIsEq (mbLift tp) <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst _ [nuP| EmptyApp |] = return EmptyApp
-  genSubst _ [nuP| BoolLit b |] = return $ BoolLit $ mbLift b
-  genSubst s [nuP| Not e |] =
-    Not <$> genSubst1 s e
-  genSubst s [nuP| And e1 e2 |] =
-    And <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| Or e1 e2 |] =
-    Or <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BoolXor e1 e2 |] =
-    BoolXor <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst _ [nuP| NatLit n |] =
-    return $ NatLit $ mbLift n
-  genSubst s [nuP| NatLt e1 e2 |] =
-    NatLt <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatLe e1 e2 |] =
-    NatLe <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatEq e1 e2 |] =
-    NatEq <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatAdd e1 e2 |] =
-    NatAdd <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatSub e1 e2 |] =
-    NatSub <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatMul e1 e2 |] =
-    NatMul <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatDiv e1 e2 |] =
-    NatDiv <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| NatMod e1 e2 |] =
-    NatMod <$> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst _ [nuP| HandleLit h |] =
-    return $ HandleLit $ mbLift h
-  genSubst s [nuP| BVUndef w |] =
-    BVUndef <$> genSubst s w
-  genSubst s [nuP| BVLit w i |] =
-    BVLit <$> genSubst s w <*> return (mbLift i)
-  genSubst s [nuP| BVConcat w1 w2 e1 e2 |] =
-    BVConcat <$> genSubst s w1 <*> genSubst s w2 <*>
-    genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVTrunc w1 w2 e |] =
-    BVTrunc <$> genSubst s w1 <*> genSubst s w2 <*> genSubst1 s e
-  genSubst s [nuP| BVZext w1 w2 e |] =
-    BVZext <$> genSubst s w1 <*> genSubst s w2 <*> genSubst1 s e
-  genSubst s [nuP| BVSext w1 w2 e |] =
-    BVSext <$> genSubst s w1 <*> genSubst s w2 <*> genSubst1 s e
-  genSubst s [nuP| BVNot w e |] =
-    BVNot <$> genSubst s w <*> genSubst1 s e
-  genSubst s [nuP| BVAnd w e1 e2 |] =
-    BVAnd <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVOr w e1 e2 |] =
-    BVOr <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVXor w e1 e2 |] =
-    BVXor <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVNeg w e |] =
-    BVNeg <$> genSubst s w <*> genSubst1 s e
-  genSubst s [nuP| BVAdd w e1 e2 |] =
-    BVAdd <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVSub w e1 e2 |] =
-    BVSub <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVMul w e1 e2 |] =
-    BVMul <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVUdiv w e1 e2 |] =
-    BVUdiv <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVSdiv w e1 e2 |] =
-    BVSdiv <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVUrem w e1 e2 |] =
-    BVUrem <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVSrem w e1 e2 |] =
-    BVSrem <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVUle w e1 e2 |] =
-    BVUle <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVUlt w e1 e2 |] =
-    BVUlt <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVSle w e1 e2 |] =
-    BVSle <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVSlt w e1 e2 |] =
-    BVSlt <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVCarry w e1 e2 |] =
-    BVCarry <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVSCarry w e1 e2 |] =
-    BVSCarry <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVSBorrow w e1 e2 |] =
-    BVSBorrow <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVShl w e1 e2 |] =
-    BVShl <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVLshr w e1 e2 |] =
-    BVLshr <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BVAshr w e1 e2 |] =
-    BVAshr <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
-  genSubst s [nuP| BoolToBV w e |] =
-    BoolToBV <$> genSubst s w <*> genSubst1 s e
-  genSubst s [nuP| BVNonzero w e |] =
-    BVNonzero <$> genSubst s w <*> genSubst1 s e
-  genSubst _ [nuP| StringLit str_lit |] =
-    return $ StringLit $ mbLift str_lit
-  genSubst s [nuP| MkStruct tps flds |] =
-    MkStruct (mbLift tps) <$> genSubst s flds
-  genSubst s [nuP| GetStruct str ix tp |] =
-    GetStruct <$> genSubst1 s str <*> return (mbLift ix) <*> return (mbLift tp)
-  genSubst s [nuP| SetStruct tps str ix x |] =
-    SetStruct (mbLift tps) <$> genSubst1 s str <*> return (mbLift ix)
-    <*> genSubst1 s x
-  genSubst _ mb_expr =
-    error ("genSubst: unhandled Crucible expression construct: "
-           ++ mbLift (fmap (show . ppApp (const (pretty "_"))) mb_expr))
+  genSubst s mb_expr = case mbMatch mb_expr of
+    [nuMP| ExtensionApp _ |] ->
+      error "genSubst: unexpected ExtensionApp"
+    [nuMP| BaseIsEq tp e1 e2 |] ->
+      BaseIsEq (mbLift tp) <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| EmptyApp |] -> return EmptyApp
+    [nuMP| BoolLit b |] -> return $ BoolLit $ mbLift b
+    [nuMP| Not e |] ->
+      Not <$> genSubst1 s e
+    [nuMP| And e1 e2 |] ->
+      And <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| Or e1 e2 |] ->
+      Or <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BoolXor e1 e2 |] ->
+      BoolXor <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatLit n |] ->
+      return $ NatLit $ mbLift n
+    [nuMP| NatLt e1 e2 |] ->
+      NatLt <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatLe e1 e2 |] ->
+      NatLe <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatEq e1 e2 |] ->
+      NatEq <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatAdd e1 e2 |] ->
+      NatAdd <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatSub e1 e2 |] ->
+      NatSub <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatMul e1 e2 |] ->
+      NatMul <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatDiv e1 e2 |] ->
+      NatDiv <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| NatMod e1 e2 |] ->
+      NatMod <$> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| HandleLit h |] ->
+      return $ HandleLit $ mbLift h
+    [nuMP| BVUndef w |] ->
+      BVUndef <$> genSubst s w
+    [nuMP| BVLit w i |] ->
+      BVLit <$> genSubst s w <*> return (mbLift i)
+    [nuMP| BVConcat w1 w2 e1 e2 |] ->
+      BVConcat <$> genSubst s w1 <*> genSubst s w2 <*>
+                   genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVTrunc w1 w2 e |] ->
+      BVTrunc <$> genSubst s w1 <*> genSubst s w2 <*> genSubst1 s e
+    [nuMP| BVZext w1 w2 e |] ->
+      BVZext <$> genSubst s w1 <*> genSubst s w2 <*> genSubst1 s e
+    [nuMP| BVSext w1 w2 e |] ->
+      BVSext <$> genSubst s w1 <*> genSubst s w2 <*> genSubst1 s e
+    [nuMP| BVNot w e |] ->
+      BVNot <$> genSubst s w <*> genSubst1 s e
+    [nuMP| BVAnd w e1 e2 |] ->
+      BVAnd <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVOr w e1 e2 |] ->
+      BVOr <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVXor w e1 e2 |] ->
+      BVXor <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVNeg w e |] ->
+      BVNeg <$> genSubst s w <*> genSubst1 s e
+    [nuMP| BVAdd w e1 e2 |] ->
+      BVAdd <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVSub w e1 e2 |] ->
+      BVSub <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVMul w e1 e2 |] ->
+      BVMul <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVUdiv w e1 e2 |] ->
+      BVUdiv <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVSdiv w e1 e2 |] ->
+      BVSdiv <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVUrem w e1 e2 |] ->
+      BVUrem <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVSrem w e1 e2 |] ->
+      BVSrem <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVUle w e1 e2 |] ->
+      BVUle <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVUlt w e1 e2 |] ->
+      BVUlt <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVSle w e1 e2 |] ->
+      BVSle <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVSlt w e1 e2 |] ->
+      BVSlt <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVCarry w e1 e2 |] ->
+      BVCarry <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVSCarry w e1 e2 |] ->
+      BVSCarry <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVSBorrow w e1 e2 |] ->
+      BVSBorrow <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVShl w e1 e2 |] ->
+      BVShl <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVLshr w e1 e2 |] ->
+      BVLshr <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BVAshr w e1 e2 |] ->
+      BVAshr <$> genSubst s w <*> genSubst1 s e1 <*> genSubst1 s e2
+    [nuMP| BoolToBV w e |] ->
+      BoolToBV <$> genSubst s w <*> genSubst1 s e
+    [nuMP| BVNonzero w e |] ->
+      BVNonzero <$> genSubst s w <*> genSubst1 s e
+    [nuMP| StringLit str_lit |] ->
+      return $ StringLit $ mbLift str_lit
+    [nuMP| MkStruct tps flds |] ->
+      MkStruct (mbLift tps) <$> genSubst s flds
+    [nuMP| GetStruct str ix tp |] ->
+      GetStruct <$> genSubst1 s str <*> return (mbLift ix) <*> return (mbLift tp)
+    [nuMP| SetStruct tps str ix x |] ->
+      SetStruct (mbLift tps) <$> genSubst1 s str <*> return (mbLift ix)
+                             <*> genSubst1 s x
+    _ ->
+      error ("genSubst: unhandled Crucible expression construct: "
+             ++ mbLift (fmap (show . ppApp (const (pretty "_"))) mb_expr))
 
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
@@ -776,49 +779,51 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedLLVMStmt w tp ps_out ps_in) m where
-  genSubst s [nuP| ConstructLLVMWord r |] = ConstructLLVMWord <$> genSubst s r
-  genSubst s [nuP| AssertLLVMWord r e |] =
-    AssertLLVMWord <$> genSubst s r <*> genSubst s e
-  genSubst s [nuP| AssertLLVMPtr r |] =
-    AssertLLVMPtr <$> genSubst s r
-  genSubst s [nuP| DestructLLVMWord r e |] =
-    DestructLLVMWord <$> genSubst s r <*> genSubst s e
-  genSubst s [nuP| OffsetLLVMValue r off |] =
-    OffsetLLVMValue <$> genSubst s r <*> genSubst s off
-  genSubst s [nuP| TypedLLVMLoad r fp ps ps_l |] =
-    TypedLLVMLoad <$> genSubst s r <*> genSubst s fp <*> genSubst s ps <*>
-    genSubst s ps_l
-  genSubst s [nuP| TypedLLVMStore r fp e ps cur_ps |] =
-    TypedLLVMStore <$> genSubst s r <*> genSubst s fp <*> genSubst s e <*>
-    genSubst s ps <*> genSubst s cur_ps
-  genSubst s [nuP| TypedLLVMAlloca r fperms i |] =
-    TypedLLVMAlloca <$> genSubst s r <*> genSubst s fperms <*>
-    return (mbLift i)
-  genSubst _ [nuP| TypedLLVMCreateFrame |] = return TypedLLVMCreateFrame
-  genSubst s [nuP| TypedLLVMDeleteFrame r fperms perms |] =
-    TypedLLVMDeleteFrame <$> genSubst s r <*> genSubst s fperms <*>
-    genSubst s perms
-  genSubst s [nuP| TypedLLVMLoadHandle r tp p |] =
-    TypedLLVMLoadHandle <$> genSubst s r <*> return (mbLift tp) <*> genSubst s p
-  genSubst s [nuP| TypedLLVMResolveGlobal gsym p |] =
-    TypedLLVMResolveGlobal (mbLift gsym) <$> genSubst s p
-  genSubst s [nuP| TypedLLVMIte r1 r2 r3 |] =
-    TypedLLVMIte <$> genSubst s r1 <*> genSubst s r2 <*> genSubst s r3
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| ConstructLLVMWord r |] -> ConstructLLVMWord <$> genSubst s r
+    [nuMP| AssertLLVMWord r e |] ->
+      AssertLLVMWord <$> genSubst s r <*> genSubst s e
+    [nuMP| AssertLLVMPtr r |] ->
+      AssertLLVMPtr <$> genSubst s r
+    [nuMP| DestructLLVMWord r e |] ->
+      DestructLLVMWord <$> genSubst s r <*> genSubst s e
+    [nuMP| OffsetLLVMValue r off |] ->
+      OffsetLLVMValue <$> genSubst s r <*> genSubst s off
+    [nuMP| TypedLLVMLoad r fp ps ps_l |] ->
+      TypedLLVMLoad <$> genSubst s r <*> genSubst s fp <*> genSubst s ps <*>
+                        genSubst s ps_l
+    [nuMP| TypedLLVMStore r fp e ps cur_ps |] ->
+      TypedLLVMStore <$> genSubst s r <*> genSubst s fp <*> genSubst s e <*>
+                         genSubst s ps <*> genSubst s cur_ps
+    [nuMP| TypedLLVMAlloca r fperms i |] ->
+      TypedLLVMAlloca <$> genSubst s r <*> genSubst s fperms <*>
+                          return (mbLift i)
+    [nuMP| TypedLLVMCreateFrame |] -> return TypedLLVMCreateFrame
+    [nuMP| TypedLLVMDeleteFrame r fperms perms |] ->
+      TypedLLVMDeleteFrame <$> genSubst s r <*> genSubst s fperms <*>
+                               genSubst s perms
+    [nuMP| TypedLLVMLoadHandle r tp p |] ->
+      TypedLLVMLoadHandle <$> genSubst s r <*> return (mbLift tp) <*> genSubst s p
+    [nuMP| TypedLLVMResolveGlobal gsym p |] ->
+      TypedLLVMResolveGlobal (mbLift gsym) <$> genSubst s p
+    [nuMP| TypedLLVMIte r1 r2 r3 |] ->
+      TypedLLVMIte <$> genSubst s r1 <*> genSubst s r2 <*> genSubst s r3
 
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
          Substable PermVarSubst (TypedStmt ext rets ps_in ps_out) m where
-  genSubst s [nuP| TypedSetReg tp expr |] =
-    TypedSetReg (mbLift tp) <$> genSubst s expr
-  genSubst s [nuP| TypedSetRegPermExpr tp expr |] =
-    TypedSetRegPermExpr (mbLift tp) <$> genSubst s expr
-  genSubst s [nuP| TypedCall f fun_perm ghosts gexprs args |] =
-    TypedCall <$> genSubst s f <*> genSubst s fun_perm <*>
-    genSubst s ghosts <*> genSubst s gexprs <*> genSubst s args
-  genSubst s [nuP| TypedAssert r1 r2 |] =
-    TypedAssert <$> genSubst s r1 <*> genSubst s r2
-  genSubst s [nuP| TypedLLVMStmt llvmStmt |] =
-    TypedLLVMStmt <$> genSubst s llvmStmt
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| TypedSetReg tp expr |] ->
+      TypedSetReg (mbLift tp) <$> genSubst s expr
+    [nuMP| TypedSetRegPermExpr tp expr |] ->
+      TypedSetRegPermExpr (mbLift tp) <$> genSubst s expr
+    [nuMP| TypedCall f fun_perm ghosts gexprs args |] ->
+      TypedCall <$> genSubst s f <*> genSubst s fun_perm <*>
+                    genSubst s ghosts <*> genSubst s gexprs <*> genSubst s args
+    [nuMP| TypedAssert r1 r2 |] ->
+      TypedAssert <$> genSubst s r1 <*> genSubst s r2
+    [nuMP| TypedLLVMStmt llvmStmt |] ->
+      TypedLLVMStmt <$> genSubst s llvmStmt
 
 
 instance SubstVar PermVarSubst m =>
@@ -842,23 +847,25 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedTermStmt blocks tops ret ps_in) m where
-  genSubst s [nuP| TypedJump impl_tgt |] = TypedJump <$> genSubst s impl_tgt
-  genSubst s [nuP| TypedBr reg impl_tgt1 impl_tgt2 |] =
-    TypedBr <$> genSubst s reg <*> genSubst s impl_tgt1 <*>
-    genSubst s impl_tgt2
-  genSubst s [nuP| TypedReturn impl_ret |] =
-    TypedReturn <$> genSubst s impl_ret
-  genSubst s [nuP| TypedErrorStmt str r |] =
-    TypedErrorStmt (mbLift str) <$> genSubst s r
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| TypedJump impl_tgt |] -> TypedJump <$> genSubst s impl_tgt
+    [nuMP| TypedBr reg impl_tgt1 impl_tgt2 |] ->
+      TypedBr <$> genSubst s reg <*> genSubst s impl_tgt1 <*>
+                  genSubst s impl_tgt2
+    [nuMP| TypedReturn impl_ret |] ->
+      TypedReturn <$> genSubst s impl_ret
+    [nuMP| TypedErrorStmt str r |] ->
+      TypedErrorStmt (mbLift str) <$> genSubst s r
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
          Substable PermVarSubst (TypedStmtSeq ext blocks tops ret ps_in) m where
-  genSubst s [nuP| TypedImplStmt impl_seq |] =
-    TypedImplStmt <$> genSubst s impl_seq
-  genSubst s [nuP| TypedConsStmt loc stmt mb_seq |] =
-    TypedConsStmt (mbLift loc) <$> genSubst s stmt <*> genSubst s mb_seq
-  genSubst s [nuP| TypedTermStmt loc term_stmt |] =
-    TypedTermStmt (mbLift loc) <$> genSubst s term_stmt
+  genSubst s mb_x = case mbMatch mb_x of
+    [nuMP| TypedImplStmt impl_seq |] ->
+      TypedImplStmt <$> genSubst s impl_seq
+    [nuMP| TypedConsStmt loc stmt mb_seq |] ->
+      TypedConsStmt (mbLift loc) <$> genSubst s stmt <*> genSubst s mb_seq
+    [nuMP| TypedTermStmt loc term_stmt |] ->
+      TypedTermStmt (mbLift loc) <$> genSubst s term_stmt
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
          Substable1 PermVarSubst (TypedStmtSeq ext blocks tops ret) m where

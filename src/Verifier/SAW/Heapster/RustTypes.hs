@@ -662,27 +662,28 @@ instance Applicative SomeTypedMb where
 -- 'LOwnedPerms' sequence
 abstractMbLOPsModalities :: Mb ctx (LOwnedPerms tps) ->
                             SomeTypedMb (Mb ctx (LOwnedPerms tps))
-abstractMbLOPsModalities lops@[nuP| MNil |] = pure lops
-abstractMbLOPsModalities [nuP| lops :>: LOwnedPermField mb_e mb_fp |] =
-  liftA2 (mbMap2 (:>:))
-  (abstractMbLOPsModalities lops)
-  (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
-   nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
-    mbMap2 (\e fp ->
-             LOwnedPermField e (fp { llvmFieldRW = PExpr_Var rw,
-                                     llvmFieldLifetime = PExpr_Var l }))
-    mb_e mb_fp)
-abstractMbLOPsModalities [nuP| lops :>: LOwnedPermBlock mb_e mb_bp |] =
-  liftA2 (mbMap2 (:>:))
-  (abstractMbLOPsModalities lops)
-  (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
-   nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
-    mbMap2 (\e bp ->
-             LOwnedPermBlock e (bp { llvmBlockRW = PExpr_Var rw,
-                                     llvmBlockLifetime = PExpr_Var l }))
-    mb_e mb_bp)
-abstractMbLOPsModalities [nuP| lops :>: lop@(LOwnedPermLifetime _ _ _) |] =
-  liftA2 (mbMap2 (:>:)) (abstractMbLOPsModalities lops) (pure lop)
+abstractMbLOPsModalities mb_lops = case mbMatch mb_lops of
+  [nuMP| MNil |] -> pure mb_lops
+  [nuMP| lops :>: LOwnedPermField mb_e mb_fp |] ->
+    liftA2 (mbMap2 (:>:))
+    (abstractMbLOPsModalities lops)
+    (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
+     nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
+      mbMap2 (\e fp ->
+               LOwnedPermField e (fp { llvmFieldRW = PExpr_Var rw,
+                                       llvmFieldLifetime = PExpr_Var l }))
+      mb_e mb_fp)
+  [nuMP| lops :>: LOwnedPermBlock mb_e mb_bp |] ->
+    liftA2 (mbMap2 (:>:))
+    (abstractMbLOPsModalities lops)
+    (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
+     nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
+      mbMap2 (\e bp ->
+               LOwnedPermBlock e (bp { llvmBlockRW = PExpr_Var rw,
+                                       llvmBlockLifetime = PExpr_Var l }))
+      mb_e mb_bp)
+  [nuMP| lops :>: lop@(LOwnedPermLifetime _ _ _) |] ->
+    liftA2 (mbMap2 (:>:)) (abstractMbLOPsModalities lops) (pure lop)
 
 
 -- | Find all field or block permissions containing lifetime @l@ and return them

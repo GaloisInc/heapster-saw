@@ -185,24 +185,25 @@ translateCompleteIRTTyVars sc env npn_rec args p =
 valuePermIRTTyVars :: Mb (args :++: ext) (ValuePerm a) ->
                       IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                 IRTVarTreeShape)
-valuePermIRTTyVars [nuP| ValPerm_Eq _ |] = return ([], IRTVarsNil)
-valuePermIRTTyVars [nuP| ValPerm_Or p1 p2 |] =
-  do (tps1, ixs1) <- valuePermIRTTyVars p1
-     (tps2, ixs2) <- valuePermIRTTyVars p2
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
-valuePermIRTTyVars [nuP| ValPerm_Exists p |] =
-  do let tp = mbBindingType p
-         tp_trans = typeTransTupleType <$> translateClosed tp
-     pCbn <- irtTMbCombine p
-     (tps, ixs) <- inExtIRTTyVarsTransM (valuePermIRTTyVars pCbn)
-     return (tp_trans : tps, IRTVarsCons () ixs)
-valuePermIRTTyVars p@[nuP| ValPerm_Named npn args off |] =
-  namedPermIRTTyVars p npn args off
-valuePermIRTTyVars p@[nuP| ValPerm_Var x _ |] =
-  irtTTranslateVar p x
-valuePermIRTTyVars [nuP| ValPerm_Conj ps |] =
-  do (tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars (mbList ps)
-     return (concat tps, IRTVarsConcat ixs)
+valuePermIRTTyVars mb_p = case mbMatch mb_p of
+  [nuMP| ValPerm_Eq _ |] -> return ([], IRTVarsNil)
+  [nuMP| ValPerm_Or p1 p2 |] ->
+    do (tps1, ixs1) <- valuePermIRTTyVars p1
+       (tps2, ixs2) <- valuePermIRTTyVars p2
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+  [nuMP| ValPerm_Exists p |] ->
+    do let tp = mbBindingType p
+           tp_trans = typeTransTupleType <$> translateClosed tp
+       pCbn <- irtTMbCombine p
+       (tps, ixs) <- inExtIRTTyVarsTransM (valuePermIRTTyVars pCbn)
+       return (tp_trans : tps, IRTVarsCons () ixs)
+  [nuMP| ValPerm_Named npn args off |] ->
+    namedPermIRTTyVars mb_p npn args off
+  [nuMP| ValPerm_Var x _ |] ->
+    irtTTranslateVar mb_p x
+  [nuMP| ValPerm_Conj ps |] ->
+    do (tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars (mbList ps)
+       return (concat tps, IRTVarsConcat ixs)
 
 -- | Get all IRT type variables in a named permission application. The first
 -- argument must be either 'ValPerm_Named' or 'Perm_NamedConj' applied to the
@@ -263,62 +264,63 @@ irtTTranslateVar p x =
 atomicPermIRTTyVars :: Mb (args :++: ext) (AtomicPerm a) ->
                        IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                  IRTVarTreeShape)
-atomicPermIRTTyVars [nuP| Perm_LLVMField fld |] =
-  valuePermIRTTyVars (fmap llvmFieldContents fld)
-atomicPermIRTTyVars [nuP| Perm_LLVMArray mb_ap |] =
-  do let mb_flds = fmap llvmArrayFields mb_ap
-         flds = fmap (fmap llvmArrayFieldToAtomicPerm) (mbList mb_flds)
-     (fld_tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars flds
-     return (concat fld_tps, IRTVarsConcat ixs)
-atomicPermIRTTyVars [nuP| Perm_LLVMBlock bp |] =
-  shapeExprIRTTyVars (fmap llvmBlockShape bp)
-atomicPermIRTTyVars [nuP| Perm_LLVMFree _ |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_LLVMFunPtr _ p |] =
-  valuePermIRTTyVars p
-atomicPermIRTTyVars [nuP| Perm_IsLLVMPtr |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_LLVMBlockShape sh |] =
-  shapeExprIRTTyVars sh
-atomicPermIRTTyVars p@[nuP| Perm_NamedConj npn args off |] =
-  namedPermIRTTyVars p npn args off
-atomicPermIRTTyVars [nuP| Perm_LLVMFrame _ |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_LOwned _ _ |] =
-  throwError "lowned permission in an IRT definition!"
-atomicPermIRTTyVars [nuP| Perm_LCurrent _ |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_Struct ps |] = valuePermsIRTTyVars ps
-atomicPermIRTTyVars [nuP| Perm_Fun _ |] =
-  throwError "fun perm in an IRT definition!"
-atomicPermIRTTyVars [nuP| Perm_BVProp _ |] =
-  throwError "BVProp in an IRT definition!"
+atomicPermIRTTyVars mb_p = case mbMatch mb_p of
+  [nuMP| Perm_LLVMField fld |] ->
+    valuePermIRTTyVars (fmap llvmFieldContents fld)
+  [nuMP| Perm_LLVMArray mb_ap |] ->
+    do let mb_flds = fmap llvmArrayFields mb_ap
+           flds = fmap (fmap llvmArrayFieldToAtomicPerm) (mbList mb_flds)
+       (fld_tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars flds
+       return (concat fld_tps, IRTVarsConcat ixs)
+  [nuMP| Perm_LLVMBlock bp |] ->
+    shapeExprIRTTyVars (fmap llvmBlockShape bp)
+  [nuMP| Perm_LLVMFree _ |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_LLVMFunPtr _ p |] ->
+    valuePermIRTTyVars p
+  [nuMP| Perm_IsLLVMPtr |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_LLVMBlockShape sh |] ->
+    shapeExprIRTTyVars sh
+  [nuMP| Perm_NamedConj npn args off |] ->
+    namedPermIRTTyVars mb_p npn args off
+  [nuMP| Perm_LLVMFrame _ |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_LOwned _ _ |] ->
+    throwError "lowned permission in an IRT definition!"
+  [nuMP| Perm_LCurrent _ |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_Struct ps |] -> valuePermsIRTTyVars ps
+  [nuMP| Perm_Fun _ |] ->
+    throwError "fun perm in an IRT definition!"
+  [nuMP| Perm_BVProp _ |] ->
+    throwError "BVProp in an IRT definition!"
 
 -- | Get all IRT type variables in a shape expression
 shapeExprIRTTyVars :: Mb (args :++: ext) (PermExpr (LLVMShapeType w)) ->
                       IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                 IRTVarTreeShape)
-shapeExprIRTTyVars p@[nuP| PExpr_Var x |] =
-  irtTTranslateVar p x
-shapeExprIRTTyVars [nuP| PExpr_EmptyShape |] = return ([], IRTVarsNil)
-shapeExprIRTTyVars [nuP| PExpr_EqShape _ |] = return ([], IRTVarsNil)
-shapeExprIRTTyVars [nuP| PExpr_PtrShape _ _ sh |] =
-  shapeExprIRTTyVars sh
-shapeExprIRTTyVars [nuP| PExpr_FieldShape fsh |] =
-  fieldShapeIRTTyVars fsh
-shapeExprIRTTyVars [nuP| PExpr_ArrayShape _ _ fshs |] = 
-  do (tps, ixs) <- unzip <$> mapM fieldShapeIRTTyVars (mbList fshs)
-     return (concat tps, IRTVarsConcat ixs)
-shapeExprIRTTyVars [nuP| PExpr_SeqShape sh1 sh2 |] =
-  do (tps1, ixs1) <- shapeExprIRTTyVars sh1
-     (tps2, ixs2) <- shapeExprIRTTyVars sh2
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
-shapeExprIRTTyVars [nuP| PExpr_OrShape sh1 sh2 |] =
-  do (tps1, ixs1) <- shapeExprIRTTyVars sh1
-     (tps2, ixs2) <- shapeExprIRTTyVars sh2
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
-shapeExprIRTTyVars [nuP| PExpr_ExShape mb_sh |] =
-  do let tp = mbBindingType mb_sh
-         tp_trans = typeTransTupleType <$> translateClosed tp
-     shCbn <- irtTMbCombine mb_sh
-     (tps, ixs) <- inExtIRTTyVarsTransM (shapeExprIRTTyVars shCbn)
-     return (tp_trans : tps, IRTVarsCons () ixs)
+shapeExprIRTTyVars mb_p = case mbMatch mb_p of
+  [nuMP| PExpr_Var x |] -> irtTTranslateVar mb_p x
+  [nuMP| PExpr_EmptyShape |] -> return ([], IRTVarsNil)
+  [nuMP| PExpr_EqShape _ |] -> return ([], IRTVarsNil)
+  [nuMP| PExpr_PtrShape _ _ sh |] ->
+      shapeExprIRTTyVars sh
+  [nuMP| PExpr_FieldShape fsh |] ->
+      fieldShapeIRTTyVars fsh
+  [nuMP| PExpr_ArrayShape _ _ fshs |] ->
+    do (tps, ixs) <- unzip <$> mapM fieldShapeIRTTyVars (mbList fshs)
+       return (concat tps, IRTVarsConcat ixs)
+  [nuMP| PExpr_SeqShape sh1 sh2 |] ->
+    do (tps1, ixs1) <- shapeExprIRTTyVars sh1
+       (tps2, ixs2) <- shapeExprIRTTyVars sh2
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+  [nuMP| PExpr_OrShape sh1 sh2 |] ->
+    do (tps1, ixs1) <- shapeExprIRTTyVars sh1
+       (tps2, ixs2) <- shapeExprIRTTyVars sh2
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+  [nuMP| PExpr_ExShape mb_sh |] ->
+    do let tp = mbBindingType mb_sh
+           tp_trans = typeTransTupleType <$> translateClosed tp
+       shCbn <- irtTMbCombine mb_sh
+       (tps, ixs) <- inExtIRTTyVarsTransM (shapeExprIRTTyVars shCbn)
+       return (tp_trans : tps, IRTVarsCons () ixs)
 
 -- | Get all IRT type variables in a field shape
 fieldShapeIRTTyVars :: Mb (args :++: ext) (LLVMFieldShape w) ->
@@ -330,11 +332,12 @@ fieldShapeIRTTyVars [nuP| LLVMFieldShape p |] = valuePermIRTTyVars p
 valuePermsIRTTyVars :: Mb (args :++: ext) (ValuePerms ps) ->
                        IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                  IRTVarTreeShape)
-valuePermsIRTTyVars [nuP| ValPerms_Nil |] = return ([], IRTVarsNil)
-valuePermsIRTTyVars [nuP| ValPerms_Cons ps p |] =
-  do (tps1, ixs1) <- valuePermsIRTTyVars ps
-     (tps2, ixs2) <- valuePermIRTTyVars p
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+valuePermsIRTTyVars mb_ps = case mbMatch mb_ps of
+  [nuMP| ValPerms_Nil |] -> return ([], IRTVarsNil)
+  [nuMP| ValPerms_Cons ps p |] ->
+    do (tps1, ixs1) <- valuePermsIRTTyVars ps
+       (tps2, ixs2) <- valuePermIRTTyVars p
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
 
 
 ----------------------------------------------------------------------

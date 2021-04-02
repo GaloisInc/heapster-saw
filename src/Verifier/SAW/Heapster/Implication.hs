@@ -2179,272 +2179,285 @@ instance SubstVar PermVarSubst m =>
 
 instance (NuMatching a, Substable PermVarSubst a m) =>
          Substable PermVarSubst (EqProof ps a) m where
-  genSubst s [nuP| EqProofRefl a |] =
-    EqProofRefl <$> genSubst s a
-  genSubst s [nuP| EqProofPerm eqp mb_a |] =
-    EqProofPerm <$> genSubst s eqp <*> genSubst s mb_a
-  genSubst s [nuP| EqProofTrans eqp1 eqp2 |] =
-    EqProofTrans <$> genSubst s eqp1 <*> genSubst s eqp2
+  genSubst s mb_eq = case mbMatch mb_eq of
+    [nuMP| EqProofRefl a |] ->
+      EqProofRefl <$> genSubst s a
+    [nuMP| EqProofPerm eqp mb_a |] ->
+      EqProofPerm <$> genSubst s eqp <*> genSubst s mb_a
+    [nuMP| EqProofTrans eqp1 eqp2 |] ->
+      EqProofTrans <$> genSubst s eqp1 <*> genSubst s eqp2
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (SimplImpl ps_in ps_out) m where
-  genSubst s [nuP| SImpl_Drop x p |] =
-    SImpl_Drop <$> genSubst s x <*> genSubst s p
-  genSubst s [nuP| SImpl_Copy x p |] =
-    SImpl_Copy <$> genSubst s x <*> genSubst s p
-  genSubst s [nuP| SImpl_Swap x p1 y p2 |] =
-    SImpl_Swap <$> genSubst s x <*> genSubst s p1 <*> genSubst s y <*> genSubst s p2
-  genSubst s [nuP| SImpl_MoveUp ps1 x p ps2 |] =
-    SImpl_MoveUp <$> genSubst s ps1 <*> genSubst s x <*>
-    genSubst s p <*> genSubst s ps2
-  genSubst s [nuP| SImpl_IntroOrL x p1 p2 |] =
-    SImpl_IntroOrL <$> genSubst s x <*> genSubst s p1 <*> genSubst s p2
-  genSubst s [nuP| SImpl_IntroOrR x p1 p2 |] =
-    SImpl_IntroOrR <$> genSubst s x <*> genSubst s p1 <*> genSubst s p2
-  genSubst s [nuP| SImpl_IntroExists x e p |] =
-    SImpl_IntroExists <$> genSubst s x <*> genSubst s e <*> genSubst s p
-  genSubst s [nuP| SImpl_Cast x y p |] =
-    SImpl_Cast <$> genSubst s x <*> genSubst s y <*> genSubst s p
-  genSubst s [nuP| SImpl_CastPerm x eqp |] =
-    SImpl_CastPerm <$> genSubst s x <*> genSubst s eqp
-  genSubst s [nuP| SImpl_IntroEqRefl x |] =
-    SImpl_IntroEqRefl <$> genSubst s x
-  genSubst s [nuP| SImpl_InvertEq x y |] =
-    SImpl_InvertEq <$> genSubst s x <*> genSubst s y
-  genSubst s [nuP| SImpl_InvTransEq x y e |] =
-    SImpl_InvTransEq <$> genSubst s x <*> genSubst s y <*> genSubst s e
-  genSubst s [nuP| SImpl_CopyEq x e |] =
-    SImpl_CopyEq <$> genSubst s x <*> genSubst s e
-  genSubst s [nuP| SImpl_LLVMWordEq x y e |] =
-    SImpl_LLVMWordEq <$> genSubst s x <*> genSubst s y <*> genSubst s e
-  genSubst s [nuP| SImpl_IntroConj x |] =
-    SImpl_IntroConj <$> genSubst s x
-  genSubst s [nuP| SImpl_ExtractConj x ps i |] =
-    SImpl_ExtractConj <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
-  genSubst s [nuP| SImpl_CopyConj x ps i |] =
-    SImpl_CopyConj <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
-  genSubst s [nuP| SImpl_InsertConj x p ps i |] =
-    SImpl_InsertConj <$> genSubst s x <*> genSubst s p <*>
-    genSubst s ps <*> return (mbLift i)
-  genSubst s [nuP| SImpl_AppendConjs x ps1 ps2 |] =
-    SImpl_AppendConjs <$> genSubst s x <*> genSubst s ps1 <*> genSubst s ps2
-  genSubst s [nuP| SImpl_SplitConjs x ps i |] =
-    SImpl_SplitConjs <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
-  genSubst s [nuP| SImpl_IntroStructTrue x fs |] =
-    SImpl_IntroStructTrue <$> genSubst s x <*> return (mbLift fs)
-  genSubst s [nuP| SImpl_StructEqToPerm x exprs |] =
-    SImpl_StructEqToPerm <$> genSubst s x <*> genSubst s exprs
-  genSubst s [nuP| SImpl_StructPermToEq x exprs |] =
-    SImpl_StructPermToEq <$> genSubst s x <*> genSubst s exprs
-  genSubst s [nuP| SImpl_IntroStructField x ps memb p |] =
-    SImpl_IntroStructField <$> genSubst s x <*> genSubst s ps
-    <*> genSubst s memb <*> genSubst s p
-  genSubst s [nuP| SImpl_ConstFunPerm x h fun_perm ident |] =
-    SImpl_ConstFunPerm <$> genSubst s x <*> return (mbLift h) <*>
-    genSubst s fun_perm <*> return (mbLift ident)
-  genSubst s [nuP| SImpl_CastLLVMWord x e1 e2 |] =
-    SImpl_CastLLVMWord <$> genSubst s x <*> genSubst s e1 <*> genSubst s e2
-  genSubst s [nuP| SImpl_InvertLLVMOffsetEq x off y |] =
-    SImpl_InvertLLVMOffsetEq <$> genSubst s x <*> genSubst s off <*> genSubst s y
-  genSubst s [nuP| SImpl_OffsetLLVMWord y e off x |] =
-    SImpl_OffsetLLVMWord <$> genSubst s y <*> genSubst s e <*>
-    genSubst s off <*> genSubst s x
-  genSubst s [nuP| SImpl_CastLLVMPtr y p off x |] =
-    SImpl_CastLLVMPtr <$> genSubst s y <*> genSubst s p <*>
-    genSubst s off <*> genSubst s x
-  genSubst s [nuP| SImpl_CastLLVMFree x e1 e2 |] =
-    SImpl_CastLLVMFree <$> genSubst s x <*> genSubst s e1 <*> genSubst s e2
-  genSubst s [nuP| SImpl_CastLLVMFieldOffset x fld off' |] =
-    SImpl_CastLLVMFieldOffset <$> genSubst s x <*> genSubst s fld <*>
-    genSubst s off'
-  genSubst s [nuP| SImpl_IntroLLVMFieldContents x y fld |] =
-    SImpl_IntroLLVMFieldContents <$> genSubst s x <*> genSubst s y <*>
-    genSubst s fld
-  genSubst s [nuP| SImpl_DemoteLLVMFieldRW x fld |] =
-    SImpl_DemoteLLVMFieldRW <$> genSubst s x <*> genSubst s fld
-  genSubst s [nuP| SImpl_LLVMArrayCopy x ap rng |] =
-    SImpl_LLVMArrayCopy <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
-  genSubst s [nuP| SImpl_LLVMArrayBorrow x ap rng |] =
-    SImpl_LLVMArrayBorrow <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
-  genSubst s [nuP| SImpl_LLVMArrayReturn x ap rng |] =
-    SImpl_LLVMArrayReturn <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
-  genSubst s [nuP| SImpl_LLVMArrayAppend x ap1 ap2 |] =
-    SImpl_LLVMArrayAppend <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
-  genSubst s [nuP| SImpl_LLVMArrayRearrange x ap1 ap2 |] =
-    SImpl_LLVMArrayRearrange <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
-  genSubst s [nuP| SImpl_LLVMArrayToField x ap sz |] =
-    SImpl_LLVMArrayToField <$> genSubst s x <*> genSubst s ap
-    <*> return (mbLift sz)
-  genSubst s [nuP| SImpl_LLVMArrayEmpty x ap |] =
-    SImpl_LLVMArrayEmpty <$> genSubst s x <*> genSubst s ap
-  genSubst s [nuP| SImpl_LLVMArrayOneCell x ap |] =
-    SImpl_LLVMArrayOneCell <$> genSubst s x <*> genSubst s ap
-  genSubst s [nuP| SImpl_LLVMArrayIndexCopy x ap ix |] =
-    SImpl_LLVMArrayIndexCopy <$> genSubst s x <*> genSubst s ap <*> genSubst s ix
-  genSubst s [nuP| SImpl_LLVMArrayIndexBorrow x ap ix |] =
-    SImpl_LLVMArrayIndexBorrow <$> genSubst s x <*> genSubst s ap <*>
-    genSubst s ix
-  genSubst s [nuP| SImpl_LLVMArrayIndexReturn x ap ix |] =
-    SImpl_LLVMArrayIndexReturn <$> genSubst s x <*> genSubst s ap <*>
-    genSubst s ix
-  genSubst s [nuP| SImpl_LLVMArrayContents x ap i fp impl |] =
-    SImpl_LLVMArrayContents <$> genSubst s x <*> genSubst s ap <*>
-    return (mbLift i) <*> genSubst s fp <*> genSubst s impl
-  genSubst s [nuP| SImpl_LLVMFieldIsPtr x fp |] =
-    SImpl_LLVMFieldIsPtr <$> genSubst s x <*> genSubst s fp
-  genSubst s [nuP| SImpl_LLVMArrayIsPtr x ap |] =
-    SImpl_LLVMArrayIsPtr <$> genSubst s x <*> genSubst s ap
-  genSubst s [nuP| SImpl_LLVMBlockIsPtr x bp |] =
-    SImpl_LLVMBlockIsPtr <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_SplitLifetime x f args l l2 ps_in ps_out |] =
-    SImpl_SplitLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s args
-    <*> genSubst s l <*> genSubst s l2
-    <*> genSubst s ps_in <*> genSubst s ps_out
-  genSubst s [nuP| SImpl_SubsumeLifetime l1 ps_in1 ps_out1 l2 ps_in2 ps_out2 |] =
-    SImpl_SubsumeLifetime <$> genSubst s l1 <*> genSubst s ps_in1
-    <*> genSubst s ps_out1 <*> genSubst s l2 <*> genSubst s ps_in2
-    <*> genSubst s ps_out2
-  genSubst s [nuP| SImpl_WeakenLifetime x f args l l2 |] =
-    SImpl_WeakenLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s args
-     <*> genSubst s l <*> genSubst s l2
-  genSubst s [nuP| SImpl_MapLifetime l ps_in ps_out ps_in' ps_out'
-                 ps1 ps2 impl1 impl2 |] =
-    SImpl_MapLifetime <$> genSubst s l <*> genSubst s ps_in
-    <*> genSubst s ps_out <*> genSubst s ps_in' <*> genSubst s ps_out'
-    <*> genSubst s ps1 <*> genSubst s ps2 <*> genSubst s impl1
-    <*> genSubst s impl2
-  genSubst s [nuP| SImpl_EndLifetime l ps_in ps_out |] =
-    SImpl_EndLifetime <$> genSubst s l <*> genSubst s ps_in
-    <*> genSubst s ps_out
-  genSubst s [nuP| SImpl_LCurrentRefl l |] =
-    SImpl_LCurrentRefl <$> genSubst s l
-  genSubst s [nuP| SImpl_LCurrentTrans l1 l2 l3 |] =
-    SImpl_LCurrentTrans <$> genSubst s l1 <*> genSubst s l2 <*> genSubst s l3
-  genSubst s [nuP| SImpl_DemoteLLVMBlockRW x bp |] =
-    SImpl_DemoteLLVMBlockRW <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_IntroLLVMBlockEmpty x bp |] =
-    SImpl_IntroLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_CoerceLLVMBlockEmpty x bp |] =
-    SImpl_CoerceLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_ElimLLVMBlockToBytes x bp |] =
-    SImpl_ElimLLVMBlockToBytes <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_IntroLLVMBlockSeqEmpty x bp |] =
-    SImpl_IntroLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_ElimLLVMBlockSeqEmpty x bp |] =
-    SImpl_ElimLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_IntroLLVMBlockNamed x bp nmsh |] =
-    SImpl_IntroLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
-    <*> genSubst s nmsh
-  genSubst s [nuP| SImpl_ElimLLVMBlockNamed x bp nmsh |] =
-    SImpl_ElimLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
-    <*> genSubst s nmsh
-  genSubst s [nuP| SImpl_IntroLLVMBlockFromEq x bp y |] =
-    SImpl_IntroLLVMBlockFromEq <$> genSubst s x <*> genSubst s bp
-    <*> genSubst s y
-  genSubst s [nuP| SImpl_IntroLLVMBlockPtr x maybe_rw maybe_l bp |] =
-    SImpl_IntroLLVMBlockPtr <$> genSubst s x <*> genSubst s maybe_rw
-    <*> genSubst s maybe_l <*> genSubst s bp
-  genSubst s [nuP| SImpl_ElimLLVMBlockPtr x maybe_rw maybe_l bp |] =
-    SImpl_ElimLLVMBlockPtr <$> genSubst s x <*> genSubst s maybe_rw
-    <*> genSubst s maybe_l <*> genSubst s bp
-  genSubst s [nuP| SImpl_IntroLLVMBlockField x fp |] =
-    SImpl_IntroLLVMBlockField <$> genSubst s x <*> genSubst s fp
-  genSubst s [nuP| SImpl_ElimLLVMBlockField x fp len |] =
-    SImpl_ElimLLVMBlockField <$> genSubst s x <*> genSubst s fp
-    <*> genSubst s len
-  genSubst s [nuP| SImpl_IntroLLVMBlockArray x fp |] =
-    SImpl_IntroLLVMBlockArray <$> genSubst s x <*> genSubst s fp
-  genSubst s [nuP| SImpl_ElimLLVMBlockArray x fp |] =
-    SImpl_ElimLLVMBlockArray <$> genSubst s x <*> genSubst s fp
-  genSubst s [nuP| SImpl_IntroLLVMBlockSeq x bp1 len2 sh2 |] =
-    SImpl_IntroLLVMBlockSeq <$> genSubst s x <*> genSubst s bp1
-    <*> genSubst s len2 <*> genSubst s sh2
-  genSubst s [nuP| SImpl_ElimLLVMBlockSeq x bp1 sh2 |] =
-    SImpl_ElimLLVMBlockSeq <$> genSubst s x <*> genSubst s bp1
-    <*> genSubst s sh2
-  genSubst s [nuP| SImpl_IntroLLVMBlockOr x bp1 sh2 |] =
-    SImpl_IntroLLVMBlockOr <$> genSubst s x <*> genSubst s bp1
-    <*> genSubst s sh2
-  genSubst s [nuP| SImpl_ElimLLVMBlockOr x bp1 sh2 |] =
-    SImpl_ElimLLVMBlockOr <$> genSubst s x <*> genSubst s bp1 <*> genSubst s sh2
-  genSubst s [nuP| SImpl_IntroLLVMBlockEx x bp |] =
-    SImpl_IntroLLVMBlockEx <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_ElimLLVMBlockEx x bp |] =
-    SImpl_ElimLLVMBlockEx <$> genSubst s x <*> genSubst s bp
-  genSubst s [nuP| SImpl_FoldNamed x np args off |] =
-    SImpl_FoldNamed <$> genSubst s x <*> genSubst s np <*> genSubst s args
-     <*> genSubst s off
-  genSubst s [nuP| SImpl_UnfoldNamed x np args off |] =
-    SImpl_UnfoldNamed <$> genSubst s x <*> genSubst s np <*> genSubst s args
-     <*> genSubst s off
-  genSubst s [nuP| SImpl_NamedToConj x npn args off |] =
-    SImpl_NamedToConj <$> genSubst s x <*> genSubst s npn <*> genSubst s args
-     <*> genSubst s off
-  genSubst s [nuP| SImpl_NamedFromConj x npn args off |] =
-    SImpl_NamedFromConj <$> genSubst s x <*> genSubst s npn <*> genSubst s args
-     <*> genSubst s off
-  genSubst s [nuP| SImpl_NamedArgAlways x npn args off memb l |] =
-    SImpl_NamedArgAlways <$> genSubst s x <*> genSubst s npn <*>
-    genSubst s args <*> genSubst s off <*> genSubst s memb <*> genSubst s l
-  genSubst s [nuP| SImpl_NamedArgCurrent x npn args off memb l2 |] =
-    SImpl_NamedArgCurrent <$> genSubst s x <*> genSubst s npn <*>
-    genSubst s args <*> genSubst s off <*> genSubst s memb <*> genSubst s l2
-  genSubst s [nuP| SImpl_NamedArgWrite x npn args off memb rw |] =
-    SImpl_NamedArgWrite <$> genSubst s x <*> genSubst s npn <*>
-    genSubst s args <*> genSubst s off <*> genSubst s memb <*> genSubst s rw
-  genSubst s [nuP| SImpl_NamedArgRead x npn args off memb |] =
-    SImpl_NamedArgRead <$> genSubst s x <*> genSubst s npn <*>
-    genSubst s args <*> genSubst s off <*> genSubst s memb
-  genSubst s [nuP| SImpl_ReachabilityTrans x rp args off y p |] =
-    SImpl_ReachabilityTrans <$> genSubst s x <*> genSubst s rp <*>
-    genSubst s args <*> genSubst s off <*> genSubst s y <*> genSubst s p
+  genSubst s mb_impl = case mbMatch mb_impl of
+    [nuMP| SImpl_Drop x p |] ->
+      SImpl_Drop <$> genSubst s x <*> genSubst s p
+    [nuMP| SImpl_Copy x p |] ->
+      SImpl_Copy <$> genSubst s x <*> genSubst s p
+    [nuMP| SImpl_Swap x p1 y p2 |] ->
+      SImpl_Swap <$> genSubst s x <*> genSubst s p1 <*> genSubst s y <*> genSubst s p2
+    [nuMP| SImpl_MoveUp ps1 x p ps2 |] ->
+      SImpl_MoveUp <$> genSubst s ps1 <*> genSubst s x <*>
+                       genSubst s p <*> genSubst s ps2
+    [nuMP| SImpl_IntroOrL x p1 p2 |] ->
+      SImpl_IntroOrL <$> genSubst s x <*> genSubst s p1 <*> genSubst s p2
+    [nuMP| SImpl_IntroOrR x p1 p2 |] ->
+      SImpl_IntroOrR <$> genSubst s x <*> genSubst s p1 <*> genSubst s p2
+    [nuMP| SImpl_IntroExists x e p |] ->
+      SImpl_IntroExists <$> genSubst s x <*> genSubst s e <*> genSubst s p
+    [nuMP| SImpl_Cast x y p |] ->
+      SImpl_Cast <$> genSubst s x <*> genSubst s y <*> genSubst s p
+    [nuMP| SImpl_CastPerm x eqp |] ->
+      SImpl_CastPerm <$> genSubst s x <*> genSubst s eqp
+    [nuMP| SImpl_IntroEqRefl x |] ->
+      SImpl_IntroEqRefl <$> genSubst s x
+    [nuMP| SImpl_InvertEq x y |] ->
+      SImpl_InvertEq <$> genSubst s x <*> genSubst s y
+    [nuMP| SImpl_InvTransEq x y e |] ->
+      SImpl_InvTransEq <$> genSubst s x <*> genSubst s y <*> genSubst s e
+    [nuMP| SImpl_CopyEq x e |] ->
+      SImpl_CopyEq <$> genSubst s x <*> genSubst s e
+    [nuMP| SImpl_LLVMWordEq x y e |] ->
+      SImpl_LLVMWordEq <$> genSubst s x <*> genSubst s y <*> genSubst s e
+    [nuMP| SImpl_IntroConj x |] ->
+      SImpl_IntroConj <$> genSubst s x
+    [nuMP| SImpl_ExtractConj x ps i |] ->
+      SImpl_ExtractConj <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
+    [nuMP| SImpl_CopyConj x ps i |] ->
+      SImpl_CopyConj <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
+    [nuMP| SImpl_InsertConj x p ps i |] ->
+      SImpl_InsertConj <$> genSubst s x <*> genSubst s p <*>
+                           genSubst s ps <*> return (mbLift i)
+    [nuMP| SImpl_AppendConjs x ps1 ps2 |] ->
+      SImpl_AppendConjs <$> genSubst s x <*> genSubst s ps1 <*> genSubst s ps2
+    [nuMP| SImpl_SplitConjs x ps i |] ->
+      SImpl_SplitConjs <$> genSubst s x <*> genSubst s ps <*> return (mbLift i)
+    [nuMP| SImpl_IntroStructTrue x fs |] ->
+      SImpl_IntroStructTrue <$> genSubst s x <*> return (mbLift fs)
+    [nuMP| SImpl_StructEqToPerm x exprs |] ->
+      SImpl_StructEqToPerm <$> genSubst s x <*> genSubst s exprs
+    [nuMP| SImpl_StructPermToEq x exprs |] ->
+      SImpl_StructPermToEq <$> genSubst s x <*> genSubst s exprs
+    [nuMP| SImpl_IntroStructField x ps memb p |] ->
+      SImpl_IntroStructField <$> genSubst s x <*> genSubst s ps
+                             <*> genSubst s memb <*> genSubst s p
+    [nuMP| SImpl_ConstFunPerm x h fun_perm ident |] ->
+      SImpl_ConstFunPerm <$> genSubst s x <*> return (mbLift h) <*>
+                             genSubst s fun_perm <*> return (mbLift ident)
+    [nuMP| SImpl_CastLLVMWord x e1 e2 |] ->
+      SImpl_CastLLVMWord <$> genSubst s x <*> genSubst s e1 <*> genSubst s e2
+    [nuMP| SImpl_InvertLLVMOffsetEq x off y |] ->
+      SImpl_InvertLLVMOffsetEq <$> genSubst s x <*> genSubst s off <*> genSubst s y
+    [nuMP| SImpl_OffsetLLVMWord y e off x |] ->
+      SImpl_OffsetLLVMWord <$> genSubst s y <*> genSubst s e <*>
+                               genSubst s off <*> genSubst s x
+    [nuMP| SImpl_CastLLVMPtr y p off x |] ->
+      SImpl_CastLLVMPtr <$> genSubst s y <*> genSubst s p <*>
+                            genSubst s off <*> genSubst s x
+    [nuMP| SImpl_CastLLVMFree x e1 e2 |] ->
+      SImpl_CastLLVMFree <$> genSubst s x <*> genSubst s e1 <*> genSubst s e2
+    [nuMP| SImpl_CastLLVMFieldOffset x fld off' |] ->
+      SImpl_CastLLVMFieldOffset <$> genSubst s x <*> genSubst s fld <*>
+                                    genSubst s off'
+    [nuMP| SImpl_IntroLLVMFieldContents x y fld |] ->
+      SImpl_IntroLLVMFieldContents <$> genSubst s x <*> genSubst s y <*>
+                                       genSubst s fld
+    [nuMP| SImpl_DemoteLLVMFieldRW x fld |] ->
+      SImpl_DemoteLLVMFieldRW <$> genSubst s x <*> genSubst s fld
+    [nuMP| SImpl_LLVMArrayCopy x ap rng |] ->
+      SImpl_LLVMArrayCopy <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
+    [nuMP| SImpl_LLVMArrayBorrow x ap rng |] ->
+      SImpl_LLVMArrayBorrow <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
+    [nuMP| SImpl_LLVMArrayReturn x ap rng |] ->
+      SImpl_LLVMArrayReturn <$> genSubst s x <*> genSubst s ap <*> genSubst s rng
+    [nuMP| SImpl_LLVMArrayAppend x ap1 ap2 |] ->
+      SImpl_LLVMArrayAppend <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
+    [nuMP| SImpl_LLVMArrayRearrange x ap1 ap2 |] ->
+      SImpl_LLVMArrayRearrange <$> genSubst s x <*> genSubst s ap1 <*> genSubst s ap2
+    [nuMP| SImpl_LLVMArrayToField x ap sz |] ->
+      SImpl_LLVMArrayToField <$> genSubst s x <*> genSubst s ap
+                             <*> return (mbLift sz)
+    [nuMP| SImpl_LLVMArrayEmpty x ap |] ->
+      SImpl_LLVMArrayEmpty <$> genSubst s x <*> genSubst s ap
+    [nuMP| SImpl_LLVMArrayOneCell x ap |] ->
+      SImpl_LLVMArrayOneCell <$> genSubst s x <*> genSubst s ap
+    [nuMP| SImpl_LLVMArrayIndexCopy x ap ix |] ->
+      SImpl_LLVMArrayIndexCopy <$> genSubst s x <*> genSubst s ap <*> genSubst s ix
+    [nuMP| SImpl_LLVMArrayIndexBorrow x ap ix |] ->
+      SImpl_LLVMArrayIndexBorrow <$> genSubst s x <*> genSubst s ap <*>
+                                     genSubst s ix
+    [nuMP| SImpl_LLVMArrayIndexReturn x ap ix |] ->
+      SImpl_LLVMArrayIndexReturn <$> genSubst s x <*> genSubst s ap <*>
+                                     genSubst s ix
+    [nuMP| SImpl_LLVMArrayContents x ap i fp impl |] ->
+      SImpl_LLVMArrayContents <$> genSubst s x <*> genSubst s ap <*>
+                                  return (mbLift i) <*> genSubst s fp <*>
+                                  genSubst s impl
+    [nuMP| SImpl_LLVMFieldIsPtr x fp |] ->
+      SImpl_LLVMFieldIsPtr <$> genSubst s x <*> genSubst s fp
+    [nuMP| SImpl_LLVMArrayIsPtr x ap |] ->
+      SImpl_LLVMArrayIsPtr <$> genSubst s x <*> genSubst s ap
+    [nuMP| SImpl_LLVMBlockIsPtr x bp |] ->
+      SImpl_LLVMBlockIsPtr <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_SplitLifetime x f args l l2 ps_in ps_out |] ->
+      SImpl_SplitLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s args
+                          <*> genSubst s l <*> genSubst s l2
+                          <*> genSubst s ps_in <*> genSubst s ps_out
+    [nuMP| SImpl_SubsumeLifetime l1 ps_in1 ps_out1 l2 ps_in2 ps_out2 |] ->
+      SImpl_SubsumeLifetime <$> genSubst s l1 <*> genSubst s ps_in1
+                            <*> genSubst s ps_out1 <*> genSubst s l2
+                            <*> genSubst s ps_in2 <*> genSubst s ps_out2
+    [nuMP| SImpl_WeakenLifetime x f args l l2 |] ->
+      SImpl_WeakenLifetime <$> genSubst s x <*> genSubst s f <*> genSubst s args
+                           <*> genSubst s l <*> genSubst s l2
+    [nuMP| SImpl_MapLifetime l ps_in ps_out ps_in' ps_out'
+                            ps1 ps2 impl1 impl2 |] ->
+      SImpl_MapLifetime <$> genSubst s l <*> genSubst s ps_in
+                        <*> genSubst s ps_out <*> genSubst s ps_in'
+                        <*> genSubst s ps_out' <*> genSubst s ps1
+                        <*> genSubst s ps2 <*> genSubst s impl1
+                        <*> genSubst s impl2
+    [nuMP| SImpl_EndLifetime l ps_in ps_out |] ->
+      SImpl_EndLifetime <$> genSubst s l <*> genSubst s ps_in
+                        <*> genSubst s ps_out
+    [nuMP| SImpl_LCurrentRefl l |] ->
+      SImpl_LCurrentRefl <$> genSubst s l
+    [nuMP| SImpl_LCurrentTrans l1 l2 l3 |] ->
+      SImpl_LCurrentTrans <$> genSubst s l1 <*> genSubst s l2 <*> genSubst s l3
+    [nuMP| SImpl_DemoteLLVMBlockRW x bp |] ->
+      SImpl_DemoteLLVMBlockRW <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_IntroLLVMBlockEmpty x bp |] ->
+      SImpl_IntroLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_CoerceLLVMBlockEmpty x bp |] ->
+      SImpl_CoerceLLVMBlockEmpty <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_ElimLLVMBlockToBytes x bp |] ->
+      SImpl_ElimLLVMBlockToBytes <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_IntroLLVMBlockSeqEmpty x bp |] ->
+      SImpl_IntroLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_ElimLLVMBlockSeqEmpty x bp |] ->
+      SImpl_ElimLLVMBlockSeqEmpty <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_IntroLLVMBlockNamed x bp nmsh |] ->
+      SImpl_IntroLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
+                                <*> genSubst s nmsh
+    [nuMP| SImpl_ElimLLVMBlockNamed x bp nmsh |] ->
+      SImpl_ElimLLVMBlockNamed <$> genSubst s x <*> genSubst s bp
+                               <*> genSubst s nmsh
+    [nuMP| SImpl_IntroLLVMBlockFromEq x bp y |] ->
+      SImpl_IntroLLVMBlockFromEq <$> genSubst s x <*> genSubst s bp
+                                 <*> genSubst s y
+    [nuMP| SImpl_IntroLLVMBlockPtr x maybe_rw maybe_l bp |] ->
+      SImpl_IntroLLVMBlockPtr <$> genSubst s x <*> genSubst s maybe_rw
+                              <*> genSubst s maybe_l <*> genSubst s bp
+    [nuMP| SImpl_ElimLLVMBlockPtr x maybe_rw maybe_l bp |] ->
+      SImpl_ElimLLVMBlockPtr <$> genSubst s x <*> genSubst s maybe_rw
+                             <*> genSubst s maybe_l <*> genSubst s bp
+    [nuMP| SImpl_IntroLLVMBlockField x fp |] ->
+      SImpl_IntroLLVMBlockField <$> genSubst s x <*> genSubst s fp
+    [nuMP| SImpl_ElimLLVMBlockField x fp len |] ->
+      SImpl_ElimLLVMBlockField <$> genSubst s x <*> genSubst s fp
+                               <*> genSubst s len
+    [nuMP| SImpl_IntroLLVMBlockArray x fp |] ->
+      SImpl_IntroLLVMBlockArray <$> genSubst s x <*> genSubst s fp
+    [nuMP| SImpl_ElimLLVMBlockArray x fp |] ->
+      SImpl_ElimLLVMBlockArray <$> genSubst s x <*> genSubst s fp
+    [nuMP| SImpl_IntroLLVMBlockSeq x bp1 len2 sh2 |] ->
+      SImpl_IntroLLVMBlockSeq <$> genSubst s x <*> genSubst s bp1
+                              <*> genSubst s len2 <*> genSubst s sh2
+    [nuMP| SImpl_ElimLLVMBlockSeq x bp1 sh2 |] ->
+      SImpl_ElimLLVMBlockSeq <$> genSubst s x <*> genSubst s bp1
+                             <*> genSubst s sh2
+    [nuMP| SImpl_IntroLLVMBlockOr x bp1 sh2 |] ->
+      SImpl_IntroLLVMBlockOr <$> genSubst s x <*> genSubst s bp1
+                             <*> genSubst s sh2
+    [nuMP| SImpl_ElimLLVMBlockOr x bp1 sh2 |] ->
+      SImpl_ElimLLVMBlockOr <$> genSubst s x <*> genSubst s bp1 <*> genSubst s sh2
+    [nuMP| SImpl_IntroLLVMBlockEx x bp |] ->
+      SImpl_IntroLLVMBlockEx <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_ElimLLVMBlockEx x bp |] ->
+      SImpl_ElimLLVMBlockEx <$> genSubst s x <*> genSubst s bp
+    [nuMP| SImpl_FoldNamed x np args off |] ->
+      SImpl_FoldNamed <$> genSubst s x <*> genSubst s np <*> genSubst s args
+                      <*> genSubst s off
+    [nuMP| SImpl_UnfoldNamed x np args off |] ->
+      SImpl_UnfoldNamed <$> genSubst s x <*> genSubst s np <*> genSubst s args
+                        <*> genSubst s off
+    [nuMP| SImpl_NamedToConj x npn args off |] ->
+      SImpl_NamedToConj <$> genSubst s x <*> genSubst s npn <*> genSubst s args
+                        <*> genSubst s off
+    [nuMP| SImpl_NamedFromConj x npn args off |] ->
+      SImpl_NamedFromConj <$> genSubst s x <*> genSubst s npn <*> genSubst s args
+                          <*> genSubst s off
+    [nuMP| SImpl_NamedArgAlways x npn args off memb l |] ->
+      SImpl_NamedArgAlways <$> genSubst s x <*> genSubst s npn <*>
+                               genSubst s args <*> genSubst s off <*>
+                               genSubst s memb <*> genSubst s l
+    [nuMP| SImpl_NamedArgCurrent x npn args off memb l2 |] ->
+      SImpl_NamedArgCurrent <$> genSubst s x <*> genSubst s npn <*>
+                                genSubst s args <*> genSubst s off <*>
+                                genSubst s memb <*> genSubst s l2
+    [nuMP| SImpl_NamedArgWrite x npn args off memb rw |] ->
+      SImpl_NamedArgWrite <$> genSubst s x <*> genSubst s npn <*>
+                              genSubst s args <*> genSubst s off <*>
+                              genSubst s memb <*> genSubst s rw
+    [nuMP| SImpl_NamedArgRead x npn args off memb |] ->
+      SImpl_NamedArgRead <$> genSubst s x <*> genSubst s npn <*>
+                             genSubst s args <*> genSubst s off <*>
+                             genSubst s memb
+    [nuMP| SImpl_ReachabilityTrans x rp args off y p |] ->
+      SImpl_ReachabilityTrans <$> genSubst s x <*> genSubst s rp <*>
+                                  genSubst s args <*> genSubst s off <*>
+                                  genSubst s y <*> genSubst s p
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (PermImpl1 ps_in ps_out) m where
-  genSubst _ [nuP| Impl1_Fail str |] = return (Impl1_Fail $ mbLift str)
-  genSubst _ [nuP| Impl1_Catch |] = return Impl1_Catch
-  genSubst s [nuP| Impl1_Push x p |] =
-    Impl1_Push <$> genSubst s x <*> genSubst s p
-  genSubst s [nuP| Impl1_Pop x p |] =
-    Impl1_Pop <$> genSubst s x <*> genSubst s p
-  genSubst s [nuP| Impl1_ElimOr x p1 p2 |] =
-    Impl1_ElimOr <$> genSubst s x <*> genSubst s p1 <*> genSubst s p2
-  genSubst s [nuP| Impl1_ElimExists x p_body |] =
-    Impl1_ElimExists <$> genSubst s x <*> genSubst s p_body
-  genSubst s [nuP| Impl1_Simpl simpl prx |] =
-    Impl1_Simpl <$> genSubst s simpl <*> return (mbLift prx)
-  genSubst s [nuP| Impl1_LetBind tp e |] =
-    Impl1_LetBind (mbLift tp) <$> genSubst s e
-  genSubst s [nuP| Impl1_ElimStructField x ps tp memb |] =
-    Impl1_ElimStructField <$> genSubst s x <*> genSubst s ps
-    <*> return (mbLift tp) <*> genSubst s memb
-  genSubst s [nuP| Impl1_ElimLLVMFieldContents x fp |] =
-    Impl1_ElimLLVMFieldContents <$> genSubst s x <*> genSubst s fp
-  genSubst s [nuP| Impl1_ElimReachabilityPerm x rp args off p |] =
-    Impl1_ElimReachabilityPerm <$> genSubst s x <*> genSubst s rp
-     <*> genSubst s args <*> genSubst s off <*> genSubst s p
-  genSubst s [nuP| Impl1_ElimLLVMBlockToEq x bp |] =
-    Impl1_ElimLLVMBlockToEq <$> genSubst s x <*> genSubst s bp
-  genSubst _ [nuP| Impl1_BeginLifetime |] = return Impl1_BeginLifetime
-  genSubst s [nuP| Impl1_TryProveBVProp x prop prop_str |] =
-    Impl1_TryProveBVProp <$> genSubst s x <*> genSubst s prop <*>
-    return (mbLift prop_str)
+  genSubst s mb_impl = case mbMatch mb_impl of
+    [nuMP| Impl1_Fail str |] -> return (Impl1_Fail $ mbLift str)
+    [nuMP| Impl1_Catch |] -> return Impl1_Catch
+    [nuMP| Impl1_Push x p |] ->
+      Impl1_Push <$> genSubst s x <*> genSubst s p
+    [nuMP| Impl1_Pop x p |] ->
+      Impl1_Pop <$> genSubst s x <*> genSubst s p
+    [nuMP| Impl1_ElimOr x p1 p2 |] ->
+      Impl1_ElimOr <$> genSubst s x <*> genSubst s p1 <*> genSubst s p2
+    [nuMP| Impl1_ElimExists x p_body |] ->
+      Impl1_ElimExists <$> genSubst s x <*> genSubst s p_body
+    [nuMP| Impl1_Simpl simpl prx |] ->
+      Impl1_Simpl <$> genSubst s simpl <*> return (mbLift prx)
+    [nuMP| Impl1_LetBind tp e |] ->
+      Impl1_LetBind (mbLift tp) <$> genSubst s e
+    [nuMP| Impl1_ElimStructField x ps tp memb |] ->
+      Impl1_ElimStructField <$> genSubst s x <*> genSubst s ps
+                            <*> return (mbLift tp) <*> genSubst s memb
+    [nuMP| Impl1_ElimLLVMFieldContents x fp |] ->
+      Impl1_ElimLLVMFieldContents <$> genSubst s x <*> genSubst s fp
+    [nuMP| Impl1_ElimReachabilityPerm x rp args off p |] ->
+      Impl1_ElimReachabilityPerm <$> genSubst s x <*> genSubst s rp
+                                 <*> genSubst s args <*> genSubst s off
+                                 <*> genSubst s p
+    [nuMP| Impl1_ElimLLVMBlockToEq x bp |] ->
+      Impl1_ElimLLVMBlockToEq <$> genSubst s x <*> genSubst s bp
+    [nuMP| Impl1_BeginLifetime |] -> return Impl1_BeginLifetime
+    [nuMP| Impl1_TryProveBVProp x prop prop_str |] ->
+      Impl1_TryProveBVProp <$> genSubst s x <*> genSubst s prop <*>
+                               return (mbLift prop_str)
 
 -- FIXME: shouldn't need the SubstVar PermVarSubst m assumption...
 instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
           Substable1 PermVarSubst r m) =>
          Substable PermVarSubst (PermImpl r ps) m where
-  genSubst s [nuP| PermImpl_Done r |] = PermImpl_Done <$> genSubst1 s r
-  genSubst s [nuP| PermImpl_Step impl1 mb_impls |] =
-    PermImpl_Step <$> genSubst s impl1 <*> genSubst s mb_impls
+  genSubst s mb_impl = case mbMatch mb_impl of
+    [nuMP| PermImpl_Done r |] -> PermImpl_Done <$> genSubst1 s r
+    [nuMP| PermImpl_Step impl1 mb_impls |] ->
+      PermImpl_Step <$> genSubst s impl1 <*> genSubst s mb_impls
 
 -- FIXME: shouldn't need the SubstVar PermVarSubst m assumption...
 instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
           Substable1 PermVarSubst r m) =>
          Substable PermVarSubst (MbPermImpls r bs_pss) m where
-  genSubst _ [nuP| MbPermImpls_Nil |] = return MbPermImpls_Nil
-  genSubst s [nuP| MbPermImpls_Cons mb_impl mb_impls |] =
-    MbPermImpls_Cons <$> genSubst s mb_impl <*> genSubst s mb_impls
+  genSubst s mb_impls = case mbMatch mb_impls of
+    [nuMP| MbPermImpls_Nil |] -> return MbPermImpls_Nil
+    [nuMP| MbPermImpls_Cons mb_impl mb_impls' |] ->
+      MbPermImpls_Cons <$> genSubst s mb_impl <*> genSubst s mb_impls'
 
 -- FIXME: shouldn't need the SubstVar PermVarSubst m assumption...
 instance SubstVar PermVarSubst m =>
@@ -6760,21 +6773,22 @@ isProvablePerm _ _ _ = 0
 -- list is non-empty.
 findProvablePerm :: Mb vars (NameSet CrucibleType) -> ExDistPerms vars ps ->
                     (Int, ExDistPermsSplit vars ps)
+findProvablePerm mbUnsetVars mb_ps = case mbMatch mb_ps of
 
-findProvablePerm _ [nuP| DistPermsNil |] =
-  error "findProvablePerm: empty list"
+  [nuMP| DistPermsNil |] ->
+    error "findProvablePerm: empty list"
 
-findProvablePerm mbUnsetVars [nuP| DistPermsCons ps_nil@DistPermsNil mb_x mb_p |] =
-  (isProvablePerm mbUnsetVars mb_x mb_p,
-   ExDistPermsSplit ps_nil mb_x mb_p ps_nil)
+  [nuMP| DistPermsCons ps_nil@DistPermsNil mb_x mb_p |] ->
+    (isProvablePerm mbUnsetVars mb_x mb_p,
+     ExDistPermsSplit ps_nil mb_x mb_p ps_nil)
 
-findProvablePerm mbUnsetVars [nuP| DistPermsCons ps mb_x mb_p |] =
-  let (best_rank,best) = findProvablePerm mbUnsetVars ps in
-  let rank = isProvablePerm mbUnsetVars mb_x mb_p in
-  if rank > best_rank then
-    (rank, ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p))
-  else
-    (best_rank, extExDistPermsSplit best mb_x mb_p)
+  [nuMP| DistPermsCons ps mb_x mb_p |] ->
+    let (best_rank,best) = findProvablePerm mbUnsetVars ps in
+    let rank = isProvablePerm mbUnsetVars mb_x mb_p in
+    if rank > best_rank then
+      (rank, ExDistPermsSplit ps mb_x mb_p (fmap (const DistPermsNil) mb_p))
+    else
+      (best_rank, extExDistPermsSplit best mb_x mb_p)
 
 
 -- | Find all existential lifetime variables that are assigned permissions in an
@@ -6787,17 +6801,17 @@ instantiateLifetimeVars mb_ps =
 -- | The main loop for 'instantiateLifetimeVars'
 instantiateLifetimeVars' :: NuMatchingAny1 r => PartialSubst vars ->
                             ExDistPerms vars ps -> ImplM vars s r ps_in ps_in ()
-instantiateLifetimeVars' _ [nuP| DistPermsNil |] = greturn ()
-instantiateLifetimeVars' psubst [nuP| DistPermsCons mb_ps mb_x
-                                   (ValPerm_Conj1 mb_p) |]
-  | Just Refl <- mbLift $ fmap isLifetimePerm mb_p
-  , Left memb <- mbNameBoundP mb_x
-  , Nothing <- psubstLookup psubst memb =
-    implBeginLifetimeM >>>= \l ->
-    setVarM memb (PExpr_Var l) >>>
-    instantiateLifetimeVars' (psubstSet memb (PExpr_Var l) psubst) mb_ps
-instantiateLifetimeVars' psubst [nuP| DistPermsCons mb_ps _ _ |] =
-  instantiateLifetimeVars' psubst mb_ps
+instantiateLifetimeVars' psubst mb_ps = case mbMatch mb_ps of
+  [nuMP| DistPermsNil |] -> greturn ()
+  [nuMP| DistPermsCons mb_ps' mb_x (ValPerm_Conj1 mb_p) |]
+    | Just Refl <- mbLift $ fmap isLifetimePerm mb_p
+    , Left memb <- mbNameBoundP mb_x
+    , Nothing <- psubstLookup psubst memb ->
+      implBeginLifetimeM >>>= \l ->
+      setVarM memb (PExpr_Var l) >>>
+      instantiateLifetimeVars' (psubstSet memb (PExpr_Var l) psubst) mb_ps'
+  [nuMP| DistPermsCons mb_ps' _ _ |] ->
+    instantiateLifetimeVars' psubst mb_ps'
 
 
 -- | Internal-only version of 'proveVarsImplAppend' that is called recursively

@@ -524,8 +524,9 @@ data CruCtx ctx where
 $(mkNuMatching [t| forall ctx. CruCtx ctx |])
 
 instance Liftable (CruCtx ctx) where
-  mbLift [nuP| CruCtxNil |] = CruCtxNil
-  mbLift [nuP| CruCtxCons ctx a |] = CruCtxCons (mbLift ctx) (mbLift a)
+  mbLift mb_ctx = case mbMatch mb_ctx of
+    [nuMP| CruCtxNil |] -> CruCtxNil
+    [nuMP| CruCtxCons ctx a |] -> CruCtxCons (mbLift ctx) (mbLift a)
 
 instance Closable (CruCtx ctx) where
   toClosed CruCtxNil = $(mkClosed [| CruCtxNil |])
