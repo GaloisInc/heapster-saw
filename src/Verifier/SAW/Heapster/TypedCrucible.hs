@@ -2683,6 +2683,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_MemClear _ ptr bytes) =
   stmtRecombinePerms >>>
   greturn (addCtxName ctx z)
 
+{-
 -- Type-check a non-empty mem-clear instruction by writing a 0 to the last word
 -- and then recursively clearing all but the last word
 -- FIXME: add support for using non-word-size ptr perms with MemClear
@@ -2698,6 +2699,7 @@ tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes) =
                                        bvInt 0) DistPermsNil >>>
   stmtRecombinePerms >>>
   tcEmitLLVMStmt arch ctx loc (LLVM_MemClear mem ptr bytes')
+-}
 
 -- Type-check an alloca instruction
 tcEmitLLVMStmt _arch ctx loc (LLVM_Alloca _w _ sz_reg _ _) =

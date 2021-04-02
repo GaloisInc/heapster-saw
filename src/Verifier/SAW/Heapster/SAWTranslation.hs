@@ -765,17 +765,16 @@ instance TransInfo info =>
 
     -- LLVM shapes are translated to types
     [nuMP| PExpr_EmptyShape |] -> return $ ETrans_Term unitTypeOpenTerm
-    [nuMP| PExpr_NamedShape _ _ nmsh args |]
-      | [nuP| DefinedShapeBody _ |] <- fmap namedShapeBody nmsh ->
-        translate (mbMap2 unfoldNamedShape nmsh args)
-    [nuMP| PExpr_NamedShape _ _ nmsh args |]
-      | [nuP| OpaqueShapeBody _ trans_id |] <- fmap namedShapeBody nmsh ->
-        ETrans_Term <$> applyOpenTermMulti (globalOpenTerm $ mbLift trans_id) <$>
-        transTerms <$> translate args
-    [nuMP| PExpr_NamedShape _ _ nmsh args |]
-      | [nuP| RecShapeBody _ trans_id _ _ |] <- fmap namedShapeBody nmsh ->
-        ETrans_Term <$> applyOpenTermMulti (globalOpenTerm $ mbLift trans_id) <$>
-        transTerms <$> translate args
+    [nuMP| PExpr_NamedShape _ _ nmsh args |] ->
+      case mbMatch $ fmap namedShapeBody nmsh of
+        [nuMP| DefinedShapeBody _ |] ->
+          translate (mbMap2 unfoldNamedShape nmsh args)
+        [nuMP| OpaqueShapeBody _ trans_id |] ->
+          ETrans_Term <$> applyOpenTermMulti (globalOpenTerm $ mbLift trans_id) <$>
+          transTerms <$> translate args
+        [nuMP| RecShapeBody _ trans_id _ _ |] ->
+          ETrans_Term <$> applyOpenTermMulti (globalOpenTerm $ mbLift trans_id) <$>
+          transTerms <$> translate args
     [nuMP| PExpr_EqShape _ |] -> return $ ETrans_Term unitTypeOpenTerm
     [nuMP| PExpr_PtrShape _ _ sh |] -> translate sh
     [nuMP| PExpr_FieldShape fsh |] ->
@@ -2692,7 +2691,7 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
          let t = applyOpenTermMulti (globalOpenTerm $
                                      mbLift fold_id) (transTerms args_trans)
          withPermStackM id
-           (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [t])
+           (\(pctx :>: _) -> pctx :>: typeTransF ttrans [t])
            m
   
   -- Intro for a defined named shape (the other case) is a no-op
@@ -2713,7 +2712,7 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
          let t = applyOpenTermMulti (globalOpenTerm $
                                      mbLift unfold_id) (transTerms args_trans)
          withPermStackM id
-           (\(pctx :>: ptrans) -> pctx :>: typeTransF ttrans [t])
+           (\(pctx :>: _) -> pctx :>: typeTransF ttrans [t])
            m
   
   -- Intro for a defined named shape (the other case) is a no-op

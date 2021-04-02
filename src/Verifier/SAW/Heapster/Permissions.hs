@@ -4251,20 +4251,19 @@ namedPermArgsAreCopyable (CruCtxCons tps tp) (PExprs_Cons args arg) =
 shapeIsCopyable :: PermExpr RWModalityType -> PermExpr (LLVMShapeType w) -> Bool
 shapeIsCopyable _ (PExpr_Var _) = False
 shapeIsCopyable _ PExpr_EmptyShape = True
-shapeIsCopyable rw (PExpr_NamedShape maybe_rw' _ nmsh args)
-  | DefinedShapeBody _ <- namedShapeBody nmsh =
-    let rw' = maybe rw id maybe_rw' in
-    shapeIsCopyable rw' $ unfoldNamedShape nmsh args
-shapeIsCopyable rw (PExpr_NamedShape maybe_rw maybe_l nmsh args)
-  -- NOTE: we are assuming that opaque shapes are copyable iff their args are
-  | OpaqueShapeBody _ _ <- namedShapeBody nmsh =
-    namedPermArgsAreCopyable (namedShapeArgs nmsh) args
-shapeIsCopyable rw (PExpr_NamedShape maybe_rw maybe_l nmsh args)
-  -- HACK: the real computation we want to perform is to assume nmsh is copyable
-  -- and prove it is under that assumption; to accomplish this, we substitute
-  -- the empty shape for the recursive shape
-  | RecShapeBody mb_sh _ _ _ <- namedShapeBody nmsh =
-    shapeIsCopyable rw $ subst (substOfExprs (args :>: PExpr_EmptyShape)) mb_sh
+shapeIsCopyable rw (PExpr_NamedShape maybe_rw' _ nmsh args) =
+  case namedShapeBody nmsh of
+    DefinedShapeBody _ ->
+      let rw' = maybe rw id maybe_rw' in
+      shapeIsCopyable rw' $ unfoldNamedShape nmsh args
+    -- NOTE: we are assuming that opaque shapes are copyable iff their args are
+    OpaqueShapeBody _ _ ->
+      namedPermArgsAreCopyable (namedShapeArgs nmsh) args
+    -- HACK: the real computation we want to perform is to assume nmsh is copyable
+    -- and prove it is under that assumption; to accomplish this, we substitute
+    -- the empty shape for the recursive shape
+    RecShapeBody mb_sh _ _ _ ->
+      shapeIsCopyable rw $ subst (substOfExprs (args :>: PExpr_EmptyShape)) mb_sh
 shapeIsCopyable _ (PExpr_EqShape _) = True
 shapeIsCopyable rw (PExpr_PtrShape maybe_rw' _ sh) =
   let rw' = maybe rw id maybe_rw' in
@@ -6258,7 +6257,6 @@ lookupNamedShape :: PermEnv -> String -> Maybe SomeNamedShape
 lookupNamedShape env nm =
   find (\case SomeNamedShape nmsh ->
                 nm == namedShapeName nmsh) (permEnvNamedShapes env)
-lookupNamedShape _ _ = Nothing
 
 -- | Look up the permissions and translation for a 'GlobalSymbol' at a
 -- particular machine word width

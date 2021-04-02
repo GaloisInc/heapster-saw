@@ -1942,7 +1942,7 @@ simplImplOut (SImpl_IntroLLVMBlockSeqEmpty x bp) =
                        PExpr_SeqShape (llvmBlockShape bp) PExpr_EmptyShape })
 simplImplOut (SImpl_ElimLLVMBlockSeqEmpty x bp) =
   distPerms1 x (ValPerm_Conj1 $ Perm_LLVMBlock bp)
-simplImplOut (SImpl_IntroLLVMBlockNamed x bp nmsh) =
+simplImplOut (SImpl_IntroLLVMBlockNamed x bp _) =
   distPerms1 x $ ValPerm_LLVMBlock bp
 simplImplOut (SImpl_ElimLLVMBlockNamed x bp nmsh) =
   case llvmBlockShape bp of
@@ -3856,6 +3856,8 @@ implEndLifetimeM :: NuMatchingAny1 r => Proxy ps -> ExprVar LifetimeType ->
 implEndLifetimeM ps l ps_in ps_out@(lownedPermsToDistPerms -> Just dps_out) =
   implSimplM ps (SImpl_EndLifetime l ps_in ps_out) >>>
   recombinePermsPartial ps dps_out
+implEndLifetimeM _ _ _ _ = implFailM "implEndLifetimeM: lownedPermsToDistPerms"
+  
 
 -- | Save a permission for later by splitting it into part that is in the
 -- current lifetime and part that is saved in the lifetime for later. Assume
@@ -4073,7 +4075,7 @@ implIntroLLVMBlockNamed :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                            ImplM vars s r (ps :> LLVMPointerType w)
                            (ps :> LLVMPointerType w) ()
 implIntroLLVMBlockNamed x bp
-  | PExpr_NamedShape rw l nmsh args <- llvmBlockShape bp
+  | PExpr_NamedShape _ _ nmsh _ <- llvmBlockShape bp
   , TrueRepr <- namedShapeCanUnfoldRepr nmsh =
     implSimplM Proxy (SImpl_IntroLLVMBlockNamed x bp nmsh)
 implIntroLLVMBlockNamed _ _ =

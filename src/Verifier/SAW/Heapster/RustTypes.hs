@@ -244,7 +244,7 @@ instance Show RustName where
   show (RustName ids) = concat $ intersperse "::" $ map show ids
 
 instance RsConvert w RustName SomeNamedShape where
-  rsConvert w (RustName elems) =
+  rsConvert _w (RustName elems) =
     -- FIXME: figure out how to actually resolve names; for now we just look at
     -- the last string component...
     do let str = name $ last elems
@@ -536,7 +536,7 @@ layoutArgShapeByVal Rust sh@(PExpr_NamedShape _ _ nmsh _)
 
 -- Opaque named shapes that could potentially be laid out by value are an error,
 -- because we do not know their representation
-layoutArgShapeByVal Rust sh@(PExpr_NamedShape _ _ nmsh _)
+layoutArgShapeByVal Rust (PExpr_NamedShape _ _ nmsh _)
   | not (namedShapeCanUnfold nmsh) =
     lift $ fail $ renderDoc
     (pretty "layoutArgShapeByVal: Cannot lay out opaque named shape by value:"
