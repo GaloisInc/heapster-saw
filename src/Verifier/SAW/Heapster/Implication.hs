@@ -4447,7 +4447,7 @@ instance ProveEq (PermExpr a) where
   proveEq e mb_e = getPSubst >>>= \psubst -> proveEqH psubst e mb_e
 
 instance ProveEq (LLVMFramePerm w) where
-  proveEq [] [nuP| [] |] = greturn $ SomeEqProof $ EqProofRefl []
+  proveEq [] [nuP| [] |] = greturn $ someEqProofRefl []
   proveEq ((e,i):fperms) [nuP| ((mb_e,mb_i)):mb_fperms |]
     | mbLift mb_i == i =
       proveEq e mb_e >>>= \eqp1 ->
@@ -4519,7 +4519,7 @@ proveEqH psubst e [nuP| PExpr_Var z |]
 -- If the RHS = LHS, do a proof by reflexivity
 proveEqH psubst e mb_e
   | Just e' <- partialSubst psubst mb_e
-  , e == e' = greturn (SomeEqProof $ EqProofRefl e)
+  , e == e' = greturn (someEqProofRefl e)
 
 -- To prove x=y, try to see if either side has an eq permission, if necessary by
 -- eliminating compound permissions, and proceed by transitivity if possible
@@ -4549,9 +4549,8 @@ proveEqH psubst e@(PExpr_Var x) mb_e@[nuP| PExpr_Var mb_y |]
 proveEqH psubst e@(PExpr_Var x) mb_e =
   getVarEqPerm x >>>= \case
   Just e' ->
-    proveEq e' mb_e >>>= \(SomeEqProof eqp2) ->
-    greturn (SomeEqProof (eqProofTrans (EqProofPerm (EqPerm x e' True) $
-                                        nu PExpr_Var) eqp2))
+    proveEq e' mb_e >>>= \eqp2 ->
+    greturn (someEqProofTrans (someEqProofPerm x e' True) eqp2)
   Nothing -> proveEqFail e mb_e
 
 -- To prove e=x, try to see if x:eq(e') and proceed by transitivity
@@ -4576,7 +4575,7 @@ proveEqH psubst e [nuP| PExpr_BV [BVFactor (BV.BV mb_n) z] (BV.BV mb_m) |]
   , Nothing <- psubstLookup psubst memb
   , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) =
     setVarM memb (bvDiv (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) >>>
-    greturn (SomeEqProof (EqProofRefl e))
+    greturn (someEqProofRefl e)
 
 -- FIXME: add cases to prove struct(es1)=struct(es2) 
 
