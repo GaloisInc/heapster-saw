@@ -91,6 +91,14 @@ import Debug.Trace
 -- * Utility Functions
 ----------------------------------------------------------------------
 
+-- | An existentially-quantified 'RAssign' forms a semigroup
+instance Semigroup (Some (RAssign f)) where
+  (Some fs1) <> (Some fs2) = Some (RL.append fs1 fs2)
+
+-- | An existentially-quantified 'RAssign' forms a monoid
+instance Monoid (Some (RAssign f)) where
+  mempty = Some MNil
+
 -- | Prove that append on right-lists is associative
 --
 -- FIXME: move to Hobbits
@@ -4470,6 +4478,11 @@ unfoldPerm (NamedPerm_Rec rp) = unfoldRecPerm rp
 class FreeVars a where
   freeVars :: a -> NameSet CrucibleType
 
+-- | Get the free variables of an expression as an 'RAssign'
+freeVarsRAssign :: FreeVars a => a -> Some (RAssign ExprVar)
+freeVarsRAssign =
+  foldl (\(Some ns) (SomeName n) -> Some (ns :>: n)) mempty . toList . freeVars
+
 instance FreeVars a => FreeVars (Maybe a) where
   freeVars = maybe NameSet.empty freeVars
 
@@ -5623,12 +5636,28 @@ class AbstractVars a where
                     RAssign Name (ectx :: RList CrucibleType) -> a ->
                     Maybe (Closed (Mb pctx (Mb ectx a)))
 
+-- | Call 'abstractPEVars' with only variables that have 'CrucibleType's
 abstractVars :: AbstractVars a =>
                 RAssign Name (ctx :: RList CrucibleType) -> a ->
                 Maybe (Closed (Mb ctx a))
 abstractVars ns a =
   fmap (clApply $(mkClosed [| elimEmptyMb |])) $ abstractPEVars MNil ns a
 
+-- | An expression or other object which the variables have been abstracted out
+-- of, along with those variables that were abstracted out of it
+data AbsObj a = forall ctx. AbsObj (RAssign Name ctx) (Closed (Mb ctx a))
+
+-- | Find all free variables of an expresssion and abstract them out. Note that
+-- this should always succeed, if 'freeVars' is implemented correctly.
+abstractFreeVars :: (AbstractVars a, FreeVars a) => a -> AbsObj a
+abstractFreeVars a
+  | Some ns <- freeVarsRAssign a
+  , Just cl_mb_a <- abstractVars ns a = AbsObj ns cl_mb_a
+abstractFreeVars _ = error "abstractFreeVars"
+
+
+-- | Try to close an expression by calling 'abstractPEVars' with an empty list
+-- of expression variables
 tryClose :: AbstractVars a => a -> Maybe (Closed a)
 tryClose a =
   fmap (clApply $(mkClosed [| elimEmptyMb . elimEmptyMb |])) $
