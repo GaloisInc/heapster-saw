@@ -1779,6 +1779,12 @@ instance TestEquality LOwnedPerm where
     = Just Refl
   testEquality (LOwnedPermLifetime _ _ _) _ = Nothing
 
+instance Eq (LOwnedPerm a) where
+  lop1 == lop2 | Just Refl <- testEquality lop1 lop2 = True
+  _ == _ = False
+
+instance Eq1 LOwnedPerm where
+  eq1 = (==)
 
 -- | Convert an 'LOwnedPerm' to the expression plus permission it represents
 lownedPermExprAndPerm :: LOwnedPerm a -> ExprAndPerm a
