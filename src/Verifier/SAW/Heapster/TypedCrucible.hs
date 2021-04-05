@@ -226,7 +226,7 @@ instance Closable (TypedEntryID blocks args ghosts) where
     toClosed entryGhosts `clApply` toClosed entryIndex
 
 instance Liftable (TypedEntryID blocks args ghosts) where
-  mbLift [nuP| TypedEntryID entryBlockID entryGhosts entryIndex |] =
+  mbLift (mbMatch -> [nuMP| TypedEntryID entryBlockID entryGhosts entryIndex |]) =
     TypedEntryID { entryBlockID = mbLift entryBlockID,
                    entryGhosts = mbLift entryGhosts,
                    entryIndex = mbLift entryIndex }
@@ -632,7 +632,7 @@ instance NuMatchingExtC ext =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedReg tp) m where
-  genSubst s [nuP| TypedReg x |] = TypedReg <$> genSubst s x
+  genSubst s (mbMatch -> [nuMP| TypedReg x |]) = TypedReg <$> genSubst s x
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (RegWithVal tp) m where
@@ -655,7 +655,7 @@ instance SubstVar PermVarSubst m =>
 instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
           Substable1 PermVarSubst r m) =>
          Substable PermVarSubst (AnnotPermImpl r ps) m where
-  genSubst s [nuP| AnnotPermImpl err impl |] =
+  genSubst s (mbMatch -> [nuMP| AnnotPermImpl err impl |]) =
     AnnotPermImpl (mbLift err) <$> genSubst s impl
 
 instance (PermCheckExtC ext, NuMatchingAny1 f,
@@ -774,7 +774,7 @@ instance (PermCheckExtC ext, NuMatchingAny1 f,
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
          Substable PermVarSubst (TypedExpr ext tp) m where
-  genSubst s [nuP| TypedExpr app maybe_val |] =
+  genSubst s (mbMatch -> [nuMP| TypedExpr app maybe_val |]) =
     TypedExpr <$> genSubst s app <*> genSubst s maybe_val
 
 instance SubstVar PermVarSubst m =>
@@ -828,7 +828,7 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedRet tops ret ps) m where
-  genSubst s [nuP| TypedRet e tp ret mb_perms |] =
+  genSubst s (mbMatch -> [nuMP| TypedRet e tp ret mb_perms |]) =
     TypedRet (mbLift e) (mbLift tp) <$> genSubst s ret <*> genSubst s mb_perms
 
 instance SubstVar PermVarSubst m =>
@@ -837,7 +837,7 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedJumpTarget blocks tops ps) m where
-  genSubst s [nuP| TypedJumpTarget entryID prx ctx exprs perms |] =
+  genSubst s (mbMatch -> [nuMP| TypedJumpTarget entryID prx ctx exprs perms |]) =
     TypedJumpTarget (mbLift entryID) (mbLift prx) (mbLift ctx) <$>
     genSubst s exprs <*> genSubst s perms
 
@@ -1277,7 +1277,7 @@ instance Closable (TopPermCheckState ext cblocks blocks ret) where
     `clApplyCl` stFunTypeEnv
 
 instance BindState (TopPermCheckState ext cblocks blocks ret) where
-  bindState [nuP| TopPermCheckState retType bt i env |] =
+  bindState (mbMatch -> [nuMP| TopPermCheckState retType bt i env |]) =
     TopPermCheckState (mbLift retType) (mbLift bt) (mbLift i) (mbLift env)
 -}
 
@@ -2301,26 +2301,22 @@ couldSatisfyPermsM :: PermCheckExtC ext => CruCtx args -> TypedRegs args ->
                       Mb ghosts (ValuePerms args) ->
                       StmtPermCheckM ext cblocks blocks tops ret ps ps Bool
 couldSatisfyPermsM CruCtxNil _ _ = greturn True
-couldSatisfyPermsM (CruCtxCons
-                    tps (BVRepr _)) (TypedRegsCons
-                                     args arg) [nuP| ValPerms_Cons ps
-                                                   (ValPerm_Eq mb_e) |] =
+couldSatisfyPermsM (CruCtxCons tps (BVRepr _)) (TypedRegsCons args arg)
+                   (mbMatch -> [nuMP| ValPerms_Cons ps (ValPerm_Eq mb_e) |]) =
   couldSatisfyPermsM tps args ps >>>= \b ->
   getRegEqualsExpr arg >>>= \arg_val ->
   greturn (b && mbLift (fmap (bvCouldEqual arg_val) mb_e))
-couldSatisfyPermsM (CruCtxCons
-                    tps _) (TypedRegsCons
-                            args arg) [nuP| ValPerms_Cons ps
-                                          (ValPerm_Eq
-                                          (PExpr_LLVMWord mb_e)) |] =
+couldSatisfyPermsM (CruCtxCons tps _) (TypedRegsCons args arg) 
+                   (mbMatch -> [nuMP| ValPerms_Cons ps
+                                       (ValPerm_Eq (PExpr_LLVMWord mb_e)) |]) =
   couldSatisfyPermsM tps args ps >>>= \b ->
   getRegEqualsExpr arg >>>= \arg_val ->
   case arg_val of
     PExpr_LLVMWord e ->
       greturn (b && mbLift (fmap (bvCouldEqual e) mb_e))
     _ -> greturn False
-couldSatisfyPermsM (CruCtxCons
-                    tps _) (TypedRegsCons args _) [nuP| ValPerms_Cons ps _ |] =
+couldSatisfyPermsM (CruCtxCons tps _) (TypedRegsCons args _)
+                   (mbMatch -> [nuMP| ValPerms_Cons ps _ |]) =
   couldSatisfyPermsM tps args ps
 
 

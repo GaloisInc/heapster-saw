@@ -491,7 +491,7 @@ instance NuMatchingAny1 (KnownReprObj f) where
   nuMatchingAny1Proof = nuMatchingProof
 
 instance Liftable (KnownReprObj f a) where
-  mbLift [nuP| KnownReprObj |] = KnownReprObj
+  mbLift (mbMatch -> [nuMP| KnownReprObj |]) = KnownReprObj
 
 instance LiftableAny1 (KnownReprObj f) where
   mbLiftAny1 = mbLift

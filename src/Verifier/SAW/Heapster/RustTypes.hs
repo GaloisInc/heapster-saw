@@ -364,7 +364,7 @@ argLayout1 p =
 -- | Convert an 'ArgLayout' in a name-binding into an 'ArgLayout' with an
 -- additional ghost argument for the bound name
 mbArgLayout :: KnownRepr TypeRepr a => Binding a ArgLayout -> ArgLayout
-mbArgLayout [nuP| ArgLayout ghosts args mb_ps |] =
+mbArgLayout (mbMatch -> [nuMP| ArgLayout ghosts args mb_ps |]) =
   ArgLayout (mbLift ghosts :>: KnownReprObj) (mbLift args) (mbCombine $
                                                             mbSwap mb_ps)
 
@@ -495,8 +495,9 @@ assocAppend fs1 ctx2 ctx3 fs23 =
 -- | Add ghost variables for the bound names in a 'Some3FunPerm' in a binding
 mbGhostsFunPerm3 :: CruCtx new_ghosts -> Mb new_ghosts Some3FunPerm ->
                     Some3FunPerm
-mbGhostsFunPerm3 new_ghosts [nuP| Some3FunPerm
-                                (FunPerm ghosts args ret ps_in ps_out) |] =
+mbGhostsFunPerm3 new_ghosts (mbMatch -> [nuMP| Some3FunPerm
+                                                (FunPerm ghosts args
+                                                         ret ps_in ps_out) |]) =
   let new_prxs = cruCtxProxies new_ghosts
       ghosts_prxs = cruCtxProxies $ mbLift ghosts
       args_prxs = cruCtxProxies $ mbLift args in
@@ -719,7 +720,8 @@ extMbOuter prxs mb_a = mbCombine $ nuMulti prxs $ const mb_a
 -- | Add a lifetime described by a 'LifetimeDef' to a 'Some3FunPerm'
 mbLifetimeFunPerm :: LifetimeDef Span -> Binding LifetimeType Some3FunPerm ->
                      RustConvM Some3FunPerm
-mbLifetimeFunPerm (LifetimeDef _ _ [] _) [nuP| Some3FunPerm fun_perm |] =
+mbLifetimeFunPerm (LifetimeDef _ _ [] _)
+                  (mbMatch -> [nuMP| Some3FunPerm fun_perm |]) =
   do let ghosts = mbLift $ fmap funPermGhosts fun_perm
      let args = mbLift $ fmap funPermArgs fun_perm
      let args_prxs = cruCtxProxies args
@@ -733,10 +735,10 @@ mbLifetimeFunPerm (LifetimeDef _ _ [] _) [nuP| Some3FunPerm fun_perm |] =
      let mb_l =
            extMbMulti (cruCtxProxies args) $
            extMbMulti (cruCtxProxies ghosts) (nu id)
-     [nuP| Some mb_lops_in |] <-
-       mbM $ mbMap2 lownedPermsForLifetime mb_l mb_ps_in
-     [nuP| Some mb_lops_out |] <-
-       mbM $ mbMap2 lownedPermsForLifetime (extMb mb_l) mb_ps_out
+     [nuMP| Some mb_lops_in |] <-
+       mbMatchM $ mbMap2 lownedPermsForLifetime mb_l mb_ps_in
+     [nuMP| Some mb_lops_out |] <-
+       mbMatchM $ mbMap2 lownedPermsForLifetime (extMb mb_l) mb_ps_out
      case abstractMbLOPsModalities mb_lops_in of
        SomeTypedMb ghosts' mb_mb_lops_in_abs ->
          return $ mbGhostsFunPerm3 ghosts' $
@@ -751,7 +753,7 @@ mbLifetimeFunPerm (LifetimeDef _ _ [] _) [nuP| Some3FunPerm fun_perm |] =
                    assocAppend (MNil :>: ValPerm_LOwned lops_out lops_in_abs)
                    ghosts (args_prxs :>: Proxy) $ distPermsToValuePerms ps_out)
           mb_ps_out mb_lops_out (extMb mb_lops_in_abs))
-mbLifetimeFunPerm (LifetimeDef _ _ _bounds _) [nuP| Some3FunPerm _fun_perm |] =
+mbLifetimeFunPerm (LifetimeDef _ _ _bounds _) _ =
   fail "Rust lifetime bounds not yet supported!"
 
 -- | Run a computation of a function permission in the context of a list of
