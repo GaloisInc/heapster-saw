@@ -4430,7 +4430,7 @@ instance ProveEq (PermExpr a) where
 
 instance ProveEq (LLVMFramePerm w) where
   proveEq perms mb = case (perms, mbMatch mb) of
-    ([], [nuMP| [] |]) -> greturn $ SomeEqProof $ EqProofRefl []
+    ([], [nuMP| [] |]) -> greturn $ someEqProofRefl []
     (((e,i):fperms), [nuMP| ((mb_e,mb_i)):mb_fperms |])
       | mbLift mb_i == i ->
         proveEq e mb_e >>>= \eqp1 ->
@@ -4502,7 +4502,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
   
   -- If the RHS = LHS, do a proof by reflexivity
   _ | Just e' <- partialSubst psubst mb_e
-    , e == e' -> greturn (SomeEqProof $ EqProofRefl e)
+    , e == e' -> greturn (someEqProofRefl e)
   
   -- To prove x=y, try to see if either side has an eq permission, if necessary by
   -- eliminating compound permissions, and proceed by transitivity if possible
@@ -4532,9 +4532,8 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
   (PExpr_Var x, _) ->
     getVarEqPerm x >>>= \case
     Just e' ->
-      proveEq e' mb_e >>>= \(SomeEqProof eqp2) ->
-      greturn (SomeEqProof (eqProofTrans (EqProofPerm (EqPerm x e' True) $
-                                          nu PExpr_Var) eqp2))
+      proveEq e' mb_e >>>= \eqp2 ->
+      greturn (someEqProofTrans (someEqProofPerm x e' True) eqp2)
     Nothing -> proveEqFail e mb_e
   
   -- To prove e=x, try to see if x:eq(e') and proceed by transitivity
@@ -4559,7 +4558,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
     , Nothing <- psubstLookup psubst memb
     , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) ->
       setVarM memb (bvDiv (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) >>>
-      greturn (SomeEqProof (EqProofRefl e))
+      greturn (someEqProofRefl e)
   
   -- FIXME: add cases to prove struct(es1)=struct(es2) 
   
@@ -4773,21 +4772,9 @@ neededPermsToExDistPerms vars MNil = nuMulti vars (const MNil)
 neededPermsToExDistPerms vars (ps :>: Compose mb_vap) =
   mbMap2 (:>:) (neededPermsToExDistPerms vars ps) mb_vap
 
--- | The empty set of needed permissions
-neededPermsEmpty :: NeededPerms vars
-neededPermsEmpty = Some MNil
-
 -- | A single needed permission
 neededPerms1 :: Mb vars (ExprVar a) -> Mb vars (ValuePerm a) -> NeededPerms vars
 neededPerms1 mb_x mb_p = Some (MNil :>: Compose (mbMap2 VarAndPerm mb_x mb_p))
-
--- | Combine two sets of needed permissions
-neededPermsAppend :: NeededPerms vars -> NeededPerms vars -> NeededPerms vars
-neededPermsAppend (Some ps1) (Some ps2) = Some (RL.append ps1 ps2)
-
--- | Combine a list of sets of needed permissions
-neededPermsAppendMulti :: [NeededPerms vars] -> NeededPerms vars
-neededPermsAppendMulti = foldr neededPermsAppend neededPermsEmpty
 
 -- | If the second argument is an unset lifetime variable, set it to the first,
 -- otherwise do nothing
@@ -4827,8 +4814,7 @@ solveForPermListImplBlock (ps_l :>: LOwnedPermBlock (PExpr_Var y) bp_l) x mb_bp
   , rng_l <- llvmBlockRange bp_l
   , [nuMP| Just mb_bps |] <- mbMatch $ fmap (remLLVMBLockPermRange rng_l) mb_bp =
     tryUnifyLifetimes (llvmBlockLifetime bp_l) (fmap llvmBlockLifetime mb_bp) >>>
-    neededPermsAppendMulti <$>
-    mapM (solveForPermListImplBlock ps_l x) (mbList mb_bps)
+    mconcat <$> mapM (solveForPermListImplBlock ps_l x) (mbList mb_bps)
 
 -- Otherwise, recurse on the tail of the permission list
 solveForPermListImplBlock (ps_l :>: _) x mb_bp =
@@ -4846,7 +4832,7 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
 
   -- If the RHS is empty, we are done
   [nuMP| MNil |] ->
-    greturn neededPermsEmpty
+    greturn mempty
   
   -- If the RHS starts with a field perm, convert to a block perm and call
   -- solveForPermListImplBlock
@@ -4855,14 +4841,14 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
     , mb_bp <- fmap llvmFieldPermToBlock mb_fp ->
       solveForPermListImplBlock ps_l x mb_bp >>>= \needed1 ->
       solveForPermListImpl ps_l mb_ps_r >>>= \needed2 ->
-      greturn (neededPermsAppend needed1 needed2)
+      greturn (needed1 <> needed2)
   
   -- If the RHS starts with a block perm, call solveForPermListImplBlock
   [nuMP| mb_ps_r :>: LOwnedPermBlock (PExpr_Var mb_x) mb_bp |]
     | Right x <- mbNameBoundP mb_x ->
       solveForPermListImplBlock ps_l x mb_bp >>>= \needed1 ->
       solveForPermListImpl ps_l mb_ps_r >>>= \needed2 ->
-      greturn (neededPermsAppend needed1 needed2)
+      greturn (needed1 <> needed2)
   
   -- If the RHS is an lowned perm that is in the LHS, return nothing
   --
@@ -4879,13 +4865,12 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
   
   -- If the RHS is an lowned perm not in the LHS, return the RHS
   [nuMP| mb_ps_r :>: LOwnedPermLifetime (PExpr_Var mb_l) mb_ps_in mb_ps_out |] ->
-    neededPermsAppend
-    (neededPerms1 mb_l (mbMap2 ValPerm_LOwned mb_ps_in mb_ps_out)) <$>
+    (<>) (neededPerms1 mb_l (mbMap2 ValPerm_LOwned mb_ps_in mb_ps_out)) <$>
     solveForPermListImpl ps_l mb_ps_r
   
   -- Otherwise, we don't know what to do, so do nothing and return
   _ ->
-    greturn neededPermsEmpty
+    greturn mempty
 
 
 ----------------------------------------------------------------------

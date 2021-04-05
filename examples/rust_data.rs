@@ -203,6 +203,44 @@ impl StrStruct {
     }
 }
 
+/* A struct with a mix of different field types */
+#[derive(Clone, Debug, PartialEq)]
+pub struct MixedStruct {
+    pub s: String,
+    pub i1: u64,
+    pub i2: u64,
+}
+
+impl MixedStruct {
+    pub fn get_s(&self) -> String {
+        self.s.clone()
+    }
+
+    pub fn get_i1(&self) -> u64 {
+        self.i1
+    }
+
+    pub fn get_i2(&self) -> u64 {
+        self.i2
+    }
+}
+
+/* A 'true' enum */
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrueEnum {
+    Foo,
+    Bar,
+    Baz,
+}
+
+pub fn cycle_true_enum (te: &TrueEnum) -> TrueEnum {
+    match te {
+        TrueEnum::Foo => TrueEnum::Bar,
+        TrueEnum::Bar => TrueEnum::Baz,
+        TrueEnum::Baz => TrueEnum::Foo,
+    }
+}
+
 /* A linked list */
 #[derive(Clone, Debug, PartialEq)]
 #[repr(C,u64)]
