@@ -14,7 +14,6 @@ import Data.Parameterized.Some (Some(Some))
 
 import Lang.Crucible.Types
 
-import Verifier.SAW.Heapster.Permissions
 import Verifier.SAW.Heapster.CruUtil
 
 -- | A sequence of variable names and their types

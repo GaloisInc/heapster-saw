@@ -13,10 +13,12 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PatternGuards #-}
+
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Verifier.SAW.Heapster.CruUtil where
 
-import Data.Kind
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Reflection
@@ -30,13 +32,12 @@ import GHC.TypeNats
 import Data.Functor.Product
 
 import Data.Binding.Hobbits
-import Data.Binding.Hobbits.NuMatching
 
 import What4.ProgramLoc
 import What4.Partial
 import What4.InterpretedFloatingPoint (X86_80Val(..))
-import What4.Interface (RoundingMode(..),StringLiteral(..), stringLiteralInfo)
-import What4.Utils.Word16String (Word16String (..))
+import What4.Interface (StringLiteral(..))
+import What4.Utils.Word16String (Word16String)
 
 import Data.Parameterized.Context hiding ((:>), empty, take, view)
 import qualified Data.Parameterized.Context as Ctx
@@ -52,7 +53,6 @@ import Lang.Crucible.FunctionHandle
 import Lang.Crucible.CFG.Expr
 import Lang.Crucible.CFG.Core hiding (App)
 import qualified Lang.Crucible.CFG.Core as Core
-import Lang.Crucible.CFG.Extension
 import Lang.Crucible.LLVM.Bytes
 import Lang.Crucible.LLVM.Errors
 import Lang.Crucible.LLVM.Errors.MemoryError
@@ -141,58 +141,6 @@ instance Closable Ident where
 
 instance Liftable Ident where
   mbLift = unClosed . mbLift . fmap toClosed
-
--- FIXME: this Natural instance should go into Hobbits
-instance Closable Natural where
-  toClosed = unsafeClose
-
--- FIXME: move to Hobbits
-class NuMatchingAny1 f => LiftableAny1 f where
-  mbLiftAny1 :: Mb ctx (f a) -> f a
-
--- FIXME: move to Hobbits
-instance NuMatchingAny1 Proxy where
-  nuMatchingAny1Proof = nuMatchingProof
-
--- FIXME: move to Hobbits
-instance LiftableAny1 Proxy where
-  mbLiftAny1 = mbLift
-
--- FIXME: move to Hobbits
-instance LiftableAny1 f => Liftable (RAssign f ctx) where
-  mbLift [nuP| MNil |] = MNil
-  mbLift [nuP| xs :>: x |] = mbLift xs :>: mbLiftAny1 x
-
--- FIXME: move to Hobbits
-instance TestEquality f => TestEquality (RAssign f) where
-  testEquality MNil MNil = Just Refl
-  testEquality (xs1 :>: x1) (xs2 :>: x2)
-    | Just Refl <- testEquality xs1 xs2
-    , Just Refl <- testEquality x1 x2
-    = Just Refl
-  testEquality _ _ = Nothing
-
--- FIXME: move to Hobbits
-instance NuMatchingAny1 f => NuMatchingAny1 (RAssign f) where
-  nuMatchingAny1Proof = nuMatchingProof
-
--- | Typeclass for functors that allow equality testing at all types
-class Eq1 f where
-  eq1 :: f a -> f a -> Bool
-
--- FIXME: move to Hobbits
-instance Eq1 f => Eq (RAssign f ctx) where
-  MNil == MNil = True
-  (xs1 :>: x1) == (xs2 :>: x2) = xs1 == xs2 && eq1 x1 x2
-
--- FIXME: move to Hobbits
-$(mkNuMatching [t| forall f g a. (NuMatchingAny1 f,
-                                  NuMatchingAny1 g) => Product f g a |])
-
--- FIXME: move to Hobbits
-instance (NuMatchingAny1 f,
-          NuMatchingAny1 g) => NuMatchingAny1 (Product f g) where
-  nuMatchingAny1Proof = nuMatchingProof
 
 instance NuMatching OpenTerm where
   nuMatchingProof = unsafeMbTypeRepr
@@ -543,7 +491,7 @@ instance NuMatchingAny1 (KnownReprObj f) where
   nuMatchingAny1Proof = nuMatchingProof
 
 instance Liftable (KnownReprObj f a) where
-  mbLift [nuP| KnownReprObj |] = KnownReprObj
+  mbLift (mbMatch -> [nuMP| KnownReprObj |]) = KnownReprObj
 
 instance LiftableAny1 (KnownReprObj f) where
   mbLiftAny1 = mbLift
@@ -576,8 +524,9 @@ data CruCtx ctx where
 $(mkNuMatching [t| forall ctx. CruCtx ctx |])
 
 instance Liftable (CruCtx ctx) where
-  mbLift [nuP| CruCtxNil |] = CruCtxNil
-  mbLift [nuP| CruCtxCons ctx a |] = CruCtxCons (mbLift ctx) (mbLift a)
+  mbLift mb_ctx = case mbMatch mb_ctx of
+    [nuMP| CruCtxNil |] -> CruCtxNil
+    [nuMP| CruCtxCons ctx a |] -> CruCtxCons (mbLift ctx) (mbLift a)
 
 instance Closable (CruCtx ctx) where
   toClosed CruCtxNil = $(mkClosed [| CruCtxNil |])
@@ -593,7 +542,7 @@ instance TestEquality CruCtx where
   testEquality _ _ = Nothing
 
 instance PP.Pretty (CruCtx ctx) where
-  pretty ctx = PP.list $ helper ctx where
+  pretty = PP.list . helper where
     helper :: CruCtx ctx' -> [PP.Doc ann]
     helper CruCtxNil = []
     helper (CruCtxCons ctx tp) = helper ctx ++ [PP.pretty tp]
@@ -620,7 +569,7 @@ cruCtxToRepr (CruCtxCons ctx tp) = Ctx.extend (cruCtxToRepr ctx) tp
 -- equal types
 cruCtxToReprEq :: CruCtx ctx -> CtxToRList (RListToCtx ctx) :~: ctx
 cruCtxToReprEq CruCtxNil = Refl
-cruCtxToReprEq (CruCtxCons ctx tp) =
+cruCtxToReprEq (CruCtxCons ctx _tp) =
   case cruCtxToReprEq ctx of
     Refl -> Refl
 
@@ -709,6 +658,8 @@ stmtInputRegs (Print msg) = [Some msg]
 stmtInputRegs (ReadGlobal _) = []
 stmtInputRegs (WriteGlobal _ r) = [Some r]
 stmtInputRegs (FreshConstant _ _) = []
+stmtInputRegs (FreshFloat _ _) = []
+stmtInputRegs (FreshNat _) = []
 stmtInputRegs (NewRefCell _ r) = [Some r]
 stmtInputRegs (NewEmptyRefCell _) = []
 stmtInputRegs (ReadRefCell r) = [Some r]
@@ -727,19 +678,21 @@ stmtOutputRegs sz (ExtendAssign s') =
 stmtOutputRegs sz (CallHandle _ h _ args) =
   Some (extendReg h) : foldMapFC (\r -> [Some $ extendReg r]) args
   ++ [Some $ Reg $ Ctx.lastIndex sz]
-stmtOutputRegs sz (Print msg) = [Some msg]
-stmtOutputRegs sz (ReadGlobal _) = []
-stmtOutputRegs sz (WriteGlobal _ r) = [Some r]
-stmtOutputRegs sz (FreshConstant _ _) = []
+stmtOutputRegs _ (Print msg) = [Some msg]
+stmtOutputRegs _ (ReadGlobal _) = []
+stmtOutputRegs _ (WriteGlobal _ r) = [Some r]
+stmtOutputRegs _ (FreshConstant _ _) = []
+stmtOutputRegs _ (FreshFloat _ _) = []
+stmtOutputRegs _ (FreshNat _) = []
 stmtOutputRegs sz (NewRefCell _ r) =
   [Some $ extendReg r] ++ [Some $ Reg $ Ctx.lastIndex sz]
-stmtOutputRegs sz (NewEmptyRefCell _) = []
+stmtOutputRegs _ (NewEmptyRefCell _) = []
 stmtOutputRegs sz (ReadRefCell r) =
   [Some $ extendReg r] ++ [Some $ Reg $ Ctx.lastIndex sz]
-stmtOutputRegs sz (WriteRefCell r1 r2) = [Some r1, Some r2]
-stmtOutputRegs sz (DropRefCell r) = [Some r]
-stmtOutputRegs sz (Assert r1 r2) = [Some r1, Some r2]
-stmtOutputRegs sz (Assume r1 r2) = [Some r1, Some r2]
+stmtOutputRegs _ (WriteRefCell r1 r2) = [Some r1, Some r2]
+stmtOutputRegs _ (DropRefCell r) = [Some r]
+stmtOutputRegs _ (Assert r1 r2) = [Some r1, Some r2]
+stmtOutputRegs _ (Assume r1 r2) = [Some r1, Some r2]
 
 -- | Get all the registers used in a Crucible 'JumpTarget'
 jumpTargetRegs :: JumpTarget blocks ctx -> [Some (Reg ctx)]

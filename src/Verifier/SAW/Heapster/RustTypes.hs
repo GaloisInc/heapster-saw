@@ -27,8 +27,10 @@
 
 module Verifier.SAW.Heapster.RustTypes where
 
+import Prelude hiding (span)
+
 import Data.Maybe
-import Data.List
+import Data.List hiding (span)
 import GHC.TypeLits
 import Data.Functor.Constant
 import Data.Functor.Product
@@ -42,10 +44,7 @@ import Data.Parameterized.Some
 
 import Data.Binding.Hobbits
 import Data.Binding.Hobbits.MonadBind
-import Data.Type.RList (RList(..), RAssign(..), (:++:), append, memberElem,
-                        mapRAssign, mapToList)
 import qualified Data.Type.RList as RL
-import Data.Binding.Hobbits.NameSet (NameSet, SomeName(..), toList)
 import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Language.Rust.Syntax
@@ -89,24 +88,6 @@ newtype RustConvM a =
 
 instance MonadFail RustConvM where
   fail = RustConvM . throwError
-
--- FIXME: move this to Hobbits
-instance (MonadBind m, Liftable e) => MonadBind (ExceptT e m) where
-  mbM mb_m =
-    ExceptT $
-    do mb_eith <- mbM $ fmap runExceptT mb_m
-       case mb_eith of
-         [nuP| Right mb_a |] -> return $ Right mb_a
-         [nuP| Left mb_e |] -> return $ Left $ mbLift mb_e
-
--- FIXME: move this to Hobbits
-mbMaybe :: NuMatching a => Mb ctx (Maybe a) -> Maybe (Mb ctx a)
-mbMaybe [nuP| Just mb_a |] = Just mb_a
-mbMaybe [nuP| Nothing |] = Nothing
-
--- FIXME: move this to Hobbits
-instance MonadBind m => MonadBind (MaybeT m) where
-  mbM mb_m = MaybeT $ fmap mbMaybe $ mbM $ fmap runMaybeT mb_m
 
 instance MonadBind RustConvM where
   mbM mb_m = RustConvM $ mbM $ fmap unRustConvM mb_m
@@ -263,7 +244,7 @@ instance Show RustName where
   show (RustName ids) = concat $ intersperse "::" $ map show ids
 
 instance RsConvert w RustName SomeNamedShape where
-  rsConvert w (RustName elems) =
+  rsConvert _w (RustName elems) =
     -- FIXME: figure out how to actually resolve names; for now we just look at
     -- the last string component...
     do let str = name $ last elems
@@ -293,7 +274,7 @@ instance RsConvert w Mutability (PermExpr RWModalityType) where
   rsConvert _ Immutable = return PExpr_Read
 
 instance RsConvert w (Lifetime Span) (PermExpr LifetimeType) where
-  rsConvert _ (Lifetime "static" span) = return PExpr_Always
+  rsConvert _ (Lifetime "static" _) = return PExpr_Always
   rsConvert _ (Lifetime l span) =
     PExpr_Var <$> atSpan span (lookupName l knownRepr)
 
@@ -383,13 +364,13 @@ argLayout1 p =
 -- | Convert an 'ArgLayout' in a name-binding into an 'ArgLayout' with an
 -- additional ghost argument for the bound name
 mbArgLayout :: KnownRepr TypeRepr a => Binding a ArgLayout -> ArgLayout
-mbArgLayout [nuP| ArgLayout ghosts args mb_ps |] =
+mbArgLayout (mbMatch -> [nuMP| ArgLayout ghosts args mb_ps |]) =
   ArgLayout (mbLift ghosts :>: KnownReprObj) (mbLift args) (mbCombine $
                                                             mbSwap mb_ps)
 
 -- | Convert an 'ArgLayout' to a permission on a @struct@ of its arguments
 argLayoutStructPerm :: ArgLayout -> Some (Typed ValuePerm)
-argLayoutStructPerm (ArgLayout ghosts args@(MNil :>: KnownReprObj) mb_perms) =
+argLayoutStructPerm (ArgLayout ghosts (MNil :>: KnownReprObj) mb_perms) =
   Some $ Typed knownRepr $
   valPermExistsMulti ghosts $ fmap (\(_ :>: perm) -> perm) mb_perms
 argLayoutStructPerm (ArgLayout ghosts args mb_perms)
@@ -514,8 +495,9 @@ assocAppend fs1 ctx2 ctx3 fs23 =
 -- | Add ghost variables for the bound names in a 'Some3FunPerm' in a binding
 mbGhostsFunPerm3 :: CruCtx new_ghosts -> Mb new_ghosts Some3FunPerm ->
                     Some3FunPerm
-mbGhostsFunPerm3 new_ghosts [nuP| Some3FunPerm
-                                (FunPerm ghosts args ret ps_in ps_out) |] =
+mbGhostsFunPerm3 new_ghosts (mbMatch -> [nuMP| Some3FunPerm
+                                                (FunPerm ghosts args
+                                                         ret ps_in ps_out) |]) =
   let new_prxs = cruCtxProxies new_ghosts
       ghosts_prxs = cruCtxProxies $ mbLift ghosts
       args_prxs = cruCtxProxies $ mbLift args in
@@ -555,7 +537,7 @@ layoutArgShapeByVal Rust sh@(PExpr_NamedShape _ _ nmsh _)
 
 -- Opaque named shapes that could potentially be laid out by value are an error,
 -- because we do not know their representation
-layoutArgShapeByVal Rust sh@(PExpr_NamedShape _ _ nmsh _)
+layoutArgShapeByVal Rust (PExpr_NamedShape _ _ nmsh _)
   | not (namedShapeCanUnfold nmsh) =
     lift $ fail $ renderDoc
     (pretty "layoutArgShapeByVal: Cannot lay out opaque named shape by value:"
@@ -681,27 +663,28 @@ instance Applicative SomeTypedMb where
 -- 'LOwnedPerms' sequence
 abstractMbLOPsModalities :: Mb ctx (LOwnedPerms tps) ->
                             SomeTypedMb (Mb ctx (LOwnedPerms tps))
-abstractMbLOPsModalities lops@[nuP| MNil |] = pure lops
-abstractMbLOPsModalities [nuP| lops :>: LOwnedPermField mb_e mb_fp |] =
-  liftA2 (mbMap2 (:>:))
-  (abstractMbLOPsModalities lops)
-  (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
-   nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
-    mbMap2 (\e fp ->
-             LOwnedPermField e (fp { llvmFieldRW = PExpr_Var rw,
-                                     llvmFieldLifetime = PExpr_Var l }))
-    mb_e mb_fp)
-abstractMbLOPsModalities [nuP| lops :>: LOwnedPermBlock mb_e mb_bp |] =
-  liftA2 (mbMap2 (:>:))
-  (abstractMbLOPsModalities lops)
-  (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
-   nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
-    mbMap2 (\e bp ->
-             LOwnedPermBlock e (bp { llvmBlockRW = PExpr_Var rw,
-                                     llvmBlockLifetime = PExpr_Var l }))
-    mb_e mb_bp)
-abstractMbLOPsModalities [nuP| lops :>: lop@(LOwnedPermLifetime _ _ _) |] =
-  liftA2 (mbMap2 (:>:)) (abstractMbLOPsModalities lops) (pure lop)
+abstractMbLOPsModalities mb_lops = case mbMatch mb_lops of
+  [nuMP| MNil |] -> pure mb_lops
+  [nuMP| lops :>: LOwnedPermField mb_e mb_fp |] ->
+    liftA2 (mbMap2 (:>:))
+    (abstractMbLOPsModalities lops)
+    (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
+     nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
+      mbMap2 (\e fp ->
+               LOwnedPermField e (fp { llvmFieldRW = PExpr_Var rw,
+                                       llvmFieldLifetime = PExpr_Var l }))
+      mb_e mb_fp)
+  [nuMP| lops :>: LOwnedPermBlock mb_e mb_bp |] ->
+    liftA2 (mbMap2 (:>:))
+    (abstractMbLOPsModalities lops)
+    (SomeTypedMb (CruCtxCons (CruCtxCons CruCtxNil RWModalityRepr) LifetimeRepr) $
+     nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: rw :>: l) ->
+      mbMap2 (\e bp ->
+               LOwnedPermBlock e (bp { llvmBlockRW = PExpr_Var rw,
+                                       llvmBlockLifetime = PExpr_Var l }))
+      mb_e mb_bp)
+  [nuMP| lops :>: lop@(LOwnedPermLifetime _ _ _) |] ->
+    liftA2 (mbMap2 (:>:)) (abstractMbLOPsModalities lops) (pure lop)
 
 
 -- | Find all field or block permissions containing lifetime @l@ and return them
@@ -737,7 +720,8 @@ extMbOuter prxs mb_a = mbCombine $ nuMulti prxs $ const mb_a
 -- | Add a lifetime described by a 'LifetimeDef' to a 'Some3FunPerm'
 mbLifetimeFunPerm :: LifetimeDef Span -> Binding LifetimeType Some3FunPerm ->
                      RustConvM Some3FunPerm
-mbLifetimeFunPerm (LifetimeDef _ _ [] _) [nuP| Some3FunPerm fun_perm |] =
+mbLifetimeFunPerm (LifetimeDef _ _ [] _)
+                  (mbMatch -> [nuMP| Some3FunPerm fun_perm |]) =
   do let ghosts = mbLift $ fmap funPermGhosts fun_perm
      let args = mbLift $ fmap funPermArgs fun_perm
      let args_prxs = cruCtxProxies args
@@ -751,10 +735,10 @@ mbLifetimeFunPerm (LifetimeDef _ _ [] _) [nuP| Some3FunPerm fun_perm |] =
      let mb_l =
            extMbMulti (cruCtxProxies args) $
            extMbMulti (cruCtxProxies ghosts) (nu id)
-     [nuP| Some mb_lops_in |] <-
-       mbM $ mbMap2 lownedPermsForLifetime mb_l mb_ps_in
-     [nuP| Some mb_lops_out |] <-
-       mbM $ mbMap2 lownedPermsForLifetime (extMb mb_l) mb_ps_out
+     [nuMP| Some mb_lops_in |] <-
+       mbMatchM $ mbMap2 lownedPermsForLifetime mb_l mb_ps_in
+     [nuMP| Some mb_lops_out |] <-
+       mbMatchM $ mbMap2 lownedPermsForLifetime (extMb mb_l) mb_ps_out
      case abstractMbLOPsModalities mb_lops_in of
        SomeTypedMb ghosts' mb_mb_lops_in_abs ->
          return $ mbGhostsFunPerm3 ghosts' $
@@ -769,7 +753,7 @@ mbLifetimeFunPerm (LifetimeDef _ _ [] _) [nuP| Some3FunPerm fun_perm |] =
                    assocAppend (MNil :>: ValPerm_LOwned lops_out lops_in_abs)
                    ghosts (args_prxs :>: Proxy) $ distPermsToValuePerms ps_out)
           mb_ps_out mb_lops_out (extMb mb_lops_in_abs))
-mbLifetimeFunPerm (LifetimeDef _ _ bounds _) [nuP| Some3FunPerm fun_perm |] =
+mbLifetimeFunPerm (LifetimeDef _ _ _bounds _) _ =
   fail "Rust lifetime bounds not yet supported!"
 
 -- | Run a computation of a function permission in the context of a list of
@@ -793,7 +777,7 @@ rsConvertMonoFun w span abi ls fn_tp =
 -- | Convert a Rust polymorphic function type to a Heapster function permission
 rsConvertFun :: (1 <= w, KnownNat w) => prx w ->
                 Abi -> Generics Span -> FnDecl Span -> RustConvM Some3FunPerm
-rsConvertFun w abi (Generics ldefs tparams@[]
+rsConvertFun w abi (Generics ldefs _tparams@[]
                     (WhereClause [] _) _) (FnDecl args (Just ret_tp) False _) =
   fmap (\ret ->
          tracePretty (pretty "rsConvertFun returning:" <+>
@@ -838,8 +822,7 @@ parseFunPermFromRust env w args ret str
   , (_, fn_str) <- splitAt (i+1) str
   , Left err <- parse @(Ty Span) (inputStreamFromString fn_str) =
     fail ("Error parsing generics: " ++ show err)
-
-  | Nothing <- findIndex (== '>') str =
+parseFunPermFromRust _ _ _ _ str =
     fail ("Malformed Rust type: " ++ str)
 
 

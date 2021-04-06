@@ -185,24 +185,25 @@ translateCompleteIRTTyVars sc env npn_rec args p =
 valuePermIRTTyVars :: Mb (args :++: ext) (ValuePerm a) ->
                       IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                 IRTVarTreeShape)
-valuePermIRTTyVars [nuP| ValPerm_Eq _ |] = return ([], IRTVarsNil)
-valuePermIRTTyVars [nuP| ValPerm_Or p1 p2 |] =
-  do (tps1, ixs1) <- valuePermIRTTyVars p1
-     (tps2, ixs2) <- valuePermIRTTyVars p2
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
-valuePermIRTTyVars [nuP| ValPerm_Exists p |] =
-  do let tp = mbBindingType p
-         tp_trans = typeTransTupleType <$> translateClosed tp
-     pCbn <- irtTMbCombine p
-     (tps, ixs) <- inExtIRTTyVarsTransM (valuePermIRTTyVars pCbn)
-     return (tp_trans : tps, IRTVarsCons () ixs)
-valuePermIRTTyVars p@[nuP| ValPerm_Named npn args off |] =
-  namedPermIRTTyVars p npn args off
-valuePermIRTTyVars p@[nuP| ValPerm_Var x _ |] =
-  irtTTranslateVar p x
-valuePermIRTTyVars [nuP| ValPerm_Conj ps |] =
-  do (tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars (mbList ps)
-     return (concat tps, IRTVarsConcat ixs)
+valuePermIRTTyVars mb_p = case mbMatch mb_p of
+  [nuMP| ValPerm_Eq _ |] -> return ([], IRTVarsNil)
+  [nuMP| ValPerm_Or p1 p2 |] ->
+    do (tps1, ixs1) <- valuePermIRTTyVars p1
+       (tps2, ixs2) <- valuePermIRTTyVars p2
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+  [nuMP| ValPerm_Exists p |] ->
+    do let tp = mbBindingType p
+           tp_trans = typeTransTupleType <$> translateClosed tp
+       pCbn <- irtTMbCombine p
+       (tps, ixs) <- inExtIRTTyVarsTransM (valuePermIRTTyVars pCbn)
+       return (tp_trans : tps, IRTVarsCons () ixs)
+  [nuMP| ValPerm_Named npn args off |] ->
+    namedPermIRTTyVars mb_p npn args off
+  [nuMP| ValPerm_Var x _ |] ->
+    irtTTranslateVar mb_p x
+  [nuMP| ValPerm_Conj ps |] ->
+    do (tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars (mbList ps)
+       return (concat tps, IRTVarsConcat ixs)
 
 -- | Get all IRT type variables in a named permission application. The first
 -- argument must be either 'ValPerm_Named' or 'Perm_NamedConj' applied to the
@@ -220,8 +221,8 @@ namedPermIRTTyVars p npn args off =
   do IRTRecPermName npn_rec <- irtTRecPerm <$> ask
      npn_args <- irtNus (\ns _ -> namesToExprs ns)
      npn_off  <- irtNus (\_  _ -> NoPermOffset @tp)
-     case testNamedPermNameEq npn_rec <$> npn of
-       [nuP| Just (Refl, Refl, Refl) |] ->
+     case mbMatch $ testNamedPermNameEq npn_rec <$> npn of
+       [nuMP| Just (Refl, Refl, Refl) |] ->
          if npn_args == args && npn_off == off
          then return ([], IRTRecVar)
          else throwError $ "recursive permission applied to different"
@@ -263,78 +264,81 @@ irtTTranslateVar p x =
 atomicPermIRTTyVars :: Mb (args :++: ext) (AtomicPerm a) ->
                        IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                  IRTVarTreeShape)
-atomicPermIRTTyVars [nuP| Perm_LLVMField fld |] =
-  valuePermIRTTyVars (fmap llvmFieldContents fld)
-atomicPermIRTTyVars [nuP| Perm_LLVMArray mb_ap |] =
-  do let mb_flds = fmap llvmArrayFields mb_ap
-         flds = fmap (fmap llvmArrayFieldToAtomicPerm) (mbList mb_flds)
-     (fld_tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars flds
-     return (concat fld_tps, IRTVarsConcat ixs)
-atomicPermIRTTyVars [nuP| Perm_LLVMBlock bp |] =
-  shapeExprIRTTyVars (fmap llvmBlockShape bp)
-atomicPermIRTTyVars [nuP| Perm_LLVMFree _ |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_LLVMFunPtr _ p |] =
-  valuePermIRTTyVars p
-atomicPermIRTTyVars [nuP| Perm_IsLLVMPtr |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_LLVMBlockShape sh |] =
-  shapeExprIRTTyVars sh
-atomicPermIRTTyVars p@[nuP| Perm_NamedConj npn args off |] =
-  namedPermIRTTyVars p npn args off
-atomicPermIRTTyVars [nuP| Perm_LLVMFrame _ |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_LOwned _ _ |] =
-  throwError "lowned permission in an IRT definition!"
-atomicPermIRTTyVars [nuP| Perm_LCurrent _ |] = return ([], IRTVarsNil)
-atomicPermIRTTyVars [nuP| Perm_Struct ps |] = valuePermsIRTTyVars ps
-atomicPermIRTTyVars [nuP| Perm_Fun _ |] =
-  throwError "fun perm in an IRT definition!"
-atomicPermIRTTyVars [nuP| Perm_BVProp _ |] =
-  throwError "BVProp in an IRT definition!"
+atomicPermIRTTyVars mb_p = case mbMatch mb_p of
+  [nuMP| Perm_LLVMField fld |] ->
+    valuePermIRTTyVars (fmap llvmFieldContents fld)
+  [nuMP| Perm_LLVMArray mb_ap |] ->
+    do let mb_flds = fmap llvmArrayFields mb_ap
+           flds = fmap (fmap llvmArrayFieldToAtomicPerm) (mbList mb_flds)
+       (fld_tps, ixs) <- unzip <$> mapM atomicPermIRTTyVars flds
+       return (concat fld_tps, IRTVarsConcat ixs)
+  [nuMP| Perm_LLVMBlock bp |] ->
+    shapeExprIRTTyVars (fmap llvmBlockShape bp)
+  [nuMP| Perm_LLVMFree _ |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_LLVMFunPtr _ p |] ->
+    valuePermIRTTyVars p
+  [nuMP| Perm_IsLLVMPtr |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_LLVMBlockShape sh |] ->
+    shapeExprIRTTyVars sh
+  [nuMP| Perm_NamedConj npn args off |] ->
+    namedPermIRTTyVars mb_p npn args off
+  [nuMP| Perm_LLVMFrame _ |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_LOwned _ _ |] ->
+    throwError "lowned permission in an IRT definition!"
+  [nuMP| Perm_LCurrent _ |] -> return ([], IRTVarsNil)
+  [nuMP| Perm_Struct ps |] -> valuePermsIRTTyVars ps
+  [nuMP| Perm_Fun _ |] ->
+    throwError "fun perm in an IRT definition!"
+  [nuMP| Perm_BVProp _ |] ->
+    throwError "BVProp in an IRT definition!"
 
 -- | Get all IRT type variables in a shape expression
 shapeExprIRTTyVars :: Mb (args :++: ext) (PermExpr (LLVMShapeType w)) ->
                       IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                 IRTVarTreeShape)
-shapeExprIRTTyVars p@[nuP| PExpr_Var x |] =
-  irtTTranslateVar p x
-shapeExprIRTTyVars [nuP| PExpr_EmptyShape |] = return ([], IRTVarsNil)
-shapeExprIRTTyVars [nuP| PExpr_EqShape _ |] = return ([], IRTVarsNil)
-shapeExprIRTTyVars [nuP| PExpr_PtrShape _ _ sh |] =
-  shapeExprIRTTyVars sh
-shapeExprIRTTyVars [nuP| PExpr_FieldShape fsh |] =
-  fieldShapeIRTTyVars fsh
-shapeExprIRTTyVars [nuP| PExpr_ArrayShape _ _ fshs |] = 
-  do (tps, ixs) <- unzip <$> mapM fieldShapeIRTTyVars (mbList fshs)
-     return (concat tps, IRTVarsConcat ixs)
-shapeExprIRTTyVars [nuP| PExpr_SeqShape sh1 sh2 |] =
-  do (tps1, ixs1) <- shapeExprIRTTyVars sh1
-     (tps2, ixs2) <- shapeExprIRTTyVars sh2
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
-shapeExprIRTTyVars [nuP| PExpr_OrShape sh1 sh2 |] =
-  do (tps1, ixs1) <- shapeExprIRTTyVars sh1
-     (tps2, ixs2) <- shapeExprIRTTyVars sh2
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
-shapeExprIRTTyVars [nuP| PExpr_ExShape mb_sh |] =
-  do let tp = mbBindingType mb_sh
-         tp_trans = typeTransTupleType <$> translateClosed tp
-     shCbn <- irtTMbCombine mb_sh
-     (tps, ixs) <- inExtIRTTyVarsTransM (shapeExprIRTTyVars shCbn)
-     return (tp_trans : tps, IRTVarsCons () ixs)
+shapeExprIRTTyVars mb_p = case mbMatch mb_p of
+  [nuMP| PExpr_Var x |] -> irtTTranslateVar mb_p x
+  [nuMP| PExpr_EmptyShape |] -> return ([], IRTVarsNil)
+  [nuMP| PExpr_EqShape _ |] -> return ([], IRTVarsNil)
+  [nuMP| PExpr_PtrShape _ _ sh |] ->
+      shapeExprIRTTyVars sh
+  [nuMP| PExpr_FieldShape fsh |] ->
+      fieldShapeIRTTyVars fsh
+  [nuMP| PExpr_ArrayShape _ _ fshs |] ->
+    do (tps, ixs) <- unzip <$> mapM fieldShapeIRTTyVars (mbList fshs)
+       return (concat tps, IRTVarsConcat ixs)
+  [nuMP| PExpr_SeqShape sh1 sh2 |] ->
+    do (tps1, ixs1) <- shapeExprIRTTyVars sh1
+       (tps2, ixs2) <- shapeExprIRTTyVars sh2
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+  [nuMP| PExpr_OrShape sh1 sh2 |] ->
+    do (tps1, ixs1) <- shapeExprIRTTyVars sh1
+       (tps2, ixs2) <- shapeExprIRTTyVars sh2
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+  [nuMP| PExpr_ExShape mb_sh |] ->
+    do let tp = mbBindingType mb_sh
+           tp_trans = typeTransTupleType <$> translateClosed tp
+       shCbn <- irtTMbCombine mb_sh
+       (tps, ixs) <- inExtIRTTyVarsTransM (shapeExprIRTTyVars shCbn)
+       return (tp_trans : tps, IRTVarsCons () ixs)
 
 -- | Get all IRT type variables in a field shape
 fieldShapeIRTTyVars :: Mb (args :++: ext) (LLVMFieldShape w) ->
                        IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                  IRTVarTreeShape)
-fieldShapeIRTTyVars [nuP| LLVMFieldShape p |] = valuePermIRTTyVars p
+fieldShapeIRTTyVars (mbMatch -> [nuMP| LLVMFieldShape p |]) =
+  valuePermIRTTyVars p
 
 -- | Get all IRT type variables in a set of value perms
 valuePermsIRTTyVars :: Mb (args :++: ext) (ValuePerms ps) ->
                        IRTTyVarsTransM args ext ([TypeTransM args OpenTerm],
                                                  IRTVarTreeShape)
-valuePermsIRTTyVars [nuP| ValPerms_Nil |] = return ([], IRTVarsNil)
-valuePermsIRTTyVars [nuP| ValPerms_Cons ps p |] =
-  do (tps1, ixs1) <- valuePermsIRTTyVars ps
-     (tps2, ixs2) <- valuePermIRTTyVars p
-     return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
+valuePermsIRTTyVars mb_ps = case mbMatch mb_ps of
+  [nuMP| ValPerms_Nil |] -> return ([], IRTVarsNil)
+  [nuMP| ValPerms_Cons ps p |] ->
+    do (tps1, ixs1) <- valuePermsIRTTyVars ps
+       (tps2, ixs2) <- valuePermIRTTyVars p
+       return (tps1 ++ tps2, IRTVarsAppend ixs1 ixs2)
 
 
 ----------------------------------------------------------------------
@@ -436,23 +440,24 @@ translateCompleteIRTDesc sc env tyVarsIdent args p ixs =
 -- the results to get the single IRTDesc to which the input corresponds.
 valuePermIRTDesc :: Mb ctx (ValuePerm a) -> IRTVarIdxs ->
                     IRTDescTransM ctx [OpenTerm]
-valuePermIRTDesc [nuP| ValPerm_Eq _ |] _ = return []
-valuePermIRTDesc [nuP| ValPerm_Or p1 p2 |] (IRTVarsAppend ixs1 ixs2) =
-  do x1 <- valuePermIRTDesc p1 ixs1 >>= irtProd
-     x2 <- valuePermIRTDesc p2 ixs2 >>= irtProd
-     irtCtor "Prelude.IRT_Either" [x1, x2]
-valuePermIRTDesc [nuP| ValPerm_Exists p |] (IRTVarsCons ix ixs) =
-  do let tp = mbBindingType p
-     tp_trans <- tupleTypeTrans <$> translateClosed tp
-     xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
-             valuePermIRTDesc (mbCombine p) ixs >>= irtProd)
-     irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
-valuePermIRTDesc [nuP| ValPerm_Named npn args off |] ix =
-  namedPermIRTDesc npn args off ix
-valuePermIRTDesc [nuP| ValPerm_Var _ _ |] ix = irtVarT ix
-valuePermIRTDesc [nuP| ValPerm_Conj ps |] (IRTVarsConcat ixss) =
-  concat <$> zipWithM atomicPermIRTDesc (mbList ps) ixss
-valuePermIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
+valuePermIRTDesc mb_p ixs = case (mbMatch mb_p, ixs) of
+  ([nuMP| ValPerm_Eq _ |], _) -> return []
+  ([nuMP| ValPerm_Or p1 p2 |], IRTVarsAppend ixs1 ixs2) ->
+    do x1 <- valuePermIRTDesc p1 ixs1 >>= irtProd
+       x2 <- valuePermIRTDesc p2 ixs2 >>= irtProd
+       irtCtor "Prelude.IRT_Either" [x1, x2]
+  ([nuMP| ValPerm_Exists p |], IRTVarsCons ix ixs') ->
+    do let tp = mbBindingType p
+       tp_trans <- tupleTypeTrans <$> translateClosed tp
+       xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
+               valuePermIRTDesc (mbCombine p) ixs' >>= irtProd)
+       irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
+  ([nuMP| ValPerm_Named npn args off |], _) ->
+    namedPermIRTDesc npn args off ixs
+  ([nuMP| ValPerm_Var _ _ |], _) -> irtVarT ixs
+  ([nuMP| ValPerm_Conj ps |], IRTVarsConcat ixss) ->
+    concat <$> zipWithM atomicPermIRTDesc (mbList ps) ixss
+  _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a named perm. Apply 'irtProd' to
 -- the results to get the single IRTDesc to which the input corresponds.
@@ -460,110 +465,114 @@ namedPermIRTDesc :: Mb ctx (NamedPermName ns args tp) ->
                     Mb ctx (PermExprs args) ->
                     Mb ctx (PermOffset tp) -> IRTVarIdxs ->
                     IRTDescTransM ctx [OpenTerm]
-namedPermIRTDesc _ _ _ IRTRecVar =
-  irtCtor "Prelude.IRT_varD" [natOpenTerm 0]
-namedPermIRTDesc npn args off ixs =
-  do env <- infoEnv <$> ask
-     case (lookupNamedPerm env (mbLift npn), ixs) of
-       (Just (NamedPerm_Defined dp), _) ->
-         valuePermIRTDesc (mbMap2 (unfoldDefinedPerm dp) args off) ixs
-       (_, IRTVar ix) -> irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
-       _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
+namedPermIRTDesc npn args off ixs = case ixs of
+  IRTRecVar -> irtCtor "Prelude.IRT_varD" [natOpenTerm 0]
+  _ -> do env <- infoEnv <$> ask
+          case (lookupNamedPerm env (mbLift npn), ixs) of
+            (Just (NamedPerm_Defined dp), _) ->
+              valuePermIRTDesc (mbMap2 (unfoldDefinedPerm dp) args off) ixs
+            (_, IRTVar ix) -> irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
+            _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a variable. Apply 'irtProd' to
 -- the results to get the single IRTDesc to which the input corresponds.
 irtVarT :: IRTVarIdxs -> IRTDescTransM ctx [OpenTerm]
-irtVarT IRTVarsNil = return []
-irtVarT (IRTVar ix) = irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
-irtVarT ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
+irtVarT ixs = case ixs of
+  IRTVarsNil -> return []
+  IRTVar ix -> irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
+  _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to an atomic perm. Apply 'irtProd' to
 -- the results to get the single IRTDesc to which the input corresponds.
 atomicPermIRTDesc :: Mb ctx (AtomicPerm a) -> IRTVarIdxs ->
                      IRTDescTransM ctx [OpenTerm]
-atomicPermIRTDesc [nuP| Perm_LLVMField fld |] ixs =
-  valuePermIRTDesc (fmap llvmFieldContents fld) ixs
-atomicPermIRTDesc [nuP| Perm_LLVMArray mb_ap |] (IRTVarsConcat ixss) =
-  do let w = natVal2 mb_ap
-         w_term = natOpenTerm w
-         mb_len = fmap llvmArrayLen mb_ap
-         mb_flds = fmap llvmArrayFields mb_ap
-         flds = fmap (fmap llvmArrayFieldToAtomicPerm) (mbList mb_flds)
-     len_term <- translate1 mb_len
-     xs <- concat <$> zipWithM atomicPermIRTDesc flds ixss
-     xs_term <- irtProd xs
-     irtCtor "Prelude.IRT_BVVec" [w_term, len_term, xs_term]
-atomicPermIRTDesc [nuP| Perm_LLVMBlock bp |] ixs =
-  shapeExprIRTDesc (fmap llvmBlockShape bp) ixs
-atomicPermIRTDesc [nuP| Perm_LLVMFree _ |] _ = return []
-atomicPermIRTDesc [nuP| Perm_LLVMFunPtr _ p |] ixs =
-  valuePermIRTDesc p ixs
-atomicPermIRTDesc [nuP| Perm_IsLLVMPtr |] _ = return []
-atomicPermIRTDesc [nuP| Perm_LLVMBlockShape sh |] ixs =
-  shapeExprIRTDesc sh ixs
-atomicPermIRTDesc [nuP| Perm_NamedConj npn args off |] ix =
-  namedPermIRTDesc npn args off ix
-atomicPermIRTDesc [nuP| Perm_LLVMFrame _ |] _ = return []
-atomicPermIRTDesc [nuP| Perm_LOwned _ _ |] _ =
-  error "lowned permission made it to IRTDesc translation"
-atomicPermIRTDesc [nuP| Perm_LCurrent _ |] _ = return []
-atomicPermIRTDesc [nuP| Perm_Struct ps |] ixs =
-  valuePermsIRTDesc ps ixs
-atomicPermIRTDesc [nuP| Perm_Fun _ |] _ =
-  error "fun perm made it to IRTDesc translation"
-atomicPermIRTDesc [nuP| Perm_BVProp _ |] _ =
-  error "BVProp made it to IRTDesc translation"
-atomicPermIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
+atomicPermIRTDesc mb_p ixs = case (mbMatch mb_p, ixs) of
+  ([nuMP| Perm_LLVMField fld |], _) ->
+    valuePermIRTDesc (fmap llvmFieldContents fld) ixs
+  ([nuMP| Perm_LLVMArray mb_ap |], IRTVarsConcat ixss) ->
+    do let w = natVal2 mb_ap
+           w_term = natOpenTerm w
+           mb_len = fmap llvmArrayLen mb_ap
+           mb_flds = fmap llvmArrayFields mb_ap
+           flds = fmap (fmap llvmArrayFieldToAtomicPerm) (mbList mb_flds)
+       len_term <- translate1 mb_len
+       xs <- concat <$> zipWithM atomicPermIRTDesc flds ixss
+       xs_term <- irtProd xs
+       irtCtor "Prelude.IRT_BVVec" [w_term, len_term, xs_term]
+  ([nuMP| Perm_LLVMBlock bp |], _) ->
+    shapeExprIRTDesc (fmap llvmBlockShape bp) ixs
+  ([nuMP| Perm_LLVMFree _ |], _) -> return []
+  ([nuMP| Perm_LLVMFunPtr _ p |], _) ->
+    valuePermIRTDesc p ixs
+  ([nuMP| Perm_IsLLVMPtr |], _) -> return []
+  ([nuMP| Perm_LLVMBlockShape sh |], _) ->
+    shapeExprIRTDesc sh ixs
+  ([nuMP| Perm_NamedConj npn args off |], _) ->
+    namedPermIRTDesc npn args off ixs
+  ([nuMP| Perm_LLVMFrame _ |], _) -> return []
+  ([nuMP| Perm_LOwned _ _ |], _) ->
+    error "lowned permission made it to IRTDesc translation"
+  ([nuMP| Perm_LCurrent _ |], _) -> return []
+  ([nuMP| Perm_Struct ps |], _) ->
+    valuePermsIRTDesc ps ixs
+  ([nuMP| Perm_Fun _ |], _) ->
+    error "fun perm made it to IRTDesc translation"
+  ([nuMP| Perm_BVProp _ |], _) ->
+    error "BVProp made it to IRTDesc translation"
+  _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a shape expression. Apply 'irtProd' to
 -- the results to get the single IRTDesc to which the input corresponds.
 shapeExprIRTDesc :: Mb ctx (PermExpr (LLVMShapeType w)) -> IRTVarIdxs ->
                     IRTDescTransM ctx [OpenTerm]
-shapeExprIRTDesc [nuP| PExpr_EmptyShape |] _ = return []
-shapeExprIRTDesc [nuP| PExpr_EqShape _ |] _ = return []
-shapeExprIRTDesc [nuP| PExpr_PtrShape _ _ sh |] ixs =
-  shapeExprIRTDesc sh ixs
-shapeExprIRTDesc [nuP| PExpr_FieldShape fsh |] ixs =
-  fieldShapeIRTDesc fsh ixs
-shapeExprIRTDesc [nuP| PExpr_ArrayShape mb_len _ mb_fshs |] (IRTVarsConcat ixss) =
-  do let w = natVal4 mb_len
-     let w_term = natOpenTerm w
-     len_term <- translate1 mb_len
-     xs <- concat <$> zipWithM fieldShapeIRTDesc (mbList mb_fshs) ixss
-     xs_term <- irtProd xs
-     irtCtor "Prelude.IRT_BVVec" [w_term, len_term, xs_term]
-shapeExprIRTDesc [nuP| PExpr_SeqShape sh1 sh2 |] (IRTVarsAppend ixs1 ixs2) =
-  do x1 <- shapeExprIRTDesc sh1 ixs1 >>= irtProd
-     x2 <- shapeExprIRTDesc sh2 ixs2 >>= irtProd
-     irtCtor "Prelude.IRT_prod" [x1, x2]
-shapeExprIRTDesc [nuP| PExpr_OrShape sh1 sh2 |] (IRTVarsAppend ixs1 ixs2) =
-  do x1 <- shapeExprIRTDesc sh1 ixs1 >>= irtProd
-     x2 <- shapeExprIRTDesc sh2 ixs2 >>= irtProd
-     irtCtor "Prelude.IRT_Either" [x1, x2]
-shapeExprIRTDesc [nuP| PExpr_ExShape mb_sh |] (IRTVarsCons ix ixs) =
-  do let tp = mbBindingType mb_sh
-     tp_trans <- tupleTypeTrans <$> translateClosed tp
-     xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
-             shapeExprIRTDesc (mbCombine mb_sh) ixs >>= irtProd)
-     irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
-shapeExprIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
+shapeExprIRTDesc mb_expr ixs = case (mbMatch mb_expr, ixs) of
+  ([nuMP| PExpr_EmptyShape |], _) -> return []
+  ([nuMP| PExpr_EqShape _ |], _) -> return []
+  ([nuMP| PExpr_PtrShape _ _ sh |], _) ->
+    shapeExprIRTDesc sh ixs
+  ([nuMP| PExpr_FieldShape fsh |], _) ->
+    fieldShapeIRTDesc fsh ixs
+  ([nuMP| PExpr_ArrayShape mb_len _ mb_fshs |], IRTVarsConcat ixss) ->
+    do let w = natVal4 mb_len
+       let w_term = natOpenTerm w
+       len_term <- translate1 mb_len
+       xs <- concat <$> zipWithM fieldShapeIRTDesc (mbList mb_fshs) ixss
+       xs_term <- irtProd xs
+       irtCtor "Prelude.IRT_BVVec" [w_term, len_term, xs_term]
+  ([nuMP| PExpr_SeqShape sh1 sh2 |], IRTVarsAppend ixs1 ixs2) ->
+    do x1 <- shapeExprIRTDesc sh1 ixs1 >>= irtProd
+       x2 <- shapeExprIRTDesc sh2 ixs2 >>= irtProd
+       irtCtor "Prelude.IRT_prod" [x1, x2]
+  ([nuMP| PExpr_OrShape sh1 sh2 |], IRTVarsAppend ixs1 ixs2) ->
+    do x1 <- shapeExprIRTDesc sh1 ixs1 >>= irtProd
+       x2 <- shapeExprIRTDesc sh2 ixs2 >>= irtProd
+       irtCtor "Prelude.IRT_Either" [x1, x2]
+  ([nuMP| PExpr_ExShape mb_sh |], IRTVarsCons ix ixs') ->
+    do let tp = mbBindingType mb_sh
+       tp_trans <- tupleTypeTrans <$> translateClosed tp
+       xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
+               shapeExprIRTDesc (mbCombine mb_sh) ixs' >>= irtProd)
+       irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
+  _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a field shape. Apply 'irtProd' to
 -- the results to get the single IRTDesc to which the input corresponds.
 fieldShapeIRTDesc :: Mb ctx (LLVMFieldShape w) -> IRTVarIdxs ->
                      IRTDescTransM ctx [OpenTerm]
-fieldShapeIRTDesc [nuP| LLVMFieldShape p |] ixs = valuePermIRTDesc p ixs
+fieldShapeIRTDesc (mbMatch -> [nuMP| LLVMFieldShape p |]) ixs =
+  valuePermIRTDesc p ixs
 
 -- | Get the IRTDescs associated to a set of value perms. Apply 'irtProd' to
 -- the results to get the single IRTDesc to which the input corresponds.
 valuePermsIRTDesc :: Mb ctx (ValuePerms ps) -> IRTVarIdxs ->
                      IRTDescTransM ctx [OpenTerm]
-valuePermsIRTDesc [nuP| ValPerms_Nil |] _ = return []
-valuePermsIRTDesc [nuP| ValPerms_Cons ps p |] (IRTVarsAppend ixs1 ixs2) =
-  do xs <- valuePermsIRTDesc ps ixs1
-     x  <- valuePermIRTDesc p ixs2
-     return $ xs ++ x
-valuePermsIRTDesc _ ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
+valuePermsIRTDesc mb_ps ixs = case (mbMatch mb_ps, ixs) of
+  ([nuMP| ValPerms_Nil |], _) -> return []
+  ([nuMP| ValPerms_Cons ps p |], IRTVarsAppend ixs1 ixs2) ->
+    do xs <- valuePermsIRTDesc ps ixs1
+       x  <- valuePermIRTDesc p ixs2
+       return $ xs ++ x
+  _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 
 ----------------------------------------------------------------------
