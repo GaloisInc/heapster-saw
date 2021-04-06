@@ -94,6 +94,9 @@ eqPermPerm (EqPerm _ e _) = ValPerm_Eq e
 eqPermVarAndPerm :: EqPerm a -> VarAndPerm a
 eqPermVarAndPerm (EqPerm x e _) = VarAndPerm x (ValPerm_Eq e)
 
+-- | Apply symmetry to an 'EqPerm', changing an @e1=e2@ proof to @e2=e1@
+eqPermSym :: EqPerm a -> EqPerm a
+eqPermSym (EqPerm x e flag) = EqPerm x e (not flag)
 
 -- | A single step of an equality proof on some type @a@ is a sequence of @N@
 -- 'EqPerms', each of which specifies a LHS and a RHS expression (one of which
@@ -124,6 +127,11 @@ instance Functor (EqProofStep ps) where
 -- 'Applicative' laws.
 eqProofStepRefl :: a -> EqProofStep RNil a
 eqProofStepRefl a = EqProofStep MNil (const a)
+
+-- | Apply symmetry to a 'EqProofStep', changing an @e1=e2@ proof to @e2=e1@
+eqProofStepSym :: EqProofStep ps a -> EqProofStep ps a
+eqProofStepSym (EqProofStep eq_perms f) =
+  EqProofStep (RL.map eqPermSym eq_perms) f
 
 -- | Combine two 'EqProofStep's using a function, similar to the 'liftA2' method
 -- of 'Applicative'. The result uses the 'EqPerm's of both proofs. This function
@@ -201,6 +209,16 @@ someEqProofPerm :: ExprVar a -> PermExpr a -> Bool -> SomeEqProof (PermExpr a)
 someEqProofPerm x e flag =
   let eq_step = EqProofStep (MNil :>: EqPerm x e flag) (\(_ :>: e') -> e') in
   SomeEqProofCons (SomeEqProofRefl $ eqProofStepLHS eq_step) eq_step
+
+-- | Apply symmetry to a 'SomeEqProof', changing an @e1=e2@ proof to @e2=e1@
+someEqProofSym :: SomeEqProof a -> SomeEqProof a
+someEqProofSym eqp_top =
+  helper eqp_top (SomeEqProofRefl $ someEqProofRHS eqp_top) where
+  -- helper implements someEqProofSym using an accumulator
+  helper :: SomeEqProof a -> SomeEqProof a -> SomeEqProof a
+  helper (SomeEqProofRefl _) accum = accum
+  helper (SomeEqProofCons eqp step) accum =
+    helper eqp (SomeEqProofCons accum (eqProofStepSym step))
 
 -- | Construct a 'SomeEqProof' by transitivity
 someEqProofTrans :: Eq a => SomeEqProof a -> SomeEqProof a -> SomeEqProof a
@@ -6239,34 +6257,72 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       proveEq fperms mb_fperms >>>= \eqp ->
       implCastPermM x (fmap (ValPerm_Conj1 . Perm_LLVMFrame) eqp)
   
-  [nuMP| Perm_LOwned mb_ps_in' mb_ps_out' |]
-    | [Perm_LOwned ps_in ps_out] <- ps ->
+  [nuMP| Perm_LOwned mb_ps_inR mb_ps_outR |]
+    | [Perm_LOwned ps_inL ps_outL] <- ps ->
+
+      -- First, simplify both sides using any current equality permissions. This
+      -- just builds the equality proofs and computes the new LHS and RHS, but
+      -- we don't actually perform the casts until later.
+      substEqsWithProof (ps_inL, ps_outL) >>>= \eqp_psL ->
+      substEqsWithProof (mb_ps_inR, mb_ps_outR) >>>= \eqp_mb_psR ->
+      let (ps_inL',ps_outL') = someEqProofRHS eqp_psL
+          (mb_ps_inR',mb_ps_outR') = someEqProofRHS eqp_mb_psR in
+
+      -- Pop ps from the stack, so we can push it to the top of the stack later
       implPopM x (ValPerm_Conj ps) >>>
-      partialSubstForceM mb_ps_in' "proveVarAtomicImpl" >>>= \ps_in' ->
-      let mb_ps_in = fmap (const ps_in) mb_ps_in' in
-      solveForPermListImpl ps_in' mb_ps_in >>>= \(Some neededs1) ->
-      solveForPermListImpl ps_out mb_ps_out' >>>= \(Some neededs2) ->
-      let prxs = mbToProxy mb_ps_in'
-          mb_ps1 = neededPermsToExDistPerms prxs neededs1
+
+      -- Compute the necessary "permission subtractions" to figure out what
+      -- additional permissions are needed to prove both ps_inR -o ps_inL and
+      -- ps_outL -o ps_outR. These required permissions are calls ps1 and ps2,
+      -- respectively. Note that the RHS for both of these implications needs to
+      -- be in a name-binding for the evars and the LHS needs to not be in a
+      -- name-binding, so ps_inR cannot have any evars.
+      partialSubstForceM mb_ps_inR' "proveVarAtomicImpl" >>>= \ps_inR' ->
+      let mb_ps_inL' = fmap (const ps_inL') mb_ps_inR' in
+      solveForPermListImpl ps_inR' mb_ps_inL' >>>= \(Some neededs1) ->
+      solveForPermListImpl ps_outL' mb_ps_outR' >>>= \(Some neededs2) ->
+      (cruCtxProxies <$> view implStateVars <$> gget) >>>= \prxs ->
+      let mb_ps1 = neededPermsToExDistPerms prxs neededs1
           mb_ps2 = neededPermsToExDistPerms prxs neededs2 in
+
+      -- Prove ps1 and ps2, which can have evars, and then look at the
+      -- substitution instances of ps1 and ps2 that were actually proved on top
+      -- of the stack. We do it this way because we can't substitute expressions
+      -- for variables in a DistPerms, because DistPerms need to have variables
+      -- on the LHSs and not arbitrary expressions
       getDistPerms >>>= \before_ps ->
       proveVarsImplAppendInt (mbMap2 RL.append mb_ps1 mb_ps2) >>>
       getDistPerms >>>= \top_ps ->
       let ps12 = snd $ RL.split before_ps (RL.append neededs1 neededs2) top_ps
           (ps1,ps2) = RL.split neededs1 neededs2 ps12 in
-      partialSubstForceM mb_ps_out' "proveVarAtomicImpl" >>>= \ps_out' ->
-      (case (lownedPermsToDistPerms ps_in, lownedPermsToDistPerms ps_out,
-             lownedPermsToDistPerms ps_in', lownedPermsToDistPerms ps_out') of
-          (Just dps_in, Just dps_out, Just dps_in', Just dps_out') ->
-            greturn (dps_in, dps_out, dps_in', dps_out')
+      partialSubstForceM mb_ps_outR' "proveVarAtomicImpl" >>>= \ps_outR' ->
+      getPSubst >>>= \psubst ->
+      let eqp_R =
+            fmap (\(mb_ps_in,mb_ps_out) ->
+                   ValPerm_LOwned
+                   (partialSubstForce psubst mb_ps_in "proveVarAtomicImpl")
+                   (partialSubstForce psubst mb_ps_out "proveVarAtomicImpl"))
+            eqp_mb_psR in
+
+      -- Build the local implications ps_inR -o ps_inL and ps_outL -o ps_outR
+      (case (lownedPermsToDistPerms ps_inL', lownedPermsToDistPerms ps_outL',
+             lownedPermsToDistPerms ps_inR', lownedPermsToDistPerms ps_outR') of
+          (Just dps_inL, Just dps_outL, Just dps_inR, Just dps_outR) ->
+            greturn (dps_inL, dps_outL, dps_inR, dps_outR)
           _ -> implFailM "proveVarAtomicImpl: lownedPermsToDistPerms")
-      >>>= \(dps_in, dps_out, dps_in', dps_out') ->
-      localProveVars (RL.append ps1 dps_in') dps_in >>>= \impl_in ->
-      localProveVars (RL.append ps2 dps_out) dps_out' >>>= \impl_out ->
+      >>>= \(dps_inL, dps_outL, dps_inR, dps_outR) ->
+      localProveVars (RL.append ps1 dps_inR) dps_inL >>>= \impl_in ->
+      localProveVars (RL.append ps2 dps_outL) dps_outR >>>= \impl_out ->
+
+      -- Finally, apply the MapLifetime proof step, first pushing the input
+      -- lowned permissions and casting it, and then cast the result
       implPushM x (ValPerm_Conj ps) >>>
-      implSimplM Proxy (SImpl_MapLifetime x ps_in ps_out ps_in' ps_out'
-                        ps1 ps2 impl_in impl_out)
-        
+      implCastPermM x (fmap (\(ps_in,ps_out) ->
+                              ValPerm_LOwned ps_in ps_out) eqp_psL) >>>
+      implSimplM Proxy (SImpl_MapLifetime x ps_inL' ps_outL' ps_inR' ps_outR'
+                        ps1 ps2 impl_in impl_out) >>>
+      implCastPermM x (someEqProofSym eqp_R)
+
   [nuMP| Perm_LCurrent mb_l' |] ->
     partialSubstForceM mb_l' "proveVarAtomicImpl" >>>= \l' ->
     case ps of
@@ -6888,6 +6944,7 @@ localProveVars ps_in ps_out =
   embedImplM ps_in (recombinePerms ps_in >>>
                     proveVarsImplInt (emptyMb ps_out) >>>
                     greturn (LocalImplRet Refl))
+
 
 ----------------------------------------------------------------------
 -- * External Entrypoints to the Implication Prover
