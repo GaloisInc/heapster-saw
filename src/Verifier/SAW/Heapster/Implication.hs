@@ -120,153 +120,193 @@ eqPermVar (EqPerm x _ _) = x
 eqPermPerm :: EqPerm a -> ValuePerm a
 eqPermPerm (EqPerm _ e _) = ValPerm_Eq e
 
+-- | Get the variable and permission out of an 'EqPerm'
+eqPermVarAndPerm :: EqPerm a -> VarAndPerm a
+eqPermVarAndPerm (EqPerm x e _) = VarAndPerm x (ValPerm_Eq e)
 
--- | A proof that @o1=o2@ for some objects @o1@ and @o2@ of type @a@. This proof
--- requires some (possibly empty) set of equality permissions, whose types are
--- given by the @ps@ type argument. These proofs are given as sequences of 0 or
--- more steps, represented as a tree, where each step is an 'EqPerm' that proves
--- that either @x=e@ or @e=x@ for some @x@ and @e@ of type @a@, along with a
--- name-binding @mb_b@ for building a @b@ from an @a@, resulting in a proof that
--- the substitution of @x@ into @mb_b@ equals the substitution of @e@ into
--- @mb_b@.
+
+-- | A single step of an equality proof on some type @a@ is a sequence of @N@
+-- 'EqPerms', each of which specifies a LHS and a RHS expression (one of which
+-- is a variable), along with a function @f@ from these @N@ expressions to an
+-- @a@. This represents a proof that @f es_lhs = f es_rhs@, where @es_lhs@ and
+-- @es_rhs@ are the LHS and RHS expressions, respectively, of the 'EqPerm's.
+data EqProofStep ps a = EqProofStep (RAssign EqPerm ps) (PermExprs ps -> a)
+
+-- | Get the left-hand side of an 'EqProofStep'
+eqProofStepLHS :: EqProofStep ps a -> a
+eqProofStepLHS (EqProofStep eq_perms f) = f (RL.map eqPermLHS eq_perms)
+
+-- | Get the right-hand side of an 'EqProofStep'
+eqProofStepRHS :: EqProofStep ps a -> a
+eqProofStepRHS (EqProofStep eq_perms f) = f (RL.map eqPermRHS eq_perms)
+
+-- | Get the equality permissions required by an 'EqProofStep'
+eqProofStepPerms :: EqProofStep ps a -> DistPerms ps
+eqProofStepPerms (EqProofStep eq_perms f) = RL.map eqPermVarAndPerm eq_perms
+
+instance Functor (EqProofStep ps) where
+  fmap f (EqProofStep eq_perms g) = EqProofStep eq_perms (f . g)
+
+-- | Build a reflexive 'EqProofStep' that any object equals itself. The
+-- resulting proof uses no 'EqPerm's. This function along with
+-- 'eqProofStepLiftA2' forms a parameterized 'Applicative', where the @ps@
+-- argument changes when we combine proofs but otherwise satisfies the
+-- 'Applicative' laws.
+eqProofStepRefl :: a -> EqProofStep RNil a
+eqProofStepRefl a = EqProofStep MNil (const a)
+
+-- | Combine two 'EqProofStep's using a function, similar to the 'liftA2' method
+-- of 'Applicative'. The result uses the 'EqPerm's of both proofs. This function
+-- along with 'eqProofStepRefl' forms a parameterized 'Applicative', where the
+-- @ps@ argument changes when we combine proofs but otherwise satisfies the
+-- 'Applicative' laws.
+eqProofStepLiftA2 :: (a -> b -> c) -> EqProofStep ps1 a -> EqProofStep ps2 b ->
+                     EqProofStep (ps1 :++: ps2) c
+eqProofStepLiftA2 f (EqProofStep eq_perms1 g1) (EqProofStep eq_perms2 g2) =
+  EqProofStep (RL.append eq_perms1 eq_perms2) $ \es ->
+  let (es1, es2) = RL.split eq_perms1 eq_perms2 es in
+  f (g1 es1) (g2 es2)
+
+
+-- | A proof that two objects are equal, using 0 or more 'EqProofStep' steps
 data EqProof ps a where
   EqProofRefl :: a -> EqProof RNil a
-  EqProofPerm :: EqPerm a -> Binding a b -> EqProof (RNil :> a) b
-  EqProofTrans :: EqProof ps1 a -> EqProof ps2 a ->
-                  EqProof (ps1 :++: ps2) a
+  EqProofCons :: EqProof ps1 a -> EqProofStep ps2 a ->
+                 EqProof (ps1 :++: ps2) a
 
+-- NOTE: this can be done but requires a lot of type-level equality proofs
+{-
 -- | Construct an 'EqProof' by transitivity, checking that the RHS of the first
 -- proof equals the LHS of the second
-eqProofTrans :: (Eq a, Substable PermSubst a Identity) =>
-                EqProof ps1 a -> EqProof ps2 a -> EqProof (ps1 :++: ps2) a
+eqProofTrans :: Eq a => EqProof ps1 a -> EqProof ps2 a ->
+                EqProof (ps1 :++: ps2) a
+eqProofTrans eqp (EqProofRefl a) | eqProofRHS eqp == a = eqp
+-- FIXME: need to prove RNil :++: ps2 :~: ps2
+--eqProofTrans EqProofRefl eqp = eqp
 eqProofTrans eqp1 eqp2
   | eqProofRHS eqp1 == eqProofLHS eqp2
   = EqProofTrans eqp1 eqp2
 eqProofTrans _ _ = error "eqProofTrans"
+-}
 
 -- | Get the LHS of an 'EqProof'
-eqProofLHS :: Substable PermSubst a Identity => EqProof ps a -> a
+eqProofLHS :: EqProof ps a -> a
 eqProofLHS (EqProofRefl a) = a
-eqProofLHS (EqProofPerm eqp mb_e) = subst (singletonSubst (eqPermLHS eqp)) mb_e
-eqProofLHS (EqProofTrans eqp1 _) = eqProofLHS eqp1
+eqProofLHS (EqProofCons eqp1 _) = eqProofLHS eqp1
 
 -- | Get the RHS of an 'EqProof'
-eqProofRHS :: Substable PermSubst a Identity => EqProof ps a -> a
+eqProofRHS :: EqProof ps a -> a
 eqProofRHS (EqProofRefl a) = a
-eqProofRHS (EqProofPerm eqp mb_e) = subst (singletonSubst (eqPermRHS eqp)) mb_e
-eqProofRHS (EqProofTrans _ eqp2) = eqProofRHS eqp2
+eqProofRHS (EqProofCons _ eq_step) = eqProofStepRHS eq_step
 
 -- | Get the permissions needed by an 'EqProof'
 eqProofPerms :: EqProof ps a -> DistPerms ps
 eqProofPerms (EqProofRefl _) = DistPermsNil
-eqProofPerms (EqProofPerm eqp _) = distPerms1 (eqPermVar eqp) (eqPermPerm eqp)
-eqProofPerms (EqProofTrans eqp1 eqp2) =
-  appendDistPerms (eqProofPerms eqp1) (eqProofPerms eqp2)
+eqProofPerms (EqProofCons eqp eq_step) =
+  appendDistPerms (eqProofPerms eqp) (eqProofStepPerms eq_step)
 
 instance Functor (EqProof ps) where
   fmap f (EqProofRefl a) = EqProofRefl $ f a
-  fmap f (EqProofPerm eqp mb_b) = EqProofPerm eqp $ fmap f mb_b
-  fmap f (EqProofTrans eqp1 eqp2) = EqProofTrans (fmap f eqp1) (fmap f eqp2)
+  fmap f (EqProofCons eqp eq_step) =
+    EqProofCons (fmap f eqp) (fmap f eq_step)
 
--- | An 'EqProofStep' where the permissions are existentially quantified
-data SomeEqProof a = forall ps. SomeEqProof (EqProof ps a)
+-- | An equality proof using some unknown set of permissions
+data SomeEqProof a where
+  SomeEqProofRefl :: a -> SomeEqProof a
+  SomeEqProofCons :: SomeEqProof a -> EqProofStep ps a -> SomeEqProof a
 
-instance Functor SomeEqProof where
-  fmap f (SomeEqProof eqp) = SomeEqProof $ fmap f eqp
+-- | Get the LHS of a 'SomeEqProof'
+someEqProofLHS :: SomeEqProof a -> a
+someEqProofLHS (SomeEqProofRefl a) = a
+someEqProofLHS (SomeEqProofCons some_eqp _) = someEqProofLHS some_eqp
 
--- | Like 'liftA2' for 'SomeEqProof', but requires a 'Substable' instance
-mapEqProof2 :: (Substable PermSubst a Identity,
-                Substable PermSubst b Identity,
-                Substable PermSubst c Identity, Eq c) =>
-               (a -> b -> c) -> SomeEqProof a -> SomeEqProof b -> SomeEqProof c
-mapEqProof2 f (SomeEqProof eqp1) (SomeEqProof eqp2) =
-  SomeEqProof $
-  eqProofTrans (fmap (flip f $ eqProofLHS eqp2) eqp1)
-  (fmap (f (eqProofRHS eqp1)) eqp2)
-
--- | Like 'mapEqProof2' but for three arguments
-mapEqProof3 :: (Substable PermSubst a Identity,
-                Substable PermSubst b Identity,
-                Substable PermSubst c Identity,
-                Substable PermSubst d Identity, Eq d) =>
-               (a -> b -> c -> d) -> SomeEqProof a -> SomeEqProof b ->
-               SomeEqProof c -> SomeEqProof d
-mapEqProof3 f (SomeEqProof eqp1) (SomeEqProof eqp2) (SomeEqProof eqp3) =
-  SomeEqProof $
-  eqProofTrans
-  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3)) eqp1) $
-  eqProofTrans
-  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3)) eqp2)
-  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c) eqp3)
-
--- | Like 'mapEqProof2' but for four arguments
-mapEqProof4 :: (Substable PermSubst a Identity,
-                Substable PermSubst b Identity,
-                Substable PermSubst c Identity,
-                Substable PermSubst d Identity,
-                Substable PermSubst e Identity, Eq e) =>
-               (a -> b -> c -> d -> e) -> SomeEqProof a -> SomeEqProof b ->
-               SomeEqProof c -> SomeEqProof d -> SomeEqProof e
-mapEqProof4 f (SomeEqProof eqp1) (SomeEqProof eqp2)
-  (SomeEqProof eqp3) (SomeEqProof eqp4) =
-  SomeEqProof $
-  eqProofTrans
-  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3) (eqProofLHS eqp4)) eqp1) $
-  eqProofTrans
-  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3) (eqProofLHS eqp4)) eqp2) $
-  eqProofTrans
-  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c (eqProofLHS eqp4)) eqp3)
-  (fmap (\d -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3) d) eqp4)
-
--- | Like 'mapEqProof2' but for five arguments
---
--- FIXME HERE: there must be some way to get this functionality without an
--- explicit function for mapping 5-ary functions on 'SomeEqProof's
-mapEqProof5 :: (Substable PermSubst a Identity,
-                Substable PermSubst b Identity,
-                Substable PermSubst c Identity,
-                Substable PermSubst d Identity,
-                Substable PermSubst e Identity,
-                Substable PermSubst f Identity, Eq f) =>
-               (a -> b -> c -> d -> e -> f) -> SomeEqProof a -> SomeEqProof b ->
-               SomeEqProof c -> SomeEqProof d -> SomeEqProof e -> SomeEqProof f
-mapEqProof5 f (SomeEqProof eqp1) (SomeEqProof eqp2)
-  (SomeEqProof eqp3) (SomeEqProof eqp4) (SomeEqProof eqp5) =
-  SomeEqProof $
-  eqProofTrans
-  (fmap (\a -> f a (eqProofLHS eqp2) (eqProofLHS eqp3)
-               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp1) $
-  eqProofTrans
-  (fmap (\b -> f (eqProofRHS eqp1) b (eqProofLHS eqp3)
-               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp2) $
-  eqProofTrans
-  (fmap (\c -> f (eqProofRHS eqp1) (eqProofRHS eqp2) c
-               (eqProofLHS eqp4) (eqProofLHS eqp5)) eqp3) $
-  eqProofTrans
-  (fmap (\d -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3) d
-               (eqProofLHS eqp5)) eqp4)
-  (fmap (\e -> f (eqProofRHS eqp1) (eqProofRHS eqp2) (eqProofRHS eqp3)
-               (eqProofRHS eqp4) e) eqp5)
-
--- | Construct a 'SomeEqProof' by reflexivity
-someEqProofRefl :: a -> SomeEqProof a
-someEqProofRefl = SomeEqProof . EqProofRefl
+-- | Get the RHS of a 'SomeEqProof'
+someEqProofRHS :: SomeEqProof a -> a
+someEqProofRHS (SomeEqProofRefl a) = a
+someEqProofRHS (SomeEqProofCons _ eq_step) = eqProofStepRHS eq_step
 
 -- | Construct a 'SomeEqProof' for @x=e@ or @e=x@ using an @x:eq(e)@ permission,
 -- where the 'Bool' flag is 'True' for @x=e@ and 'False' for @e=x@ like 'EqPerm'
 someEqProofPerm :: ExprVar a -> PermExpr a -> Bool -> SomeEqProof (PermExpr a)
 someEqProofPerm x e flag =
-  SomeEqProof $ EqProofPerm (EqPerm x e flag) $ nu PExpr_Var
+  let eq_step = EqProofStep (MNil :>: EqPerm x e flag) (\(_ :>: e) -> e) in
+  SomeEqProofCons (SomeEqProofRefl $ eqProofStepLHS eq_step) eq_step
 
 -- | Construct a 'SomeEqProof' by transitivity
-someEqProofTrans :: (Eq a, Substable PermSubst a Identity) =>
-                    SomeEqProof a -> SomeEqProof a -> SomeEqProof a
-someEqProofTrans (SomeEqProof eqp1) (SomeEqProof eqp2) =
-  SomeEqProof $ eqProofTrans eqp1 eqp2
+someEqProofTrans :: Eq a => SomeEqProof a -> SomeEqProof a -> SomeEqProof a
+someEqProofTrans some_eqp1 some_eqp2
+  | someEqProofRHS some_eqp1 == someEqProofLHS some_eqp2 =
+    someEqProofTrans' some_eqp1 some_eqp2
+someEqProofTrans _ _ = error "someEqProofTrans"
 
--- | Get the RHS of a 'SomeEqProof'
-someEqProofRHS :: Substable PermSubst a Identity => SomeEqProof a -> a
-someEqProofRHS (SomeEqProof eqp) = eqProofRHS eqp
+-- | Unchecked version of 'someEqProofTrans'
+someEqProofTrans' :: SomeEqProof a -> SomeEqProof a -> SomeEqProof a
+someEqProofTrans' some_eqp (SomeEqProofRefl _) = some_eqp
+someEqProofTrans' some_eqp1 (SomeEqProofCons some_eqp2 eq_step) =
+  SomeEqProofCons (someEqProofTrans' some_eqp1 some_eqp2) eq_step
+
+instance Functor SomeEqProof where
+  fmap f (SomeEqProofRefl a) = SomeEqProofRefl $ f a
+  fmap f (SomeEqProofCons some_eqp eq_step) =
+    SomeEqProofCons (fmap f some_eqp) (fmap f eq_step)
+
+-- NOTE: this is possible, but it requires a lot of type-level equality proofs
+{-
+-- | A version of 'liftA2' for 'EqProof', which, like 'eqProofStepLiftA2', forms
+-- a parameterized 'Applicative'
+eqProofLiftA2 :: (a -> b -> c) -> EqProof ps1 a -> EqProof ps2 b ->
+                 EqProof (ps1 :++: ps2) c
+eqProofLiftA2 f (EqProofRefl a) eqp
+  -- NOTE: this is to prove RNil :++: ps2 ~ ps2
+  | Refl <- prependRNilEq (eqProofPerms eqp) = fmap (f a) eqp
+eqProofLiftA2 f eqp (EqProofRefl b) = fmap (flip f b) eqp
+eqProofLiftA2 f (EqProof1 eq_step1) (EqProof1 eq_step2) =
+  EqProof1 (eqProofStepLiftA2 f eq_step1 eq_step2)
+-}
+
+instance Applicative SomeEqProof where
+  pure = SomeEqProofRefl
+  liftA2 f (SomeEqProofRefl a) some_eqp = fmap (f a) some_eqp
+  liftA2 f some_eqp (SomeEqProofRefl b) = fmap (flip f b) some_eqp
+  liftA2 f (SomeEqProofCons eqp1 step1) (SomeEqProofCons eqp2 step2) =
+    SomeEqProofCons (liftA2 f eqp1 eqp2) (eqProofStepLiftA2 f step1 step2)
+
+-- | An 'EqProofStep' with an existentially quantified list of permissions
+data SomeEqProofStep a = forall ps. SomeEqProofStep (EqProofStep ps a)
+
+-- | Build an 'EqProofStep' by finding each free variable @x@ in an object that
+-- has some equality permission @x:eq(e)@ in the supplied variable permission
+-- map and substituting @e@ for @x@
+eqProofStepFromSubst :: (AbstractVars a, FreeVars a,
+                         Substable PermSubst a Identity) => NameMap ValuePerm ->
+                        a -> SomeEqProofStep a
+eqProofStepFromSubst var_ps a
+  | AbsObj vars cl_mb_a <- abstractFreeVars a
+  , eq_perms <- RL.map (\var -> case NameMap.lookup var var_ps of
+                           Just (ValPerm_Eq e) -> EqPerm var e True
+                           _ -> EqPerm var (PExpr_Var var) True) vars =
+    SomeEqProofStep $
+    EqProofStep eq_perms (\es -> subst (substOfExprs es) (unClosed cl_mb_a))
+
+-- | Build a 'SomeEqProof' by finding each free variable @x@ in an object that
+-- has some equality permission @x:eq(e)@ in the supplied variable permission
+-- map and substituting @e@ for @x@
+someEqProofFromSubst :: (AbstractVars a, FreeVars a,
+                         Substable PermSubst a Identity) => NameMap ValuePerm ->
+                        a -> SomeEqProof a
+someEqProofFromSubst var_ps a
+  | SomeEqProofStep eq_step <- eqProofStepFromSubst var_ps a =
+    SomeEqProofCons (SomeEqProofRefl a) eq_step
+
+-- | A 'SomeEqProof' that has been converted to an 'EqProof' with explicit perms
+data UnSomeEqProof a = forall ps. UnSomeEqProof (EqProof ps a)
+
+-- | Convert a 'SomeEqProof' to an 'EqProof'
+unSomeEqProof :: SomeEqProof a -> UnSomeEqProof a
+unSomeEqProof (SomeEqProofRefl a) = UnSomeEqProof $ EqProofRefl a
+unSomeEqProof (SomeEqProofCons some_eqp eq_step)
+  | UnSomeEqProof eqp <- unSomeEqProof some_eqp =
+    UnSomeEqProof $ EqProofCons eqp eq_step
 
 
 ----------------------------------------------------------------------
@@ -1241,6 +1281,7 @@ newtype LocalImplRet ps ps' = LocalImplRet (ps :~: ps')
 -- type IsLLVMPointerTypeList w ps = RAssign ((:~:) (LLVMPointerType w)) ps
 
 $(mkNuMatching [t| forall a. EqPerm a |])
+$(mkNuMatching [t| forall ps a. NuMatching a => EqProofStep ps a |])
 $(mkNuMatching [t| forall ps a. NuMatching a => EqProof ps a |])
 $(mkNuMatching [t| forall ps_in ps_out. SimplImpl ps_in ps_out |])
 $(mkNuMatching [t| forall ps_in ps_outs. PermImpl1 ps_in ps_outs |])
@@ -2200,19 +2241,28 @@ applyImpl1 _ (Impl1_TryProveBVProp x prop _) ps =
   pushPerm x (ValPerm_Conj [Perm_BVProp prop]) ps
 
 
-instance SubstVar PermVarSubst m =>
-         Substable PermVarSubst (EqPerm a) m where
+instance SubstVar PermVarSubst m => Substable PermVarSubst (EqPerm a) m where
   genSubst s [nuP| EqPerm x e b |] =
     EqPerm <$> genSubst s x <*> genSubst s e <*> return (mbLift b)
 
-instance (NuMatching a, Substable PermVarSubst a m) =>
-         Substable PermVarSubst (EqProof ps a) m where
+instance SubstVar PermVarSubst m => Substable1 PermVarSubst EqPerm m where
+  genSubst1 = genSubst
+
+-- NOTE: PermVarSubst is always associated with the Identity monad because of
+-- the functional dependency of SubstVar; this is necessary to substitute inside
+-- the function used in EqProofStep
+instance (NuMatching a, Substable PermVarSubst a Identity) =>
+         Substable PermVarSubst (EqProofStep ps a) Identity where
+  genSubst s [nuP| EqProofStep eq_perms f |] =
+    Identity $ EqProofStep (runIdentity $ genSubst s eq_perms) $ \es ->
+    runIdentity $ genSubst s $ fmap ($ es) f
+
+instance (NuMatching a, Substable PermVarSubst a Identity) =>
+         Substable PermVarSubst (EqProof ps a) Identity where
   genSubst s [nuP| EqProofRefl a |] =
     EqProofRefl <$> genSubst s a
-  genSubst s [nuP| EqProofPerm eqp mb_a |] =
-    EqProofPerm <$> genSubst s eqp <*> genSubst s mb_a
-  genSubst s [nuP| EqProofTrans eqp1 eqp2 |] =
-    EqProofTrans <$> genSubst s eqp1 <*> genSubst s eqp2
+  genSubst s [nuP| EqProofCons eqp eq_step |] =
+    EqProofCons <$> genSubst s eqp <*> genSubst s eq_step
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (SimplImpl ps_in ps_out) m where
@@ -2234,7 +2284,9 @@ instance SubstVar PermVarSubst m =>
   genSubst s [nuP| SImpl_Cast x y p |] =
     SImpl_Cast <$> genSubst s x <*> genSubst s y <*> genSubst s p
   genSubst s [nuP| SImpl_CastPerm x eqp |] =
-    SImpl_CastPerm <$> genSubst s x <*> genSubst s eqp
+    SImpl_CastPerm <$> genSubst s x <*>
+    -- NOTE: EqProof specifically the substitution monad to be Identity
+    return (runIdentity $ genSubst s eqp)
   genSubst s [nuP| SImpl_IntroEqRefl x |] =
     SImpl_IntroEqRefl <$> genSubst s x
   genSubst s [nuP| SImpl_InvertEq x y |] =
@@ -3653,25 +3705,30 @@ introCastM :: NuMatchingAny1 r => ExprVar a -> ExprVar a -> ValuePerm a ->
               ImplM vars s r (ps :> a) (ps :> a :> a) ()
 introCastM x y p = implSimplM Proxy (SImpl_Cast x y p)
 
--- | Copy a sequence of equality permissions @x1:eq(e1),...,xn:eq(en)@ from the
--- current permission set and push them to the top of the stack, on top of but
--- associated with the top permission already on the stack. It is an error if
--- any of the supplied perms are not equality perms, or if any @xi@ does not
--- have permission @eq(ei)@ in the current permission set.
-implPushEqPermsMulti :: NuMatchingAny1 r => DistPerms ps' ->
-                        ImplM vars s r (ps :++: (RNil :> a :++: ps')) (ps :> a) ()
-implPushEqPermsMulti DistPermsNil = greturn ()
-implPushEqPermsMulti (DistPermsCons ps' x p@(ValPerm_Eq e)) =
-  implPushEqPermsMulti ps' >>>
+-- | Prove a sequence of equality permissions @x1:eq(e1),...,xn:eq(en)@, where
+-- each is proved either by reflexivity, if it is of the form @x:eq(x)@, or by
+-- copying an equality permission already held by the variable in quesiton, if
+-- it is not. It is an error if any of the supplied perms are not equality
+-- perms, or if any @xi@ does not have permission @eq(ei)@ in the current
+-- permission set for @ei@ not equal to @xi@.
+implProveEqPerms :: NuMatchingAny1 r => DistPerms ps' ->
+                    ImplM vars s r (ps :++: (RNil :> a :++: ps')) (ps :> a) ()
+implProveEqPerms DistPermsNil = greturn ()
+implProveEqPerms (DistPermsCons ps' x p@(ValPerm_Eq (PExpr_Var y)))
+  | x == y
+  = implProveEqPerms ps' >>> introEqReflM x
+implProveEqPerms (DistPermsCons ps' x p@(ValPerm_Eq e)) =
+  implProveEqPerms ps' >>>
   implPushM x p >>> implCopyM x p >>> implPopM x p
-implPushEqPermsMulti _ = error "implPushEqPermsMulti: non-equality permission"
+implProveEqPerms _ = error "implProveEqPerms: non-equality permission"
 
 -- | Cast a proof of @x:p@ to one of @x:p'@ using a proof that @p=p'@
 implCastPermM :: NuMatchingAny1 r => ExprVar a -> SomeEqProof (ValuePerm a) ->
                  ImplM vars s r (ps :> a) (ps :> a) ()
-implCastPermM x (SomeEqProof eqp) =
-  implPushEqPermsMulti (eqProofPerms eqp) >>>
-  implSimplM Proxy (SImpl_CastPerm x eqp)
+implCastPermM x some_eqp
+  | UnSomeEqProof eqp <- unSomeEqProof some_eqp =
+    implProveEqPerms (eqProofPerms eqp) >>>
+    implSimplM Proxy (SImpl_CastPerm x eqp)
 
 -- | Introduce a proof of @x:true@ onto the top of the stack, which is the same
 -- as an empty conjunction
@@ -4433,39 +4490,39 @@ instance (Eq a, Eq b, ProveEq a, ProveEq b, Substable PermSubst a Identity,
   proveEq (a,b) mb_ab =
     proveEq a (fmap fst mb_ab) >>>= \eqp1 ->
     proveEq b (fmap snd mb_ab) >>>= \eqp2 ->
-    greturn $ mapEqProof2 (,) eqp1 eqp2
+    greturn ((,) <$> eqp1 <*> eqp2)
 
 instance (Eq a, Eq b, Eq c, ProveEq a, ProveEq b, ProveEq c,
           Substable PermSubst a Identity,
           Substable PermSubst b Identity,
           Substable PermSubst c Identity) => ProveEq (a,b,c) where
   proveEq (a,b,c) mb_abc =
-    fmap (\(a,(b,c)) -> (a,b,c)) <$>
-    proveEq (a,(b,c)) (fmap (\(a,b,c) -> (a,(b,c))) mb_abc)
+    proveEq a (fmap (\(a,_,_) -> a) mb_abc) >>>= \eqp1 ->
+    proveEq b (fmap (\(_,b,_) -> b) mb_abc) >>>= \eqp2 ->
+    proveEq c (fmap (\(_,_,c) -> c) mb_abc) >>>= \eqp3 ->
+    greturn ((,,) <$> eqp1 <*> eqp2 <*> eqp3)
 
 instance ProveEq (PermExpr a) where
   proveEq e mb_e = getPSubst >>>= \psubst -> proveEqH psubst e mb_e
 
 instance ProveEq (LLVMFramePerm w) where
-  proveEq [] [nuP| [] |] = greturn $ someEqProofRefl []
+  proveEq [] [nuP| [] |] = greturn $ SomeEqProofRefl []
   proveEq ((e,i):fperms) [nuP| ((mb_e,mb_i)):mb_fperms |]
     | mbLift mb_i == i =
       proveEq e mb_e >>>= \eqp1 ->
       proveEq fperms mb_fperms >>>= \eqp2 ->
-      greturn (mapEqProof2 (\x y -> (x,i):y) eqp1 eqp2)
+      greturn (liftA2 (\x y -> (x,i):y) eqp1 eqp2)
   proveEq perms mb = proveEqFail perms mb
 
 instance ProveEq (LLVMBlockPerm w) where
   proveEq bp mb_bp =
-    let mkTuple bp = (llvmBlockRW bp,
-                      (llvmBlockLifetime bp,
-                       (llvmBlockOffset bp,
-                        (llvmBlockLen bp, llvmBlockShape bp))))
-        unTuple (llvmBlockRW,
-                 (llvmBlockLifetime,
-                  (llvmBlockOffset,
-                   (llvmBlockLen, llvmBlockShape)))) = LLVMBlockPerm {..} in
-    fmap (fmap unTuple) $ proveEq (mkTuple bp) (fmap mkTuple mb_bp)
+    proveEq (llvmBlockRW bp) (fmap llvmBlockRW mb_bp) >>>= \eqp_rw ->
+    proveEq (llvmBlockLifetime bp) (fmap llvmBlockLifetime mb_bp) >>>= \eqp_l ->
+    proveEq (llvmBlockOffset bp) (fmap llvmBlockOffset mb_bp) >>>= \eqp_off ->
+    proveEq (llvmBlockLen bp) (fmap llvmBlockLen mb_bp) >>>= \eqp_len ->
+    proveEq (llvmBlockShape bp) (fmap llvmBlockShape mb_bp) >>>= \eqp_sh ->
+    greturn (LLVMBlockPerm <$>
+             eqp_rw <*> eqp_l <*> eqp_off <*> eqp_len <*> eqp_sh)
 
 
 -- | Substitute any equality permissions for the variables in an expression,
@@ -4475,26 +4532,12 @@ instance ProveEq (LLVMBlockPerm w) where
 -- to eliminate perms just to set @z=e@.
 --
 -- FIXME: maybe 'getEqualsExpr' should also not eliminate permissions?
-substEqsWithProof :: NuMatchingAny1 r => PermExpr a ->
-                     ImplM vars s r ps ps (SomeEqProof (PermExpr a))
-substEqsWithProof e@(PExpr_Var x) =
-  getPerm x >>>= \p ->
-  case p of
-    ValPerm_Eq e' ->
-      substEqsWithProof e' >>>= \eqp ->
-      greturn (someEqProofTrans (someEqProofPerm x e' True) eqp)
-    _ -> greturn (someEqProofRefl e)
-substEqsWithProof (PExpr_BV factors off) =
-  foldr (mapEqProof2 bvAdd) (someEqProofRefl $ PExpr_BV [] off) <$>
-  mapM (\(BVFactor (BV.BV i) x) ->
-         fmap (bvMult i) <$> substEqsWithProof (PExpr_Var x)) factors
-substEqsWithProof (PExpr_LLVMWord e) =
-  fmap PExpr_LLVMWord <$> substEqsWithProof e
-substEqsWithProof (PExpr_LLVMOffset x off) =
-  substEqsWithProof (PExpr_Var x) >>>= \eqp_x ->
-  substEqsWithProof off >>>= \eqp_off ->
-  greturn (mapEqProof2 addLLVMOffset eqp_x eqp_off)
-substEqsWithProof e = greturn $ someEqProofRefl e
+substEqsWithProof :: (AbstractVars a, FreeVars a,
+                      Substable PermSubst a Identity, NuMatchingAny1 r) =>
+                     a -> ImplM vars s r ps ps (SomeEqProof a)
+substEqsWithProof a =
+  (view varPermMap <$> getPerms) >>>= \var_ps ->
+  greturn (someEqProofFromSubst var_ps a)
 
 
 -- | The main work horse for 'proveEq' on expressions
@@ -4519,7 +4562,7 @@ proveEqH psubst e [nuP| PExpr_Var z |]
 -- If the RHS = LHS, do a proof by reflexivity
 proveEqH psubst e mb_e
   | Just e' <- partialSubst psubst mb_e
-  , e == e' = greturn (someEqProofRefl e)
+  , e == e' = greturn (SomeEqProofRefl e)
 
 -- To prove x=y, try to see if either side has an eq permission, if necessary by
 -- eliminating compound permissions, and proceed by transitivity if possible
@@ -4575,7 +4618,7 @@ proveEqH psubst e [nuP| PExpr_BV [BVFactor (BV.BV mb_n) z] (BV.BV mb_m) |]
   , Nothing <- psubstLookup psubst memb
   , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) =
     setVarM memb (bvDiv (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) >>>
-    greturn (someEqProofRefl e)
+    greturn (SomeEqProofRefl e)
 
 -- FIXME: add cases to prove struct(es1)=struct(es2) 
 
