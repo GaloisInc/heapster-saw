@@ -70,47 +70,11 @@ Definition mux_mut_refs_u64__tuple_fun : @CompM.lrtTupleType (@CompM.LRT_Cons (@
   let var__1   := @sigT var__0 (fun (x_ex0 : var__0) => unit) in
   CompM (prod var__1 (prod var__1 unit))) (p1 : @sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (p2 : @sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (p3 : @sigT (@SAWCorePrelude.bitvector 1) (fun (x_ex0 : @SAWCorePrelude.bitvector 1) => unit)) => @CompM.letRecM (@CompM.LRT_Nil) (prod (forall (ps : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit), let var__0   := @SAWCorePrelude.bitvector 64 in
   let var__1   := @sigT var__0 (fun (x_ex0 : var__0) => unit) in
-  CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) tt (if @SAWCoreScaffolding.not (@SAWCorePrelude.bvEq 1 (@projT1 (@SAWCorePrelude.bitvector 1) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 1) => unit) p3) (intToBv 1 0%Z)) then @errorM CompM _ (prod (forall (ps : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit), let var__0   := @SAWCorePrelude.bitvector 64 in
+  CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) tt (if @SAWCoreScaffolding.not (@SAWCorePrelude.bvEq 1 (@projT1 (@SAWCorePrelude.bitvector 1) (fun (x_elimEx0 : @SAWCorePrelude.bitvector 1) => unit) p3) (intToBv 1 0%Z)) then @returnM CompM _ (prod (forall (ps : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit), let var__0   := @SAWCorePrelude.bitvector 64 in
   let var__1   := @sigT var__0 (fun (x_ex0 : var__0) => unit) in
-  CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) "At internal (return $1)
-  Regs: $1 = x11
-  Input perms: top1:lowned (top5:[top1]memblock(R, 0, 8, u64<>),
-                            top4:[top1]memblock(R, 0, 8, u64<>)
-                            -o
-                            top5:[top3]memblock(W, 0, 8, u64<>),
-                            top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
-               top3:true, top4:[top1]memblock(W, 0, 8, u64<>),
-               top5:[top1]memblock(W, 0, 8, u64<>), top6:eq(LLVMword ghost9),
-               x11:eq(top4), ghost9:true
-  Could not prove: top1:lowned (x11:[top1]memblock(R, 0, 8, u64<>)
-                                -o
-                                top5:[top3]memblock(W, 0, 8, u64<>),
-                                top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
-                   top3:true, top4:true, top5:true, top6:true,
-                   x11:[top1]memblock(W, 0, 8, u64<>)
-
-  proveVarAtomicImpl: Could not prove
-  top4:true -o (). [top1]ptr((R,0) |-> int64<>)"%string else @errorM CompM _ (prod (forall (ps : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit), let var__0   := @SAWCorePrelude.bitvector 64 in
+  CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (pair (@SAWCorePrelude.composeM (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (fun (x_local0 : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit) => @returnM CompM _ (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (pair p2 (pair (SAWCoreScaffolding.fst x_local0) tt))) (@SAWCorePrelude.composeM (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) p0 (fun (x_local0 : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) => @returnM CompM _ (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (pair (SAWCoreScaffolding.fst x_local0) (pair (SAWCoreScaffolding.fst (SAWCoreScaffolding.snd x_local0)) tt))))) (pair p1 tt)) else @returnM CompM _ (prod (forall (ps : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit), let var__0   := @SAWCorePrelude.bitvector 64 in
   let var__1   := @sigT var__0 (fun (x_ex0 : var__0) => unit) in
-  CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) "At internal (return $1)
-  Regs: $1 = x11
-  Input perms: top1:lowned (top5:[top1]memblock(R, 0, 8, u64<>),
-                            top4:[top1]memblock(R, 0, 8, u64<>)
-                            -o
-                            top5:[top3]memblock(W, 0, 8, u64<>),
-                            top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
-               top3:true, top4:[top1]memblock(W, 0, 8, u64<>),
-               top5:[top1]memblock(W, 0, 8, u64<>), top6:eq(LLVMword ghost9),
-               x11:eq(top5), ghost9:true
-  Could not prove: top1:lowned (x11:[top1]memblock(R, 0, 8, u64<>)
-                                -o
-                                top5:[top3]memblock(W, 0, 8, u64<>),
-                                top4:[top2]memblock(W, 0, 8, u64<>)), top2:true,
-                   top3:true, top4:true, top5:true, top6:true,
-                   x11:[top1]memblock(W, 0, 8, u64<>)
-
-  proveVarAtomicImpl: Could not prove
-  top5:true -o (). [top1]ptr((R,0) |-> int64<>)"%string)) tt).
+  CompM (prod var__1 (prod var__1 unit))) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (pair (@SAWCorePrelude.composeM (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (fun (x_local0 : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit) => @returnM CompM _ (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (pair (SAWCoreScaffolding.fst x_local0) (pair p1 tt))) (@SAWCorePrelude.composeM (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) p0 (fun (x_local0 : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) => @returnM CompM _ (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)) (pair (SAWCoreScaffolding.fst x_local0) (pair (SAWCoreScaffolding.fst (SAWCoreScaffolding.snd x_local0)) tt))))) (pair p2 tt)))) tt).
 
 Definition mux_mut_refs_u64 : @CompM.lrtToType (@CompM.LRT_Fun (forall (ps : prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) (prod (@sigT (@SAWCorePrelude.bitvector 64) (fun (x_ex0 : @SAWCorePrelude.bitvector 64) => unit)) unit)), let var__0   := @SAWCorePrelude.bitvector 64 in
   let var__1   := @sigT var__0 (fun (x_ex0 : var__0) => unit) in
