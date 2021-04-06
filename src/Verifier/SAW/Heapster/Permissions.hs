@@ -5645,7 +5645,7 @@ abstractVars ns a =
 
 -- | An expression or other object which the variables have been abstracted out
 -- of, along with those variables that were abstracted out of it
-data AbsObj a = forall ctx. AbsObj (RAssign Name ctx) (Closed (Mb ctx a))
+data AbsObj a = forall ctx. AbsObj (RAssign ExprVar ctx) (Closed (Mb ctx a))
 
 -- | Find all free variables of an expresssion and abstract them out. Note that
 -- this should always succeed, if 'freeVars' is implemented correctly.
