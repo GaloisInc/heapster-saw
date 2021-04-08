@@ -1477,7 +1477,7 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
          t1 <- translate1 e1
          t2 <- translate1 e2
          return $ flip mkTypeTrans1 (BVPropTrans prop) $
-           (dataTypeOpenTerm "Prelude.EqP"
+           (dataTypeOpenTerm "Prelude.Eq"
             [applyOpenTerm (globalOpenTerm "Prelude.bitvector") (natOpenTerm w),
              t1, t2])
 
@@ -1492,7 +1492,7 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
          t1 <- translate1 e1
          t2 <- translate1 e2
          return $ flip mkTypeTrans1 (BVPropTrans prop)
-           (dataTypeOpenTerm "Prelude.EqP"
+           (dataTypeOpenTerm "Prelude.Eq"
             [globalOpenTerm "Prelude.Bool",
              applyOpenTermMulti (globalOpenTerm "Prelude.bvult")
              [natOpenTerm w, t1, t2],
@@ -1503,7 +1503,7 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
          t1 <- translate1 e1
          t2 <- translate1 e2
          return $ flip mkTypeTrans1 (BVPropTrans prop)
-           (dataTypeOpenTerm "Prelude.EqP"
+           (dataTypeOpenTerm "Prelude.Eq"
             [globalOpenTerm "Prelude.Bool",
              applyOpenTermMulti (globalOpenTerm "Prelude.bvule")
              [natOpenTerm w, t1, t2],
@@ -1515,7 +1515,7 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
          t2 <- translate1 e2
          t3 <- translate1 e3
          return $ flip mkTypeTrans1 (BVPropTrans prop)
-           (dataTypeOpenTerm "Prelude.EqP"
+           (dataTypeOpenTerm "Prelude.Eq"
             [globalOpenTerm "Prelude.Bool",
              applyOpenTermMulti (globalOpenTerm "Prelude.bvule")
              [natOpenTerm w, t1,
@@ -3190,7 +3190,7 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
       translatePermImplUnary mb_impls $ \m ->
       do bv_tp <- typeTransType1 <$> translateClosed (mbExprType e1)
          e1_trans <- translate1 e1
-         let pf = ctorOpenTerm "Prelude.ReflP" [bv_tp, e1_trans]
+         let pf = ctorOpenTerm "Prelude.Refl" [bv_tp, e1_trans]
          withPermStackM (:>: translateVar x)
            (:>: PTrans_Conj [APTrans_BVProp (BVPropTrans prop pf)])
            m
@@ -3241,8 +3241,8 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
     | mbLift (fmap bvPropHolds prop) ->
       withPermStackM (:>: translateVar x)
       (:>: bvPropPerm (BVPropTrans prop
-                       (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
-                                                      globalOpenTerm "Prelude.True"])))
+                       (ctorOpenTerm "Prelude.Refl" [globalOpenTerm "Prelude.Bool",
+                                                     globalOpenTerm "Prelude.True"])))
       (translate $ mbCombine mb_impl')
   -}
   
@@ -3268,8 +3268,8 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
     | mbLift (fmap bvPropHolds prop) ->
       withPermStackM (:>: translateVar x)
       (:>: bvPropPerm (BVPropTrans prop
-                       (ctorOpenTerm "Prelude.ReflP" [globalOpenTerm "Prelude.Bool",
-                                                      globalOpenTerm "Prelude.True"])))
+                       (ctorOpenTerm "Prelude.Refl" [globalOpenTerm "Prelude.Bool",
+                                                     globalOpenTerm "Prelude.True"])))
       (translate $ mbCombine mb_impl')
   -}
   

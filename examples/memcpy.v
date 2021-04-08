@@ -12,7 +12,7 @@ Import ListNotations.
 Module memcpy.
 
 Definition mallocSpec : forall (sz : @SAWCorePrelude.bitvector 64), CompM (@SAWCorePrelude.BVVec 64 sz unit) :=
-  fun (sz : @SAWCoreVectorsAsCoqVectors.Vec 64 (@SAWCoreScaffolding.Bool)) => @returnM CompM _ (@SAWCorePrelude.BVVec 64 sz unit) (@SAWCorePrelude.genBVVec 64 sz unit (fun (i : @SAWCoreVectorsAsCoqVectors.Vec 64 (@SAWCoreScaffolding.Bool)) (_1 : @SAWCoreScaffolding.EqP (@SAWCoreScaffolding.Bool) (@SAWCoreVectorsAsCoqVectors.bvult 64 i sz) (@SAWCoreScaffolding.true)) => tt)).
+  fun (sz : @SAWCoreVectorsAsCoqVectors.Vec 64 (@SAWCoreScaffolding.Bool)) => @returnM CompM _ (@SAWCorePrelude.BVVec 64 sz unit) (@SAWCorePrelude.genBVVec 64 sz unit (fun (i : @SAWCoreVectorsAsCoqVectors.Vec 64 (@SAWCoreScaffolding.Bool)) (_1 : @SAWCoreScaffolding.Eq (@SAWCoreScaffolding.Bool) (@SAWCoreVectorsAsCoqVectors.bvult 64 i sz) (@SAWCoreScaffolding.true)) => tt)).
 
 Definition llvm__x2ememcpy__x2ep0i8__x2ep0i8__x2ei64 : forall (e0 : Type), forall (e1 : @SAWCorePrelude.bitvector 64), forall (p0 : e0), forall (p1 : unit), CompM (prod unit (prod unit unit)) :=
   fun (X : Type) (len : @SAWCoreVectorsAsCoqVectors.Vec 64 (@SAWCoreScaffolding.Bool)) (x : X) (_1 : unit) => @returnM CompM _ (prod unit (prod unit unit)) (pair tt (pair tt tt)).
