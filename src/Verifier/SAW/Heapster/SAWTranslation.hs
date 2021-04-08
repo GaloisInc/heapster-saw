@@ -399,6 +399,12 @@ letTransM x tp rhs_m body_m =
      return $
        letOpenTerm (pack x) tp (runTransM rhs_m r) (\x' -> runTransM (body_m x') r)
 
+-- | Build a bitvector type in a translation monad
+bitvectorTransM :: TransM info ctx OpenTerm -> TransM info ctx OpenTerm
+bitvectorTransM m =
+  applyMultiTransM (return $ globalOpenTerm "Prelude.Vec")
+  [m, return $ globalOpenTerm "Prelude.Bool"]
+
 -- | Build an @Either@ type in SAW from the 'typeTransTupleType's of the left
 -- and right types
 eitherTypeTrans :: TypeTrans trL -> TypeTrans trR -> OpenTerm
@@ -589,8 +595,7 @@ instance TransInfo info =>
     [nuMP| ComplexRealRepr |] ->
       return $ error "translate: ComplexRealRepr"
     [nuMP| BVRepr w |] ->
-      returnType1 =<<
-      (applyOpenTerm (globalOpenTerm "Prelude.bitvector") <$> translate w)
+      returnType1 =<< bitvectorTransM (translate w)
 
     -- Our special-purpose intrinsic types, whose translations do not have
     -- computational content
@@ -1478,7 +1483,9 @@ instance (1 <= w, KnownNat w, TransInfo info) =>
          t2 <- translate1 e2
          return $ flip mkTypeTrans1 (BVPropTrans prop) $
            (dataTypeOpenTerm "Prelude.Eq"
-            [applyOpenTerm (globalOpenTerm "Prelude.bitvector") (natOpenTerm w),
+            [applyOpenTermMulti (globalOpenTerm "Prelude.Vec")
+              [natOpenTerm w,
+               globalOpenTerm "Prelude.Bool"],
              t1, t2])
 
     [nuMP| BVProp_Neq _ _ |] ->
@@ -3599,7 +3606,7 @@ instance (PermCheckExtC ext, TransInfo info) =>
       let w = mbLift mb_w in
       ETrans_Term <$>
       applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
-      [applyTransM (return $ globalOpenTerm "Prelude.bitvector") (translate mb_w),
+      [bitvectorTransM (translate mb_w),
        translateRWV e,
        return (bvLitOpenTerm w (BV.one w)),
        return (bvLitOpenTerm w (BV.zero w))]

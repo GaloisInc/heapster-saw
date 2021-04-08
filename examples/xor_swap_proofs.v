@@ -13,8 +13,7 @@ Import xor_swap.
 
 
 Definition xor_swap_spec x1 x2 :
-  CompM ({_ : SAWCorePrelude.bitvector 64 & unit} *
-         ({_ : SAWCorePrelude.bitvector 64 & unit} * unit)) :=
+  CompM ({_ : bitvector 64 & unit} * ({_ : bitvector 64 & unit} * unit)) :=
   returnM (existT _ x2 tt, ((existT _ x1 tt), tt)).
 Arguments xor_swap_spec /.
 

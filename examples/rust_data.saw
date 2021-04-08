@@ -25,7 +25,7 @@ heapster_define_llvmshape env "Sum" 64 "X:llvmshape 64, Y:llvmshape 64" "(fields
 
 // List type
 heapster_define_llvmshape env "List" 64 "L:perm(llvmptr 64),X:llvmshape 64" "(fieldsh(eq(llvmword(0)))) orsh (fieldsh(eq(llvmword(1)));X;fieldsh(L))";
-heapster_define_recursive_perm env "ListPerm" "X:llvmshape 64, Xlen:bv 64, rw:rwmodality, l:lifetime" "llvmptr 64" ["[l]memblock(rw,0,Xlen + 16,List<ListPerm<X,Xlen,rw,l>,X>)"] "\\ (X:sort 0) (_:bitvector 64) -> List X" "\\ (X:sort 0) (_:bitvector 64) -> foldListPermH X" "\\ (X:sort 0) (_:bitvector 64) -> unfoldListPermH X";
+heapster_define_recursive_perm env "ListPerm" "X:llvmshape 64, Xlen:bv 64, rw:rwmodality, l:lifetime" "llvmptr 64" ["[l]memblock(rw,0,Xlen + 16,List<ListPerm<X,Xlen,rw,l>,X>)"] "\\ (X:sort 0) (_:Vec 64 Bool) -> List X" "\\ (X:sort 0) (_:Vec 64 Bool) -> foldListPermH X" "\\ (X:sort 0) (_:Vec 64 Bool) -> unfoldListPermH X";
 
 // The String type
 heapster_define_llvmshape env "String" 64 "" "exsh cap:bv 64. ptrsh(arraysh(cap,1,[(8,int8<>)]));fieldsh(int64<>);fieldsh(eq(llvmword(cap)))";
@@ -49,22 +49,22 @@ heapster_define_llvmshape env "TrueEnum" 64 "" "(fieldsh(eq(llvmword(0)))) orsh 
 
 // exchange_malloc
 exchange_malloc_sym <- heapster_find_symbol env "15exchange_malloc";
-//heapster_assume_fun_rename env exchange_malloc_sym "exchange_malloc" "(len:bv 64).arg0:eq(llvmword(len)),arg1:true -o ret:array(0,<len,*1,[(W,0,8) |-> true])" "\\ (len:bitvector 64) -> returnM (BVVec 64 len #()) (repeatBVVec 64 len #() ())";
-heapster_assume_fun_rename env exchange_malloc_sym "exchange_malloc" "(len:bv 64).arg0:eq(llvmword(len)),arg1:true -o ret:memblock(W,0,len,emptysh)" "\\ (len:bitvector 64) -> returnM #() ()";
+//heapster_assume_fun_rename env exchange_malloc_sym "exchange_malloc" "(len:bv 64).arg0:eq(llvmword(len)),arg1:true -o ret:array(0,<len,*1,[(W,0,8) |-> true])" "\\ (len:Vec 64 Bool) -> returnM (BVVec 64 len #()) (repeatBVVec 64 len #() ())";
+heapster_assume_fun_rename env exchange_malloc_sym "exchange_malloc" "(len:bv 64).arg0:eq(llvmword(len)),arg1:true -o ret:memblock(W,0,len,emptysh)" "\\ (len:Vec 64 Bool) -> returnM #() ()";
 
 // memcpy
-heapster_assume_fun env "llvm.memcpy.p0i8.p0i8.i64" "(rw:rwmodality, l1:lifetime, l2:lifetime, sh:llvmshape 64, b:llvmblock 64, len:bv 64).arg0:[l1]memblock(W,0,len,sh), arg1:[l2]memblock(rw,0,len,eqsh(b)), arg2:eq(llvmword(len))  -o  arg0:[l1]memblock(W,0,len,eqsh(b)), arg1:[l2]memblock(rw,0,len,eqsh(b))" "\\ (X:sort 0) (len:bitvector 64) (x:X) (_:#()) -> returnM (#() * #() * #()) ((),(),())";
+heapster_assume_fun env "llvm.memcpy.p0i8.p0i8.i64" "(rw:rwmodality, l1:lifetime, l2:lifetime, sh:llvmshape 64, b:llvmblock 64, len:bv 64).arg0:[l1]memblock(W,0,len,sh), arg1:[l2]memblock(rw,0,len,eqsh(b)), arg2:eq(llvmword(len))  -o  arg0:[l1]memblock(W,0,len,eqsh(b)), arg1:[l2]memblock(rw,0,len,eqsh(b))" "\\ (X:sort 0) (len:Vec 64 Bool) (x:X) (_:#()) -> returnM (#() * #() * #()) ((),(),())";
 
 // <str as alloc::string::ToString>::to_string
 to_string_str <- heapster_find_symbol env "$LT$str$u20$as$u20$alloc..string..ToString$GT$9to_string";
 // NOTE: this is the more incorrect version, with no lifetime argument and no shapes
-//heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:exists len':bv 64. ptr((W,0) |-> array(0,<len',*1,[(W,0,8) |-> int8<>])) * ptr((W,8) |-> int64<>) * ptr((W,16) |-> eq(llvmword(len')))" "\\ (len:bitvector 64) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
+//heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:exists len':bv 64. ptr((W,0) |-> array(0,<len',*1,[(W,0,8) |-> int8<>])) * ptr((W,8) |-> int64<>) * ptr((W,16) |-> eq(llvmword(len')))" "\\ (len:Vec 64 Bool) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (Vec 64 Bool) (\\ (len':Vec 64 Bool) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (Vec 64 Bool) (\\ (len':Vec 64 Bool) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
 
 // NOTE: this is the incorrect version, with no lifetime argument
-heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:memblock(W,0,24,String<>)" "\\ (len:bitvector 64) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
+heapster_assume_fun_rename env to_string_str "to_string_str" "(len:bv 64). arg0:memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[(R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o arg0:memblock(W,0,24,String<>)" "\\ (len:Vec 64 Bool) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (Vec 64 Bool) (\\ (len':Vec 64 Bool) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (Vec 64 Bool) (\\ (len':Vec 64 Bool) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
 
 // FIXME: this is the correct version, with a lifetime argument
-//heapster_assume_fun_rename env to_string_str "to_string_str" "(ps:lowned_perm,l:lifetime,len:bv 64). l:lowned ps, arg0:[l]memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[[l](R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o l:lowned ps, arg0:[l]memblock(W,0,24,String<>)" "\\ (len:bitvector 64) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (bitvector 64) (\\ (len':bitvector 64) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
+//heapster_assume_fun_rename env to_string_str "to_string_str" "(ps:lowned_perm,l:lifetime,len:bv 64). l:lowned ps, arg0:[l]memblock(W,0,24,emptysh), arg1:array(0,<len,*1,[[l](R,0,8) |-> int8<>]), arg2:eq(llvmword(len)) -o l:lowned ps, arg0:[l]memblock(W,0,24,String<>)" "\\ (len:Vec 64 Bool) (_:#()) (str:BVVec 64 len int8Trans) -> returnM (Sigma (Vec 64 Bool) (\\ (len':Vec 64 Bool) -> BVVec 64 len' int8Trans * int64Trans * #())) (exists (Vec 64 Bool) (\\ (len':Vec 64 Bool) -> BVVec 64 len' int8Trans * int64Trans * #()) len (str, mkInt64Trans len, ()))";
 
 
 /***
