@@ -192,7 +192,7 @@ Section any.
     unfold any, any__tuple_fun. (* unfold noErrorsSpec at 1. *)
     time "no_errors_any (1/2)" prove_refinement with NoRewrite.
     - unfold noErrorsSpec; prove_refinement.
-    - rewrite (e_assuming (existT (fun _ : bitvector 64 => unit) a1 tt)).
+    - rewrite (e_assuming (existT (fun _ : bitvector 64 => unit) s tt)).
       unfold noErrorsSpec at 1.
       time "no_errors_any (2/2)" prove_refinement.
       + unfold noErrorsSpec; prove_refinement.
