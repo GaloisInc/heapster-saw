@@ -1866,7 +1866,7 @@ instance TestEquality NameSortRepr where
 -- permission argument
 data NameReachConstr ns args a where
   NameReachConstr :: (IsReachabilityName ns ~ 'True) =>
-                     NameReachConstr ns (args :> ValuePermType a) a
+                     NameReachConstr ns (args :> a) a
   NameNonReachConstr :: (IsReachabilityName ns ~ 'False) =>
                         NameReachConstr ns args a
 
@@ -2066,26 +2066,22 @@ data OpaquePerm b args a = OpaquePerm {
 -- | The interpretation of a recursive permission as a reachability permission.
 -- Reachability permissions are recursive permissions of the form
 --
--- > reach<args,X> = X  |  p
+-- > reach<args,x> = eq(x)  |  p
 --
--- where @reach@ occurs exactly one in @p@ in the form @reach<args,X>@ and @X@
+-- where @reach@ occurs exactly once in @p@ in the form @reach<args,x>@ and @x@
 -- does not occur at all in @p@. This means their interpretations look like a
--- value of type @X@ inside a term context with a single "hole", where the
--- context is formed from zero or more occurrences of the interpretation of @p@
--- and the "hole" is the final occurrence of the type variable from (the
--- interpretation of) @X@. This yields the following structure used by Heapster,
--- where @f@ is the type functor defined by the zero or more applications of @p@:
+-- list type, where the @eq(x)@ is the nil constructor and the @p@ is the
+-- cons. To support the transitivity rule, we need an append function for these
+-- lists, which is given by the transitivity method listed here, which has type
 --
--- > get : f a -> a
--- > put : f a -> b -> f b
--- > trans : f () -> f a -> f a
+-- > trans : forall args (x y:A), t args x -> t args y -> t args y
+--
+-- where @args@ are the arguments and @A@ is the translation of type @a@ (which
+-- may correspond to 0 or more arguments)
 data ReachMethods reach args a where
   ReachMethods :: {
-    reachMethodGetExpr :: Ident,
-    reachMethodGetPerm :: Ident,
-    reachMethodPut :: Ident,
     reachMethodTrans :: Ident
-    } -> ReachMethods (args :> ValuePermType a) a 'True
+    } -> ReachMethods (args :> a) a 'True
   NoReachMethods :: ReachMethods args a 'False
 
 -- | A recursive permission is a disjunction of 1 or more permissions, each of
@@ -2105,23 +2101,6 @@ data RecPerm b reach args a = RecPerm {
   recPermReachMethods :: ReachMethods args a reach,
   recPermCases :: [Mb args (ValuePerm a)]
   }
-
--- | Get the expr part of the @get@ method from a 'RecPerm' for a reachability
--- permission
-recPermGetExprMethod :: RecPerm b 'True args a -> Ident
-recPermGetExprMethod (RecPerm { recPermReachMethods = ReachMethods { .. }}) =
-  reachMethodGetExpr
-
--- | Get the perm part of the @get@ method from a 'RecPerm' for a reachability
--- permission
-recPermGetPermMethod :: RecPerm b 'True args a -> Ident
-recPermGetPermMethod (RecPerm { recPermReachMethods = ReachMethods { .. }}) =
-  reachMethodGetPerm
-
--- | Get the @put@ method from a 'RecPerm' for a reachability permission
-recPermPutMethod :: RecPerm b 'True args a -> Ident
-recPermPutMethod (RecPerm { recPermReachMethods = ReachMethods { .. }}) =
-  reachMethodPut
 
 -- | Get the @trans@ method from a 'RecPerm' for a reachability permission
 recPermTransMethod :: RecPerm b 'True args a -> Ident
@@ -2808,9 +2787,8 @@ instance Liftable SomeNamedPermName where
 
 instance Liftable (ReachMethods args a reach) where
   mbLift mb_x = case mbMatch mb_x of
-    [nuMP| ReachMethods get1Ident get2Ident putIdent transIdent |] ->
-      ReachMethods (mbLift get1Ident) (mbLift get2Ident) (mbLift putIdent)
-                   (mbLift transIdent)
+    [nuMP| ReachMethods transIdent |] ->
+      ReachMethods (mbLift transIdent)
     [nuMP| NoReachMethods |] -> NoReachMethods
 
 -- | Embed a 'ValuePerm' in a 'PermExpr' - like 'PExpr_ValPerm' but maps
