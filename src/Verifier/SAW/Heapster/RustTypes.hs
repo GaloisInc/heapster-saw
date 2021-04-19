@@ -49,7 +49,7 @@ import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Language.Rust.Syntax
 import Language.Rust.Parser
-import Language.Rust.Data.Ident (Ident(..))
+import Language.Rust.Data.Ident (Ident(..), mkIdent)
 
 import Prettyprinter as PP
 
@@ -341,6 +341,27 @@ instance RsConvert w (Generics Span) (Some RustCtx) where
       addLt (Some ctx) ltdef =
         Some (ctx :>: Pair (Constant (lifetimeDefName ltdef)) LifetimeRepr)
   rsConvert _ _ = fail "Generics not yet fully supported"
+
+isRecursiveDef :: Item Span -> Bool
+isRecursiveDef item =
+  case item of
+    Enum _ _ n variants _ _ -> any (containsName n) variants
+    StructItem _ _ n vd _ _ -> error "Structs not yet supported"
+    _ -> False
+
+  where
+    -- TODO: I hate this, it needs to be better
+    isBoxed :: Ident -> Ty Span -> Bool
+    isBoxed i (PathTy _ (Path _ [PathSegment box (Just (AngleBracketed _ [PathTy _ (Path _ [PathSegment i' _ _] _) _] _ _)) _] _) _) =
+      box == mkIdent "Box" && i == i'
+
+    typeOf :: StructField Span -> Ty Span
+    typeOf (StructField _ _ t _ _) = t
+
+    containsName :: Ident -> Variant Span -> Bool
+    containsName i (Variant _ _ (StructD fields _) _ _) = any (isBoxed i) $ typeOf <$> fields
+    containsName i (Variant _ _ (TupleD fields _) _ _) = any (isBoxed i) $ typeOf <$> fields
+    containsName _ (Variant _ _ (UnitD _) _ _) = False
 
 instance RsConvert w (Item Span) SomeNamedShape where
   rsConvert _w (Enum _ _ _ _ _ _) = error "enums not yet handled"
