@@ -345,8 +345,8 @@ instance RsConvert w (Generics Span) (Some RustCtx) where
 isRecursiveDef :: Item Span -> Bool
 isRecursiveDef item =
   case item of
-    Enum _ _ n variants _ _ -> any (containsName n) variants
-    StructItem _ _ n vd _ _ -> error "Structs not yet supported"
+    Enum _ _ n variants _ _ -> any (containsName n . getVD) variants
+    StructItem _ _ n vd _ _ -> containsName n vd
     _ -> False
 
   where
@@ -358,10 +358,13 @@ isRecursiveDef item =
     typeOf :: StructField Span -> Ty Span
     typeOf (StructField _ _ t _ _) = t
 
-    containsName :: Ident -> Variant Span -> Bool
-    containsName i (Variant _ _ (StructD fields _) _ _) = any (isBoxed i) $ typeOf <$> fields
-    containsName i (Variant _ _ (TupleD fields _) _ _) = any (isBoxed i) $ typeOf <$> fields
-    containsName _ (Variant _ _ (UnitD _) _ _) = False
+    getVD :: Variant Span -> VariantData Span
+    getVD (Variant _ _ vd _ _) = vd
+
+    containsName :: Ident -> VariantData Span -> Bool
+    containsName i (StructD fields _) = any (isBoxed i) $ typeOf <$> fields
+    containsName i (TupleD fields _) = any (isBoxed i) $ typeOf <$> fields
+    containsName _ (UnitD _) = False
 
 instance RsConvert w (Item Span) SomeNamedShape where
   rsConvert _w (Enum _ _ _ _ _ _) = error "enums not yet handled"
