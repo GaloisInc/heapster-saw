@@ -335,7 +335,14 @@ instance RsConvert w (Arg Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (Arg _ tp _) = rsConvert w tp
   rsConvert _ _ = error "rsConvert (Arg): argument form not yet handled"
 
-instance RsConvert w (Item Span) (PermExpr (LLVMShapeType w)) where
+instance RsConvert w (Generics Span) (Some RustCtx) where
+  rsConvert _ (Generics ltdefs [] _ _) = return $ foldl addLt (Some MNil) ltdefs
+    where
+      addLt (Some ctx) ltdef =
+        Some (ctx :>: Pair (Constant (lifetimeDefName ltdef)) LifetimeRepr)
+  rsConvert _ _ = fail "Generics not yet fully supported"
+
+instance RsConvert w (Item Span) SomeNamedShape where
   rsConvert w (Enum _ _ _ _ _ _) = error "enums not yet handled"
   rsConvert w (StructItem _ _ nm vd generics _) = error "structs not yet handled"
   rsConvert _ item = error ("Top-level item not supported: " ++ show item)
