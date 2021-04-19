@@ -335,6 +335,22 @@ instance RsConvert w (Arg Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (Arg _ tp _) = rsConvert w tp
   rsConvert _ _ = error "rsConvert (Arg): argument form not yet handled"
 
+instance RsConvert w (Item Span) (PermExpr (LLVMShapeType w)) where
+  rsConvert w (Enum _ _ _ _ _ _) = error "enums not yet handled"
+  rsConvert w (StructItem _ _ nm vd generics _) = error "structs not yet handled"
+  rsConvert _ item = error ("Top-level item not supported: " ++ show item)
+
+instance RsConvert w (VariantData Span) (PermExpr (LLVMShapeType w)) where
+  rsConvert w (StructD sfs _) =
+    do shs <- mapM (rsConvert w) sfs
+       return $ foldr PExpr_SeqShape PExpr_EmptyShape shs
+  rsConvert w (TupleD sfs _) =
+    do shs <- mapM (rsConvert w) sfs
+       return $ foldr PExpr_SeqShape PExpr_EmptyShape shs
+  rsConvert w (UnitD _) = return PExpr_EmptyShape
+
+instance RsConvert w (StructField Span) (PermExpr (LLVMShapeType w)) where
+  rsConvert w (StructField _ _ t _ _) = rsConvert w t
 
 ----------------------------------------------------------------------
 -- * Computing the ABI-Specific Layout of Rust Types
