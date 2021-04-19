@@ -846,7 +846,7 @@ parseFunPermFromRust _ _ _ _ str =
 -- Note: No CruCtx / TypeRepr as arguments for now
 parseLLVMShapeFromRust :: (MonadFail m, 1 <= w, KnownNat w) =>
                           PermEnv -> prx w -> String ->
-                          m (SomeFunPerm args ret)
+                          m SomeNamedShape
 parseLLVMShapeFromRust env w str = fail "Not yet implemented"
 
 $(mkNuMatching [t| ArgLayout |])
