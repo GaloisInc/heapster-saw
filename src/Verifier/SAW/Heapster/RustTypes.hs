@@ -343,8 +343,8 @@ instance RsConvert w (Generics Span) (Some RustCtx) where
   rsConvert _ _ = fail "Generics not yet fully supported"
 
 instance RsConvert w (Item Span) SomeNamedShape where
-  rsConvert w (Enum _ _ _ _ _ _) = error "enums not yet handled"
-  rsConvert w (StructItem _ _ nm vd generics _) = error "structs not yet handled"
+  rsConvert _w (Enum _ _ _ _ _ _) = error "enums not yet handled"
+  rsConvert _w (StructItem _ _ _nm _vd _generics _) = error "structs not yet handled"
   rsConvert _ item = error ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w (VariantData Span) (PermExpr (LLVMShapeType w)) where
@@ -354,7 +354,7 @@ instance RsConvert w (VariantData Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (TupleD sfs _) =
     do shs <- mapM (rsConvert w) sfs
        return $ foldr PExpr_SeqShape PExpr_EmptyShape shs
-  rsConvert w (UnitD _) = return PExpr_EmptyShape
+  rsConvert _ (UnitD _) = return PExpr_EmptyShape
 
 instance RsConvert w (StructField Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (StructField _ _ t _ _) = rsConvert w t
@@ -854,7 +854,7 @@ parseFunPermFromRust _ _ _ _ str =
 parseLLVMShapeFromRust :: (MonadFail m, 1 <= w, KnownNat w) =>
                           PermEnv -> prx w -> String ->
                           m SomeNamedShape
-parseLLVMShapeFromRust env w str = fail "Not yet implemented"
+parseLLVMShapeFromRust _env _w _str = fail "Not yet implemented"
 
 $(mkNuMatching [t| ArgLayout |])
 $(mkNuMatching [t| Some3FunPerm |])
