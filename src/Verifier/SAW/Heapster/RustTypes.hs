@@ -883,7 +883,7 @@ parseFunPermFromRust _ _ _ _ str =
     fail ("Malformed Rust type: " ++ str)
 
 -- | Parse a polymorphic Rust type (enum, struct) and convert it to a Heapster
--- permission
+-- shape
 -- Note: No CruCtx / TypeRepr as arguments for now
 parseLLVMShapeFromRust :: (MonadFail m, 1 <= w, KnownNat w) =>
                           PermEnv -> prx w -> String ->
