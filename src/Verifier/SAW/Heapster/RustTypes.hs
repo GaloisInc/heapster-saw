@@ -340,7 +340,7 @@ instance RsConvert w (Generics Span) (Some RustCtx) where
     where
       addLt (Some ctx) ltdef =
         Some (ctx :>: Pair (Constant (lifetimeDefName ltdef)) LifetimeRepr)
-  rsConvert _ _ = fail "Generics not yet fully supported"
+  rsConvert _ _ = error "Generics not yet fully supported"
 
 isRecursiveDef :: Item Span -> Bool
 isRecursiveDef item =
