@@ -888,7 +888,13 @@ parseFunPermFromRust _ _ _ _ str =
 parseLLVMShapeFromRust :: (MonadFail m, 1 <= w, KnownNat w) =>
                           PermEnv -> prx w -> String ->
                           m SomeNamedShape
-parseLLVMShapeFromRust _env _w _str = fail "Not yet implemented"
+parseLLVMShapeFromRust env w str
+  | Right item <- parse @(Item Span) (inputStreamFromString str) =
+    runLiftRustConvM (mkRustConvInfo env) $ rsConvert w item
+  | Left err <- parse @(Item Span) (inputStreamFromString str) =
+    fail ("Error parsing top-level item: " ++ show err)
+parseLLVMShapeFromRust _ _ str =
+  fail ("Malformed Rust type: " ++ str)
 
 $(mkNuMatching [t| ArgLayout |])
 $(mkNuMatching [t| Some3FunPerm |])
