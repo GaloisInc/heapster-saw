@@ -1086,10 +1086,10 @@ data SimplImpl ps_in ps_out where
 
   -- | Implements transitivity of reachability permissions:
   --
-  -- > x:P<args,eq(y)>, y:P<args,p> -o x:P<args,p>
+  -- > x:P<args,y>, y:P<args,e> -o x:P<args,e>
   SImpl_ReachabilityTrans ::
-    ExprVar a -> RecPerm b 'True (args :> ValuePermType a) a ->
-    PermExprs args -> PermOffset a -> ExprVar a -> ValuePerm a ->
+    ExprVar a -> RecPerm b 'True (args :> a) a ->
+    PermExprs args -> PermOffset a -> ExprVar a -> PermExpr a ->
     SimplImpl (RNil :> a :> a) (RNil :> a)
 
 
@@ -1187,16 +1187,6 @@ data PermImpl1 ps_in ps_outs where
     PermImpl1 (ps :> LLVMPointerType w)
     (RNil :> '(RNil :> LLVMPointerType sz,
                ps :> LLVMPointerType w :> LLVMPointerType sz))
-
-  -- | Eliminate the contents of a reachability permission, binding a new
-  -- variable to hold those permissions and changing the contents of the
-  -- reachability permission to an equals permision for that variable:
-  --
-  -- > x:P<args,p> -o y. x:P<args,eq(y)> * y:p
-  Impl1_ElimReachabilityPerm ::
-    ExprVar a -> RecPerm b 'True (args :> ValuePermType a) a ->
-    PermExprs args -> PermOffset a -> ValuePerm a ->
-    PermImpl1 (ps :> a) (RNil :> '(RNil :> a, ps :> a :> a))
 
   -- | Eliminate an llvmblock permission of shape @sh@ to one of equality shape
   -- @eqsh(y)@ and a shape permission on @y@ for a fresh variable @y@:
@@ -1330,8 +1320,6 @@ permImplStep impl1@(Impl1_ElimStructField _ _ _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_ElimLLVMFieldContents _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
-permImplStep impl1@(Impl1_ElimReachabilityPerm _ _ _ _ _) mb_impls =
-  permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_BeginLifetime) mb_impls =
   permImplStepUnary impl1 mb_impls
 permImplStep impl1@(Impl1_TryProveBVProp _ _ _) mb_impls =
@@ -1458,9 +1446,6 @@ permImplSucceeds (PermImpl_Step (Impl1_ElimStructField _ _ _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMFieldContents _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
-  mbLift $ fmap permImplSucceeds mb_impl
-permImplSucceeds (PermImpl_Step (Impl1_ElimReachabilityPerm _ _ _ _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMBlockToEq _ _)
@@ -1778,12 +1763,10 @@ simplImplIn (SImpl_NamedArgWrite x npn args off memb _) =
     _ -> error "simplImplIn: SImplNamedArgWrite: non-Write argument!"
 simplImplIn (SImpl_NamedArgRead x npn args off _) =
   distPerms1 x (ValPerm_Named npn args off)
-simplImplIn (SImpl_ReachabilityTrans x rp args off y p) =
+simplImplIn (SImpl_ReachabilityTrans x rp args off y e) =
   let npn = recPermName rp in
-  distPerms2 x (ValPerm_Named npn
-                (PExprs_Cons args (PExpr_ValPerm $ ValPerm_Eq $ PExpr_Var y))
-                off)
-  y (ValPerm_Named npn (PExprs_Cons args $ PExpr_ValPerm p) off)
+  distPerms2 x (ValPerm_Named npn (PExprs_Cons args (PExpr_Var y)) off)
+  y (ValPerm_Named npn (PExprs_Cons args e) off)
 
 
 -- | Compute the output permissions of a 'SimplImpl' implication
@@ -2100,9 +2083,8 @@ simplImplOut (SImpl_NamedArgRead x npn args off memb) =
   distPerms1 x (ValPerm_Named npn
                 (setNthPermExpr args memb (PExpr_RWModality Read))
                 off)
-simplImplOut (SImpl_ReachabilityTrans x rp args off _ p) =
-  distPerms1 x (ValPerm_Named (recPermName rp) (PExprs_Cons args $
-                                                PExpr_ValPerm p) off)
+simplImplOut (SImpl_ReachabilityTrans x rp args off _ e) =
+  distPerms1 x (ValPerm_Named (recPermName rp) (PExprs_Cons args e) off)
 
 
 -- | Apply a 'SimplImpl' implication to the permissions on the top of a
@@ -2203,20 +2185,6 @@ applyImpl1 _ (Impl1_ElimLLVMFieldContents x fp) ps =
       ps)
   else
     error "applyImpl1: Impl1_ElimLLVMFieldContents: unexpected permission"
-applyImpl1 _ (Impl1_ElimReachabilityPerm x rp args off p) ps =
-  let npn = recPermName rp in
-  if ps ^. topDistPerm x == ValPerm_Named npn (PExprs_Cons args $
-                                               PExpr_ValPerm p) off then
-    (MbPermSets_Cons MbPermSets_Nil (CruCtxCons CruCtxNil $
-                                     namedPermNameType $
-                                     recPermName rp) $ nu $ \y ->
-      pushPerm y p $
-      set (topDistPerm x) (ValPerm_Named npn (PExprs_Cons args $
-                                              PExpr_ValPerm $
-                                              ValPerm_Eq $ PExpr_Var y) off)
-      ps)
-  else
-    error "applyImpl1: Impl1_ElimReachabilityPerm: unexpected permission"
 applyImpl1 _ (Impl1_ElimLLVMBlockToEq x bp) ps =
   if ps ^. topDistPerm x == ValPerm_Conj1 (Perm_LLVMBlock bp) then
     (mbPermSets1 $ nu $ \y ->
@@ -2474,10 +2442,10 @@ instance SubstVar PermVarSubst m =>
       SImpl_NamedArgRead <$> genSubst s x <*> genSubst s npn <*>
                              genSubst s args <*> genSubst s off <*>
                              genSubst s memb
-    [nuMP| SImpl_ReachabilityTrans x rp args off y p |] ->
+    [nuMP| SImpl_ReachabilityTrans x rp args off y e |] ->
       SImpl_ReachabilityTrans <$> genSubst s x <*> genSubst s rp <*>
                                   genSubst s args <*> genSubst s off <*>
-                                  genSubst s y <*> genSubst s p
+                                  genSubst s y <*> genSubst s e
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (PermImpl1 ps_in ps_out) m where
@@ -2501,10 +2469,6 @@ instance SubstVar PermVarSubst m =>
                             <*> return (mbLift tp) <*> genSubst s memb
     [nuMP| Impl1_ElimLLVMFieldContents x fp |] ->
       Impl1_ElimLLVMFieldContents <$> genSubst s x <*> genSubst s fp
-    [nuMP| Impl1_ElimReachabilityPerm x rp args off p |] ->
-      Impl1_ElimReachabilityPerm <$> genSubst s x <*> genSubst s rp
-                                 <*> genSubst s args <*> genSubst s off
-                                 <*> genSubst s p
     [nuMP| Impl1_ElimLLVMBlockToEq x bp |] ->
       Impl1_ElimLLVMBlockToEq <$> genSubst s x <*> genSubst s bp
     [nuMP| Impl1_BeginLifetime |] -> return Impl1_BeginLifetime
@@ -3360,13 +3324,15 @@ implSimplM prx simpl =
   implApplyImpl1 (Impl1_Simpl simpl prx)
   (MNil :>: Impl1Cont (const $ greturn ()))
 
--- | Bind a new variable @x@ that is set to the supplied expression @e@, and
--- push permissions @x:eq(e)@. Return @x@.
+-- | Bind a new variable @x@ that is set to the supplied expression @e@ and has
+-- permissions @eq(e)@. Return @x@.
 implLetBindVar :: NuMatchingAny1 r => TypeRepr tp -> PermExpr tp ->
-                  ImplM vars s r (ps :> tp) ps (Name tp)
+                  ImplM vars s r ps ps (Name tp)
 implLetBindVar tp e =
   implApplyImpl1 (Impl1_LetBind tp e)
-  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n))
+  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \n ->
+  implPopM n (ValPerm_Eq e) >>>
+  greturn n
 
 -- | Project out a field of a struct @x@ by binding a fresh variable @y@ for its
 -- contents, and assign the permissions for that field to @y@, replacing them
@@ -3457,56 +3423,36 @@ implElimLLVMFieldContentsM x fp =
   implPopM y (llvmFieldContents fp) >>>
   greturn y
 
--- | Prove a reachability permission @x:P<args,p>@ from a proof of @x:p@ on the
--- top of the stack
+-- | Prove a reachability permission @x:P<args,e>@ from a proof of @x:eq(e)@ on
+-- the top of the stack
 implReachabilityReflM ::
   NuMatchingAny1 r =>
   ExprVar a -> NamedPermName (RecursiveSort b 'True) args a ->
   PermExprs args -> PermOffset a ->
   ImplM vars s r (ps :> a) (ps :> a) ()
-implReachabilityReflM x npn (PExprs_Cons args arg@(PExpr_ValPerm p)) off
-  | NameReachConstr <- namedPermNameReachConstr npn =
+implReachabilityReflM x npn all_args off
+  | NameReachConstr <- namedPermNameReachConstr npn
+  , PExprs_Cons args e <- all_args =
     implLookupNamedPerm npn >>>= \np ->
-    case unfoldPerm np (PExprs_Cons args arg) off of
+    case unfoldPerm np (PExprs_Cons args e) off of
       ValPerm_Or p1 p2
-        | p1 == p ->
+        | p1 == ValPerm_Eq e ->
           introOrLM x p1 p2 >>>
-          implFoldNamedM x npn (PExprs_Cons args arg) off
+          implFoldNamedM x npn (PExprs_Cons args e) off
       _ -> error "implReachabilityReflM: unexpected form of unfolded permission"
 
--- | Prove a reachability permission @x:P<args,p>@ from proofs of
--- @x:P<args,eq(y)>@ and @y:P<args,p>@ @x:p@ on the top of the stack
+-- | Prove a reachability permission @x:P<args,e>@ from proofs of
+-- @x:P<args,y>@ and @y:P<args,e>@ on the top of the stack
 implReachabilityTransM ::
   NuMatchingAny1 r =>
   ExprVar a -> NamedPermName (RecursiveSort b 'True) args a ->
   PermExprs args -> PermOffset a -> ExprVar a ->
   ImplM vars s r (ps :> a) (ps :> a :> a) ()
-implReachabilityTransM x npn (PExprs_Cons args (PExpr_ValPerm p)) off y
-  | NameReachConstr <- namedPermNameReachConstr npn =
+implReachabilityTransM x npn all_args off y
+  | NameReachConstr <- namedPermNameReachConstr npn
+  , PExprs_Cons args e <- all_args =
     implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
-    implSimplM Proxy (SImpl_ReachabilityTrans x rp args off y p)
-
--- | Eliminate a reachability permission @x:P<args,p>@ into permissions
--- @x:P<args,eq(y)>@ and @y:p@ for a fresh variable @y@, returning the fresh
--- variable @y@ and popping the @y@ permissions off the stack. If @p@ already
--- has the form @eq(y)@, then just return @y@.
-implElimReachabilityPermM ::
-  NuMatchingAny1 r =>
-  ExprVar a -> NamedPermName (RecursiveSort b 'True) args a ->
-  PermExprs args -> PermOffset a ->
-  ImplM vars s r (ps :> a) (ps :> a) (ExprVar a)
-implElimReachabilityPermM _ npn (PExprs_Cons _
-                                 (PExpr_ValPerm
-                                  (ValPerm_Eq (PExpr_Var y)))) _
-  | NameReachConstr <- namedPermNameReachConstr npn =
-    greturn y
-implElimReachabilityPermM x npn (PExprs_Cons args (PExpr_ValPerm p)) off
-  | NameReachConstr <- namedPermNameReachConstr npn =
-    implLookupNamedPerm npn >>>= \(NamedPerm_Rec rp) ->
-    implApplyImpl1 (Impl1_ElimReachabilityPerm x rp args off p)
-    (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
-    implPopM y p >>>
-    greturn y
+    implSimplM Proxy (SImpl_ReachabilityTrans x rp args off y e)
 
 -- | Eliminate a @memblock@ permission with arbitrary shape @sh@, which cannot
 -- have any free variables outside of pointer shapes, to have equality shape
@@ -3796,6 +3742,13 @@ implGetPopConjM x ps i =
   else
     implExtractConjM x ps i >>>
     implPopM x (ValPerm_Conj $ deleteNth i ps)
+
+-- | If the top element of the stack is copyable, then copy it and pop it, and
+-- otherwise just leave it alone on top of the stack
+implMaybeCopyPopM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
+                     ImplM vars s r (ps :> a) (ps :> a) ()
+implMaybeCopyPopM x p | permIsCopyable p = implCopyM x p >>> implPopM x p
+implMaybeCopyPopM _ _ = greturn ()
 
 -- | Insert an atomic permission below the top of the stack at the @i@th
 -- position in the conjunct on the top of the stack, where @i@ must be between
@@ -4911,7 +4864,7 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
   
   -- If the RHS is an lowned perm that is in the LHS, return nothing
   --
-  -- FIXME HERE NOW: recursively call solveForPermListImpl on the the lists of
+  -- FIXME HERE: recursively call solveForPermListImpl on the the lists of
   -- permissions in the lifetimes
   [nuMP| mb_ps_r :>: LOwnedPermLifetime (PExpr_Var mb_l) _ _ |]
     | Right l <- mbNameBoundP mb_l
@@ -6535,28 +6488,42 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
     partialSubstForceM mb_p' "proveVarImpl" >>>=
     introExistsM x e
   
-  -- If proving P<args1,p1> |- P<args2,p2> for the same reachability permission,
-  -- first eliminate the LHS to get P<args1,eq(y)> for some y, then try to prove
-  -- the RHS by either reflexivity, meaning x:p2, or transitivity, meaning
-  -- y:P<args2,p2>
-  (ValPerm_Named npn args off, [nuMP| ValPerm_Named mb_npn mb_args mb_off |])
+  -- If proving P<args1,e1> |- P<args2,e2> for the same reachability permission,
+  -- try to prove the RHS by either reflexivity, meaning x:eq(e2), or
+  -- transitivity, meaning e1:P<args2,e2>
+  (ValPerm_Named npn args1 off, [nuMP| ValPerm_Named mb_npn mb_args2 mb_off |])
     | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn)
     , mbLift (fmap (offsetsEq off) mb_off)
     , RecursiveSortRepr _ TrueRepr <- namedPermNameSort npn
     , NameReachConstr <- namedPermNameReachConstr npn
-    , [nuMP| PExprs_Cons _ (PExpr_ValPerm mb_p') |] <- mbMatch mb_args ->
+    , PExprs_Cons args1_pre e1 <- args1
+    , [nuMP| PExprs_Cons mb_args2_pre mb_e2 |] <- mbMatch mb_args2 ->
       implCatchM
-      (implPopM x p >>> proveVarImplInt x mb_p' >>>
-       partialSubstForceM mb_args "proveVarImpl" >>>= \args' ->
-        implReachabilityReflM x npn args' off)
-      ((if permIsCopyable p then implCopyM x p >>> implPopM x p
-        else greturn ()) >>>
-       implElimReachabilityPermM x npn args off >>>= \y ->
+
+      -- Reflexivity branch: pop x:P<...>, prove x:eq(e), and use reflexivity
+      (implPopM x p >>> proveVarImplInt x (fmap ValPerm_Eq mb_e2) >>>
+       partialSubstForceM mb_args2 "proveVarImpl" >>>= \args2 ->
+        implReachabilityReflM x npn args2 off)
+
+      -- Transitivity branch: copy x:P<args1,e1> if possible, equalize the
+      -- arguments by proving x:P<args2,e1>, introduce variable y:eq(e1), prove
+      -- y:P<args2,e2>, and then finally use transitivity
+      (implMaybeCopyPopM x p >>>
+       proveNamedArgs x npn args1 off (fmap (:>: e1) mb_args2_pre) >>>
+       (case e1 of
+           PExpr_Var y -> greturn y
+           _  ->
+             -- If e1 is not a variable, bind a fresh variable y:eq(e1), then
+             -- cast x:P<args1,e1> to x:P<args1,y>
+             implGetVarType x >>>= \tp ->
+             implLetBindVar tp e1 >>>= \y ->
+             proveEqCast x (\z -> ValPerm_Named npn (args1_pre :>: z) off) e1
+             (fmap (const $ PExpr_Var y) mb_npn) >>>
+             greturn y) >>>= \y ->
        proveVarImplInt y mb_p >>>
-       partialSubstForceM mb_args "proveVarImpl" >>>= \args' ->
-       implReachabilityTransM x npn args' off y)
-  
-  
+       partialSubstForceM mb_args2 "proveVarImpl" >>>= \args2 ->
+       implReachabilityTransM x npn args2 off y)
+
   -- If proving P<args1> |- P<args2> for the same named permission, try to
   -- equalize the arguments and the offsets using proveNamedArgs. Note that we
   -- currently are *not* solving for offsets on the right, meaning that
@@ -6564,8 +6531,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
   (ValPerm_Named npn args off, [nuMP| ValPerm_Named mb_npn mb_args mb_off |])
     | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn (mbLift mb_npn)
     , mbLift (fmap (offsetsEq off) mb_off) ->
-      (if permIsCopyable p then implCopyM x p >>> implPopM x p
-       else greturn ()) >>>
+      implMaybeCopyPopM x p >>>
       proveNamedArgs x npn args off mb_args
   
   -- If proving x:p1 * ... * pn |- P<args>@off where P<args'>@off for some args'
@@ -6701,10 +6667,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
           proveVarImplH x p mb_p'
         (Just off, Nothing) ->
           setVarM memb (PExpr_ValPerm $ offsetPerm (negatePermOffset off) p) >>>
-          if permIsCopyable p then
-            implCopyM x p >>> implPopM x p
-          else
-            greturn ()
+          implMaybeCopyPopM x p
         (Nothing, _) ->
           implFailVarM "proveVarImplH" x p mb_p
   
@@ -6742,7 +6705,6 @@ proveExVarImpl psubst mb_x mb_p
         Left memb -> getExVarType memb
         Right x -> implGetVarType x) >>>= \tp ->
     implLetBindVar tp e >>>= \n ->
-    implPopM n (ValPerm_Eq e) >>>
     proveVarImplInt n mb_p >>> greturn n
 
 -- Special case: if proving an LLVM frame permission, look for an LLVM frame in

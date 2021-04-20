@@ -3,6 +3,15 @@ module iter_linked_list where
 
 import Prelude;
 
+List_def : (a:sort 0) -> sort 0;
+List_def a = List a;
+
+appendList : (a:sort 0) -> List a -> List a -> List a;
+appendList a l1 l2 =
+  List__rec a (\ (_:List a) -> List a) l2
+            (\ (x:a) (_:List a) (rec:List a) -> Cons a x rec)
+            l1;
+
 data ListF (a b:sort 0) : sort 0 where {
   NilF : b -> ListF a b;
   ConsF : a -> ListF a b -> ListF a b;

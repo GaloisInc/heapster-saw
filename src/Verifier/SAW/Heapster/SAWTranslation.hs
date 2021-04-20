@@ -2909,8 +2909,10 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
          (\(pctx :>: ptrans) ->
            pctx :>: typeTransF tp_trans (transTerms ptrans)) m
   
-  [nuMP| SImpl_ReachabilityTrans _ rp args _ _ p |] ->
-    do args_trans <- translate $ mbMap2 PExprs_Cons args $ fmap PExpr_ValPerm p
+  [nuMP| SImpl_ReachabilityTrans _ rp args _ y e |] ->
+    do args_trans <- translate $ mbMap2 PExprs_Cons args e
+       y_trans <- translate y
+       e_trans <- translate e
        ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
        let trans_ident = mbLift $ fmap recPermTransMethod rp
        withPermStackM RL.tail
@@ -2919,6 +2921,8 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
            typeTransF (tupleTypeTrans ttrans) [applyOpenTermMulti
                                                (globalOpenTerm trans_ident)
                                                (transTerms args_trans
+                                                ++ transTerms y_trans
+                                                ++ transTerms e_trans
                                                 ++ [transTerm1 ptrans_x,
                                                     transTerm1 ptrans_y])])
          m
@@ -3121,46 +3125,6 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
                                        fmap (const $ nu PExpr_Var) mb_fld)]
       :>: ptrans')
     m
-  
-  ([nuMP| Impl1_ElimReachabilityPerm _ rp mb_args mb_off p |], _) ->
-    translatePermImplUnary mb_impls $ \m ->
-    let _get_expr_ident = mbLift $ fmap recPermGetExprMethod rp
-        get_perm_ident = mbLift $ fmap recPermGetPermMethod rp
-        put_ident = mbLift $ fmap recPermPutMethod rp
-        tp = fmap (namedPermNameType . recPermName) rp in
-    translate tp >>= \tp_trans ->
-    let tp_trans' = case typeTransTypes tp_trans of
-          [] -> tp_trans
-          _ ->
-            -- FIXME: handle this with the getExpr method
-            error ("translate: Impl1_ElimReachabilityPerm: cannot yet"
-                   ++ " handle non-unit types") in
-    inExtTransM (typeTransF tp_trans' []) $
-    do x_tp <-
-         translate $ mbMap3 (\args off y ->
-                              ValPerm_Named (mbLift $
-                                             fmap recPermName rp)
-                              (PExprs_Cons args $ PExpr_ValPerm $
-                               ValPerm_Eq $ PExpr_Var y)
-                              off)
-         (extMb mb_args) (extMb mb_off) (nuMulti (mbToProxy rp :>: Proxy) $
-                                         \(_ :>: y) -> y)
-       y_tp <- translate $ extMb p
-       args_trans <- translate $ extMb $ mbMap2 PExprs_Cons mb_args $ fmap PExpr_ValPerm p
-       withPermStackM (:>: Member_Base)
-         (\(pctx :>: ptrans_x) ->
-           pctx :>:
-           typeTransF (tupleTypeTrans x_tp) [applyOpenTermMulti
-                                               (globalOpenTerm put_ident)
-                                               (transTerms args_trans
-                                                ++ [unitTypeOpenTerm,
-                                                    transTerm1 ptrans_x,
-                                                    unitOpenTerm])] :>:
-           typeTransF (tupleTypeTrans y_tp) [applyOpenTermMulti
-                                               (globalOpenTerm get_perm_ident)
-                                               (transTerms args_trans
-                                                ++ [transTerm1 ptrans_x])])
-         m
   
   ([nuMP| Impl1_ElimLLVMBlockToEq _ mb_bp |], _) ->
     translatePermImplUnary mb_impls $ \m ->
