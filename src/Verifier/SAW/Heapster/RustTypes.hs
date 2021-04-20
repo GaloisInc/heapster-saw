@@ -49,7 +49,7 @@ import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Language.Rust.Syntax
 import Language.Rust.Parser
-import Language.Rust.Data.Ident (Ident(..), mkIdent)
+import Language.Rust.Data.Ident (Ident(..), mkIdent, name)
 
 import Prettyprinter as PP
 
@@ -368,9 +368,20 @@ isRecursiveDef item =
     containsName _ (UnitD _) = False
 
 instance RsConvert w (Item Span) SomeNamedShape where
-  rsConvert _w (Enum _ _ _ _ _ _) = error "enums not yet handled"
-  rsConvert _w (StructItem _ _ _nm _vd _generics _) = error "structs not yet handled"
-  rsConvert _ item = error ("Top-level item not supported: " ++ show item)
+  rsConvert w item
+    | isRecursiveDef item = error "Recursive definitions not yet supported"
+    | otherwise =
+      case item of
+        StructItem _ _ ident vd generics _ ->
+          do Some ctx <- rsConvert w generics
+             sh <- inRustCtx ctx (rsConvert w vd)
+             let nsh = NamedShape { namedShapeName = name ident
+                                  , namedShapeArgs = rustCtxCtx ctx
+                                  , namedShapeBody = DefinedShapeBody sh
+                                  }
+             return $ SomeNamedShape nsh
+        Enum _ _ _ _ _ _ -> error "enums not yet handled"
+        _ -> fail ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w (VariantData Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (StructD sfs _) =
