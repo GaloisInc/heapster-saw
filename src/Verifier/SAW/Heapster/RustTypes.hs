@@ -354,6 +354,7 @@ isRecursiveDef item =
     isBoxed :: Ident -> Ty Span -> Bool
     isBoxed i (PathTy _ (Path _ [PathSegment box (Just (AngleBracketed _ [PathTy _ (Path _ [PathSegment i' _ _] _) _] _ _)) _] _) _) =
       box == mkIdent "Box" && i == i'
+    isBoxed _ _ = False
 
     typeOf :: StructField Span -> Ty Span
     typeOf (StructField _ _ t _ _) = t
