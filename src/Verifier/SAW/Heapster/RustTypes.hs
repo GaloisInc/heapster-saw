@@ -368,20 +368,18 @@ isRecursiveDef item =
     containsName _ (UnitD _) = False
 
 instance RsConvert w (Item Span) SomeNamedShape where
-  rsConvert w item
-    | isRecursiveDef item = error "Recursive definitions not yet supported"
+  rsConvert w s@(StructItem _ _ ident vd generics _)
+    | isRecursiveDef s = error "Recursive struct definitions not yet supported"
     | otherwise =
-      case item of
-        StructItem _ _ ident vd generics _ ->
-          do Some ctx <- rsConvert w generics
-             sh <- inRustCtx ctx (rsConvert w vd)
-             let nsh = NamedShape { namedShapeName = name ident
-                                  , namedShapeArgs = rustCtxCtx ctx
-                                  , namedShapeBody = DefinedShapeBody sh
-                                  }
-             return $ SomeNamedShape nsh
-        Enum _ _ _ _ _ _ -> error "enums not yet handled"
-        _ -> fail ("Top-level item not supported: " ++ show item)
+      do Some ctx <- rsConvert w generics
+         sh <- inRustCtx ctx $ rsConvert w vd
+         let nsh = NamedShape { namedShapeName = name ident
+                              , namedShapeArgs = rustCtxCtx ctx
+                              , namedShapeBody = DefinedShapeBody sh
+                              }
+         return $ SomeNamedShape nsh
+  rsConvert w e@(Enum _ _ _ _ _ _) = error "enums not yet handled"
+  rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w (VariantData Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (StructD sfs _) =
