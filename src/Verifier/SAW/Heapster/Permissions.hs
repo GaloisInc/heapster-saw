@@ -496,7 +496,7 @@ data PermExpr (a :: CrucibleType) where
 
   -- | A named shape along with arguments for it, with optional read/write and
   -- lifetime modalities that are applied to the body of the shape
-  PExpr_NamedShape :: Maybe (PermExpr RWModalityType) ->
+  PExpr_NamedShape :: KnownNat w => Maybe (PermExpr RWModalityType) ->
                       Maybe (PermExpr LifetimeType) ->
                       NamedShape b args w -> PermExprs args ->
                       PermExpr (LLVMShapeType w)
@@ -604,6 +604,10 @@ bindingType _ = knownRepr
 -- | Convenience function to get the bit width of an LLVM pointer type
 exprLLVMTypeWidth :: KnownNat w => f (LLVMPointerType w) -> NatRepr w
 exprLLVMTypeWidth _ = knownNat
+
+-- | Convenience function to get the bit width of an LLVM pointer type
+shapeLLVMTypeWidth :: KnownNat w => f (LLVMShapeType w) -> NatRepr w
+shapeLLVMTypeWidth _ = knownNat
 
 -- | Convenience function to get the number of bytes = the bit width divided by
 -- 8 of an LLVM pointer type as an expr. Note that this assumes the bit width is
@@ -1474,6 +1478,14 @@ pattern ValPerm_LLVMBlock :: () => (a ~ LLVMPointerType w, 1 <= w, KnownNat w) =
 pattern ValPerm_LLVMBlock bp <- ValPerm_Conj [Perm_LLVMBlock bp]
   where
     ValPerm_LLVMBlock bp = ValPerm_Conj [Perm_LLVMBlock bp]
+
+-- | The conjunction of exactly 1 block shape permission
+pattern ValPerm_LLVMBlockShape :: () => (a ~ LLVMBlockType w, b ~ LLVMShapeType w,
+                                         1 <= w, KnownNat w) =>
+                                  PermExpr b -> ValuePerm a
+pattern ValPerm_LLVMBlockShape sh <- ValPerm_Conj [Perm_LLVMBlockShape sh]
+  where
+    ValPerm_LLVMBlockShape sh = ValPerm_Conj [Perm_LLVMBlockShape sh]
 
 -- | A single @lowned@ permission
 pattern ValPerm_LOwned :: () => (a ~ LifetimeType) =>
@@ -3292,7 +3304,7 @@ modalizeBlockShape (LLVMBlockPerm {..}) =
   modalizeShape (Just llvmBlockRW) (Just llvmBlockLifetime) llvmBlockShape
 
 -- | Unfold a named shape
-unfoldNamedShape :: NamedShape 'True args w -> PermExprs args ->
+unfoldNamedShape :: KnownNat w => NamedShape 'True args w -> PermExprs args ->
                     PermExpr (LLVMShapeType w)
 unfoldNamedShape (NamedShape _ _ (DefinedShapeBody mb_sh)) args =
   subst (substOfExprs args) mb_sh
@@ -3300,7 +3312,7 @@ unfoldNamedShape sh@(NamedShape _ _ (RecShapeBody mb_sh _ _ _)) args =
   subst (substOfExprs (args :>: PExpr_NamedShape Nothing Nothing sh args)) mb_sh
 
 -- | Unfold a named shape and apply 'modalizeShape' to the result
-unfoldModalizeNamedShape :: Maybe (PermExpr RWModalityType) ->
+unfoldModalizeNamedShape :: KnownNat w => Maybe (PermExpr RWModalityType) ->
                             Maybe (PermExpr LifetimeType) ->
                             NamedShape 'True args w -> PermExprs args ->
                             Maybe (PermExpr (LLVMShapeType w))
@@ -6021,6 +6033,177 @@ instance AbstractVars (NamedPermName ns args a) where
 
 
 ----------------------------------------------------------------------
+-- * Abstracting out named shapes
+----------------------------------------------------------------------
+
+-- | An existentially quantified LLVM shape applied to some arguments
+data SomeNamedShapeApp w where
+  SomeNamedShapeApp :: String -> CruCtx args -> PermExprs args ->
+                       NatRepr w -> SomeNamedShapeApp w
+
+class AbstractNamedShape w a where
+  abstractNSM :: a -> ReaderT (SomeNamedShapeApp w) Maybe
+                              (Binding (LLVMShapeType w) a)
+
+abstractNS :: (KnownNat w, AbstractNamedShape w a) =>
+              String -> CruCtx args -> PermExprs args ->
+              a -> Maybe (Binding (LLVMShapeType w) a)
+abstractNS nsh args_ctx args x = runReaderT (abstractNSM x) nshApp
+  where nshApp = SomeNamedShapeApp nsh args_ctx args knownNat
+
+pureBindingM :: Monad m => b -> m (Binding a b)
+pureBindingM = pure . nu . const
+
+instance (NuMatching a, AbstractNamedShape w a) =>
+         AbstractNamedShape w (Mb ctx a) where
+  abstractNSM = fmap mbSwap . mbM . fmap abstractNSM
+
+instance AbstractNamedShape w Integer where
+  abstractNSM = pureBindingM
+
+instance AbstractNamedShape w a => AbstractNamedShape w (Maybe a) where
+  abstractNSM (Just x) = fmap Just <$> abstractNSM x
+  abstractNSM Nothing = pureBindingM Nothing
+
+instance AbstractNamedShape w a => AbstractNamedShape w [a] where
+  abstractNSM [] = pureBindingM []
+  abstractNSM (x:xs) = mbMap2 (:) <$> abstractNSM x <*> abstractNSM xs
+
+instance (AbstractNamedShape w a, AbstractNamedShape w b) =>
+         AbstractNamedShape w (a, b) where
+  abstractNSM (x,y) = mbMap2 (,) <$> abstractNSM x <*> abstractNSM y
+
+instance AbstractNamedShape w (PermExpr a) where
+  abstractNSM (PExpr_Var x) = pureBindingM (PExpr_Var x)
+  abstractNSM PExpr_Unit = pureBindingM PExpr_Unit
+  abstractNSM (PExpr_Bool b) = pureBindingM (PExpr_Bool b)
+  abstractNSM (PExpr_Nat n) = pureBindingM (PExpr_Nat n)
+  abstractNSM (PExpr_String s) = pureBindingM (PExpr_String s)
+  abstractNSM (PExpr_BV fs c) = pureBindingM (PExpr_BV fs c)
+  abstractNSM (PExpr_Struct es) = fmap PExpr_Struct <$> abstractNSM es
+  abstractNSM PExpr_Always = pureBindingM PExpr_Always
+  abstractNSM (PExpr_LLVMWord e) = fmap PExpr_LLVMWord <$> abstractNSM e
+  abstractNSM (PExpr_LLVMOffset x e) = fmap (PExpr_LLVMOffset x) <$> abstractNSM e
+  abstractNSM (PExpr_Fun fh) = pureBindingM (PExpr_Fun fh)
+  abstractNSM PExpr_PermListNil = pureBindingM PExpr_PermListNil
+  abstractNSM (PExpr_PermListCons tp e p l) =
+    mbMap3 (PExpr_PermListCons tp) <$> abstractNSM e <*> abstractNSM p <*> abstractNSM l
+  abstractNSM (PExpr_RWModality rw) = pureBindingM (PExpr_RWModality rw)
+  abstractNSM PExpr_EmptyShape = pureBindingM PExpr_EmptyShape
+  abstractNSM e@(PExpr_NamedShape maybe_rw maybe_l nmsh args) =
+    do SomeNamedShapeApp nm_abs args_ctx_abs args_abs w_abs <- ask
+       case namedShapeName nmsh == nm_abs of
+         True | Just Refl <- testEquality (namedShapeArgs nmsh) args_ctx_abs
+              , True <- args == args_abs
+              , Nothing <- maybe_rw, Nothing <- maybe_l
+              , Just Refl <- testEquality w_abs (shapeLLVMTypeWidth e)
+              -> pure $ nu PExpr_Var
+         True -> fail "named shape not applied to its arguments"
+         False -> pureBindingM (PExpr_NamedShape maybe_rw maybe_l nmsh args)
+  abstractNSM (PExpr_EqShape b) = fmap PExpr_EqShape <$> abstractNSM b
+  abstractNSM (PExpr_PtrShape rw l sh) =
+    mbMap3 PExpr_PtrShape <$> abstractNSM rw <*> abstractNSM l <*> abstractNSM sh
+  abstractNSM (PExpr_FieldShape fsh) = fmap PExpr_FieldShape <$> abstractNSM fsh
+  abstractNSM (PExpr_ArrayShape len s flds) =
+    mbMap3 PExpr_ArrayShape <$> abstractNSM len <*> pureBindingM s <*> abstractNSM flds
+  abstractNSM (PExpr_SeqShape sh1 sh2) =
+    mbMap2 PExpr_SeqShape <$> abstractNSM sh1 <*> abstractNSM sh2
+  abstractNSM (PExpr_OrShape sh1 sh2) =
+    mbMap2 PExpr_OrShape <$> abstractNSM sh1 <*> abstractNSM sh2
+  abstractNSM (PExpr_ExShape mb_sh) = fmap PExpr_ExShape <$> abstractNSM mb_sh
+  abstractNSM (PExpr_ValPerm p) = fmap PExpr_ValPerm <$> abstractNSM p
+
+instance AbstractNamedShape w (PermExprs as) where
+  abstractNSM PExprs_Nil = pureBindingM PExprs_Nil
+  abstractNSM (PExprs_Cons es e) =
+    mbMap2 PExprs_Cons <$> abstractNSM es <*> abstractNSM e
+
+instance AbstractNamedShape w' (LLVMFieldShape w) where
+  abstractNSM (LLVMFieldShape p) = fmap LLVMFieldShape <$> abstractNSM p
+
+instance AbstractNamedShape w (ValuePerm a) where
+  abstractNSM (ValPerm_Eq e) = fmap ValPerm_Eq <$> abstractNSM e
+  abstractNSM (ValPerm_Or p1 p2) =
+    mbMap2 ValPerm_Or <$> abstractNSM p1 <*> abstractNSM p2
+  abstractNSM (ValPerm_Exists p) = fmap ValPerm_Exists <$> abstractNSM p
+  abstractNSM (ValPerm_Named n args off) =
+    mbMap2 (ValPerm_Named n) <$> abstractNSM args <*> abstractNSM off
+  abstractNSM (ValPerm_Var x off) =
+    fmap (ValPerm_Var x) <$> abstractNSM off
+  abstractNSM (ValPerm_Conj aps) = fmap ValPerm_Conj <$> abstractNSM aps
+
+instance AbstractNamedShape w (PermOffset a) where
+  abstractNSM NoPermOffset = pureBindingM NoPermOffset
+  abstractNSM (LLVMPermOffset e) = fmap LLVMPermOffset <$> abstractNSM e
+
+instance AbstractNamedShape w (AtomicPerm a) where
+  abstractNSM (Perm_LLVMField fp) = fmap Perm_LLVMField <$> abstractNSM fp
+  abstractNSM (Perm_LLVMArray ap) = fmap Perm_LLVMArray <$> abstractNSM ap
+  abstractNSM (Perm_LLVMBlock bp) = fmap Perm_LLVMBlock <$> abstractNSM bp
+  abstractNSM (Perm_LLVMFree e) = fmap Perm_LLVMFree <$> abstractNSM e
+  abstractNSM (Perm_LLVMFunPtr tp p) = fmap (Perm_LLVMFunPtr tp) <$> abstractNSM p
+  abstractNSM (Perm_LLVMBlockShape sh) = fmap Perm_LLVMBlockShape <$> abstractNSM sh
+  abstractNSM Perm_IsLLVMPtr = pureBindingM Perm_IsLLVMPtr
+  abstractNSM (Perm_NamedConj n args off) = 
+    mbMap2 (Perm_NamedConj n) <$> abstractNSM args <*> abstractNSM off
+  abstractNSM (Perm_LLVMFrame fp) = fmap Perm_LLVMFrame <$> abstractNSM fp
+  abstractNSM (Perm_LOwned ps_in ps_out) =
+    mbMap2 Perm_LOwned <$> abstractNSM ps_in <*> abstractNSM ps_out
+  abstractNSM (Perm_LCurrent e) = fmap Perm_LCurrent <$> abstractNSM e
+  abstractNSM (Perm_Struct ps) = fmap Perm_Struct <$> abstractNSM ps
+  abstractNSM (Perm_Fun fp) = fmap Perm_Fun <$> abstractNSM fp
+  abstractNSM (Perm_BVProp prop) = pureBindingM (Perm_BVProp prop)
+
+instance AbstractNamedShape w' (LLVMFieldPerm w sz) where
+  abstractNSM (LLVMFieldPerm rw l off p) =
+    mbMap4 LLVMFieldPerm <$> abstractNSM rw <*> abstractNSM l
+                         <*> abstractNSM off <*> abstractNSM p
+
+instance AbstractNamedShape w' (LLVMArrayPerm w) where
+  abstractNSM (LLVMArrayPerm off len s pps bs) =
+    mbMap5 LLVMArrayPerm <$> abstractNSM off <*> abstractNSM len
+                         <*> pureBindingM s <*> abstractNSM pps
+                         <*> abstractNSM bs
+
+instance AbstractNamedShape w' (LLVMArrayField w) where
+  abstractNSM (LLVMArrayField fp) = fmap LLVMArrayField <$> abstractNSM fp
+
+instance AbstractNamedShape w' (LLVMArrayBorrow w) where
+  abstractNSM (FieldBorrow (LLVMArrayIndex e i)) =
+    fmap (\e' -> FieldBorrow (LLVMArrayIndex e' i)) <$> abstractNSM e
+  abstractNSM (RangeBorrow rng) = pureBindingM (RangeBorrow rng)
+
+instance AbstractNamedShape w' (LLVMBlockPerm w) where
+  abstractNSM (LLVMBlockPerm rw l off len sh) =
+    mbMap5 LLVMBlockPerm <$> abstractNSM rw <*> abstractNSM l
+                         <*> abstractNSM off <*> abstractNSM len
+                         <*> abstractNSM sh
+
+instance AbstractNamedShape w (LOwnedPerms ps) where
+  abstractNSM MNil = pureBindingM MNil
+  abstractNSM (fp :>: fps) = mbMap2 (:>:) <$> abstractNSM fp <*> abstractNSM fps
+
+instance AbstractNamedShape w (LOwnedPerm a) where
+  abstractNSM (LOwnedPermField e fp) =
+    mbMap2 LOwnedPermField <$> abstractNSM e <*> abstractNSM fp
+  abstractNSM (LOwnedPermBlock e bp) =
+    mbMap2 LOwnedPermBlock <$> abstractNSM e <*> abstractNSM bp
+  abstractNSM (LOwnedPermLifetime e ps_in ps_out) =
+    mbMap3 LOwnedPermLifetime <$> abstractNSM e <*> abstractNSM ps_in
+                              <*> abstractNSM ps_out
+
+instance AbstractNamedShape w (ValuePerms as) where
+  abstractNSM ValPerms_Nil = pureBindingM ValPerms_Nil
+  abstractNSM (ValPerms_Cons ps p) =
+    mbMap2 ValPerms_Cons <$> abstractNSM ps <*> abstractNSM p
+
+instance AbstractNamedShape w (FunPerm ghosts args ret) where
+  abstractNSM (FunPerm ghosts args ret perms_in perms_out) =
+    mbMap2 (FunPerm ghosts args ret) <$> abstractNSM perms_in
+                                     <*> abstractNSM perms_out
+
+
+----------------------------------------------------------------------
 -- * Permission Environments
 ----------------------------------------------------------------------
 
@@ -6107,6 +6290,12 @@ permEnvAddNamedPerm :: PermEnv -> NamedPerm ns args a -> PermEnv
 permEnvAddNamedPerm env np =
   env { permEnvNamedPerms = SomeNamedPerm np : permEnvNamedPerms env }
 
+-- | Add a 'NamedShape' to a permission environment
+permEnvAddNamedShape :: (1 <= w, KnownNat w) =>
+                        PermEnv -> NamedShape b args w -> PermEnv
+permEnvAddNamedShape env ns =
+  env { permEnvNamedShapes = SomeNamedShape ns : permEnvNamedShapes env }
+
 -- | Add an opaque named permission to a 'PermEnv'
 permEnvAddOpaquePerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
                         Ident -> PermEnv
@@ -6169,6 +6358,47 @@ permEnvAddRecPermM env nm args tp trans_ident reachC casesF foldIdentsF reachMet
                                                  FalseRepr reach) reachC
             cases2 <- casesF npn2 (mkTmpEnv npn2)
             mkRealEnv npn2 cases2 (foldIdentsF npn2 cases2) (reachMethsF npn2)
+
+-- | Add a recursive named shape to a 'PermEnv', assuming that the
+-- body and the fold and unfold functions depend recursively on the
+-- recursive named shape being defined. This is handled by adding a
+-- "temporary" version of the named shape to the environment to be used to
+-- compute the body and the fold and unfold functions and then passing
+-- the expanded environment with this temporary named permission to the supplied
+-- functions for computing these values. This temporary named shape has its
+-- body and its fold and unfold functions undefined, so the supplied
+-- functions cannot depend on these values being defined, which makes sense
+-- because they are defining them!
+permEnvAddRecShapeM :: (Monad m, MonadFail m, 1 <= w, KnownNat w) =>
+                       PermEnv -> String -> CruCtx args -> Ident ->
+                       (NamedShape 'True args w -> PermEnv ->
+                        m (Mb args (PermExpr (LLVMShapeType w)))) ->
+                       (NamedShape 'True args w -> 
+                        Mb args (PermExpr (LLVMShapeType w)) -> PermEnv ->
+                        m (Ident, Ident)) ->
+                       m PermEnv
+permEnvAddRecShapeM env nm args trans_ident bodyF foldIdentsF =
+  do let body_err = error "Analyzing recursive shape cases before it is defined!"
+         fold_err = error "Folding recursive shape before it is defined!"
+         unfold_err = error "Unfolding recursive shape before it is defined!"
+     let nsh1 = NamedShape nm args $  
+                  RecShapeBody body_err trans_ident fold_err unfold_err
+         tmp_env1 = permEnvAddNamedShape env nsh1
+     body <- bodyF nsh1 tmp_env1
+     let mb_args = nus (cruCtxProxies args) namesToExprs
+     case fmap mbCombine . mbMaybe $
+            mbMap2 (abstractNS nm args) mb_args body of
+       Just mb_body ->
+         do let nsh2 = NamedShape nm args $  
+                         RecShapeBody mb_body trans_ident fold_err unfold_err
+                tmp_env2 = permEnvAddNamedShape env nsh2
+                nsh_unf = unfoldNamedShape nsh2 <$> mb_args
+            (fold_ident, unfold_ident) <- foldIdentsF nsh2 nsh_unf tmp_env2
+            return $ permEnvAddNamedShape env $ NamedShape nm args $
+                       RecShapeBody mb_body trans_ident fold_ident unfold_ident
+       Nothing ->
+         fail $ "recursive shape applied to different arguments in its body" 
+
 
 -- | Add a defined named permission to a 'PermEnv'
 permEnvAddDefinedPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->
