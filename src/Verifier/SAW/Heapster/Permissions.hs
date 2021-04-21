@@ -6189,6 +6189,11 @@ permEnvAddDefinedShape env nm args mb_sh =
           SomeNamedShape (NamedShape nm args $
                           DefinedShapeBody mb_sh) : permEnvNamedShapes env }
 
+-- | Add a defined named shape to a 'PermEnv'
+permEnvAddNamedShape :: PermEnv -> SomeNamedShape -> PermEnv
+permEnvAddNamedShape env nsh =
+  env { permEnvNamedShapes = nsh : permEnvNamedShapes env}
+
 -- | Add a global symbol with a function permission to a 'PermEnv'
 permEnvAddGlobalSymFun :: (1 <= w, KnownNat w) => PermEnv -> GlobalSymbol ->
                           f w -> FunPerm ghosts args ret -> OpenTerm -> PermEnv
