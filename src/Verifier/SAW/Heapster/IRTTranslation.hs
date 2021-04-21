@@ -41,6 +41,7 @@ import Control.Monad.Except
 
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
+import Data.Parameterized.BoolRepr
 
 import Lang.Crucible.Types
 import Verifier.SAW.OpenTerm
@@ -335,15 +336,18 @@ instance IRTTyVars (PermExpr (LLVMShapeType w)) where
     [nuMP| PExpr_Var x |] -> irtTTranslateVar mb_sh x
     [nuMP| PExpr_EmptyShape |] -> return ([], IRTVarsNil)
     [nuMP| PExpr_NamedShape maybe_rw maybe_l nmsh args |] ->
-      do nmsh_args <- irtNus (\ns _ -> namesToExprs ns)
+      do args_rec <- irtNus (\ns _ -> namesToExprs ns)
          n_rec <- irtTRecName <$> ask
          case n_rec of
            IRTRecShapeName w_rec nmsh_rec
-             | [nuMP| Just Refl |] <- mbMatch $
+             | mbLift $ (namedShapeName nmsh_rec ==) . namedShapeName <$> nmsh
+             , [nuMP| Just Refl |] <- mbMatch $
                  testEquality w_rec . shapeLLVMTypeWidth <$> mb_sh
-             , [nuMP| Just (Refl, Refl) |] <- mbMatch $
-                 namedShapeEq nmsh_rec <$> nmsh
-             , nmsh_args == args
+             , [nuMP| Just Refl |] <- mbMatch $
+                 testEquality (namedShapeArgs nmsh_rec) . namedShapeArgs <$> nmsh
+             , [nuMP| Just Refl |] <- mbMatch $
+                 testEquality TrueRepr . namedShapeCanUnfoldRepr <$> nmsh
+             , args_rec == args
              , [nuMP| Nothing |] <- mbMatch maybe_rw
              , [nuMP| Nothing |] <- mbMatch maybe_l
              -> return ([], IRTRecVar)
@@ -449,10 +453,6 @@ irtCtor c all_args =
   do tm <- irtCtorOpenTerm c all_args
      return [tm]
 
--- | Thow a "maformed VarIdxs" error
-irtBadIxs :: IRTVarIdxs -> IRTDescTransM ctx a
-irtBadIxs ixs = error $ "malformed IRTVarIdxs: " ++ show ixs
-
 
 ----------------------------------------------------------------------
 -- Translating IRT type descriptions
@@ -510,7 +510,7 @@ instance IRTDescs (ValuePerm a) where
       namedPermIRTDescs npn args off ixs
     ([nuMP| ValPerm_Var _ _ |], _) -> irtVarTDesc ixs
     ([nuMP| ValPerm_Conj ps |], _) -> irtDescs ps ixs
-    _ -> irtBadIxs ixs
+    _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a named perm
 namedPermIRTDescs :: Mb ctx (NamedPermName ns args tp) ->
@@ -524,20 +524,20 @@ namedPermIRTDescs npn args off ixs = case ixs of
             (Just (NamedPerm_Defined dp), _) ->
               irtDescs (mbMap2 (unfoldDefinedPerm dp) args off) ixs
             (_, IRTVar ix) -> irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
-            _ -> irtBadIxs ixs
+            _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a variable
 irtVarTDesc :: IRTVarIdxs -> IRTDescTransM ctx [OpenTerm]
 irtVarTDesc ixs = case ixs of
   IRTVarsNil -> return []
   IRTVar ix -> irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
-  _ -> irtBadIxs ixs
+  _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a list
 instance (NuMatching a, IRTDescs a) => IRTDescs [a] where
   irtDescs mb_xs ixs = case ixs of
     IRTVarsConcat ixss -> concat <$> zipWithM irtDescs (mbList mb_xs) ixss
-    _ -> irtBadIxs ixs
+    _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to an atomic perm
 instance IRTDescs (AtomicPerm a) where
@@ -576,6 +576,7 @@ instance IRTDescs (AtomicPerm a) where
 -- | Get the IRTDescs associated to a shape expression
 instance IRTDescs (PermExpr (LLVMShapeType w)) where
   irtDescs mb_expr ixs = case (mbMatch mb_expr, ixs) of
+    ([nuMP| PExpr_Var _ |], _) -> irtVarTDesc ixs
     ([nuMP| PExpr_EmptyShape |], _) -> return []
     ([nuMP| PExpr_EqShape _ |], _) -> return []
     ([nuMP| PExpr_NamedShape _ _ nmsh args |], _) ->
@@ -585,7 +586,7 @@ instance IRTDescs (PermExpr (LLVMShapeType w)) where
         ([nuMP| DefinedShapeBody _ |], _) ->
           irtDescs (mbMap2 unfoldNamedShape nmsh args) ixs
         (_, IRTVar ix) -> irtCtor "Prelude.IRT_varT" [natOpenTerm ix]
-        _ -> irtBadIxs ixs
+        _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
     ([nuMP| PExpr_PtrShape _ _ sh |], _) ->
       irtDescs sh ixs
     ([nuMP| PExpr_FieldShape fsh |], _) ->
@@ -610,7 +611,7 @@ instance IRTDescs (PermExpr (LLVMShapeType w)) where
          xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
                  irtDesc (mbCombine mb_sh) ixs')
          irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
-    _ -> irtBadIxs ixs
+    _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 -- | Get the IRTDescs associated to a field shape
 instance IRTDescs (LLVMFieldShape w) where
@@ -624,7 +625,7 @@ instance IRTDescs (RAssign ValuePerm ps) where
       do xs <- irtDescs ps ixs1
          x  <- irtDescs p ixs2
          return $ xs ++ x
-    _ -> irtBadIxs ixs
+    _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 
 
 ----------------------------------------------------------------------

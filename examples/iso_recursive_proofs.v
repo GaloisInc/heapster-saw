@@ -13,16 +13,16 @@ Import iso_recursive.
 
 Import SAWCorePrelude.
 
-Ltac listIRT_destruct l l' := destruct l as [| ? l'].
-Ltac listIRT_induction l l' := induction l as [| ? l'].
-Ltac listIRT_simpl := simpl unfoldListIRT in *; simpl foldListIRT in *.
+Ltac list_IRT_destruct l l' := destruct l as [| ? l'].
+Ltac list_IRT_induction l l' := induction l as [| ? l'].
+Ltac list_IRT_simpl := simpl unfoldList_IRT in *; simpl foldList_IRT in *.
 
-Hint Extern 2 (IntroArg ?n (eq (unfoldListIRT _ _ ?l)
+Hint Extern 2 (IntroArg ?n (eq (unfoldList_IRT _ _ ?l)
                                (SAWCorePrelude.Left _ _ _)) _) =>
-  doDestruction (listIRT_destruct) (listIRT_simpl) l : refinesFun.
-Hint Extern 2 (IntroArg ?n (eq (unfoldListIRT _ _ ?l)
+  doDestruction (list_IRT_destruct) (list_IRT_simpl) l : refinesFun.
+Hint Extern 2 (IntroArg ?n (eq (unfoldList_IRT _ _ ?l)
                                (SAWCorePrelude.Right _ _ _)) _) =>
-  doDestruction (listIRT_destruct) (listIRT_simpl) l : refinesFun.
+  doDestruction (list_IRT_destruct) (list_IRT_simpl) l : refinesFun.
 
 
 Lemma no_errors_is_elem : refinesFun is_elem (fun _ _ => noErrorsSpec).
