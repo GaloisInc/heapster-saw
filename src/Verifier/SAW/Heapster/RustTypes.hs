@@ -378,7 +378,16 @@ instance RsConvert w (Item Span) SomeNamedShape where
                               , namedShapeBody = DefinedShapeBody sh
                               }
          return $ SomeNamedShape nsh
-  rsConvert w e@(Enum _ _ _ _ _ _) = error "enums not yet handled"
+  rsConvert w e@(Enum _ _ ident variants generics _)
+    | isRecursiveDef e = error "Recursive enum definitions not yet supported"
+    | otherwise =
+      do Some ctx <- rsConvert w generics
+         sh <- inRustCtx ctx $ rsConvert w variants
+         let nsh = NamedShape { namedShapeName = name ident
+                              , namedShapeArgs = rustCtxCtx ctx
+                              , namedShapeBody = DefinedShapeBody sh
+                              }
+         return $ SomeNamedShape nsh
   rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
