@@ -337,9 +337,7 @@ instance RsConvert w (Arg Span) (PermExpr (LLVMShapeType w)) where
 
 instance RsConvert w (Generics Span) (Some RustCtx) where
   rsConvert w (Generics ltdefs tyvars _ _) =
-    let ltCtx = foldl addLt (Some MNil) ltdefs
-        ctx = foldl addTyVar ltCtx tyvars
-    in return ctx
+    return $ foldl addTyVar (foldl addLt (Some MNil) ltdefs) tyvars
     where
       addLt (Some ctx) ltdef =
         Some (ctx :>: Pair (Constant (lifetimeDefName ltdef)) LifetimeRepr)
