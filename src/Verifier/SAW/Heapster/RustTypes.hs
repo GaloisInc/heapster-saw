@@ -381,6 +381,12 @@ instance RsConvert w (Item Span) SomeNamedShape where
   rsConvert w e@(Enum _ _ _ _ _ _) = error "enums not yet handled"
   rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
 
+instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
+  rsConvert w variants =
+    do vshs <- mapM (rsConvert w) variants
+       return $ foldr PExpr_OrShape PExpr_EmptyShape
+                      (zipWith PExpr_SeqShape undefined vshs)
+
 instance RsConvert w (Variant Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (Variant _ _ vd _ _) = rsConvert w vd
 
