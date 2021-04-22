@@ -346,7 +346,6 @@ instance RsConvert w (Generics Span) (Some RustCtx) where
 
       addTyVar (Some ctx) tyvar =
         Some (ctx :>: Pair (Constant (tyParamName tyvar)) (LLVMShapeRepr (natRepr w)))
-  rsConvert _ _ = error "Generics not yet fully supported"
 
 isRecursiveDef :: Item Span -> Bool
 isRecursiveDef item =
