@@ -44,19 +44,19 @@ Definition incr_list_invar :=
 
 Arguments incr_list_invar !l.
 
-Lemma no_errors_incr_list :
-  refinesFun incr_list (fun l => assumingM (incr_list_invar l) noErrorsSpec).
-Proof.
-  unfold incr_list, incr_list__tuple_fun.
-  prove_refinement_match_letRecM_l.
-  - exact (fun _ l => assumingM (incr_list_invar l) noErrorsSpec).
-  unfold noErrorsSpec, BVVec, bitvector in * |- *.
-  time "no_errors_incr_list" prove_refinement.
-  (* All but one of the remaining goals are taken care of by assumptions we have in scope: *)
-  all: try destruct e_assuming0 as [?e_assuming ?e_assuming]. simpl. apply e_assuming1. try assumption.
-  (* We just have to show this case is impossible by virtue of our loop invariant: *)
-  apply isBvult_to_isBvule_suc in e_assuming0.
-  apply bvule_msb_l in e_assuming0; try assumption.
-  compute_bv_funs in e_assuming0; inversion e_assuming0.
-(* Qed. *)
-Admitted.
+(* Lemma no_errors_incr_list : *)
+(*   refinesFun incr_list (fun l => assumingM (incr_list_invar l) noErrorsSpec). *)
+(* Proof. *)
+(*   unfold incr_list, incr_list__tuple_fun. *)
+(*   prove_refinement_match_letRecM_l. *)
+(*   - exact (fun _ l => assumingM (incr_list_invar l) noErrorsSpec). *)
+(*   unfold noErrorsSpec, BVVec, bitvector in * |- *. *)
+(*   time "no_errors_incr_list" prove_refinement. *)
+(*   (* All but one of the remaining goals are taken care of by assumptions we have in scope: *) *)
+(*   all: try destruct e_assuming0 as [?e_assuming ?e_assuming]. simpl. apply e_assuming1. try assumption. *)
+(*   (* We just have to show this case is impossible by virtue of our loop invariant: *) *)
+(*   apply isBvult_to_isBvule_suc in e_assuming0. *)
+(*   apply bvule_msb_l in e_assuming0; try assumption. *)
+(*   compute_bv_funs in e_assuming0; inversion e_assuming0. *)
+(* (* Qed. *) *)
+(* Admitted. *)
