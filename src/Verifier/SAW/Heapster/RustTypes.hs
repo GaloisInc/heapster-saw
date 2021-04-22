@@ -396,8 +396,12 @@ instance RsConvert w (Item Span) SomeNamedShape where
 instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
   rsConvert w variants =
     do vshs <- mapM (rsConvert w) variants
-       return $ foldr PExpr_OrShape PExpr_EmptyShape
-                      (zipWith PExpr_SeqShape undefined vshs)
+       return $ foldr PExpr_OrShape PExpr_EmptyShape (zipWith PExpr_SeqShape tags vshs)
+    where
+      buildTagShape n =
+        PExpr_FieldShape (LLVMFieldShape (ValPerm_Eq (PExpr_LLVMWord (bvIntOfSize w n))))
+
+      tags = map buildTagShape [0..]
 
 instance RsConvert w (Variant Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (Variant _ _ vd _ _) = rsConvert w vd
