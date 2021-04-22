@@ -336,10 +336,16 @@ instance RsConvert w (Arg Span) (PermExpr (LLVMShapeType w)) where
   rsConvert _ _ = error "rsConvert (Arg): argument form not yet handled"
 
 instance RsConvert w (Generics Span) (Some RustCtx) where
-  rsConvert _ (Generics ltdefs [] _ _) = return $ foldl addLt (Some MNil) ltdefs
+  rsConvert w (Generics ltdefs tyvars _ _) =
+    let ltCtx = foldl addLt (Some MNil) ltdefs
+        ctx = foldl addTyVar ltCtx tyvars
+    in return ctx
     where
       addLt (Some ctx) ltdef =
         Some (ctx :>: Pair (Constant (lifetimeDefName ltdef)) LifetimeRepr)
+
+      addTyVar (Some ctx) tyvar =
+        Some (ctx :>: Pair (Constant (tyParamName tyvar)) (LLVMShapeRepr (natRepr w)))
   rsConvert _ _ = error "Generics not yet fully supported"
 
 isRecursiveDef :: Item Span -> Bool
@@ -788,6 +794,10 @@ lownedPermsForLifetime l (_ :>: vap) =
 -- | Get the 'String' name defined by a 'LifetimeDef'
 lifetimeDefName :: LifetimeDef a -> String
 lifetimeDefName (LifetimeDef _ (Lifetime name _) _ _) = name
+
+-- | Get the 'String' name defined by a 'TyParam'
+tyParamName :: TyParam a -> String
+tyParamName (TyParam _ ident _ _ _) = name ident
 
 extMbOuter :: RAssign prx ctx1 -> Mb ctx2 a -> Mb (ctx1 :++: ctx2) a
 extMbOuter prxs mb_a = mbCombine $ nuMulti prxs $ const mb_a
