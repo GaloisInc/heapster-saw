@@ -30,6 +30,7 @@ library
     prettyprinter >= 1.7.0,
     transformers,
     mtl,
+    containers,
     bv-sized,
     bytestring,
     vector,

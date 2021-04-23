@@ -15,6 +15,7 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -29,10 +30,16 @@ module Verifier.SAW.Heapster.TypedCrucible where
 import Data.Maybe
 import qualified Data.Text as Text
 import Data.List (findIndex)
+import Data.Functor.Constant
 import Data.Type.Equality
 import Data.Kind
 import qualified Data.BitVector.Sized as BV
 import GHC.TypeLits
+
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IntMap
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 
 import What4.ProgramLoc
 import What4.FunctionName
@@ -58,8 +65,6 @@ import Data.Parameterized.Context hiding ((:>), empty, take, view, last, drop)
 import qualified Data.Parameterized.Context as Ctx
 import Data.Parameterized.TraversableFC
 
-
-
 import Lang.Crucible.FunctionHandle
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.Bytes
@@ -76,6 +81,58 @@ import Verifier.SAW.Heapster.Permissions
 import Verifier.SAW.Heapster.Implication
 
 import Debug.Trace
+
+
+----------------------------------------------------------------------
+-- * Handling Crucible Extensions
+----------------------------------------------------------------------
+
+-- | A Crucible extension that satisfies 'NuMatching'
+type NuMatchingExtC ext =
+  (NuMatchingAny1 (ExprExtension ext RegWithVal)
+  -- (NuMatchingAny1 (ExprExtension ext TypedReg)
+   -- , NuMatchingAny1 (StmtExtension ext TypedReg))
+  )
+
+-- | GADT telling us that @ext@ is a syntax extension we can handle
+data ExtRepr ext where
+  ExtRepr_Unit :: ExtRepr ()
+  ExtRepr_LLVM :: (1 <= ArchWidth arch, KnownNat (ArchWidth arch)) =>
+                  ExtRepr (LLVM arch)
+
+instance KnownRepr ExtRepr () where
+  knownRepr = ExtRepr_Unit
+
+instance (1 <= ArchWidth arch, KnownNat (ArchWidth arch)) =>
+         KnownRepr ExtRepr (LLVM arch) where
+  knownRepr = ExtRepr_LLVM
+
+-- | The constraints for a Crucible syntax extension that supports permission
+-- checking
+type PermCheckExtC ext =
+  (NuMatchingExtC ext, IsSyntaxExtension ext, KnownRepr ExtRepr ext)
+
+-- | Extension-specific state
+data PermCheckExtState ext where
+  -- | No extension-specific state for the empty extension
+  PermCheckExtState_Unit :: PermCheckExtState ()
+
+  -- | The extension-specific state for LLVM is the current frame pointer, if it
+  -- exists
+  PermCheckExtState_LLVM :: Maybe (TypedReg (LLVMFrameType (ArchWidth arch))) ->
+                            PermCheckExtState (LLVM arch)
+
+-- | Create a default empty extension-specific state object
+emptyPermCheckExtState :: ExtRepr ext -> PermCheckExtState ext
+emptyPermCheckExtState ExtRepr_Unit = PermCheckExtState_Unit
+emptyPermCheckExtState ExtRepr_LLVM = PermCheckExtState_LLVM Nothing
+
+-- | Get all the names contained in a 'PermCheckExtState'
+permCheckExtStateNames :: PermCheckExtState ext -> Some (RAssign ExprVar)
+permCheckExtStateNames (PermCheckExtState_LLVM (Just treg)) =
+  Some (MNil :>: typedRegVar treg)
+permCheckExtStateNames (PermCheckExtState_LLVM Nothing) = Some MNil
+permCheckExtStateNames (PermCheckExtState_Unit) = Some MNil
 
 
 ----------------------------------------------------------------------
@@ -169,10 +226,14 @@ data TypedEntryID (blocks :: RList (RList CrucibleType))
                  entryGhosts :: CruCtx ghosts,
                  entryIndex :: Int }
 
+-- | Compute the length of a 'Member' proof, which corresponds to its deBruijn
+-- index, i.e., number of hops from the right
 memberLength :: Member a as -> Int
 memberLength Member_Base = 0
 memberLength (Member_Step memb) = 1 + memberLength memb
 
+-- | Compute the indices corresponding to the 'BlockID' and 'entryIndex' of a
+-- 'TypedEntryID', for printing purposes
 entryIDIndices :: TypedEntryID blocks args ghosts -> (Int, Int)
 entryIDIndices (TypedEntryID memb _ ix) = (memberLength memb, ix)
 
@@ -183,6 +244,18 @@ instance TestEquality (TypedEntryID blocks args) where
   testEquality (TypedEntryID memb1 ghosts1 i1) (TypedEntryID memb2 ghosts2 i2)
     | memb1 == memb2 && i1 == i2 = testEquality ghosts1 ghosts2
   testEquality _ _ = Nothing
+
+-- | Test equality of two 'TypedEntryID's with possibly different type arguments
+typedEntryIDEq :: TypedEntryID blocks args ghosts ->
+                  TypedEntryID blocks args' ghosts' ->
+                  Maybe (args :~: args', ghosts :~: ghosts')
+typedEntryIDEq entryID1 entryID2 =
+  (,) <$> testEquality (entryBlockID entryID1) (entryBlockID entryID2)
+  <*> testEquality (entryGhosts entryID1) (entryGhosts entryID2)
+
+-- | A 'TypedEntryID' with unknown @args@ and @ghosts@
+data SomeTypedEntryID blocks =
+  forall args ghosts. SomeTypedEntryID (TypedEntryID blocks args ghosts)
 
 -- | A typed target for jump and branch statements, where the argument registers
 -- (including top-level function arguments and ghost arguments) are given with
@@ -205,12 +278,6 @@ instance NuMatchingAny1 TypedReg where
 
 instance NuMatchingAny1 RegWithVal where
   nuMatchingAny1Proof = nuMatchingProof
-
-type NuMatchingExtC ext =
-  (NuMatchingAny1 (ExprExtension ext RegWithVal)
-  -- (NuMatchingAny1 (ExprExtension ext TypedReg)
-   -- , NuMatchingAny1 (StmtExtension ext TypedReg))
-  )
 
 $(mkNuMatching [t| forall ext tp. NuMatchingExtC ext => TypedExpr ext tp |])
 $(mkNuMatching [t| forall ghosts args ret. TypedFnHandle ghosts args ret |])
@@ -876,6 +943,8 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
 -- * Typed Control-Flow Graphs
 ----------------------------------------------------------------------
 
+-- FIXME: remove in-degree stuff
+
 -- | This type characterizes the number and sort of jumps to a 'TypedEntry'
 data TypedEntryInDegree
      -- | There are no jumps to the entrypoint
@@ -909,90 +978,243 @@ inDegreeIsMulti EntryInDegree_One = False
 inDegreeIsMulti EntryInDegree_Many = True
 inDegreeIsMulti EntryInDegree_Loop = True
 
+-- | Type-level data-kind to indicate a phase of Heapster, which could be
+-- type-checking or translation
+data HeapsterPhase = TCPhase | TransPhase
+
+type TCPhase = 'TCPhase
+type TransPhase = 'TransPhase
+
+-- | A piece of data of type @a@ needed in the translation phase but that could
+-- still be being computed in the type-checking phase
+type family TransData phase a where
+  TransData TCPhase a = Maybe a
+  TransData TransPhase a = a
+
+data TypedCallSiteID blocks args vars =
+  TypedCallSiteID (TypedEntryID blocks args) (CruCtx vars) Int
+
+-- | A jump / branch to a particular entrypoint
+data TypedCallSite blocks tops args vars =
+  forall args' ghosts'. TypedCallSite
+  {
+    -- | The ID of this call site
+    typedCallSiteID :: TypedCallSiteID blocks args vars,
+    -- | The entrypoint calling this entrypoint
+    typedCallSiteCaller :: TypedEntryID blocks args',
+    -- | The permissions held at the call site
+    typedCallSitePerms :: MbValuePerms ((tops :++: args) :++: vars),
+    -- | An implication from the call site perms to the input perms of the
+    -- entrypoint we are jumping to
+    typedCallSiteImpl :: TransData phase (LocalPermImpl
+                                          ((tops :++: args') :++: ghosts')
+                                          ((tops :++: args) :++: ghosts))
+    }
+
+-- | Test if the callers of two 'TypedCallSite's are equal
+typedCallSiteCallerEq :: TypedEntryID blocks args' ghosts' ->
+                         TypedCallSite phase blocks tops args ghosts -> Bool
+typedCallSiteCallerEq entryID (TypedCallSite { .. }) =
+  isJust $ typedEntryIDEq entryID typedCallSiteCaller
+
+-- | Transition a 'TypedEntry' from type-checking to translation phase, by
+-- making sure that all of data needed for the translation phase is present
+completeTypedCallSite :: TypedCallSite TCPhase blocks tops args ghosts ->
+                         TypedCallSite TransPhase blocks tops args ghosts
+completeTypedCallSite (TypedCallSite { .. })
+  | Just impl <- typedCallSiteImpl =
+    TypedCallSite { typedCallSiteImpl = impl, .. }
+completeTypedCallSite _ = error "completeTypedCallSite"
+
+
 -- | A single, typed entrypoint to a Crucible block. Note that our blocks
 -- implicitly take extra "ghost" arguments, that are needed to express the input
 -- and output permissions. The first of these ghost arguments are the top-level
 -- inputs to the entire function.
---
--- FIXME: add a @ghostss@ type argument that associates a @ghosts@ type with
--- each index of each block, rather than having @ghost@ existentially bound
--- here.
-data TypedEntry ext blocks tops ret args where
-  TypedEntry ::
-    !(TypedEntryID blocks args ghosts) ->
-    !(TypedEntryInDegree) ->
-    !(CruCtx tops) -> !(CruCtx args) -> !(TypeRepr ret) ->
-    !(MbValuePerms ((tops :++: args) :++: ghosts)) ->
-    !(Mb ((tops :++: args) :++: ghosts :> ret) (ValuePerms (tops :> ret))) ->
-    !(Mb ((tops :++: args) :++: ghosts)
-      (TypedStmtSeq ext blocks tops ret ((tops :++: args) :++: ghosts))) ->
-    TypedEntry ext blocks tops ret args
+data TypedEntry phase ext blocks tops ret args =
+  TypedEntry {
+    -- | The identifier for this particular entrypoing
+    typedEntryID :: !(TypedEntryID blocks args),
+    -- | The top-level arguments to the entire function
+    typedEntryTops :: !(CruCtx tops),
+    -- | The real arguments to this block
+    typedEntryArgs :: !(CruCtx args),
+    -- | The return value from the entire function
+    typedEntryRet :: !(TypeRepr ret),
+    -- | The call sites that jump to this particular entrypoint
+    typedEntryCallers :: ![TypedCallSite phase blocks tops args],
+    -- | The 
+    -- | The input permissions for this entrypoint
+    typedEntryPermsIn :: !(TransData phase
+                           (MbValuePerms ((tops :++: args) :++: ghosts))),
+    -- | The output permissions for the entire function (cached for convenience)
+    typedEntryPermsOut :: !(Mb ((tops :++: args) :++: ghosts :> ret)
+                            (ValuePerms (tops :> ret))),
+    -- | The type-checked body of the entrypoint
+    typedEntryBody :: !(TransData phase
+                        (Mb ((tops :++: args) :++: ghosts)
+                         (TypedStmtSeq ext blocks tops ret ((tops :++: args)
+                                                            :++: ghosts))))
+    } -> TypedEntry phase ext blocks tops ret args
+
 
 -- | Extract the index of the entrypoint in all entrypoints in the same block
-typedEntryIndex :: TypedEntry ext blocks tops ret args -> Int
-typedEntryIndex (TypedEntry entryID _ _ _ _ _ _ _) = entryIndex entryID
-
--- | Extract the in-degree of an entrypoint
-typedEntryInDegree :: TypedEntry ext blocks tops ret args -> TypedEntryInDegree
-typedEntryInDegree (TypedEntry _ in_deg _ _ _ _ _ _) = in_deg
+typedEntryIndex :: TypedEntry phase ext blocks tops ret args -> Int
+typedEntryIndex (TypedEntry {..}) = entryIndex typedEntryID
 
 -- | Test if an entrypoint has a multiple in-degree
-typedEntryHasMultiInDegree :: TypedEntry ext blocks tops ret args -> Bool
-typedEntryHasMultiInDegree = inDegreeIsMulti . typedEntryInDegree
-
--- | Add to the in-degree of an entrypoint
-entryIncrInDegree :: TypedEntry ext blocks tops ret args ->
-                     TypedEntry ext blocks tops ret args
-entryIncrInDegree (TypedEntry entryID in_deg tops args ret_tp
-                   perms_in perms_ret body) =
-  TypedEntry entryID (incrInDegree in_deg) tops args ret_tp
-  perms_in perms_ret body
+typedEntryHasMultiInDegree :: TypedEntry phase ext blocks tops ret args -> Bool
+typedEntryHasMultiInDegree (TypedEntry {..}) = length typedEntryCallers > 1
 
 -- | Get the body of a 'TypedEntry' using its 'TypedEntryID' to indicate the
 -- @ghosts@ argument. It is an error if the wrong 'TypedEntryID' is given.
-typedEntryBody :: TypedEntryID blocks args ghosts ->
-                  TypedEntry ext blocks tops ret args ->
-                  Mb ((tops :++: args) :++: ghosts)
-                  (TypedStmtSeq ext blocks tops ret
-                   ((tops :++: args) :++: ghosts))
-typedEntryBody entryID (TypedEntry entryID' _ _ _ _ _ _ body)
-  | Just Refl <- testEquality entryID entryID' = body
-typedEntryBody _ _ = error "typedEntryBody"
+getTypedEntryBody :: TypedEntryID blocks args ghosts ->
+                     TypedEntry TransPhase ext blocks tops ret args ->
+                     Mb ((tops :++: args) :++: ghosts)
+                     (TypedStmtSeq ext blocks tops ret
+                      ((tops :++: args) :++: ghosts))
+getTypedEntryBody entryID (TypedEntry { .. })
+  | Just Refl <- testEquality entryID typedEntryID = typedEntryBody
+getTypedEntryBody _ _ = error "getTypedEntryBody"
+
+-- | Transition a 'TypedEntry' from type-checking to translation phase, by
+-- making sure that all of data needed for the translation phase is present
+completeTypedEntry :: TypedEntry TCPhase ext blocks tops ret args ->
+                      TypedEntry TransPhase ext blocks tops ret args
+completeTypedEntry (TypedEntry { .. })
+  | Just perms_in <- typedEntryPermsIn
+  , Just body <- typedEntryBody =
+    TypedEntry { typedEntryPermsIn = perms_in, typedEntryBody = body,
+                 typedEntryCallers =
+                   map completeTypedCallSite typedEntryCallers, .. }
+completeTypedEntry _ = error "completeTypedEntry"
+
+-- | Set the 'CallSite' to an entrypoint for a particular caller to have the
+-- supplied permissions over the supplied varialbes, inserting one if it is not
+-- there and replacing any that are already there
+setCallSiteEntry :: TypedEntryID blocks args' ghosts' -> CruCtx vars ->
+                    MbValuePerms ((tops :++: args) :++: vars) ->
+                    TypedEntry TCPhase ext blocks tops ret args ->
+                    TypedEntry TCPhase ext blocks tops ret args
+setCallSiteEntry caller vars perms_in (TypedEntry {..}) =
+  let call_site = TypedCallSite {
+        typedCallSiteCaller = caller, typedCallSiteVars = vars,
+        typedCallSiteGhosts = (entryGhosts typedEntryID),
+        typedCallSitePerms = perms_in, typedCallSiteImpl = Nothing } in
+  TypedEntry { typedEntryCallers =
+                 call_site :
+                 filter (not . typedCallSiteCallerEq caller) typedEntryCallers
+             , .. }
+
+
+-- | A typed Crucible block is either a join block, meaning that all jumps to it
+-- get joined into the same entrypoint, or is a multi-entry block, meaning that
+-- each jump to it gets type-checked separately with a different entrypoint
+data TypedBlockSort = JoinSort | MultiEntrySort
 
 -- | A typed Crucible block is a list of typed entrypoints to that block
-data TypedBlock ext blocks tops ret args =
+data TypedBlock phase ext blocks tops ret args =
+  forall cblocks cargs. (CtxCtxToRList cblocks ~  blocks,
+                         CtxToRList cargs ~ args) =>
   TypedBlock
   {
+    -- | An identifier for this block
+    typedBlockID :: Member blocks args,
+    -- | The original Crucible block
+    typedBlockBlock :: Block ext cblocks ret cargs,
+    -- | What sort of block is this
+    typedBlockSort :: TypedBlockSort,
     -- | The entrypoints into this block
-    typedBlockEntries :: [TypedEntry ext blocks tops ret args]
+    _typedBlockEntries :: [TypedEntry phase ext blocks tops ret args]
   }
 
-modifyEntry :: (TypedEntry ext blocks tops ret args ->
-                TypedEntry ext blocks tops ret args) ->
-               TypedEntryID blocks args ghosts ->
-               TypedBlock ext blocks tops ret args ->
-               TypedBlock ext blocks tops ret args
-modifyEntry f entryID block =
-  TypedBlock { typedBlockEntries =
-                 map (\case
-                         e@(TypedEntry entryID' _ _ _ _ _ _ _)
-                           | Just Refl <- testEquality entryID entryID' -> f e
-                         e -> e) $
-                 typedBlockEntries block }
+makeLenses ''TypedBlock
+
+-- | The 'Lens' associated with a 'TypedEntryID'. Note that, unlike the standard
+-- lens for list elements, it is an error to use a 'TypedEntryID' for an
+-- entrypoint that does not exist.
+entry :: TypedEntryID blocks args ghosts ->
+         Lens' (TypedBlock phase ext blocks tops ret args)
+         (TypedEntry phase ext blocks tops ret args)
+entry entryID =
+  lens
+  (\blk -> (blk ^. typedBlockEntries) !! entryIndex entryID)
+  (\blk e -> over typedBlockEntries (replaceNth (entryIndex entryID) e) blk)
+
+-- | Build an empty 'TypedBlock' 
+emptyBlockOfSort :: Size cblocks -> TypedBlockSort ->
+                    Block ext cblocks ret cargs ->
+                    TypedBlock TCPhase ext (CtxCtxToRList
+                                            cblocks) tops ret (CtxToRList cargs)
+emptyBlockOfSort sz sort blk =
+  TypedBlock (indexCtxToMember sz $ blockIDIndex $ blockID blk) blk sort []
+
+-- | Transition a 'TypedBlock' from type-checking to translation phase, by
+-- making sure that all of data needed for the translation phase is present
+completeTypedBlock :: TypedBlock TCPhase ext blocks tops ret args ->
+                      TypedBlock TransPhase ext blocks tops ret args
+completeTypedBlock (TypedBlock { .. }) =
+  TypedBlock { _typedBlockEntries = map completeTypedEntry _typedBlockEntries, .. }
+
+-- | Add a new entrypoint to a 'TypedBlock'
+addNewEntry :: CruCtx tops -> CruCtx args -> TypeRepr ret ->
+               Mb ((tops :++: args)
+                   :++: ghosts :> ret) (ValuePerms (tops :> ret)) ->
+               TypedBlock TCPhase ext blocks tops ret args ->
+               (TypedBlock TCPhase ext blocks tops ret args,
+                TypedEntryID blocks args ghosts)
+addNewEntry 
+
+-- | Set the 'CallSite' to a block for a particular caller to have the supplied
+-- permissions over the supplied varialbes, inserting one if it is not there and
+-- replacing any that are already there
+setCallSiteBlock :: TypedEntryID blocks args' ghosts' -> CruCtx vars ->
+                    MbValuePerms ((tops :++: args) :++: vars) ->
+                    TypedBlock TCPhase ext blocks tops ret args ->
+                    TypedBlock TCPhase ext blocks tops ret args
+setCallSiteEntry caller vars perms_in blk =
+  flip (over typedBlockEntries) blk $ \(entries, typedBlockSort blk) ->
+  case findIndex (typedEntryContainsCaller caller) entries of
+    (Just i, _) ->
+      replaceNth i (setCallSiteEntry caller vars perms_in (entries!!i)) entries
+    (Nothing, MultiEntrySort) ->
+      
+
+FIXME HERE NOW: the above should only take a BlockID, and should make a new
+entrypoint if appropriate
 
 -- | A map assigning a 'TypedBlock' to each 'BlockID'
-type TypedBlockMap ext blocks tops ret =
-  RAssign (TypedBlock ext blocks tops ret) blocks
+type TypedBlockMap phase ext blocks tops ret =
+  RAssign (TypedBlock phase ext blocks tops ret) blocks
 
-instance Show (TypedEntry ext blocks tops ret args) where
-  show (TypedEntry entryID _ _ _ _ _ _ _) =
-    "<entry " ++ show (entryIDIndices entryID) ++ ">"
+instance Show (TypedEntry phase ext blocks tops ret args) where
+  show (TypedEntry { .. }) =
+    "<entry " ++ show (entryIDIndices typedEntryID) ++ ">"
 
-instance Show (TypedBlock ext blocks tops ret args) where
-  show (TypedBlock entries) = show entries
+instance Show (TypedBlock phase ext blocks tops ret args) where
+  show = show . (^. typedBlockEntries)
 
-instance Show (TypedBlockMap ext blocks tops ret) where
+instance Show (TypedBlockMap phase ext blocks tops ret) where
   show blkMap = show $ RL.mapToList show blkMap
+
+-- | Build a 'TypedBlockMap' with no entrypoints from a 'BlockMap' and a list of
+-- 'TypedBlockSort's for each 'Block' in the map
+emptyTypedBlockMap :: Assignment (Constant TypedBlockSort) cblocks ->
+                      BlockMap ext cblocks ret ->
+                      TypedBlockMap TCPhase ext (CtxCtxToRList cblocks) tops ret
+emptyTypedBlockMap sorts block_map =
+  let sz = size block_map in
+  assignToRListRList
+  (\blk -> emptyBlockOfSort sz (getConstant $
+                                sorts Ctx.! blockIDIndex (blockID blk)) blk)
+  block_map
+
+-- | Transition a 'TypedBlockMap' from type-checking to translation phase, by
+-- making sure that all of data needed for the translation phase is present
+completeTypedBlockMap :: TypedBlockMap TCPhase ext blocks tops ret ->
+                         TypedBlockMap TransPhase ext blocks tops ret
+completeTypedBlockMap = RL.map completeTypedBlock
+
 
 -- | A typed Crucible CFG
 data TypedCFG
@@ -1004,16 +1226,16 @@ data TypedCFG
   = TypedCFG { tpcfgHandle :: !(TypedFnHandle ghosts inits ret)
              , tpcfgFunPerm :: !(FunPerm ghosts inits ret)
              , tpcfgBlockMap ::
-                 !(TypedBlockMap ext blocks (ghosts :++: inits) ret)
-             , tpcfgEntryBlockID ::
-                 !(TypedEntryID blocks inits RNil)
+                 !(TypedBlockMap TransPhase ext blocks (ghosts :++: inits) ret)
+             , tpcfgEntryBlockID :: !(TypedEntryID blocks inits RNil)
              }
 
-
+-- | Get the input permissions for a 'CFG'
 tpcfgInputPerms :: TypedCFG ext blocks ghosts inits ret ->
                    MbValuePerms (ghosts :++: inits)
 tpcfgInputPerms = funPermIns . tpcfgFunPerm
 
+-- | Get the output permissions for a 'CFG'
 tpcfgOutputPerms :: TypedCFG ext blocks ghosts inits ret ->
                     MbValuePerms (ghosts :++: inits :> ret)
 tpcfgOutputPerms = funPermOuts . tpcfgFunPerm
@@ -1036,46 +1258,6 @@ mkCtxTrans (viewAssign -> AssignExtend ctx' _) (ns :>: n) =
 -- | Add a variable to the current Crucible context translation
 addCtxName :: CtxTrans ctx -> ExprVar tp -> CtxTrans (ctx ::> tp)
 addCtxName ctx x = extend ctx (TypedReg x)
-
--- | GADT telling us that @ext@ is a syntax extension we can handle
-data ExtRepr ext where
-  ExtRepr_Unit :: ExtRepr ()
-  ExtRepr_LLVM :: (1 <= ArchWidth arch, KnownNat (ArchWidth arch)) =>
-                  ExtRepr (LLVM arch)
-
-instance KnownRepr ExtRepr () where
-  knownRepr = ExtRepr_Unit
-
-instance (1 <= ArchWidth arch, KnownNat (ArchWidth arch)) =>
-         KnownRepr ExtRepr (LLVM arch) where
-  knownRepr = ExtRepr_LLVM
-
--- | The constraints for a Crucible syntax extension that supports permission
--- checking
-type PermCheckExtC ext =
-  (NuMatchingExtC ext, IsSyntaxExtension ext, KnownRepr ExtRepr ext)
-
--- | Extension-specific state
-data PermCheckExtState ext where
-  -- | No extension-specific state for the empty extension
-  PermCheckExtState_Unit :: PermCheckExtState ()
-
-  -- | The extension-specific state for LLVM is the current frame pointer, if it
-  -- exists
-  PermCheckExtState_LLVM :: Maybe (TypedReg (LLVMFrameType (ArchWidth arch))) ->
-                            PermCheckExtState (LLVM arch)
-
--- | Create a default empty extension-specific state object
-emptyPermCheckExtState :: ExtRepr ext -> PermCheckExtState ext
-emptyPermCheckExtState ExtRepr_Unit = PermCheckExtState_Unit
-emptyPermCheckExtState ExtRepr_LLVM = PermCheckExtState_LLVM Nothing
-
--- | Get all the names contained in a 'PermCheckExtState'
-permCheckExtStateNames :: PermCheckExtState ext -> Some (RAssign ExprVar)
-permCheckExtStateNames (PermCheckExtState_LLVM (Just treg)) =
-  Some (MNil :>: typedRegVar treg)
-permCheckExtStateNames (PermCheckExtState_LLVM Nothing) = Some MNil
-permCheckExtStateNames (PermCheckExtState_Unit) = Some MNil
 
 -- | The local state maintained while type-checking is the current permission
 -- set and the permissions required on return from the entire function.
@@ -1101,137 +1283,6 @@ modifySTCurPerms :: (PermSet ps1 -> PermSet ps2) ->
                     PermCheckState ext tops ret ps2
 modifySTCurPerms f_perms st = setSTCurPerms (f_perms $ stCurPerms st) st
 
--- | The information needed to type-check a single entrypoint of a block
-data BlockEntryInfo blocks tops ret args where
-  BlockEntryInfo :: {
-    entryInfoID :: TypedEntryID blocks args ghosts,
-    entryInfoInDegree :: TypedEntryInDegree,
-    entryInfoTops :: CruCtx tops,
-    entryInfoArgs :: CruCtx args,
-    entryInfoPermsIn :: MbValuePerms ((tops :++: args) :++: ghosts)
-  } -> BlockEntryInfo blocks tops ret args
-
--- | Extract the 'BlockID' from entrypoint info
-entryInfoBlockID :: BlockEntryInfo blocks tops ret args -> Member blocks args
-entryInfoBlockID (BlockEntryInfo entryID _ _ _ _) = entryBlockID entryID
-
--- | Extract the entry id from entrypoint info
-entryInfoIndex :: BlockEntryInfo blocks tops ret args -> Int
-entryInfoIndex (BlockEntryInfo entryID _ _ _ _) = entryIndex entryID
-
--- | Extract the block id, entry id pair from a 'BlockEntryInfo"
-entryInfoIndices :: BlockEntryInfo blocks tops ret args -> (Int, Int)
-entryInfoIndices (BlockEntryInfo entryID _ _ _ _) = entryIDIndices entryID
-
--- | Add one to the in-degree of a 'BlockEntryInfo'
-entryInfoIncrInDegree :: BlockEntryInfo blocks tops ret args ->
-                         BlockEntryInfo blocks tops ret args
-entryInfoIncrInDegree entry_info =
-  entry_info { entryInfoInDegree =
-                 incrInDegree (entryInfoInDegree entry_info) }
-
--- | Information about the current state of type-checking for a block
-data BlockInfo ext blocks tops ret args =
-  BlockInfo
-  {
-    blockInfoMember :: Member blocks args,
-    blockInfoEntries :: [BlockEntryInfo blocks tops ret args],
-    blockInfoBlock :: Maybe (TypedBlock ext blocks tops ret args)
-  }
-
--- | Test if a block has been type-checked yet, which is true iff its
--- translation has been stored in its info yet
-blockInfoVisited :: BlockInfo ext blocks tops ret args -> Bool
-blockInfoVisited (BlockInfo { blockInfoBlock = Just _ }) = True
-blockInfoVisited _ = False
-
--- | Modify the 'BlockEntryInfo' and, if it is defined, the 'TypedEntry', for a
--- particular entrypoint in a 'BlockInfo'
-modifyEntryInfo :: (BlockEntryInfo blocks tops ret args ->
-                    BlockEntryInfo blocks tops ret args) ->
-                   (TypedEntry ext blocks tops ret args ->
-                    TypedEntry ext blocks tops ret args) ->
-                   TypedEntryID blocks args ghosts ->
-                   BlockInfo ext blocks tops ret args ->
-                   BlockInfo ext blocks tops ret args
-modifyEntryInfo f_info f_entry entryID info =
-  info { blockInfoEntries =
-           map (\case
-                   entry_info@(BlockEntryInfo {..})
-                     | Just Refl <- testEquality entryID entryInfoID ->
-                       f_info entry_info
-                   entry_info -> entry_info) $
-           blockInfoEntries info
-       , blockInfoBlock =
-           fmap (modifyEntry f_entry entryID) (blockInfoBlock info) }
-
-{- FIXME: remove?
--- | Add a new 'BlockEntryInfo' to a 'BlockInfo' and return its 'TypedEntryID'.
--- This assumes that the block has not been visited; if it has, it is an error.
-blockInfoAddEntry :: CruCtx tops -> CruCtx args -> CruCtx ghosts ->
-                     MbDistPerms ((tops :++: args) :++: ghosts) ->
-                     BlockInfo ext blocks tops ret args ->
-                     (BlockInfo ext blocks tops ret args,
-                      TypedEntryID blocks args ghosts)
-blockInfoAddEntry tops args ghosts perms_in info =
-  if blockInfoVisited info then error "blockInfoAddEntry" else
-    let entries = blockInfoEntries info
-        entryID = TypedEntryID (blockInfoMember info) ghosts (length entries) in
-    (info { blockInfoEntries =
-              entries ++ [BlockEntryInfo entryID tops args perms_in] },
-     entryID)
--}
-
-type BlockInfoMap ext blocks tops ret =
-  RAssign (BlockInfo ext blocks tops ret) blocks
-
-blockInfoMapIxs :: BlockInfoMap ext blocks tops ret -> [(Int,Int)]
-blockInfoMapIxs =
-  concat . RL.mapToList (map entryInfoIndices . blockInfoEntries)
-
-
--- | Build an empty 'BlockInfoMap' from an assignment
-emptyBlockInfoMap :: Assignment f blocks ->
-                     BlockInfoMap ext (CtxCtxToRList blocks) tops ret
-emptyBlockInfoMap =
-  RL.map (\memb -> BlockInfo memb [] Nothing) . helper
-  where
-    helper :: Assignment f ctx ->
-              RAssign (Member (CtxCtxToRList ctx)) (CtxCtxToRList ctx)
-    helper (viewAssign -> AssignEmpty) = MNil
-    helper (viewAssign -> AssignExtend asgn _) =
-      RL.map Member_Step (helper asgn) :>: Member_Base
-
-{- FIXME: remove?
--- | Add a new 'BlockEntryInfo' to a block info map, returning the newly updated
--- map and the new 'TypedEntryID'. This assumes that the block has not been
--- visited; if it has, it is an error.
-blockInfoMapAddEntry :: Member blocks args ->
-                        CruCtx tops -> CruCtx args -> CruCtx ghosts ->
-                        MbDistPerms ((tops :++: args) :++: ghosts) ->
-                        BlockInfoMap ext blocks tops ret ->
-                        (BlockInfoMap ext blocks tops ret,
-                         TypedEntryID blocks args ghosts)
-blockInfoMapAddEntry memb tops args ghosts perms_in blkMap =
-  let blkInfo = mapRListLookup memb blkMap
-      (blkInfo', entryID) =
-        blockInfoAddEntry tops args ghosts perms_in blkInfo in
-  (mapRListSet memb blkInfo' blkMap, entryID)
--}
-
--- | Set the 'TypedBlock' for a given block id, thereby marking it as
--- visited. It is an error if it is already set.
-blockInfoMapSetBlock :: Member blocks args ->
-                        TypedBlock ext blocks tops ret args ->
-                        BlockInfoMap ext blocks tops ret ->
-                        BlockInfoMap ext blocks tops ret
-blockInfoMapSetBlock memb blk =
-  RL.modify memb $ \info ->
-  if blockInfoVisited info then
-    error "blockInfoMapSetBlock: block already set"
-  else
-    info { blockInfoBlock = Just blk }
-
 
 -- | The translation of a Crucible block id
 newtype BlockIDTrans blocks args =
@@ -1253,45 +1304,40 @@ buildBlockIDMap (viewAssign -> AssignExtend asgn _) =
 data TopPermCheckState ext cblocks blocks tops ret =
   TopPermCheckState
   {
+    -- | The top-level inputs of the function being type-checked
     stTopCtx :: !(CruCtx tops),
+    -- | The return type of the function being type-checked
     stRetType :: !(TypeRepr ret),
+    -- | The return permission of the function being type-checked
     stRetPerms :: !(MbValuePerms (tops :> ret)),
+    -- | A mapping from 'BlockID's to 'TypedBlockID's
     stBlockTrans :: !(Assignment (BlockIDTrans blocks) cblocks),
-    stBlockInfo :: !(BlockInfoMap ext blocks tops ret),
+    -- | The current set of type-checked blocks
+    _stBlockMap :: !(TypedBlockMap TCPhase ext blocks tops ret),
+    -- | The permissions environment
     stPermEnv :: !PermEnv,
+    -- | The function handle of the function currently being type-checked
     stFnHandle :: !SomeHandle,
+    -- | The un-translated input types of all of the Crucible blocks
     stBlockTypes :: !(Assignment CtxRepr cblocks),
+    -- | The endianness of the current architecture
     stEndianness :: !EndianForm
   }
 
-{-
-$(mkNuMatching [t| forall ext cblocks blocks ret.
-                TopPermCheckState ext cblocks blocks ret |])
-
-instance Closable (TopPermCheckState ext cblocks blocks ret) where
-  toClosed (TopPermCheckState {..}) =
-    $(mkClosed [| TopPermCheckState |])
-    `clApply` (toClosed stRetType)
-    `clApplyCl` stBlockTrans
-    `clApplyCl` stBlockInfo
-    `clApplyCl` stFunTypeEnv
-
-instance BindState (TopPermCheckState ext cblocks blocks ret) where
-  bindState (mbMatch -> [nuMP| TopPermCheckState retType bt i env |]) =
-    TopPermCheckState (mbLift retType) (mbLift bt) (mbLift i) (mbLift env)
--}
+makeLenses ''TopPermCheckState
 
 -- | Build an empty 'TopPermCheckState' from a Crucible 'BlockMap'
 emptyTopPermCheckState ::
   FnHandle init ret -> CruCtx tops -> MbValuePerms (tops :> ret) ->
+  Assignment (Constant TypedBlockSort) cblocks ->
   BlockMap ext cblocks ret -> PermEnv -> EndianForm ->
   TopPermCheckState ext cblocks (CtxCtxToRList cblocks) tops ret
-emptyTopPermCheckState h tops retPerms blkMap env endianness =
+emptyTopPermCheckState h tops retPerms sorts blkMap env endianness =
   TopPermCheckState { stTopCtx = tops
                     , stRetType = handleReturnType h
                     , stRetPerms = retPerms
                     , stBlockTrans = buildBlockIDMap blkMap
-                    , stBlockInfo = emptyBlockInfoMap blkMap
+                    , _stBlockMap = emptyTypedBlockMap sorts blkMap
                     , stPermEnv = env
                     , stFnHandle = SomeHandle h
                     , stBlockTypes = fmapFC blockInputs blkMap
@@ -1309,12 +1355,6 @@ stLookupBlockID (BlockID ix) st =
 -- | The top-level monad for permission-checking CFGs
 type TopPermCheckM ext cblocks blocks tops ret =
   State (TopPermCheckState ext cblocks blocks tops ret)
-
-modifyBlockInfo :: (BlockInfoMap ext blocks tops ret ->
-                    BlockInfoMap ext blocks tops ret) ->
-                   TopPermCheckM ext cblocks blocks tops ret ()
-modifyBlockInfo f =
-  modify (\st -> st { stBlockInfo = f (stBlockInfo st) })
 
 {-
 -- | A datakind for the type-level parameters needed to define blocks, including
@@ -1335,56 +1375,44 @@ type family BlkArgs (args :: BlkParams) :: RList CrucibleType where
   BlkArgs ('BlkParams _ _ _ args) = args
 -}
 
--- | A change to a 'BlockInfoMap'
-data BlockInfoMapDelta blocks tops ret where
-  -- | Add a new entrypoint to a block
-  BlockInfoMapAddEntry :: Member blocks args ->
-                          BlockEntryInfo blocks tops ret args ->
-                          BlockInfoMapDelta blocks tops ret
 
-  -- | Increment the number of jumps to an entrypoint
-  BlockInfoMapIncrJumps :: TypedEntryID blocks args ghosts ->
-                           BlockInfoMapDelta blocks tops ret
 
--- | Add a new entrypoint to a 'BlockInfoMap'
-addBlockEntry :: Member blocks args -> BlockEntryInfo blocks tops ret args ->
-                 BlockInfoMap ext blocks tops ret ->
-                 BlockInfoMap ext blocks tops ret
-addBlockEntry memb entry =
-  RL.modify memb $ \info ->
-  info { blockInfoEntries = blockInfoEntries info ++ [entry] }
+-- | A change to a 'TypedBlockMap'
+data TypedBlockMapDelta blocks tops ret where
+  -- | Add a 'CallSite' to the specified entrypoint, replacing any that are
+  -- already there that have the same caller
+  TypedBlockMapSetCallSite :: TypedEntryID blocks args ghosts ->
+                              TypedEntryID blocks args' ghosts' -> CruCtx vars ->
+                              MbValuePerms ((tops :++: args) :++: vars) ->
+                              TypedBlockMapDelta blocks tops ret
 
--- | Increment the number of jumps to an entrypoint
-incrEntryJumpsInMap :: TypedEntryID blocks args ghosts ->
-                       BlockInfoMap ext blocks tops ret ->
-                       BlockInfoMap ext blocks tops ret
-incrEntryJumpsInMap entryID =
-  RL.modify (entryBlockID entryID) $
-  modifyEntryInfo entryInfoIncrInDegree entryIncrInDegree entryID
+-- | Get out the callee being modified by a 'TypedBlockMapDelta'
+typedBlockMapDeltaCallee :: TypedBlockMapDelta blocks tops ret ->
+                            SomeTypedEntryID blocks
+typedBlockMapDeltaCallee (TypedBlockMapSetCallSite entryID _ _ _) =
+  SomeTypedEntryID entryID
 
--- | Apply a 'BlockInfoMapDelta' to a 'BlockInfoMap'
-applyBlockInfoMapDelta :: BlockInfoMapDelta blocks tops ret ->
-                          BlockInfoMap ext blocks tops ret ->
-                          BlockInfoMap ext blocks tops ret
-applyBlockInfoMapDelta (BlockInfoMapAddEntry memb entry) =
-  addBlockEntry memb entry
-applyBlockInfoMapDelta (BlockInfoMapIncrJumps entryID) =
-  incrEntryJumpsInMap entryID
+-- | Apply a 'TypedBlockMapDelta' to a 'TypedBlockMap'
+applyTypedBlockMapDelta :: TypedBlockMapDelta blocks tops ret ->
+                           TypedBlockMap TCPhase ext blocks tops ret ->
+                           TypedBlockMap TCPhase ext blocks tops ret
+applyTypedBlockMapDelta (TypedBlockMapSetCallSite entryID caller vars perms_in) =
+  over (member (entryBlockID entryID) . entry entryID)
+  (setCallSite caller vars perms_in)
 
--- | Apply a list of 'BlockInfoMapDelta's to a 'TopPermCheckState'
-applyDeltasToTopState :: [BlockInfoMapDelta blocks tops ret] ->
+-- | Apply a list of 'TypedBlockMapDelta's to a 'TopPermCheckState'
+applyDeltasToTopState :: [TypedBlockMapDelta blocks tops ret] ->
                          TopPermCheckState ext cblocks blocks tops ret ->
                          TopPermCheckState ext cblocks blocks tops ret
-applyDeltasToTopState deltas top_st =
-  top_st { stBlockInfo =
-             foldr applyBlockInfoMapDelta (stBlockInfo top_st) deltas }
+applyDeltasToTopState deltas =
+  over stBlockMap (\blk_map -> foldr applyTypedBlockMapDelta blk_map deltas)
 
 -- | The state that can be modified by "inner" computations = a list of changes
--- / "deltas" to the current 'BlockInfoMap'
+-- / "deltas" to the current 'TypedBlockMap'
 data InnerPermCheckState blocks tops ret =
   InnerPermCheckState
   {
-    innerBlockInfo :: [BlockInfoMapDelta blocks tops ret]
+    innerBlockInfo :: [TypedBlockMapDelta blocks tops ret]
   }
 
 -- | Build an empty, closed 'InnerPermCheckState'
@@ -1394,7 +1422,7 @@ clEmptyInnerPermCheckState = $(mkClosed [| InnerPermCheckState [] |])
 
 
 -- | The "inner" monad that runs inside 'PermCheckM' continuations. It can see
--- but not modify the top-level state, but it can add 'BlockInfoMapDelta's to
+-- but not modify the top-level state, but it can add 'TypedBlockMapDelta's to
 -- be applied later to the top-level 'BlockInfoMap'
 type InnerPermCheckM ext cblocks blocks tops ret =
   ReaderT (TopPermCheckState ext cblocks blocks tops ret)
@@ -1432,16 +1460,18 @@ runPermCheckM topVars perms m =
            stErrPrefix = Nothing }
      runGenContM (runGenStateT m st) (\((), _) -> return ())
 
--- | Lift an 'InnerPermCheckM' to a 'TopPermCheckM'
+-- | Lift an 'InnerPermCheckM' to a 'TopPermCheckM', with all 'TypedEntryID's
+-- whose call sites have been added to as an extra return value
 liftInnerToTopM :: InnerPermCheckM ext cblocks blocks tops ret a ->
-                   TopPermCheckM ext cblocks blocks tops ret a
+                   TopPermCheckM ext cblocks blocks tops ret
+                   (a, [SomeTypedEntryID blocks])
 liftInnerToTopM m =
   do st <- get
      let (a, cl_inner_st) =
            runState (runReaderT m st) clEmptyInnerPermCheckState
      let deltas = innerBlockInfo $ unClosed cl_inner_st
      modify (applyDeltasToTopState deltas)
-     return a
+     return (a, map typedBlockMapDeltaCallee deltas)
 
 -- | Get the current top-level state modulo the modifications to the current
 -- block info map
@@ -1451,6 +1481,18 @@ top_get = gcaptureCC $ \k ->
   do top_st <- ask
      deltas <- innerBlockInfo <$> unClosed <$> get
      k $ applyDeltasToTopState deltas top_st
+
+{-
+FIXME HERE NOW
+
+    -- | The topological ordering of all the 'BlockID's of the current function,
+    -- implemented as a map from the 'indexVal' of a 'BlockID' to its ordinal
+    -- position in the this topological ordering
+    stBlockOrderMap :: IntMap Int,
+    -- | The set of blocks FIXME HERE NOW
+    stUnresolvedBlocks :: IntSet,
+
+
 
 -- | Look up the 'BlockInfo' for a block
 lookupBlockInfo :: Member blocks args ->
@@ -3499,3 +3541,4 @@ tcCFG env endianness fun_perm@(FunPerm ghosts
     visit (SCC Nothing comps) =
       -- NOTE: this should never actually happen, as nothing jumps to Nothing
       mapM_ visit comps
+-}
