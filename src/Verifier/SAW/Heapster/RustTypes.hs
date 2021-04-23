@@ -202,6 +202,15 @@ sizedIntShapeFun _ sz =
   constShapeFun $ PExpr_FieldShape (LLVMFieldShape $
                                     ValPerm_Exists $ llvmExEqWord sz)
 
+-- | Build a `SomeShapeFun` from `SomeNamedShape`
+namedShapeShapeFun :: NatRepr w -> SomeNamedShape -> RustConvM (SomeShapeFun w)
+namedShapeShapeFun w (SomeNamedShape nmsh)
+  | Just Refl <- testEquality w (natRepr nmsh) = return $
+      SomeShapeFun (namedShapeArgs nmsh)
+                   (nuMulti (cruCtxProxies (namedShapeArgs nmsh))
+                            (\ns -> PExpr_NamedShape Nothing Nothing nmsh (namesToExprs ns)))
+namedShapeShapeFun _ _ = fail "Requested width and type width are unequal"
+
 -- | A table for converting Rust base types to shapes
 namedTypeTable :: (1 <= w, KnownNat w) => prx w -> [(String,SomeShapeFun w)]
 namedTypeTable w =
@@ -243,16 +252,17 @@ newtype RustName = RustName [Ident]
 instance Show RustName where
   show (RustName ids) = concat $ intersperse "::" $ map show ids
 
-instance RsConvert w RustName SomeNamedShape where
-  rsConvert _w (RustName elems) =
+instance RsConvert w RustName (SomeShapeFun w) where
+  rsConvert w (RustName elems) =
     -- FIXME: figure out how to actually resolve names; for now we just look at
     -- the last string component...
     do let str = name $ last elems
        env <- rciPermEnv <$> ask
-       let maybe_nmsh = lookupNamedShape env str
-       case maybe_nmsh of
-         Just nmsh -> return nmsh
-         Nothing -> fail ("Unkown Rust type name: " ++ str)
+       case lookupNamedShape env str of
+         Just nmsh -> namedShapeShapeFun (natRepr w) nmsh
+         Nothing ->
+           do n <- lookupName str (LLVMShapeRepr (natRepr w))
+              return $ constShapeFun (PExpr_Var n)
 
 -- | Get the "name" = sequence of identifiers out of a Rust path
 rsPathName :: Path a -> RustName
