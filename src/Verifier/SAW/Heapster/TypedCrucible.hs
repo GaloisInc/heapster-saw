@@ -29,7 +29,7 @@ module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
 import qualified Data.Text as Text
-import Data.List (findIndex)
+import Data.List (find, findIndex, any)
 import Data.Functor.Constant
 import Data.Type.Equality
 import Data.Kind
@@ -63,6 +63,7 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 
 import Data.Parameterized.Context hiding ((:>), empty, take, view, last, drop)
 import qualified Data.Parameterized.Context as Ctx
+import Data.Parameterized.TraversableF
 import Data.Parameterized.TraversableFC
 
 import Lang.Crucible.FunctionHandle
@@ -214,17 +215,18 @@ typedFnHandleRetType :: TypedFnHandle ghosts args ret -> TypeRepr ret
 typedFnHandleRetType (TypedFnHandle _ h) = handleReturnType h
 
 
+-- | As in standard Crucible, blocks are identified by membership proofs that
+-- their input arguments are in the @blocks@ list
+type TypedBlockID =
+  Member :: RList (RList CrucibleType) -> RList CrucibleType -> Type
+
 -- | All of our blocks have multiple entry points, for different inferred types,
 -- so a "typed" 'BlockID' is a normal Crucible 'BlockID' (which is just an index
 -- into the @blocks@ context of contexts) plus an 'Int' specifying which entry
--- point to that block. Each entry point also takes an extra set of "ghost"
--- arguments, not extant in the original program, that are needed to express
--- input and output permissions.
-data TypedEntryID (blocks :: RList (RList CrucibleType))
-     (args :: RList CrucibleType) ghosts =
-  TypedEntryID { entryBlockID :: Member blocks args,
-                 entryGhosts :: CruCtx ghosts,
-                 entryIndex :: Int }
+-- point to that block
+data TypedEntryID blocks args =
+  TypedEntryID { entryBlockID :: TypedBlockID blocks args, entryIndex :: Int }
+  deriving Eq
 
 -- | Compute the length of a 'Member' proof, which corresponds to its deBruijn
 -- index, i.e., number of hops from the right
@@ -234,39 +236,66 @@ memberLength (Member_Step memb) = 1 + memberLength memb
 
 -- | Compute the indices corresponding to the 'BlockID' and 'entryIndex' of a
 -- 'TypedEntryID', for printing purposes
-entryIDIndices :: TypedEntryID blocks args ghosts -> (Int, Int)
-entryIDIndices (TypedEntryID memb _ ix) = (memberLength memb, ix)
+entryIDIndices :: TypedEntryID blocks args -> (Int, Int)
+entryIDIndices (TypedEntryID memb ix) = (memberLength memb, ix)
 
-instance Show (TypedEntryID blocks args ghosts) where
+instance Show (TypedEntryID blocks args) where
   show entryID = "<entryID " ++ show (entryIDIndices entryID) ++ ">"
 
-instance TestEquality (TypedEntryID blocks args) where
-  testEquality (TypedEntryID memb1 ghosts1 i1) (TypedEntryID memb2 ghosts2 i2)
-    | memb1 == memb2 && i1 == i2 = testEquality ghosts1 ghosts2
+instance TestEquality (TypedEntryID blocks) where
+  testEquality (TypedEntryID memb1 i1) (TypedEntryID memb2 i2)
+    | i1 == i2 = testEquality memb1 memb2
   testEquality _ _ = Nothing
 
--- | Test equality of two 'TypedEntryID's with possibly different type arguments
-typedEntryIDEq :: TypedEntryID blocks args ghosts ->
-                  TypedEntryID blocks args' ghosts' ->
-                  Maybe (args :~: args', ghosts :~: ghosts')
-typedEntryIDEq entryID1 entryID2 =
-  (,) <$> testEquality (entryBlockID entryID1) (entryBlockID entryID2)
-  <*> testEquality (entryGhosts entryID1) (entryGhosts entryID2)
+-- | Each call site, that jumps or branches to another block, is identified by
+-- the entrypoint it occurs in and the entrypoint it calls, and is associated
+-- with the free variables at that call site, each of which could have
+-- permissions being passed by the call
+data TypedCallSiteID blocks args vars =
+  forall args_src.
+  TypedCallSiteID { callSiteSrc :: TypedEntryID blocks args_src,
+                    callSiteDest :: TypedEntryID blocks args,
+                    callSiteVars :: CruCtx vars }
 
--- | A 'TypedEntryID' with unknown @args@ and @ghosts@
-data SomeTypedEntryID blocks =
-  forall args ghosts. SomeTypedEntryID (TypedEntryID blocks args ghosts)
+instance TestEquality (TypedCallSiteID blocks args) where
+  testEquality (TypedCallSiteID
+                src1 dest1 vars1) (TypedCallSiteID src2 dest2 vars2)
+    | Just Refl <- testEquality src1 src2
+    , dest1 == dest2 = testEquality vars1 vars2
+  testEquality _ _ = Nothing
+
+-- | Test if the caller of a 'TypedCallSiteID' equals a given entrypoint
+callSiteIDCallerEq :: TypedEntryID blocks args_src ->
+                      TypedCallSiteID blocks args vars -> Bool
+callSiteIDCallerEq entryID (TypedCallSiteID {..}) =
+  isJust $ testEquality entryID callSiteSrc
+
+-- | Test if two 'TypedCallSiteID's are "equivalent", meaning they have the same
+-- source and destination but possibly different free variables
+callSiteIDEquiv :: TypedCallSiteID blocks args vars ->
+                   TypedCallSiteID blocks args' vars' -> Bool
+callSiteIDEquiv (TypedCallSiteID src1 dest1 _) (TypedCallSiteID src2 dest2 _) =
+  isJust (testEquality src1 src2) && isJust (testEquality dest1 dest2)
+
+-- | Test equality of two 'TypedEntryID's with possibly different type arguments
+typedCallSiteIDEq :: TypedCallSiteID blocks args vars ->
+                     TypedCallSiteID blocks args' vars' ->
+                     Maybe (args :~: args', vars :~: vars')
+typedCallSiteIDEq (TypedCallSiteID
+                   src1 dest1 vars1) (TypedCallSiteID src2 dest2 vars2)
+  | isJust (testEquality src1 src2) =
+    (,) <$> testEquality dest1 dest2 <*> testEquality vars1 vars2
+typedCallSiteIDEq _ _ = Nothing
 
 -- | A typed target for jump and branch statements, where the argument registers
--- (including top-level function arguments and ghost arguments) are given with
--- their permissions as a 'DistPerms'; the expressions used for the ghost
--- arguments are also supplied
+-- (including top-level function arguments and free variables) are given with
+-- their permissions as a 'DistPerms'
 data TypedJumpTarget blocks tops ps where
      TypedJumpTarget ::
-       !(TypedEntryID blocks args ghosts) ->
-       !(Proxy tops) -> !(CruCtx args) -> !(PermExprs ghosts) ->
-       !(DistPerms ((tops :++: args) :++: ghosts)) ->
-       TypedJumpTarget blocks tops ((tops :++: args) :++: ghosts)
+       !(TypedCallSiteID blocks args vars) ->
+       !(Proxy tops) -> !(CruCtx args) ->
+       !(DistPerms ((tops :++: args) :++: vars)) ->
+       TypedJumpTarget blocks tops ((tops :++: args) :++: vars)
 
 
 $(mkNuMatching [t| forall tp. TypedReg tp |])
@@ -281,22 +310,28 @@ instance NuMatchingAny1 RegWithVal where
 
 $(mkNuMatching [t| forall ext tp. NuMatchingExtC ext => TypedExpr ext tp |])
 $(mkNuMatching [t| forall ghosts args ret. TypedFnHandle ghosts args ret |])
-$(mkNuMatching [t| forall blocks ghosts args. TypedEntryID blocks args ghosts |])
+$(mkNuMatching [t| forall blocks args. TypedEntryID blocks args |])
+$(mkNuMatching [t| forall blocks args ghosts. TypedCallSiteID blocks args ghosts |])
 $(mkNuMatching [t| forall blocks tops ps_in. TypedJumpTarget blocks tops ps_in |])
 
 instance NuMatchingAny1 (TypedJumpTarget blocks tops) where
   nuMatchingAny1Proof = nuMatchingProof
 
-instance Closable (TypedEntryID blocks args ghosts) where
-  toClosed (TypedEntryID entryBlockID entryGhosts entryIndex) =
-    $(mkClosed [| TypedEntryID |]) `clApply` toClosed entryBlockID `clApply`
-    toClosed entryGhosts `clApply` toClosed entryIndex
+instance Closable (TypedEntryID blocks args) where
+  toClosed (TypedEntryID entryBlockID entryIndex) =
+    $(mkClosed [| TypedEntryID |])
+    `clApply` toClosed entryBlockID `clApply` toClosed entryIndex
 
-instance Liftable (TypedEntryID blocks args ghosts) where
-  mbLift (mbMatch -> [nuMP| TypedEntryID entryBlockID entryGhosts entryIndex |]) =
-    TypedEntryID { entryBlockID = mbLift entryBlockID,
-                   entryGhosts = mbLift entryGhosts,
-                   entryIndex = mbLift entryIndex }
+instance Liftable (TypedEntryID blocks args) where
+  mbLift = unClosed . mbLift . fmap toClosed
+
+instance Closable (TypedCallSiteID blocks args vars) where
+  toClosed (TypedCallSiteID src dest vars) =
+    $(mkClosed [| TypedCallSiteID |])
+    `clApply` toClosed src `clApply` toClosed dest `clApply` toClosed vars
+
+instance Liftable (TypedCallSiteID blocks args vars) where
+  mbLift = unClosed . mbLift . fmap toClosed
 
 
 ----------------------------------------------------------------------
@@ -904,9 +939,9 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedJumpTarget blocks tops ps) m where
-  genSubst s (mbMatch -> [nuMP| TypedJumpTarget entryID prx ctx exprs perms |]) =
+  genSubst s (mbMatch -> [nuMP| TypedJumpTarget entryID prx ctx perms |]) =
     TypedJumpTarget (mbLift entryID) (mbLift prx) (mbLift ctx) <$>
-    genSubst s exprs <*> genSubst s perms
+    genSubst s perms
 
 instance SubstVar PermVarSubst m =>
          Substable1 PermVarSubst (TypedJumpTarget blocks tops) m where
@@ -991,48 +1026,54 @@ type family TransData phase a where
   TransData TCPhase a = Maybe a
   TransData TransPhase a = a
 
-data TypedCallSiteID blocks args vars =
-  TypedCallSiteID (TypedEntryID blocks args) (CruCtx vars) Int
-
--- | A jump / branch to a particular entrypoint
-data TypedCallSite blocks tops args vars =
-  forall args' ghosts'. TypedCallSite
+-- | A jump / branch to a particular entrypoint (FIXME HERE NOW: documentation)
+data TypedCallSite phase blocks tops args ghosts vars =
+  TypedCallSite
   {
     -- | The ID of this call site
     typedCallSiteID :: TypedCallSiteID blocks args vars,
-    -- | The entrypoint calling this entrypoint
-    typedCallSiteCaller :: TypedEntryID blocks args',
     -- | The permissions held at the call site
     typedCallSitePerms :: MbValuePerms ((tops :++: args) :++: vars),
     -- | An implication from the call site perms to the input perms of the
     -- entrypoint we are jumping to
     typedCallSiteImpl :: TransData phase (LocalPermImpl
-                                          ((tops :++: args') :++: ghosts')
+                                          ((tops :++: args) :++: vars)
                                           ((tops :++: args) :++: ghosts))
-    }
+  }
 
--- | Test if the callers of two 'TypedCallSite's are equal
-typedCallSiteCallerEq :: TypedEntryID blocks args' ghosts' ->
-                         TypedCallSite phase blocks tops args ghosts -> Bool
-typedCallSiteCallerEq entryID (TypedCallSite { .. }) =
-  isJust $ typedEntryIDEq entryID typedCallSiteCaller
+-- | Get the entrypoint index of a call site
+typedCallSiteEntryIx :: TypedCallSite phase blocks tops args ghosts vars -> Int
+typedCallSiteEntryIx = entryIndex . callSiteDest . typedCallSiteID
 
 -- | Transition a 'TypedEntry' from type-checking to translation phase, by
 -- making sure that all of data needed for the translation phase is present
-completeTypedCallSite :: TypedCallSite TCPhase blocks tops args ghosts ->
-                         TypedCallSite TransPhase blocks tops args ghosts
-completeTypedCallSite (TypedCallSite { .. })
-  | Just impl <- typedCallSiteImpl =
-    TypedCallSite { typedCallSiteImpl = impl, .. }
+completeTypedCallSite :: TypedCallSite TCPhase blocks tops args ghosts vars ->
+                         TypedCallSite TransPhase blocks tops args ghosts vars
+completeTypedCallSite call_site
+  | Just impl <- typedCallSiteImpl call_site
+  = call_site { typedCallSiteImpl = impl }
 completeTypedCallSite _ = error "completeTypedCallSite"
 
+-- | Build a 'TypedCallSite' with no implication
+emptyTypedCallSite :: TypedCallSiteID blocks args vars ->
+                      MbValuePerms ((tops :++: args) :++: vars) ->
+                      TypedCallSite TCPhase blocks tops args ghosts vars
+emptyTypedCallSite siteID perms = TypedCallSite siteID perms Nothing
+
+-- | Build a 'TypedCallSite' that uses the identity implication, meaning its
+-- @vars@ will equal the @ghosts@ of its entrypoint
+idTypedCallSite :: TypedCallSiteID blocks args vars ->
+                   MbValuePerms ((tops :++: args) :++: vars) ->
+                   TypedCallSite TCPhase blocks tops args vars vars
+idTypedCallSite siteID perms = TypedCallSite siteID perms (Just idLocalPermImpl)
 
 -- | A single, typed entrypoint to a Crucible block. Note that our blocks
 -- implicitly take extra "ghost" arguments, that are needed to express the input
 -- and output permissions. The first of these ghost arguments are the top-level
 -- inputs to the entire function.
-data TypedEntry phase ext blocks tops ret args =
-  TypedEntry {
+data TypedEntry phase ext blocks tops ret args ghosts =
+  TypedEntry
+  {
     -- | The identifier for this particular entrypoing
     typedEntryID :: !(TypedEntryID blocks args),
     -- | The top-level arguments to the entire function
@@ -1042,69 +1083,73 @@ data TypedEntry phase ext blocks tops ret args =
     -- | The return value from the entire function
     typedEntryRet :: !(TypeRepr ret),
     -- | The call sites that jump to this particular entrypoint
-    typedEntryCallers :: ![TypedCallSite phase blocks tops args],
-    -- | The 
+    typedEntryCallers :: ![Some (TypedCallSite phase blocks tops args ghosts)],
+    -- | The ghost variables for this entrypoint
+    typedEntryGhosts :: !(CruCtx ghosts),
     -- | The input permissions for this entrypoint
-    typedEntryPermsIn :: !(TransData phase
-                           (MbValuePerms ((tops :++: args) :++: ghosts))),
-    -- | The output permissions for the entire function (cached for convenience)
+    typedEntryPermsIn :: !(MbValuePerms ((tops :++: args) :++: ghosts)),
+    -- | The output permissions for the function (cached locally)
     typedEntryPermsOut :: !(Mb ((tops :++: args) :++: ghosts :> ret)
                             (ValuePerms (tops :> ret))),
     -- | The type-checked body of the entrypoint
     typedEntryBody :: !(TransData phase
                         (Mb ((tops :++: args) :++: ghosts)
-                         (TypedStmtSeq ext blocks tops ret ((tops :++: args)
-                                                            :++: ghosts))))
-    } -> TypedEntry phase ext blocks tops ret args
+                         (TypedStmtSeq ext blocks tops ret
+                          ((tops :++: args) :++: ghosts))))
+  }
 
-
--- | Extract the index of the entrypoint in all entrypoints in the same block
-typedEntryIndex :: TypedEntry phase ext blocks tops ret args -> Int
-typedEntryIndex (TypedEntry {..}) = entryIndex typedEntryID
-
--- | Test if an entrypoint has a multiple in-degree
-typedEntryHasMultiInDegree :: TypedEntry phase ext blocks tops ret args -> Bool
-typedEntryHasMultiInDegree (TypedEntry {..}) = length typedEntryCallers > 1
-
--- | Get the body of a 'TypedEntry' using its 'TypedEntryID' to indicate the
--- @ghosts@ argument. It is an error if the wrong 'TypedEntryID' is given.
-getTypedEntryBody :: TypedEntryID blocks args ghosts ->
-                     TypedEntry TransPhase ext blocks tops ret args ->
-                     Mb ((tops :++: args) :++: ghosts)
-                     (TypedStmtSeq ext blocks tops ret
-                      ((tops :++: args) :++: ghosts))
-getTypedEntryBody entryID (TypedEntry { .. })
-  | Just Refl <- testEquality entryID typedEntryID = typedEntryBody
-getTypedEntryBody _ _ = error "getTypedEntryBody"
+-- | Test if an entrypoint has in-degree greater than 1
+typedEntryHasMultiInDegree :: TypedEntry phase ext blocks tops ret args ghosts ->
+                              Bool
+typedEntryHasMultiInDegree entry = length (typedEntryCallers entry) > 1
 
 -- | Transition a 'TypedEntry' from type-checking to translation phase, by
 -- making sure that all of data needed for the translation phase is present
-completeTypedEntry :: TypedEntry TCPhase ext blocks tops ret args ->
-                      TypedEntry TransPhase ext blocks tops ret args
+completeTypedEntry :: TypedEntry TCPhase ext blocks tops ret args ghosts ->
+                      TypedEntry TransPhase ext blocks tops ret args ghosts
 completeTypedEntry (TypedEntry { .. })
-  | Just perms_in <- typedEntryPermsIn
-  , Just body <- typedEntryBody =
-    TypedEntry { typedEntryPermsIn = perms_in, typedEntryBody = body,
+  | Just body <- typedEntryBody
+  = TypedEntry { typedEntryBody = body,
                  typedEntryCallers =
-                   map completeTypedCallSite typedEntryCallers, .. }
+                   map (fmapF completeTypedCallSite) typedEntryCallers, .. }
 completeTypedEntry _ = error "completeTypedEntry"
 
--- | Set the 'CallSite' to an entrypoint for a particular caller to have the
--- supplied permissions over the supplied varialbes, inserting one if it is not
--- there and replacing any that are already there
-setCallSiteEntry :: TypedEntryID blocks args' ghosts' -> CruCtx vars ->
-                    MbValuePerms ((tops :++: args) :++: vars) ->
-                    TypedEntry TCPhase ext blocks tops ret args ->
-                    TypedEntry TCPhase ext blocks tops ret args
-setCallSiteEntry caller vars perms_in (TypedEntry {..}) =
-  let call_site = TypedCallSite {
-        typedCallSiteCaller = caller, typedCallSiteVars = vars,
-        typedCallSiteGhosts = (entryGhosts typedEntryID),
-        typedCallSitePerms = perms_in, typedCallSiteImpl = Nothing } in
-  TypedEntry { typedEntryCallers =
-                 call_site :
-                 filter (not . typedCallSiteCallerEq caller) typedEntryCallers
-             , .. }
+-- | Build an entrypoint from a call site, using that call site's permissions as
+-- the entyrpoint input permissions
+singleCallSiteEntry :: TypedCallSiteID blocks args vars ->
+                       CruCtx tops -> CruCtx args -> TypeRepr ret ->
+                       MbValuePerms ((tops :++: args) :++: vars) ->
+                       Mb ((tops :++: args)
+                           :++: vars :> ret) (ValuePerms (tops :> ret)) ->
+                       TypedEntry TCPhase ext blocks tops ret args vars
+singleCallSiteEntry siteID tops args ret perms_in perms_out =
+  TypedEntry
+  {
+    typedEntryID = callSiteDest siteID, typedEntryTops = tops,
+    typedEntryArgs = args, typedEntryRet = ret,
+    typedEntryCallers = [Some $ idTypedCallSite siteID perms_in],
+    typedEntryGhosts = callSiteVars siteID,
+    typedEntryPermsIn = perms_in, typedEntryPermsOut = perms_out,
+    typedEntryBody = Nothing
+  }
+
+-- | Test if an entrypoint contains a call site with the same caller as the
+-- supplied call site id, and, if so, return the index in its list of callers
+typedEntryCallerIx :: TypedCallSiteID blocks args vars ->
+                      TypedEntry TCPhase ext blocks tops ret args ghosts ->
+                      Maybe Int
+typedEntryCallerIx (TypedCallSiteID
+                    { callSiteSrc = callerID }) (typedEntryCallers -> callers) =
+  flip findIndex callers $ \(Some site) ->
+  callSiteIDCallerEq callerID $ typedCallSiteID site
+
+-- | Test if an entrypoint contains a call site with the given caller
+typedEntryHasCaller :: TypedEntryID blocks args_src ->
+                       TypedEntry phase ext blocks tops ret args ghosts ->
+                       Bool
+typedEntryHasCaller callerID (typedEntryCallers -> callers) =
+  any (\(Some site) ->
+        callSiteIDCallerEq callerID $ typedCallSiteID site) callers
 
 
 -- | A typed Crucible block is either a join block, meaning that all jumps to it
@@ -1119,13 +1164,14 @@ data TypedBlock phase ext blocks tops ret args =
   TypedBlock
   {
     -- | An identifier for this block
-    typedBlockID :: Member blocks args,
+    typedBlockID :: TypedBlockID blocks args,
     -- | The original Crucible block
     typedBlockBlock :: Block ext cblocks ret cargs,
     -- | What sort of block is this
     typedBlockSort :: TypedBlockSort,
-    -- | The entrypoints into this block
-    _typedBlockEntries :: [TypedEntry phase ext blocks tops ret args]
+    -- | The entrypoints into this block; note that the 'entryIndex' of each
+    -- entrypoint ID should equal the position of its entrypoint in this list
+    _typedBlockEntries :: [Some (TypedEntry phase ext blocks tops ret args)]
   }
 
 makeLenses ''TypedBlock
@@ -1133,10 +1179,10 @@ makeLenses ''TypedBlock
 -- | The 'Lens' associated with a 'TypedEntryID'. Note that, unlike the standard
 -- lens for list elements, it is an error to use a 'TypedEntryID' for an
 -- entrypoint that does not exist.
-entry :: TypedEntryID blocks args ghosts ->
-         Lens' (TypedBlock phase ext blocks tops ret args)
-         (TypedEntry phase ext blocks tops ret args)
-entry entryID =
+entryByID :: TypedEntryID blocks args ->
+             Lens' (TypedBlock phase ext blocks tops ret args)
+             (Some (TypedEntry phase ext blocks tops ret args))
+entryByID entryID =
   lens
   (\blk -> (blk ^. typedBlockEntries) !! entryIndex entryID)
   (\blk e -> over typedBlockEntries (replaceNth (entryIndex entryID) e) blk)
@@ -1154,45 +1200,115 @@ emptyBlockOfSort sz sort blk =
 completeTypedBlock :: TypedBlock TCPhase ext blocks tops ret args ->
                       TypedBlock TransPhase ext blocks tops ret args
 completeTypedBlock (TypedBlock { .. }) =
-  TypedBlock { _typedBlockEntries = map completeTypedEntry _typedBlockEntries, .. }
+  TypedBlock { _typedBlockEntries =
+                 map (fmapF completeTypedEntry) _typedBlockEntries, .. }
 
--- | Add a new entrypoint to a 'TypedBlock'
-addNewEntry :: CruCtx tops -> CruCtx args -> TypeRepr ret ->
-               Mb ((tops :++: args)
-                   :++: ghosts :> ret) (ValuePerms (tops :> ret)) ->
-               TypedBlock TCPhase ext blocks tops ret args ->
-               (TypedBlock TCPhase ext blocks tops ret args,
-                TypedEntryID blocks args ghosts)
-addNewEntry 
+-- | Test if an entrypoint ID has a corresponding entrypoint in a block
+entryIDInBlock :: TypedEntryID blocks args_src ->
+                  TypedBlock phase ext blocks tops ret args -> Bool
+entryIDInBlock entryID blk =
+  entryIndex entryID < length (blk ^. typedBlockEntries)
+
+-- | Add a new entrypoint to a block, making sure that its 'entryIndex' lines up
+-- with its new position in the list of entrypoints in the block
+addEntryToBlock :: TypedEntry phase ext blocks tops ret args ghosts ->
+                   TypedBlock phase ext blocks tops ret args ->
+                   TypedBlock phase ext blocks tops ret args
+addEntryToBlock entry blk
+  | i <- entryIndex (typedEntryID entry)
+  , i == length (blk ^. typedBlockEntries) =
+    over typedBlockEntries (++ [Some entry]) blk
+addEntryToBlock _ _ = error "addEntryToBlock"
+
+-- | Look up the entrypoint containing a call site for a given caller. If none
+-- exists, either return the first entrypoint, if the block has 'JoinSort', or
+-- return a new entrypoint not yet in the block if it has 'MultiEntrySort'
+entryIDForCaller :: TypedEntryID blocks args_src ->
+                    TypedBlock phase ext blocks tops ret args ->
+                    TypedEntryID blocks args
+entryIDForCaller callerID blk
+  | Just (Some entry) <-
+      find (\(Some entry) -> typedEntryHasCaller callerID entry)
+      (blk ^. typedBlockEntries)
+  = typedEntryID entry
+entryIDForCaller _ blk@(typedBlockSort -> JoinSort) =
+  TypedEntryID (typedBlockID blk) 0
+entryIDForCaller _ blk =
+  TypedEntryID (typedBlockID blk) (length (blk ^. typedBlockEntries))
+
+-- | Compute the call site for a call to a block from a given entrypoint, using
+-- the entrypoint returned by 'entryIDForCaller'
+callSiteIDForCall :: TypedEntryID blocks args_src -> CruCtx vars ->
+                     TypedBlock phase ext blocks tops ret args ->
+                     TypedCallSiteID blocks args vars
+callSiteIDForCall callerID vars blk =
+  TypedCallSiteID callerID (entryIDForCaller callerID blk) vars
+
+
+-- | Set the call site in an entrypoint for a particular caller to have the
+-- supplied permissions over the supplied variables. If the entrypoint already
+-- has a call site for the same caller, replace that call site with a fresh one,
+-- unless its permissions are the same, in which case we do nothing and,
+-- notably, preserve any implication that is already there. Insert a new call
+-- site if the entrypoint does not yet have one for this caller.
+entrySetCallSite :: TypedCallSiteID blocks args vars ->
+                    MbValuePerms ((tops :++: args) :++: vars) ->
+                    TypedEntry TCPhase ext blocks tops ret args ghosts ->
+                    TypedEntry TCPhase ext blocks tops ret args ghosts
+
+-- If the caller is already in the list of call sites and already has the
+-- right permissions, do nothing
+entrySetCallSite siteID perms_in entry
+  | Just i <- typedEntryCallerIx siteID entry
+  , Some site <- typedEntryCallers entry !! i
+  , Just Refl <- testEquality (callSiteVars siteID) (callSiteVars $
+                                                     typedCallSiteID site)
+  , perms_in == typedCallSitePerms site =
+    entry
+-- If the caller is in the list of call sites but does not have the right
+-- permissions, replace it with a new, empty call site
+entrySetCallSite siteID perms_in entry
+  | Just i <- typedEntryCallerIx siteID entry =
+    entry { typedEntryCallers =
+              replaceNth i (Some $ emptyTypedCallSite siteID perms_in)
+              (typedEntryCallers entry) }
+-- Otherwise, the caller does not already have a call site, so add a new one
+entrySetCallSite siteID perms_in entry =
+  entry { typedEntryCallers =
+            typedEntryCallers entry ++ [Some $
+                                        emptyTypedCallSite siteID perms_in] }
 
 -- | Set the 'CallSite' to a block for a particular caller to have the supplied
--- permissions over the supplied varialbes, inserting one if it is not there and
+-- permissions over the supplied variables, inserting one if it is not there and
 -- replacing any that are already there
-setCallSiteBlock :: TypedEntryID blocks args' ghosts' -> CruCtx vars ->
+blockSetCallSite :: TypedCallSiteID blocks args vars ->
+                    CruCtx tops -> CruCtx args -> TypeRepr ret ->
                     MbValuePerms ((tops :++: args) :++: vars) ->
+                    Mb ((tops :++: args)
+                        :++: vars :> ret) (ValuePerms (tops :> ret)) ->
                     TypedBlock TCPhase ext blocks tops ret args ->
                     TypedBlock TCPhase ext blocks tops ret args
-setCallSiteEntry caller vars perms_in blk =
-  flip (over typedBlockEntries) blk $ \(entries, typedBlockSort blk) ->
-  case findIndex (typedEntryContainsCaller caller) entries of
-    (Just i, _) ->
-      replaceNth i (setCallSiteEntry caller vars perms_in (entries!!i)) entries
-    (Nothing, MultiEntrySort) ->
-      
+-- If the call site already has an entrypoint, update it with entrySetCallSite
+blockSetCallSite siteID _ _ _ perms_in _ blk
+  | entryIDInBlock (callSiteDest siteID) blk =
+    over (entryByID (callSiteDest siteID))
+    (fmapF $ entrySetCallSite siteID perms_in) blk
+-- If the call site already has an entrypoint, update it with entrySetCallSite
+blockSetCallSite siteID tops args ret perms_in perms_out blk =
+  addEntryToBlock (singleCallSiteEntry
+                   siteID tops args ret perms_in perms_out) blk
 
-FIXME HERE NOW: the above should only take a BlockID, and should make a new
-entrypoint if appropriate
 
 -- | A map assigning a 'TypedBlock' to each 'BlockID'
 type TypedBlockMap phase ext blocks tops ret =
   RAssign (TypedBlock phase ext blocks tops ret) blocks
 
-instance Show (TypedEntry phase ext blocks tops ret args) where
+instance Show (TypedEntry phase ext blocks tops ret args ghosts) where
   show (TypedEntry { .. }) =
     "<entry " ++ show (entryIDIndices typedEntryID) ++ ">"
 
 instance Show (TypedBlock phase ext blocks tops ret args) where
-  show = show . (^. typedBlockEntries)
+  show = concatMap (\(Some entry) -> show entry) . (^. typedBlockEntries)
 
 instance Show (TypedBlockMap phase ext blocks tops ret) where
   show blkMap = show $ RL.mapToList show blkMap
@@ -1214,6 +1330,11 @@ emptyTypedBlockMap sorts block_map =
 completeTypedBlockMap :: TypedBlockMap TCPhase ext blocks tops ret ->
                          TypedBlockMap TransPhase ext blocks tops ret
 completeTypedBlockMap = RL.map completeTypedBlock
+
+{-
+
+FIXME HERE NOW
+
 
 
 -- | A typed Crucible CFG
@@ -1348,7 +1469,7 @@ emptyTopPermCheckState h tops retPerms sorts blkMap env endianness =
 -- | Look up a Crucible block id in a top-level perm-checking state
 stLookupBlockID :: BlockID cblocks args ->
                    TopPermCheckState ext cblocks blocks tops ret ->
-                   Member blocks (CtxToRList args)
+                   TypedBlockID blocks (CtxToRList args)
 stLookupBlockID (BlockID ix) st =
   unBlockIDTrans $ stBlockTrans st Ctx.! ix
 
@@ -1381,8 +1502,7 @@ type family BlkArgs (args :: BlkParams) :: RList CrucibleType where
 data TypedBlockMapDelta blocks tops ret where
   -- | Add a 'CallSite' to the specified entrypoint, replacing any that are
   -- already there that have the same caller
-  TypedBlockMapSetCallSite :: TypedEntryID blocks args ghosts ->
-                              TypedEntryID blocks args' ghosts' -> CruCtx vars ->
+  TypedBlockMapSetCallSite :: TypedCallSiteID blocks args vars ->
                               MbValuePerms ((tops :++: args) :++: vars) ->
                               TypedBlockMapDelta blocks tops ret
 
@@ -1481,6 +1601,7 @@ top_get = gcaptureCC $ \k ->
   do top_st <- ask
      deltas <- innerBlockInfo <$> unClosed <$> get
      k $ applyDeltasToTopState deltas top_st
+-}
 
 {-
 FIXME HERE NOW
@@ -1495,7 +1616,7 @@ FIXME HERE NOW
 
 
 -- | Look up the 'BlockInfo' for a block
-lookupBlockInfo :: Member blocks args ->
+lookupBlockInfo :: TypedBlockID blocks args ->
                    PermCheckM ext cblocks blocks tops ret r ps r ps
                    (BlockInfo ext blocks tops ret args)
 lookupBlockInfo memb =
@@ -1503,7 +1624,7 @@ lookupBlockInfo memb =
   greturn (RL.get memb $ stBlockInfo top_st)
 
 -- | Create a new entry ID for the given block with the given ghost variables
-getNextEntryID :: Member blocks args -> CruCtx ghosts ->
+getNextEntryID :: TypedBlockID blocks args -> CruCtx ghosts ->
                   InnerPermCheckM ext cblocks blocks tops ret
                   (TypedEntryID blocks args ghosts)
 getNextEntryID memb ghosts =
@@ -1514,7 +1635,7 @@ getNextEntryID memb ghosts =
   return (TypedEntryID memb ghosts (max_ix + 1))
 
 -- | Insert a new block entry point
-insNewBlockEntry :: Member blocks args -> CruCtx args -> CruCtx ghosts ->
+insNewBlockEntry :: TypedBlockID blocks args -> CruCtx args -> CruCtx ghosts ->
                     Closed (MbValuePerms ((tops :++: args) :++: ghosts)) ->
                     InnerPermCheckM ext cblocks blocks tops ret
                     (TypedEntryID blocks args ghosts)
@@ -2169,10 +2290,10 @@ tcRegs ctx (viewAssign -> AssignExtend regs reg) =
   TypedRegsCons (tcRegs ctx regs) (tcReg ctx reg)
 
 
--- | Type-check a Crucibe block id into a 'Member' proof
+-- | Type-check a Crucibe block id into a 'TypedBlockID'
 tcBlockID :: BlockID cblocks args ->
              StmtPermCheckM ext cblocks blocks tops ret ps ps
-             (Member blocks (CtxToRList args))
+             (TypedBlockID blocks (CtxToRList args))
 tcBlockID blkID = stLookupBlockID blkID <$> top_get
 
 -- | Type-check a Crucible expression to test if it has a statically known
@@ -3411,7 +3532,7 @@ tcBlockEntry in_deg blk (BlockEntryInfo {..}) =
 
 -- | Type-check a Crucible block
 tcBlock :: PermCheckExtC ext => TypedEntryInDegree ->
-           Member blocks (CtxToRList args) ->
+           TypedBlockID blocks (CtxToRList args) ->
            Block ext cblocks ret args ->
            TopPermCheckM ext cblocks blocks tops ret
            (TypedBlock ext blocks tops ret (CtxToRList args))

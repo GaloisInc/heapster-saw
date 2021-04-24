@@ -1256,6 +1256,10 @@ newtype LocalPermImpl ps_in ps_out =
 -- type equality stating that the output permissions are as expected
 newtype LocalImplRet ps ps' = LocalImplRet (ps :~: ps')
 
+-- | The identity implication
+idLocalPermImpl :: LocalPermImpl ps ps
+idLocalPermImpl = LocalPermImpl $ PermImpl_Done $ LocalImplRet Refl
+
 -- type IsLLVMPointerTypeList w ps = RAssign ((:~:) (LLVMPointerType w)) ps
 
 $(mkNuMatching [t| forall a. EqPerm a |])
