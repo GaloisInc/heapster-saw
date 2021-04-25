@@ -1626,10 +1626,6 @@ callBlockWithPerms destID vars cl_perms_in =
                     `clApply` toClosed siteID `clApply` cl_perms_in)
      return siteID
 
-{-
-FIXME HERE NOW
-
-
 -- | Look up the current primary permission associated with a variable
 getVarPerm :: ExprVar a ->
               PermCheckM ext cblocks blocks tops ret r ps r ps (ValuePerm a)
@@ -1750,67 +1746,6 @@ getAtomicLLVMPerms r =
                        permPretty i (ValPerm_Eq $ PExpr_LLVMWord e)])
 
 
--- | Pretty-print the permissions that are "relevant" to a register, which
--- includes its permissions and all those relevant to any register it is equal
--- to, possibly plus some offset
-ppRelevantPerms :: TypedReg tp ->
-                   PermCheckM ext cblocks blocks tops ret r ps r ps (Doc ())
-ppRelevantPerms r =
-  getRegPerm r >>>= \p ->
-  permGetPPInfo >>>= \ppInfo ->
-  let pp_r = permPretty ppInfo r <> colon <> permPretty ppInfo p in
-  case p of
-    ValPerm_Eq (PExpr_Var x) ->
-      ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
-    ValPerm_Eq (PExpr_LLVMOffset x _) ->
-      ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
-    ValPerm_Eq (PExpr_LLVMWord (PExpr_Var x)) ->
-      ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
-    _ -> greturn pp_r
-
--- | Pretty-print a Crucible 'Reg' and what 'TypedReg' it is equal to, along
--- with the relevant permissions for that 'TypedReg'
-ppCruRegAndPerms :: CtxTrans ctx -> Reg ctx a ->
-                    PermCheckM ext cblocks blocks tops ret r ps r ps (Doc ())
-ppCruRegAndPerms ctx r =
-  permGetPPInfo >>>= \ppInfo ->
-  ppRelevantPerms (tcReg ctx r) >>>= \doc ->
-  greturn (PP.group (pretty r <+> pretty '=' <+> permPretty ppInfo (tcReg ctx r)
-                     <> comma <+> doc))
-
--- | Get the permissions on the variables in the input set, the variables in
--- their permissions, the variables in those permissions etc., as in
--- 'varPermsTransFreeVars'
-getRelevantPerms :: [SomeName CrucibleType] ->
-                    PermCheckM ext cblocks blocks tops ret r ps r ps 
-                      (Some DistPerms)
-getRelevantPerms (namesListToNames -> SomeRAssign ns) =
-  stCurPerms <$> gget >>>= \perms ->
-  case varPermsTransFreeVars ns perms of
-    Some all_ns -> greturn (Some $ varPermsMulti (RL.append ns all_ns) perms)
-
--- | Pretty-print a list of Crucible registers and the variables they translate
--- to, and then pretty-print the permissions on those variables and all
--- variables they contain, as well as the top-level input variables and the
--- extension-specific variables
-ppCruRegsAndTopsPerms :: CtxTrans ctx -> [Some (Reg ctx)] ->
-                         PermCheckM ext cblocks blocks tops ret r ps r ps (Doc (), Doc ())
-ppCruRegsAndTopsPerms ctx regs =
-  permGetPPInfo >>>= \ppInfo ->
-  (stTopVars <$> gget) >>>= \tops ->
-  (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
-  let vars_pp =
-        fillSep $ punctuate comma $
-        map (\case Some r ->
-                     pretty r <+> pretty '=' <+>
-                     permPretty ppInfo (tcReg ctx r)) regs
-      vars =
-        namesToNamesList tops ++ namesToNamesList ext_ns ++
-        map (\(Some r) -> SomeName $ typedRegVar $ tcReg ctx r) regs in
-  getRelevantPerms vars >>>= \some_perms ->
-  case some_perms of
-    Some perms -> greturn (vars_pp, permPretty ppInfo perms)
-
 -- | Find all the variables of LLVM frame pointer type in a sequence
 -- FIXME: move to Permissions.hs
 findLLVMFrameVars :: NatRepr w -> CruCtx as -> RAssign Name as ->
@@ -1876,19 +1811,6 @@ permGetPPInfo = stPPInfo <$> get
 -- | Get the current prefix string to give context to error messages
 getErrorPrefix :: PermCheckM ext cblocks blocks tops ret r ps r ps (Doc ())
 getErrorPrefix = maybe emptyDoc id <$> stErrPrefix <$> gget
-
--- | Set the current prefix string to give context to error messages
-setErrorPrefix :: ProgramLoc -> Doc () -> CtxTrans ctx -> [Some (Reg ctx)] ->
-                  PermCheckM ext cblocks blocks tops ret r ps r ps ()
-setErrorPrefix loc stmt_pp ctx regs =
-  ppCruRegsAndTopsPerms ctx regs >>>= \(regs_pp, perms_pp) ->
-  let prefix =
-        PP.sep
-        [PP.group (pretty "At" <+> ppShortFileName (plSourceLoc loc)
-                  <+> parens stmt_pp),
-         PP.group (pretty "Regs:" <+> regs_pp),
-         PP.group (pretty "Input perms:" <+> perms_pp)] in
-  gmodify $ \st -> st { stErrPrefix = Just prefix }
 
 -- | Emit debugging output using the current 'PPInfo'
 stmtTraceM :: (PPInfo -> Doc ()) ->
@@ -2000,7 +1922,6 @@ stmtEmbedImplM ::
   StmtPermCheckM ext cblocks blocks tops ret ps_out ps_in a
 stmtEmbedImplM m =
   pcmEmbedImplM TypedImplStmt emptyCruCtx m >>>= \(_,a) -> greturn a
-
 
 -- | Recombine any outstanding distinguished permissions back into the main
 -- permission set, in the context of type-checking statements
@@ -2227,12 +2148,8 @@ checkerProgramLoc =
 
 
 ----------------------------------------------------------------------
--- * Permission Checking for Expressions and Statements
+-- * Permission Checking and Pretty-Printing for Registers
 ----------------------------------------------------------------------
-
--- | Get a dynamic representation of an architecture's width
-archWidth :: KnownNat (ArchWidth arch) => f arch -> NatRepr (ArchWidth arch)
-archWidth _ = knownNat
 
 -- | Type-check a Crucible register by looking it up in the translated context
 tcReg :: CtxTrans ctx -> Reg ctx tp -> TypedReg tp
@@ -2255,6 +2172,88 @@ tcRegs _ctx (viewAssign -> AssignEmpty) = TypedRegsNil
 tcRegs ctx (viewAssign -> AssignExtend regs reg) =
   TypedRegsCons (tcRegs ctx regs) (tcReg ctx reg)
 
+-- | Pretty-print the permissions that are "relevant" to a register, which
+-- includes its permissions and all those relevant to any register it is equal
+-- to, possibly plus some offset
+ppRelevantPerms :: TypedReg tp ->
+                   PermCheckM ext cblocks blocks tops ret r ps r ps (Doc ())
+ppRelevantPerms r =
+  getRegPerm r >>>= \p ->
+  permGetPPInfo >>>= \ppInfo ->
+  let pp_r = permPretty ppInfo r <> colon <> permPretty ppInfo p in
+  case p of
+    ValPerm_Eq (PExpr_Var x) ->
+      ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
+    ValPerm_Eq (PExpr_LLVMOffset x _) ->
+      ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
+    ValPerm_Eq (PExpr_LLVMWord (PExpr_Var x)) ->
+      ((pp_r <> comma) <+>) <$> ppRelevantPerms (TypedReg x)
+    _ -> greturn pp_r
+
+-- | Pretty-print a Crucible 'Reg' and what 'TypedReg' it is equal to, along
+-- with the relevant permissions for that 'TypedReg'
+ppCruRegAndPerms :: CtxTrans ctx -> Reg ctx a ->
+                    PermCheckM ext cblocks blocks tops ret r ps r ps (Doc ())
+ppCruRegAndPerms ctx r =
+  permGetPPInfo >>>= \ppInfo ->
+  ppRelevantPerms (tcReg ctx r) >>>= \doc ->
+  greturn (PP.group (pretty r <+> pretty '=' <+> permPretty ppInfo (tcReg ctx r)
+                     <> comma <+> doc))
+
+-- | Get the permissions on the variables in the input set, the variables in
+-- their permissions, the variables in those permissions etc., as in
+-- 'varPermsTransFreeVars'
+getRelevantPerms :: [SomeName CrucibleType] ->
+                    PermCheckM ext cblocks blocks tops ret r ps r ps 
+                      (Some DistPerms)
+getRelevantPerms (namesListToNames -> SomeRAssign ns) =
+  stCurPerms <$> gget >>>= \perms ->
+  case varPermsTransFreeVars ns perms of
+    Some all_ns -> greturn (Some $ varPermsMulti (RL.append ns all_ns) perms)
+
+-- | Pretty-print a list of Crucible registers and the variables they translate
+-- to, and then pretty-print the permissions on those variables and all
+-- variables they contain, as well as the top-level input variables and the
+-- extension-specific variables
+ppCruRegsAndTopsPerms :: CtxTrans ctx -> [Some (Reg ctx)] ->
+                         PermCheckM ext cblocks blocks tops ret r ps r ps (Doc (), Doc ())
+ppCruRegsAndTopsPerms ctx regs =
+  permGetPPInfo >>>= \ppInfo ->
+  (stTopVars <$> gget) >>>= \tops ->
+  (permCheckExtStateNames <$> stExtState <$> gget) >>>= \(Some ext_ns) ->
+  let vars_pp =
+        fillSep $ punctuate comma $
+        map (\case Some r ->
+                     pretty r <+> pretty '=' <+>
+                     permPretty ppInfo (tcReg ctx r)) regs
+      vars =
+        namesToNamesList tops ++ namesToNamesList ext_ns ++
+        map (\(Some r) -> SomeName $ typedRegVar $ tcReg ctx r) regs in
+  getRelevantPerms vars >>>= \some_perms ->
+  case some_perms of
+    Some perms -> greturn (vars_pp, permPretty ppInfo perms)
+
+-- | Set the current prefix string to give context to error messages
+setErrorPrefix :: ProgramLoc -> Doc () -> CtxTrans ctx -> [Some (Reg ctx)] ->
+                  PermCheckM ext cblocks blocks tops ret r ps r ps ()
+setErrorPrefix loc stmt_pp ctx regs =
+  ppCruRegsAndTopsPerms ctx regs >>>= \(regs_pp, perms_pp) ->
+  let prefix =
+        PP.sep
+        [PP.group (pretty "At" <+> ppShortFileName (plSourceLoc loc)
+                  <+> parens stmt_pp),
+         PP.group (pretty "Regs:" <+> regs_pp),
+         PP.group (pretty "Input perms:" <+> perms_pp)] in
+  gmodify $ \st -> st { stErrPrefix = Just prefix }
+
+
+----------------------------------------------------------------------
+-- * Permission Checking for Expressions and Statements
+----------------------------------------------------------------------
+
+-- | Get a dynamic representation of an architecture's width
+archWidth :: KnownNat (ArchWidth arch) => f arch -> NatRepr (ArchWidth arch)
+archWidth _ = knownNat
 
 -- | Type-check a Crucibe block id into a 'TypedBlockID'
 tcBlockID :: BlockID cblocks args ->
@@ -2899,6 +2898,7 @@ tcEmitLLVMStmt _arch ctx loc (LLVM_LoadHandle _ _ ptr args ret) =
         (TypedLLVMLoadHandle tptr tp p) >>>= \ret' ->
         stmtRecombinePerms >>>
         greturn (addCtxName ctx ret')
+    _ -> stmtFailM (const $ pretty "LLVM_PopFrame: no function pointer perms")
 
 -- Type-check a ResolveGlobal instruction by looking up the global symbol
 tcEmitLLVMStmt _arch ctx loc (LLVM_ResolveGlobal w _ gsym) =
@@ -3199,6 +3199,11 @@ generalizeUnneededEqPerms =
                   m >>> generalizeUnneededEqPerms1 needed_vars x p)
   (greturn ())
   var_perms
+
+{-
+FIXME HERE NOW
+
+
 
 -- | Type-check a Crucible jump target
 tcJumpTarget :: PermCheckExtC ext => CtxTrans ctx -> JumpTarget cblocks ctx ->
