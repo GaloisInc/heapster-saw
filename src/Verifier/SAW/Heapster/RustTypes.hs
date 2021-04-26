@@ -315,25 +315,12 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        sh <- rsConvert w tp'
        return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
   rsConvert w (PathTy Nothing path _) =
-    do SomeNamedShape nmsh <- rsConvert w (rsPathName path)
-       Some typed_args <- rsConvert w (rsPathParams path)
-       case (testEquality (typedPermExprsCtx typed_args) (namedShapeArgs nmsh),
-             testEquality (natRepr w) (natRepr nmsh)) of
-         (Just Refl, Just Refl) ->
-           return (PExpr_NamedShape Nothing Nothing nmsh $
-                   typedPermExprsExprs typed_args)
-         (Nothing, _) ->
-           fail $ renderDoc $ fillSep
-           [pretty "Arguments for" <+> pretty (namedShapeName nmsh)
-            <+> pretty "of incorrect type",
-            pretty "Expected:" <+> permPretty emptyPPInfo (namedShapeArgs nmsh),
-            pretty "Actual:"
-            <+> permPretty emptyPPInfo (typedPermExprsCtx typed_args)]
-         (_, Nothing) ->
-           fail $ renderDoc $ fillSep
-           [pretty "Incorrect size of shape" <+> pretty (namedShapeName nmsh),
-            pretty "Expected:" <+> pretty (intValue (natRepr w)),
-            pretty "Actual:" <+> pretty (intValue (natRepr nmsh))]
+    do someShapeFn <- rsConvert w (rsPathName path)
+       someTypedArgs <- rsConvert w (rsPathParams path)
+       case tryApplySomeShapeFun someShapeFn someTypedArgs of
+         Just shTp -> return shTp
+         Nothing ->
+           fail $ renderDoc $ pretty "Failed to apply shape funtion to arguments"
   rsConvert (w :: prx w) (BareFn _ abi rust_ls2 fn_tp span) =
     do Some3FunPerm fun_perm <- rsConvertMonoFun w span abi rust_ls2 fn_tp
        let args = funPermArgs fun_perm
