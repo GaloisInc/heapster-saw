@@ -209,7 +209,11 @@ namedShapeShapeFun w (SomeNamedShape nmsh)
     SomeShapeFun (namedShapeArgs nmsh)
                  (nuMulti (cruCtxProxies (namedShapeArgs nmsh))
                           (\ns -> PExpr_NamedShape Nothing Nothing nmsh (namesToExprs ns)))
-namedShapeShapeFun _ _ = fail "Requested width and type width are unequal"
+namedShapeShapeFun w (SomeNamedShape nmsh) =
+  fail $ renderDoc $ fillSep
+  [pretty "Incorrect size of shape" <+> pretty (namedShapeName nmsh),
+   pretty "Expected:" <+> pretty (intValue w),
+   pretty "Actual:" <+> pretty (intValue (natRepr nmsh))]
 
 -- | A table for converting Rust base types to shapes
 namedTypeTable :: (1 <= w, KnownNat w) => prx w -> [(String,SomeShapeFun w)]
