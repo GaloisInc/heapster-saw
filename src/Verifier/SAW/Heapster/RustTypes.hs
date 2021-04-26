@@ -206,9 +206,9 @@ sizedIntShapeFun _ sz =
 namedShapeShapeFun :: NatRepr w -> SomeNamedShape -> RustConvM (SomeShapeFun w)
 namedShapeShapeFun w (SomeNamedShape nmsh)
   | Just Refl <- testEquality w (natRepr nmsh) = return $
-      SomeShapeFun (namedShapeArgs nmsh)
-                   (nuMulti (cruCtxProxies (namedShapeArgs nmsh))
-                            (\ns -> PExpr_NamedShape Nothing Nothing nmsh (namesToExprs ns)))
+    SomeShapeFun (namedShapeArgs nmsh)
+                 (nuMulti (cruCtxProxies (namedShapeArgs nmsh))
+                          (\ns -> PExpr_NamedShape Nothing Nothing nmsh (namesToExprs ns)))
 namedShapeShapeFun _ _ = fail "Requested width and type width are unequal"
 
 -- | A table for converting Rust base types to shapes
