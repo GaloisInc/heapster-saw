@@ -3446,11 +3446,6 @@ tcTermStmt _ tstmt =
 -- * Permission Checking for Blocks and Sequences of Statements
 ----------------------------------------------------------------------
 
-{-
-FIXME HERE NOW
-
-
-
 -- | Translate and emit a Crucible statement sequence, starting and ending with
 -- an empty stack of distinguished permissions
 tcEmitStmtSeq :: PermCheckExtC ext => CtxTrans ctx ->
@@ -3467,9 +3462,11 @@ tcEmitStmtSeq ctx (TermStmt loc tstmt) =
   tcTermStmt ctx tstmt >>>= \typed_tstmt ->
   gmapRet (>> return (TypedTermStmt loc typed_tstmt))
 
+-- | Get the pointer width of the current architecture
 llvmReprWidth :: ExtRepr (LLVM arch) -> NatRepr (ArchWidth arch)
 llvmReprWidth ExtRepr_LLVM = knownRepr
 
+-- | Set the extension-specific state
 setInputExtState :: ExtRepr ext -> CruCtx as -> RAssign Name as ->
                     PermCheckM ext cblocks blocks tops ret r ps r ps ()
 setInputExtState ExtRepr_Unit _ _ = greturn ()
@@ -3481,46 +3478,47 @@ setInputExtState ExtRepr_LLVM _ _ =
   -- of the wrong type
   greturn ()
 
--- | Type-check a single block entrypoint
-tcBlockEntry :: PermCheckExtC ext => TypedEntryInDegree ->
-                Block ext cblocks ret args ->
-                BlockEntryInfo blocks tops ret (CtxToRList args) ->
-                TopPermCheckM ext cblocks blocks tops ret
-                (TypedEntry ext blocks tops ret (CtxToRList args))
-tcBlockEntry in_deg blk (BlockEntryInfo {..}) =
+-- | Type-check the body of a Crucible block as the body of an entrypoint
+tcBlockEntryBody ::
+  PermCheckExtC ext => Block ext cblocks ret args ->
+  TypedEntry TCPhase ext blocks tops ret (CtxToRList args) ghosts ->
+  TopPermCheckM ext cblocks blocks tops ret
+  (Mb ((tops :++: CtxToRList args) :++: ghosts)
+   (TypedStmtSeq ext blocks tops ret ((tops :++: CtxToRList args) :++: ghosts)))
+tcBlockEntryBody blk (TypedEntry {..}) =
   get >>= \(TopPermCheckState {..}) ->
-  let args_prxs = cruCtxProxies entryInfoArgs
-      ghosts_prxs = cruCtxProxies $ entryGhosts entryInfoID
-      ret_perms =
-        mbCombine $ extMbMulti ghosts_prxs $ extMbMulti args_prxs $
-        mbSeparate (MNil :>: Proxy) stRetPerms in
-  fmap (TypedEntry entryInfoID (addInDegrees in_deg entryInfoInDegree)
-        stTopCtx entryInfoArgs stRetType entryInfoPermsIn ret_perms) $
+  let args_prxs = cruCtxProxies typedEntryArgs
+      ghosts_prxs = cruCtxProxies typedEntryGhosts in
   liftInnerToTopM $ strongMbM $
   flip nuMultiWithElim1 (mbValuePermsToDistPerms
-                         entryInfoPermsIn) $ \ns perms ->
+                         typedEntryPermsIn) $ \ns perms ->
   let (tops_args, ghosts_ns) = RL.split Proxy ghosts_prxs ns
       (tops_ns, args_ns) = RL.split Proxy args_prxs tops_args
       ctx = mkCtxTrans (blockInputs blk) args_ns in
-  runPermCheckM tops_ns (distPermSet perms) $
+  runPermCheckM tops_ns (distPermSet perms) typedEntryID $
   setVarTypes "top" tops_ns stTopCtx >>>
-  setVarTypes "local" args_ns entryInfoArgs >>>
-  setVarTypes "ghost" ghosts_ns (entryGhosts entryInfoID) >>>
+  setVarTypes "local" args_ns typedEntryArgs >>>
+  setVarTypes "ghost" ghosts_ns typedEntryGhosts >>>
   stmtTraceM (\i ->
                pretty "Type-checking block" <+> pretty (blockID blk) <>
-               comma <+> pretty "entrypoint" <+> pretty (entryIndex entryInfoID)
+               comma <+> pretty "entrypoint" <+> pretty (entryIndex typedEntryID)
                <> line <>
                pretty "Input types:"
                <> align (permPretty i $
                          RL.map2 VarAndType ns $ cruCtxToTypes $
-                         appendCruCtx (appendCruCtx stTopCtx entryInfoArgs)
-                         (entryGhosts entryInfoID))
+                         appendCruCtx (appendCruCtx stTopCtx typedEntryArgs)
+                         typedEntryGhosts)
                <> line <>
                pretty "Input perms:"
                <> align (permPretty i perms)) >>>
-  setInputExtState knownRepr (entryGhosts entryInfoID) ghosts_ns >>>
+  setInputExtState knownRepr typedEntryGhosts ghosts_ns >>>
   stmtRecombinePerms >>>
   tcEmitStmtSeq ctx (blk ^. blockStmts)
+
+
+{-
+FIXME HERE NOW
+
 
 -- | Type-check a Crucible block
 tcBlock :: PermCheckExtC ext => TypedEntryInDegree ->
