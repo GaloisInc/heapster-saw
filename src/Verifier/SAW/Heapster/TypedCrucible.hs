@@ -1026,6 +1026,28 @@ type family TransData phase a where
   TransData TCPhase a = Maybe a
   TransData TransPhase a = a
 
+-- | The body of an implication in a call site, which ensures that the
+-- permissions are as expected and gives expressions for the ghost variables
+data CallSiteImplRet args ghosts ps_out =
+  CallSiteImplRet (args :++: ghosts :~: ps_out) (PermExprs ghosts)
+
+$(mkNuMatching [t| forall args ghosts ps_out. CallSiteImplRet args ghosts ps_out |])
+
+instance NuMatchingAny1 (CallSiteImplRet args ghosts) where
+  nuMatchingAny1Proof = nuMatchingProof
+
+-- | An implication used in a call site, which binds the input variables in an
+-- implication of the output variables
+newtype CallSiteImpl ps_in args ghosts =
+  CallSiteImpl (Mb ps_in (AnnotPermImpl (CallSiteImplRet args ghosts) ps_in))
+
+-- | The identity implication
+idCallSiteImpl :: RAssign prx args -> RAssign prx vars ->
+                  CallSiteImpl (args :++: vars) args vars
+idCallSiteImpl args vars =
+  CallSiteImpl $ mbCombine $ nuMulti args $ \_ -> nuMulti vars $ \vars_ns ->
+  AnnotPermImpl "" $ PermImpl_Done $ CallSiteImplRet Refl (namesToExprs vars_ns)
+
 -- | A jump / branch to a particular entrypoint
 data TypedCallSite phase blocks tops args ghosts vars =
   TypedCallSite
@@ -1036,10 +1058,9 @@ data TypedCallSite phase blocks tops args ghosts vars =
     typedCallSitePerms :: MbValuePerms ((tops :++: args) :++: vars),
     -- | An implication from the call site perms to the input perms of the
     -- entrypoint we are jumping to
-    typedCallSiteImpl :: TransData phase (Mb ((tops :++: args) :++: vars)
-                                          (LocalPermImpl
-                                           ((tops :++: args) :++: vars)
-                                           ((tops :++: args) :++: ghosts)))
+    typedCallSiteImpl :: TransData phase (CallSiteImpl
+                                          ((tops :++: args) :++: vars)
+                                          (tops :++: args) ghosts)
   }
 
 -- | Transition a 'TypedEntry' from type-checking to translation phase, by
@@ -1060,11 +1081,12 @@ emptyTypedCallSite siteID perms = TypedCallSite siteID perms Nothing
 -- | Build a 'TypedCallSite' that uses the identity implication, meaning its
 -- @vars@ will equal the @ghosts@ of its entrypoint
 idTypedCallSite :: TypedCallSiteID blocks args vars ->
+                   CruCtx (tops :++: args) ->
                    MbValuePerms ((tops :++: args) :++: vars) ->
                    TypedCallSite TCPhase blocks tops args vars vars
-idTypedCallSite siteID perms =
-  error "FIXME HERE NOW"
-  -- TypedCallSite siteID perms (Just idLocalPermImpl)
+idTypedCallSite siteID tops_args perms =
+  TypedCallSite siteID perms $ Just $
+  idCallSiteImpl (cruCtxProxies tops_args) (cruCtxProxies $ callSiteVars siteID)
 
 -- | A single, typed entrypoint to a Crucible block. Note that our blocks
 -- implicitly take extra "ghost" arguments, that are needed to express the input
@@ -1124,7 +1146,8 @@ singleCallSiteEntry siteID tops args ret perms_in perms_out =
   {
     typedEntryID = callSiteDest siteID, typedEntryTops = tops,
     typedEntryArgs = args, typedEntryRet = ret,
-    typedEntryCallers = [Some $ idTypedCallSite siteID perms_in],
+    typedEntryCallers = [Some $ idTypedCallSite siteID (appendCruCtx
+                                                        tops args) perms_in],
     typedEntryGhosts = callSiteVars siteID,
     typedEntryPermsIn = perms_in, typedEntryPermsOut = perms_out,
     typedEntryBody = Nothing
@@ -1156,14 +1179,13 @@ data TypedBlockSort = JoinSort | MultiEntrySort
 
 -- | A typed Crucible block is a list of typed entrypoints to that block
 data TypedBlock phase ext blocks tops ret args =
-  forall cblocks cargs. (CtxCtxToRList cblocks ~  blocks,
-                         CtxToRList cargs ~ args) =>
+  forall cargs. (CtxToRList cargs ~ args) =>
   TypedBlock
   {
     -- | An identifier for this block
     typedBlockID :: TypedBlockID blocks args,
     -- | The original Crucible block
-    typedBlockBlock :: Block ext cblocks ret cargs,
+    typedBlockBlock :: Block ext (RListToCtxCtx blocks) ret cargs,
     -- | What sort of block is this
     typedBlockSort :: TypedBlockSort,
     -- | The entrypoints into this block; note that the 'entryIndex' of each
@@ -1189,12 +1211,14 @@ entryByID entryID =
   (\blk e -> over typedBlockEntries (replaceNth (entryIndex entryID) e) blk)
 
 -- | Build an empty 'TypedBlock' 
-emptyBlockOfSort :: Size cblocks -> TypedBlockSort ->
+emptyBlockOfSort :: Assignment CtxRepr cblocks -> TypedBlockSort ->
                     Block ext cblocks ret cargs ->
                     TypedBlock TCPhase ext (CtxCtxToRList
                                             cblocks) tops ret (CtxToRList cargs)
-emptyBlockOfSort sz sort blk =
-  TypedBlock (indexCtxToMember sz $ blockIDIndex $ blockID blk) blk sort []
+emptyBlockOfSort cblocks sort blk
+  | Refl <- reprReprToCruCtxCtxEq cblocks =
+    TypedBlock (indexCtxToMember (size cblocks) $
+                blockIDIndex $ blockID blk) blk sort []
 
 -- | Transition a 'TypedBlock' from type-checking to translation phase, by
 -- making sure that all of data needed for the translation phase is present
@@ -1319,10 +1343,10 @@ emptyTypedBlockMap :: Assignment (Constant TypedBlockSort) cblocks ->
                       BlockMap ext cblocks ret ->
                       TypedBlockMap TCPhase ext (CtxCtxToRList cblocks) tops ret
 emptyTypedBlockMap sorts block_map =
-  let sz = size block_map in
+  let cblocks = fmapFC blockInputs block_map in
   assignToRListRList
-  (\blk -> emptyBlockOfSort sz (getConstant $
-                                sorts Ctx.! blockIDIndex (blockID blk)) blk)
+  (\blk -> emptyBlockOfSort cblocks (getConstant $
+                                     sorts Ctx.! blockIDIndex (blockID blk)) blk)
   block_map
 
 -- | Transition a 'TypedBlockMap' from type-checking to translation phase, by
@@ -1417,6 +1441,8 @@ data TopPermCheckState ext cblocks blocks tops ret =
     -- type-checked; if we translated @blocks@ to @'CtxCtxToRList' blocks@ when
     -- creating the hints, this field would go away
     stBlockTypes :: !(Assignment CtxRepr cblocks),
+    -- | Equality constraint between @cblocks@ and @blocks@
+    stCBlocksEq :: RListToCtxCtx blocks :~: cblocks,
     -- | The endianness of the current architecture
     stEndianness :: !EndianForm
   }
@@ -1438,6 +1464,8 @@ emptyTopPermCheckState h tops retPerms sorts blkMap env endianness =
                     , stPermEnv = env
                     , stFnHandle = SomeHandle h
                     , stBlockTypes = fmapFC blockInputs blkMap
+                    , stCBlocksEq = reprReprToCruCtxCtxEq (fmapFC
+                                                           blockInputs blkMap)
                     , stEndianness = endianness
                     }
 
@@ -3531,41 +3559,75 @@ tcBlockEntryBody blk (TypedEntry {..}) =
   tcEmitStmtSeq ctx (blk ^. blockStmts)
 
 
-
-{-
-FIXME HERE NOW
+-- | Prove that the permissions held at a call site from the given source
+-- entrypoint imply the supplied input permissions of the current entrypoint
+proveCallSiteImpl ::
+  KnownRepr ExtRepr ext => TypedEntryID blocks some_args ->
+  CruCtx args -> CruCtx ghosts -> CruCtx vars ->
+  MbValuePerms ((tops :++: args) :++: vars) ->
+  MbValuePerms ((tops :++: args) :++: ghosts) ->
+  TopPermCheckM ext cblocks blocks tops ret (CallSiteImpl
+                                             ((tops :++: args) :++: vars)
+                                             (tops :++: args) ghosts)
+proveCallSiteImpl srcID args ghosts vars mb_perms_in mb_perms_out =
+  fmap CallSiteImpl $ runPermCheckM srcID args vars mb_perms_in $
+  \tops_ns args_ns _ perms_in ->
+  let perms_out =
+        varSubst (permVarSubstOfNames $ RL.append tops_ns args_ns) $
+        mbSeparate (cruCtxProxies ghosts) $
+        mbValuePermsToDistPerms mb_perms_out in
+  permGetPPInfo >>>= \ppInfo ->
+  let err = pretty "Could not prove" <+> permPretty ppInfo perms_out in
+  pcmRunImplM ghosts err (CallSiteImplRet Refl .
+                          exprsOfSubst . completePSubst ghosts)
+  (recombinePerms perms_in >>>
+   proveVarsImpl perms_out >>> getPSubst) >>>= \impl ->
+  gmapRet (>> return impl)
 
 -- | Visit a call site, proving its implication of the entrypoint input
 -- permissions if that implication does not already exist
 visitCallSite :: PermCheckExtC ext =>
-                 TypedEntry TCPhase blocks tops args ghosts ->
+                 TypedEntry TCPhase ext blocks tops ret args ghosts ->
                  TypedCallSite TCPhase blocks tops args ghosts vars ->
                  TopPermCheckM ext cblocks blocks tops ret
                  (TypedCallSite TCPhase blocks tops args ghosts vars)
 visitCallSite _ site@(TypedCallSite { typedCallSiteImpl = Just _ }) =
   return site
 visitCallSite (TypedEntry {..}) site@(TypedCallSite {..}) =
-  get >>= \st ->
-  return $
-  site { typedCallSiteImpl =
-         Just $ flip nuMultiWithElim1 typedCallSitePermsIn $ \ns perms_in ->
-         runImplM typedEntryGhosts (distPermSet perms_in) (stPermEnv st)
-         }
+  fmap (\impl -> site { typedCallSiteImpl = Just impl }) $
+  proveCallSiteImpl typedEntryID typedEntryArgs typedEntryGhosts
+  (callSiteVars typedCallSiteID)
+  typedCallSitePerms typedEntryPermsIn
 
--- | Visit an entrypoint, return a flag for whether the body was type-checked,
--- so we can re-visit the blocks a second time
-visitEntry
+-- | Visit an entrypoint, by first proving the required implications at each
+-- call site, meaning that the permissions held at the call site imply the input
+-- permissions of the entrypoint, and then type-checking the body of the block
+-- with those input permissions, if it has not been type-checked already
+--
+-- FIXME HERE: if some of the call site implications fail, recompute the
+-- entrypoint input permissions using widening
+visitEntry :: (PermCheckExtC ext, CtxToRList cargs ~ args) =>
+              Block ext cblocks ret cargs ->
+              TypedEntry TCPhase ext blocks tops ret args ghosts ->
+              TopPermCheckM ext cblocks blocks tops ret
+              (TypedEntry TCPhase ext blocks tops ret args ghosts)
+visitEntry blk entry@(TypedEntry {..}) =
+  do callers <- mapM (traverseF $ visitCallSite entry) typedEntryCallers
+     body <- maybe (tcBlockEntryBody blk entry) return typedEntryBody
+     return $ entry { typedEntryCallers = callers, typedEntryBody = Just body }
 
--- | Type-check a Crucible block
-tcBlock :: PermCheckExtC ext => TypedEntryInDegree ->
-           TypedBlockID blocks (CtxToRList args) ->
-           Block ext cblocks ret args ->
-           TopPermCheckM ext cblocks blocks tops ret
-           (TypedBlock ext blocks tops ret (CtxToRList args))
-tcBlock in_deg memb blk =
-  do entries <- blockInfoEntries <$> RL.get memb <$>
-       stBlockInfo <$> get
-     TypedBlock <$> mapM (tcBlockEntry in_deg blk) entries
+-- | Visit a block by visiting all its entrypoints
+visitBlock :: PermCheckExtC ext =>
+              TypedBlock TCPhase ext blocks tops ret args ->
+              TopPermCheckM ext cblocks blocks tops ret
+              (TypedBlock TCPhase ext blocks tops ret args)
+visitBlock blk@(TypedBlock {..}) =
+  (stCBlocksEq <$> get) >>= \Refl ->
+  flip (set typedBlockEntries) blk <$>
+  mapM (traverseF $ visitEntry typedBlockBlock) _typedBlockEntries
+
+{-
+FIXME HERE NOW
 
 -- | Type-check a Crucible block and put its translation into the 'BlockInfo'
 -- for that block

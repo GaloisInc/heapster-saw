@@ -606,6 +606,14 @@ reprToCruCtxEq (viewAssign -> AssignExtend ctx _) =
   case reprToCruCtxEq ctx of
     Refl -> Refl
 
+-- | Build a proof that converting a Crucible context of contexts to a list of
+-- lists and back again is the identity
+reprReprToCruCtxCtxEq :: Assignment CtxRepr ctxs ->
+                         RListToCtxCtx (CtxCtxToRList ctxs) :~: ctxs
+reprReprToCruCtxCtxEq (viewAssign -> AssignEmpty) = Refl
+reprReprToCruCtxCtxEq (viewAssign -> AssignExtend ctxs ctx)
+  | (Refl, Refl) <- (reprReprToCruCtxCtxEq ctxs, reprToCruCtxEq ctx) = Refl
+
 -- | Convert a 'CruCtx' to an assignment of 'TypeRepr's
 --
 -- FIXME: 'CruCtx' should just be defined as an assignment!
