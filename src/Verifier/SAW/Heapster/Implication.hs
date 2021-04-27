@@ -2501,7 +2501,8 @@ instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
 -- FIXME: shouldn't need the SubstVar PermVarSubst m assumption...
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (LocalPermImpl ps_in ps_out) m where
-  genSubst s (mbMatch -> [nuMP| LocalPermImpl impl |]) = LocalPermImpl <$> genSubst s impl
+  genSubst s (mbMatch -> [nuMP| LocalPermImpl impl |]) =
+    LocalPermImpl <$> genSubst s impl
 
 instance SubstVar s m => Substable s (LocalImplRet ps ps') m where
   genSubst _ (mbMatch -> [nuMP| LocalImplRet Refl |]) = return $ LocalImplRet Refl
