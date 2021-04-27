@@ -1063,14 +1063,15 @@ data TypedCallSite phase blocks tops args ghosts vars =
                                           (tops :++: args) ghosts)
   }
 
--- | Transition a 'TypedEntry' from type-checking to translation phase, by
--- making sure that all of data needed for the translation phase is present
-completeTypedCallSite :: TypedCallSite TCPhase blocks tops args ghosts vars ->
-                         TypedCallSite TransPhase blocks tops args ghosts vars
+-- | Transition a 'TypedEntry' from type-checking to translation phase if its
+-- implication has been proved
+completeTypedCallSite ::
+  TypedCallSite TCPhase blocks tops args ghosts vars ->
+  Maybe (TypedCallSite TransPhase blocks tops args ghosts vars)
 completeTypedCallSite call_site
   | Just impl <- typedCallSiteImpl call_site
-  = call_site { typedCallSiteImpl = impl }
-completeTypedCallSite _ = error "completeTypedCallSite"
+  = Just $ call_site { typedCallSiteImpl = impl }
+completeTypedCallSite _ = Nothing
 
 -- | Build a 'TypedCallSite' with no implication
 emptyTypedCallSite :: TypedCallSiteID blocks args vars ->
@@ -1123,16 +1124,16 @@ typedEntryHasMultiInDegree :: TypedEntry phase ext blocks tops ret args ghosts -
                               Bool
 typedEntryHasMultiInDegree entry = length (typedEntryCallers entry) > 1
 
--- | Transition a 'TypedEntry' from type-checking to translation phase, by
--- making sure that all of data needed for the translation phase is present
-completeTypedEntry :: TypedEntry TCPhase ext blocks tops ret args ghosts ->
-                      TypedEntry TransPhase ext blocks tops ret args ghosts
+-- | Transition a 'TypedEntry' from type-checking to translation phase if its
+-- body is present and all call site implications have been proved
+completeTypedEntry ::
+  TypedEntry TCPhase ext blocks tops ret args ghosts ->
+  Maybe (TypedEntry TransPhase ext blocks tops ret args ghosts)
 completeTypedEntry (TypedEntry { .. })
   | Just body <- typedEntryBody
-  = TypedEntry { typedEntryBody = body,
-                 typedEntryCallers =
-                   map (fmapF completeTypedCallSite) typedEntryCallers, .. }
-completeTypedEntry _ = error "completeTypedEntry"
+  , Just callers <- mapM (traverseF completeTypedCallSite) typedEntryCallers
+  = Just $ TypedEntry { typedEntryBody = body, typedEntryCallers = callers, .. }
+completeTypedEntry _ = Nothing
 
 -- | Build an entrypoint from a call site, using that call site's permissions as
 -- the entyrpoint input permissions
@@ -1223,10 +1224,11 @@ emptyBlockOfSort cblocks sort blk
 -- | Transition a 'TypedBlock' from type-checking to translation phase, by
 -- making sure that all of data needed for the translation phase is present
 completeTypedBlock :: TypedBlock TCPhase ext blocks tops ret args ->
-                      TypedBlock TransPhase ext blocks tops ret args
-completeTypedBlock (TypedBlock { .. }) =
-  TypedBlock { _typedBlockEntries =
-                 map (fmapF completeTypedEntry) _typedBlockEntries, .. }
+                      Maybe (TypedBlock TransPhase ext blocks tops ret args)
+completeTypedBlock (TypedBlock { .. })
+  | Just entries <- mapM (traverseF completeTypedEntry) _typedBlockEntries
+  = Just $ TypedBlock { _typedBlockEntries = entries, .. }
+completeTypedBlock _ = Nothing
 
 -- | Test if an entrypoint ID has a corresponding entrypoint in a block
 entryIDInBlock :: TypedEntryID blocks args_src ->
@@ -1352,8 +1354,8 @@ emptyTypedBlockMap sorts block_map =
 -- | Transition a 'TypedBlockMap' from type-checking to translation phase, by
 -- making sure that all of data needed for the translation phase is present
 completeTypedBlockMap :: TypedBlockMap TCPhase ext blocks tops ret ->
-                         TypedBlockMap TransPhase ext blocks tops ret
-completeTypedBlockMap = RL.map completeTypedBlock
+                         Maybe (TypedBlockMap TransPhase ext blocks tops ret)
+completeTypedBlockMap = traverseRAssign completeTypedBlock
 
 
 -- | A typed Crucible CFG
