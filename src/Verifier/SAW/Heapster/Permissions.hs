@@ -293,12 +293,6 @@ instance PermPrettyF VarAndType where
   permPrettyMF = permPrettyM
 
 
--- FIXME: this is just TraversableFC without having an orphan instance...
-traverseRAssign :: Applicative m => (forall a. f a -> m (g a)) ->
-                   RAssign f as -> m (RAssign g as)
-traverseRAssign _ MNil = pure MNil
-traverseRAssign f (xs :>: x) = (:>:) <$> traverseRAssign f xs <*> f x
-
 permPrettyExprMb :: PermPretty a =>
                     (RAssign (Constant (Doc ann)) ctx -> PermPPM (Doc ann) -> PermPPM (Doc ann)) ->
                     Mb (ctx :: RList CrucibleType) a -> PermPPM (Doc ann)

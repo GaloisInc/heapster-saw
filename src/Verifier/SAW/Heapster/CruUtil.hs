@@ -74,6 +74,14 @@ import Verifier.SAW.OpenTerm
 member :: Member ctx a -> Lens' (RAssign f ctx) (f a)
 member memb = lens (RL.get memb) (flip (RL.set memb))
 
+-- | Traverse an 'RAssign' inside an 'Applicative'
+--
+-- FIXME HERE: move to Hobbits, renaming it just plain 'traverse'
+traverseRAssign :: Applicative m => (forall x. f x -> m (g x)) ->
+                   RAssign f c -> m (RAssign g c)
+traverseRAssign _ MNil = pure MNil
+traverseRAssign f (xs :>: x) = (:>:) <$> traverseRAssign f xs <*> f x
+
 
 ----------------------------------------------------------------------
 -- * Helper Functions for 'NatRepr' and 'KnownNat'
