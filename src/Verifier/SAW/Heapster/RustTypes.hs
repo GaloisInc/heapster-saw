@@ -395,9 +395,10 @@ instance RsConvert w (Item Span) SomeNamedShape where
   rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
+  rsConvert _ [] = fail "Uninhabited types not supported"
   rsConvert w variants =
     do vshs <- mapM (rsConvert w) variants
-       return $ foldr PExpr_OrShape PExpr_EmptyShape (zipWith PExpr_SeqShape tags vshs)
+       return $ foldr1 PExpr_OrShape (zipWith PExpr_SeqShape tags vshs)
     where
       buildTagShape =
         PExpr_FieldShape . LLVMFieldShape . ValPerm_Eq . PExpr_LLVMWord . bvIntOfSize w
