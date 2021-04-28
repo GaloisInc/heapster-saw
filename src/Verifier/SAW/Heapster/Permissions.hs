@@ -6065,6 +6065,21 @@ data BlockHint blocks init ret args where
 blockHintSort :: BlockHint blocks init ret args -> BlockHintSort args
 blockHintSort (BlockHint _ _ _ sort) = sort
 
+-- | Test if a 'BlockHintSort' is a block entry hint
+isBlockEntryHint :: BlockHintSort args -> Bool
+isBlockEntryHint (BlockEntryHintSort _ _  _) = True
+isBlockEntryHint _ = False
+
+-- | Test if a 'BlockHintSort' is a generalization hint
+isGenPermsHint :: BlockHintSort args -> Bool
+isGenPermsHint GenPermsHintSort = True
+isGenPermsHint _ = False
+
+-- | Test if a 'BlockHintSort' is a generalization hint
+isJoinPointHint :: BlockHintSort args -> Bool
+isJoinPointHint JoinPointHintSort = True
+isJoinPointHint _ = False
+
 -- FIXME: all the per-block hints 
 
 -- | A "hint" from the user for type-checking

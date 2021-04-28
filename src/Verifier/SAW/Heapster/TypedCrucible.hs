@@ -1217,9 +1217,29 @@ emptyBlockOfSort :: Assignment CtxRepr cblocks -> TypedBlockSort ->
                     TypedBlock TCPhase ext (CtxCtxToRList
                                             cblocks) tops ret (CtxToRList cargs)
 emptyBlockOfSort cblocks sort blk
-  | Refl <- reprReprToCruCtxCtxEq cblocks =
-    TypedBlock (indexCtxToMember (size cblocks) $
+  | Refl <- reprReprToCruCtxCtxEq cblocks
+  = TypedBlock (indexCtxToMember (size cblocks) $
                 blockIDIndex $ blockID blk) blk sort []
+
+-- | Build a block with a user-supplied input permission
+emptyBlockForPerms :: Assignment CtxRepr cblocks ->
+                      Block ext cblocks ret cargs -> CruCtx tops ->
+                      TypeRepr ret -> CruCtx ghosts ->
+                      MbValuePerms ((tops :++: CtxToRList cargs) :++: ghosts) ->
+                      MbValuePerms (tops :> ret) ->
+                      TypedBlock TCPhase ext (CtxCtxToRList
+                                              cblocks) tops ret (CtxToRList cargs)
+emptyBlockForPerms cblocks blk tops ret ghosts perms_in perms_out
+  | Refl <- reprReprToCruCtxCtxEq cblocks
+  , blockID <- indexCtxToMember (size cblocks) $ blockIDIndex $ blockID blk
+  , args <- mkCruCtx (blockInputs blk) =
+    TypedBlock blockID blk JoinSort
+    [Some $ TypedEntry {
+        typedEntryID = TypedEntryID blockID 0, typedEntryTops = tops,
+        typedEntryArgs = args, typedEntryRet = ret,
+        typedEntryCallers = [], typedEntryGhosts = ghosts,
+        typedEntryPermsIn = perms_in, typedEntryPermsOut = perms_out,
+        typedEntryBody = Nothing }]
 
 -- | Transition a 'TypedBlock' from type-checking to translation phase, by
 -- making sure that all of data needed for the translation phase is present
@@ -1339,23 +1359,34 @@ instance Show (TypedBlock phase ext blocks tops ret args) where
 instance Show (TypedBlockMap phase ext blocks tops ret) where
   show blkMap = show $ RL.mapToList show blkMap
 
--- | Build a 'TypedBlockMap' with no entrypoints from a 'BlockMap' and a list of
--- 'TypedBlockSort's for each 'Block' in the map
-emptyTypedBlockMap :: Assignment (Constant TypedBlockSort) cblocks ->
-                      BlockMap ext cblocks ret ->
-                      TypedBlockMap TCPhase ext (CtxCtxToRList cblocks) tops ret
-emptyTypedBlockMap sorts block_map =
-  let cblocks = fmapFC blockInputs block_map in
-  assignToRListRList
-  (\blk -> emptyBlockOfSort cblocks (getConstant $
-                                     sorts Ctx.! blockIDIndex (blockID blk)) blk)
-  block_map
-
 -- | Transition a 'TypedBlockMap' from type-checking to translation phase, by
 -- making sure that all of data needed for the translation phase is present
 completeTypedBlockMap :: TypedBlockMap TCPhase ext blocks tops ret ->
                          Maybe (TypedBlockMap TransPhase ext blocks tops ret)
 completeTypedBlockMap = traverseRAssign completeTypedBlock
+
+-- | Build an initial 'TypedBlockMap' entrypoints from a 'BlockMap', using hints
+-- in the supplied 'PermEnv' to determine the sorts and possibly entrypoint
+-- permissions for each block
+initTypedBlockMap :: PermEnv -> FnHandle init ret -> CruCtx tops ->
+                     MbValuePerms (tops :> ret) -> BlockMap ext cblocks ret ->
+                     TypedBlockMap TCPhase ext (CtxCtxToRList cblocks) tops ret
+initTypedBlockMap env h tops perms_out block_map =
+  let cblocks = fmapFC blockInputs block_map
+      ret = handleReturnType h in
+  assignToRListRList
+  (\blk ->
+    let blkID = blockID blk
+        hints = lookupBlockHints env h cblocks blkID in
+    case hints of
+      (find isBlockEntryHint ->
+       Just (BlockEntryHintSort tops' ghosts perms_in))
+        | Just Refl <- testEquality tops tops' ->
+          emptyBlockForPerms cblocks blk tops ret ghosts perms_in perms_out
+      (any isJoinPointHint -> True) ->
+        emptyBlockOfSort cblocks JoinSort blk
+      _ -> emptyBlockOfSort cblocks MultiEntrySort blk)
+  block_map
 
 
 -- | A typed Crucible CFG
@@ -1462,7 +1493,7 @@ emptyTopPermCheckState h tops retPerms sorts blkMap env endianness =
                     , stRetType = handleReturnType h
                     , stRetPerms = retPerms
                     , stBlockTrans = buildBlockIDMap blkMap
-                    , _stBlockMap = emptyTypedBlockMap sorts blkMap
+                    , _stBlockMap = initTypedBlockMap env h tops retPerms blkMap
                     , stPermEnv = env
                     , stFnHandle = SomeHandle h
                     , stBlockTypes = fmapFC blockInputs blkMap
@@ -3628,19 +3659,6 @@ visitBlock blk@(TypedBlock {..}) =
   flip (set typedBlockEntries) blk <$>
   mapM (traverseF $ visitEntry typedBlockBlock) _typedBlockEntries
 
-{-
-FIXME HERE NOW
-
--- | Type-check a Crucible block and put its translation into the 'BlockInfo'
--- for that block
-tcEmitBlock :: PermCheckExtC ext => TypedEntryInDegree ->
-               Block ext cblocks ret args ->
-               TopPermCheckM ext cblocks blocks tops ret ()
-tcEmitBlock in_deg blk =
-  do !memb <- stLookupBlockID (blockID blk) <$> get
-     !block_t <- tcBlock in_deg memb blk
-     modifyBlockInfo (blockInfoMapSetBlock memb block_t)
-
 -- | Build the input permissions for the initial block of a CFG, where the
 -- top-level variables (which in this case are the ghosts plus the normal
 -- arguments of the function permission) get the function input permissions and
@@ -3655,6 +3673,8 @@ funPermToBlockInputs fun_perm =
   let (_, args_ns) =
         RL.split (funPermGhosts fun_perm) args_prxs ghosts_args_ns in
   appendValuePerms perms_in (eqValuePerms args_ns)
+
+{-
 
 -- | Type-check a Crucible CFG
 tcCFG :: forall ext cblocks ghosts inits ret. PermCheckExtC ext =>
