@@ -31,6 +31,7 @@ import Data.Maybe
 import qualified Data.Text as Text
 import Data.List (find, findIndex, any)
 import Data.Functor.Constant
+import Data.Functor.Product
 import Data.Type.Equality
 import Data.Kind
 import qualified Data.BitVector.Sized as BV
@@ -1365,28 +1366,53 @@ completeTypedBlockMap :: TypedBlockMap TCPhase ext blocks tops ret ->
                          Maybe (TypedBlockMap TransPhase ext blocks tops ret)
 completeTypedBlockMap = traverseRAssign completeTypedBlock
 
--- | Build an initial 'TypedBlockMap' entrypoints from a 'BlockMap', using hints
--- in the supplied 'PermEnv' to determine the sorts and possibly entrypoint
--- permissions for each block
-initTypedBlockMap :: PermEnv -> FnHandle init ret -> CruCtx tops ->
-                     MbValuePerms (tops :> ret) -> BlockMap ext cblocks ret ->
-                     TypedBlockMap TCPhase ext (CtxCtxToRList cblocks) tops ret
-initTypedBlockMap env h tops perms_out block_map =
-  let cblocks = fmapFC blockInputs block_map
-      ret = handleReturnType h in
+-- | Build the input permissions for the initial block of a CFG, where the
+-- top-level variables (which in this case are the ghosts plus the normal
+-- arguments of the function permission) get the function input permissions and
+-- the normal arguments get equality permissions to their respective top-level
+-- variables.
+funPermToBlockInputs :: FunPerm ghosts args ret ->
+                        MbValuePerms ((ghosts :++: args) :++: args)
+funPermToBlockInputs fun_perm =
+  let args_prxs = cruCtxProxies $ funPermArgs fun_perm in
+  extMbMulti args_prxs $
+  flip nuMultiWithElim1 (funPermIns fun_perm) $ \ghosts_args_ns perms_in ->
+  let (_, args_ns) =
+        RL.split (funPermGhosts fun_perm) args_prxs ghosts_args_ns in
+  appendValuePerms perms_in (eqValuePerms args_ns)
+
+-- | Build an initial 'TypedBlockMap' from a 'BlockMap'. Determine the sort, and
+-- possibly entrypoint permissions, for each block by using hints in the
+-- supplied 'PermEnv' along with a list of 'Bool' flags indicating which blocks
+-- are at the head of a loop (or other strongly-connected component)
+initTypedBlockMap ::
+  PermEnv -> FunPerm ghosts (CtxToRList init) ret ->
+  CFG ext cblocks init ret -> Assignment (Constant Bool) cblocks ->
+  TypedBlockMap TCPhase ext (CtxCtxToRList
+                             cblocks) (ghosts :++: CtxToRList init) ret
+initTypedBlockMap env fun_perm cfg sccs =
+  let block_map = cfgBlockMap cfg
+      cblocks = fmapFC blockInputs block_map
+      ret = funPermRet fun_perm
+      ghosts = funPermGhosts fun_perm
+      tops = funPermTops fun_perm
+      top_perms_in = funPermToBlockInputs fun_perm
+      perms_out = funPermOuts fun_perm in
   assignToRListRList
-  (\blk ->
+  (\(Pair blk (Constant is_scc)) ->
     let blkID = blockID blk
-        hints = lookupBlockHints env h cblocks blkID in
+        hints = lookupBlockHints env (cfgHandle cfg) cblocks blkID in
     case hints of
+      _ | Just Refl <- testEquality (cfgEntryBlockID cfg) blkID ->
+          emptyBlockForPerms cblocks blk tops ret CruCtxNil top_perms_in perms_out
       (find isBlockEntryHint ->
        Just (BlockEntryHintSort tops' ghosts perms_in))
         | Just Refl <- testEquality tops tops' ->
           emptyBlockForPerms cblocks blk tops ret ghosts perms_in perms_out
-      (any isJoinPointHint -> True) ->
-        emptyBlockOfSort cblocks JoinSort blk
-      _ -> emptyBlockOfSort cblocks MultiEntrySort blk)
-  block_map
+      _ | is_scc || any isJoinPointHint hints ->
+          emptyBlockOfSort cblocks JoinSort blk
+      _ -> emptyBlockOfSort cblocks MultiEntrySort blk) $
+  Ctx.zipWith Pair block_map sccs
 
 
 -- | A typed Crucible CFG
@@ -1484,23 +1510,24 @@ makeLenses ''TopPermCheckState
 
 -- | Build an empty 'TopPermCheckState' from a Crucible 'BlockMap'
 emptyTopPermCheckState ::
-  FnHandle init ret -> CruCtx tops -> MbValuePerms (tops :> ret) ->
-  Assignment (Constant TypedBlockSort) cblocks ->
-  BlockMap ext cblocks ret -> PermEnv -> EndianForm ->
-  TopPermCheckState ext cblocks (CtxCtxToRList cblocks) tops ret
-emptyTopPermCheckState h tops retPerms sorts blkMap env endianness =
-  TopPermCheckState { stTopCtx = tops
-                    , stRetType = handleReturnType h
-                    , stRetPerms = retPerms
-                    , stBlockTrans = buildBlockIDMap blkMap
-                    , _stBlockMap = initTypedBlockMap env h tops retPerms blkMap
-                    , stPermEnv = env
-                    , stFnHandle = SomeHandle h
-                    , stBlockTypes = fmapFC blockInputs blkMap
-                    , stCBlocksEq = reprReprToCruCtxCtxEq (fmapFC
-                                                           blockInputs blkMap)
-                    , stEndianness = endianness
-                    }
+  PermEnv -> FunPerm ghosts (CtxToRList init) ret ->
+  EndianForm -> CFG ext cblocks init ret -> Assignment (Constant Bool) cblocks ->
+  TopPermCheckState ext cblocks (CtxCtxToRList
+                                 cblocks) (ghosts :++: CtxToRList init) ret
+emptyTopPermCheckState env fun_perm endianness cfg sccs =
+  let blkMap = cfgBlockMap cfg in
+  TopPermCheckState
+  { stTopCtx = funPermTops fun_perm
+  , stRetType = funPermRet fun_perm
+  , stRetPerms = funPermOuts fun_perm
+  , stBlockTrans = buildBlockIDMap blkMap
+  , _stBlockMap = initTypedBlockMap env fun_perm cfg sccs
+  , stPermEnv = env
+  , stFnHandle = SomeHandle $ cfgHandle cfg
+  , stBlockTypes = fmapFC blockInputs blkMap
+  , stCBlocksEq = reprReprToCruCtxCtxEq (fmapFC blockInputs blkMap)
+  , stEndianness = endianness
+  }
 
 
 -- | Look up a Crucible block id in a top-level perm-checking state
@@ -3659,43 +3686,40 @@ visitBlock blk@(TypedBlock {..}) =
   flip (set typedBlockEntries) blk <$>
   mapM (traverseF $ visitEntry typedBlockBlock) _typedBlockEntries
 
--- | Build the input permissions for the initial block of a CFG, where the
--- top-level variables (which in this case are the ghosts plus the normal
--- arguments of the function permission) get the function input permissions and
--- the normal arguments get equality permissions to their respective top-level
--- variables.
-funPermToBlockInputs :: FunPerm ghosts args ret ->
-                        MbValuePerms ((ghosts :++: args) :++: args)
-funPermToBlockInputs fun_perm =
-  let args_prxs = cruCtxProxies $ funPermArgs fun_perm in
-  extMbMulti args_prxs $
-  flip nuMultiWithElim1 (funPermIns fun_perm) $ \ghosts_args_ns perms_in ->
-  let (_, args_ns) =
-        RL.split (funPermGhosts fun_perm) args_prxs ghosts_args_ns in
-  appendValuePerms perms_in (eqValuePerms args_ns)
+-- | Flatten a list of topological ordering components to a list of nodes in
+-- topological order paired with a flag denoting which nodes were loop heads
+wtoCompsToListWithSCCs :: [WTOComponent n] -> [(n,Bool)]
+wtoCompsToListWithSCCs =
+  concatMap (\case
+                Vertex n -> [(n,False)]
+                SCC n comps -> [(n,True)] ++ wtoCompsToListWithSCCs comps)
+
+-- | FIXME HERE NOW: document
+cfgOrderWithSCCs :: CFG ext blocks init ret ->
+                    ([Some (BlockID blocks)], Assignment (Constant Bool) blocks)
+cfgOrderWithSCCs cfg =
+  let nodes_sccs = wtoCompsToListWithSCCs $ cfgWeakTopologicalOrdering cfg in
+  (map fst nodes_sccs,
+   foldr (\(Some blkID, is_scc) ->
+           set (ixF $ blockIDIndex blkID) $ Constant is_scc)
+   (fmapFC (const $ Constant False) $ cfgBlockMap cfg)
+   nodes_sccs)
 
 {-
-
 -- | Type-check a Crucible CFG
 tcCFG :: forall ext cblocks ghosts inits ret. PermCheckExtC ext =>
          PermEnv -> EndianForm ->
          FunPerm ghosts (CtxToRList inits) ret ->
          CFG ext cblocks inits ret ->
          TypedCFG ext (CtxCtxToRList cblocks) ghosts (CtxToRList inits) ret
-tcCFG env endianness fun_perm@(FunPerm ghosts
-                               _inits _ _ _) (cfg :: CFG ext cblocks inits ret) =
+tcCFG env endianness fun_perm (cfg :: CFG ext cblocks inits ret) =
   let h = cfgHandle cfg
-      cblocks_types = fmapFC blockInputs $ cfgBlockMap cfg
       inits = mkCruCtx $ handleArgTypes h
+      ghosts = funPermGhosts fun_perm
       tops = appendCruCtx ghosts inits
-      perms_out = funPermOuts fun_perm in
-  flip evalState (emptyTopPermCheckState
-                  h
-                  tops
-                  perms_out
-                  (cfgBlockMap cfg)
-                  env
-                  endianness) $
+      perms_out = funPermOuts fun_perm
+      (nodes, sccs) = cfgOrderWithSCCs cfg in
+  flip evalState (emptyTopPermCheckState env fun_perm endianness cfg sccs) $
   do
      -- First, add a block entrypoint for the initial block of the function
      init_memb <- stLookupBlockID (cfgEntryBlockID cfg) <$> get

@@ -1754,6 +1754,11 @@ funPermArgs (FunPerm _ args _ _ _) = args
 funPermGhosts :: FunPerm ghosts args ret -> CruCtx ghosts
 funPermGhosts (FunPerm ghosts _ _ _ _) = ghosts
 
+-- | Extract the @ghosts@ and @args@ contexts from a function permission
+funPermTops :: FunPerm ghosts args ret -> CruCtx (ghosts :++: args)
+funPermTops fun_perm =
+  appendCruCtx (funPermGhosts fun_perm) (funPermArgs fun_perm)
+
 -- | Extract the return type from a function permission
 funPermRet :: FunPerm ghosts args ret -> TypeRepr ret
 funPermRet (FunPerm _ _ ret _ _) = ret
