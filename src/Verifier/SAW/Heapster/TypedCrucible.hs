@@ -1150,6 +1150,12 @@ typedEntryHasMultiInDegree :: TypedEntry phase ext blocks tops ret args ghosts -
                               Bool
 typedEntryHasMultiInDegree entry = length (typedEntryCallers entry) > 1
 
+-- | Get the types of all the inputs of an entrypoint
+typedEntryAllArgs :: TypedEntry phase ext blocks tops ret args ghosts ->
+                     CruCtx ((tops :++: args) :++: ghosts)
+typedEntryAllArgs (TypedEntry {..}) =
+  appendCruCtx (appendCruCtx typedEntryTops typedEntryArgs) typedEntryGhosts
+
 -- | Transition a 'TypedEntry' from type-checking to translation phase if its
 -- body is present and all call site implications have been proved
 completeTypedEntry ::
@@ -3562,8 +3568,7 @@ tcBlockEntryBody ::
   TopPermCheckM ext cblocks blocks tops ret
   (Mb ((tops :++: CtxToRList args) :++: ghosts)
    (TypedStmtSeq ext blocks tops ret ((tops :++: CtxToRList args) :++: ghosts)))
-tcBlockEntryBody blk (TypedEntry {..}) =
-  get >>= \(TopPermCheckState {..}) ->
+tcBlockEntryBody blk entry@(TypedEntry {..}) =
   runPermCheckM typedEntryID typedEntryArgs typedEntryGhosts typedEntryPermsIn $
   \tops_ns args_ns ghosts_ns perms ->
   let ctx = mkCtxTrans (blockInputs blk) args_ns
@@ -3575,8 +3580,7 @@ tcBlockEntryBody blk (TypedEntry {..}) =
                pretty "Input types:"
                <> align (permPretty i $
                          RL.map2 VarAndType ns $ cruCtxToTypes $
-                         appendCruCtx (appendCruCtx stTopCtx typedEntryArgs)
-                         typedEntryGhosts)
+                         typedEntryAllArgs entry)
                <> line <>
                pretty "Input perms:"
                <> align (permPretty i perms)) >>>
