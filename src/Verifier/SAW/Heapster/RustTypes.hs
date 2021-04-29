@@ -914,18 +914,18 @@ parseFunPermFromRust env w args ret str
 parseFunPermFromRust _ _ _ _ str =
     fail ("Malformed Rust type: " ++ str)
 
--- | Parse a polymorphic Rust type (enum, struct) and convert it to a Heapster
+-- | Parse a polymorphic Rust type declaration and convert it to a Heapster
 -- shape
 -- Note: No CruCtx / TypeRepr as arguments for now
-parseLLVMShapeFromRust :: (MonadFail m, 1 <= w, KnownNat w) =>
-                          PermEnv -> prx w -> String ->
-                          m SomeNamedShape
-parseLLVMShapeFromRust env w str
+parseNamedShapeFromRustDecl :: (MonadFail m, 1 <= w, KnownNat w) =>
+                               PermEnv -> prx w -> String ->
+                               m SomeNamedShape
+parseNamedShapeFromRustDecl env w str
   | Right item <- parse @(Item Span) (inputStreamFromString str) =
     runLiftRustConvM (mkRustConvInfo env) $ rsConvert w item
   | Left err <- parse @(Item Span) (inputStreamFromString str) =
     fail ("Error parsing top-level item: " ++ show err)
-parseLLVMShapeFromRust _ _ str =
+parseNamedShapeFromRustDecl _ _ str =
   fail ("Malformed Rust type: " ++ str)
 
 $(mkNuMatching [t| ArgLayout |])

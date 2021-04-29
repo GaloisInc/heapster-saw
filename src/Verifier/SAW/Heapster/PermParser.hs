@@ -220,4 +220,4 @@ parseRustTypeString ::
   prx w                 {- ^ pointer bit-width proxy    -} ->
   String                {- ^ input text                 -} ->
   m SomeNamedShape
-parseRustTypeString = parseLLVMShapeFromRust
+parseRustTypeString = parseNamedShapeFromRustDecl
