@@ -47,6 +47,7 @@ import What4.FunctionName
 import What4.Interface (StringLiteral(..))
 
 import Control.Lens hiding ((:>), Index, ix)
+import Control.Monad
 import Control.Monad.State.Strict hiding (ap)
 import Control.Monad.Reader hiding (ap)
 
@@ -1491,8 +1492,6 @@ data TopPermCheckState ext cblocks blocks tops ret =
     _stBlockMap :: !(TypedBlockMap TCPhase ext blocks tops ret),
     -- | The permissions environment
     stPermEnv :: !PermEnv,
-    -- | The function handle of the function currently being type-checked
-    stFnHandle :: !SomeHandle,
     -- | The un-translated input types of all of the Crucible blocks
     --
     -- FIXME: this is only needed to look up hints, to prove that the @blocks@
@@ -1523,7 +1522,6 @@ emptyTopPermCheckState env fun_perm endianness cfg sccs =
   , stBlockTrans = buildBlockIDMap blkMap
   , _stBlockMap = initTypedBlockMap env fun_perm cfg sccs
   , stPermEnv = env
-  , stFnHandle = SomeHandle $ cfgHandle cfg
   , stBlockTypes = fmapFC blockInputs blkMap
   , stCBlocksEq = reprReprToCruCtxCtxEq (fmapFC blockInputs blkMap)
   , stEndianness = endianness
@@ -3705,7 +3703,6 @@ cfgOrderWithSCCs cfg =
    (fmapFC (const $ Constant False) $ cfgBlockMap cfg)
    nodes_sccs)
 
-{-
 -- | Type-check a Crucible CFG
 tcCFG :: forall ext cblocks ghosts inits ret. PermCheckExtC ext =>
          PermEnv -> EndianForm ->
@@ -3714,86 +3711,28 @@ tcCFG :: forall ext cblocks ghosts inits ret. PermCheckExtC ext =>
          TypedCFG ext (CtxCtxToRList cblocks) ghosts (CtxToRList inits) ret
 tcCFG env endianness fun_perm (cfg :: CFG ext cblocks inits ret) =
   let h = cfgHandle cfg
-      inits = mkCruCtx $ handleArgTypes h
       ghosts = funPermGhosts fun_perm
-      tops = appendCruCtx ghosts inits
-      perms_out = funPermOuts fun_perm
-      (nodes, sccs) = cfgOrderWithSCCs cfg in
-  flip evalState (emptyTopPermCheckState env fun_perm endianness cfg sccs) $
-  do
-     -- First, add a block entrypoint for the initial block of the function
-     init_memb <- stLookupBlockID (cfgEntryBlockID cfg) <$> get
-     let init_entryID = TypedEntryID init_memb CruCtxNil 0
-     -- let init_args = mkCruCtx $ handleArgTypes $ cfgHandle cfg
-     modifyBlockInfo (addBlockEntry init_memb $
-                      BlockEntryInfo init_entryID EntryInDegree_One tops inits
-                      (funPermToBlockInputs fun_perm))
-
-     -- Next, add entrypoints for all the block entry hints, keeping track of
-     -- the hints that we actually used
-     --
-     -- FIXME: why does GHC need this type to be given?
-     entry_hint_blocks :: [Some (BlockID cblocks)] <-
-       fmap catMaybes $
-       forM (lookupBlockEntryHints env h cblocks_types) $ \case
-       Some (BlockHint _ _ h_blkID
-             (BlockEntryHintSort h_topargs h_ghosts h_perms_in))
-         | Just Refl <- testEquality h_topargs (appendCruCtx ghosts inits) ->
-           do h_memb <- stLookupBlockID h_blkID <$> get
-              let h_entryID = TypedEntryID h_memb h_ghosts 0
-              let h_args = mkCruCtx $ blockInputs (cfgBlockMap cfg !
-                                                   blockIDIndex h_blkID)
-              -- let h_allargs = appendCruCtx h_ghosts h_args
-              modifyBlockInfo (addBlockEntry h_memb $
-                               BlockEntryInfo h_entryID EntryInDegree_One
-                               tops h_args h_perms_in)
-              return (Just $ Some h_blkID)
-       Some (BlockHint _ _ h_blkID _) ->
-         trace ("Block entry hint for block "
-                ++ show h_blkID
-                ++ " did not match arguments, skipping") $
-         return Nothing
-
-     -- Visit all the blocks in a weak topological order, meaning that we visit
-     -- a block before its successors (the blocks it could jump to) in the CFG.
-     -- The exception is that blocks with block entry hints should be visited
-     -- first, before any blocks that jump to them. To ensure this, we remove
-     -- all links to a block with a block entry hint and then add a dummy start
-     -- node, represented by Nothing, that has the function start block and also
-     -- all blocks with hints as successors.
-     let hint_nodes = map Just entry_hint_blocks
-     let nodeSuccessors (Just node) =
-           filter (\node' -> notElem node' hint_nodes) $
-           map Just $ cfgSuccessors cfg node
-         nodeSuccessors Nothing = Just (cfgStart cfg) : hint_nodes
-     let nodes = weakTopologicalOrdering nodeSuccessors Nothing
-
-     -- !(init_st) <- get
-     mapM_ visit $ trace "visiting CFG..." nodes
-     !final_st <- get
-     trace "visiting complete!" $ return $ TypedCFG
-       { tpcfgHandle = TypedFnHandle ghosts h
-       , tpcfgFunPerm = fun_perm
-       , tpcfgBlockMap =
-           RL.map
-           (maybe (error "tcCFG: unvisited block!") id . blockInfoBlock)
-           (stBlockInfo final_st)
-       , tpcfgEntryID = init_entryID }
+      (nodes, sccs) = cfgOrderWithSCCs cfg
+      init_st = emptyTopPermCheckState env fun_perm endianness cfg sccs
+      tp_nodes = map (\(Some blkID) ->
+                       Some $ stLookupBlockID blkID init_st) nodes in
+  let tp_blk_map = flip evalState init_st $ main_loop tp_nodes in
+  TypedCFG { tpcfgHandle = TypedFnHandle ghosts h
+           , tpcfgFunPerm = fun_perm
+           , tpcfgBlockMap = tp_blk_map
+           , tpcfgEntryID =
+               TypedEntryID (stLookupBlockID (cfgEntryBlockID cfg) init_st) 0 }
   where
-    visit :: WTOComponent (Maybe (Some (BlockID cblocks))) ->
-             TopPermCheckM ext cblocks blocks tops ret ()
-    visit (Vertex Nothing) = return ()
-    visit (Vertex (Just (Some blkID))) =
-      do blkIx <- memberLength <$> stLookupBlockID blkID <$> get
-         () <- trace ("Visiting block: " ++ show blkIx
-                      ++ " (" ++ show blkID ++ ")") $ return ()
-         !ret <- tcEmitBlock EntryInDegree_None (getBlock blkID (cfgBlockMap cfg))
-         !_s <- get
-         trace ("Visiting block " ++ show blkIx ++ " complete") $ return ret
-    visit (SCC (Just (Some blkID)) comps) =
-      tcEmitBlock EntryInDegree_Loop (getBlock blkID (cfgBlockMap cfg)) >>
-      mapM_ visit comps
-    visit (SCC Nothing comps) =
-      -- NOTE: this should never actually happen, as nothing jumps to Nothing
-      mapM_ visit comps
--}
+    main_loop :: [Some (TypedBlockID blocks)] ->
+                 TopPermCheckM ext cblocks blocks tops ret
+                 (TypedBlockMap TransPhase ext blocks tops ret)
+    main_loop nodes =
+      get >>= \st ->
+      case completeTypedBlockMap $ view stBlockMap st of
+        Just blkMapOut -> return blkMapOut
+        Nothing ->
+          forM_ nodes (\(Some tpBlkID) ->
+                        use (stBlockMap . member tpBlkID) >>=
+                        (visitBlock >=>
+                         assign (stBlockMap . member tpBlkID))) >>
+          main_loop nodes
