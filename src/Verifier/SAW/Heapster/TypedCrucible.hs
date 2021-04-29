@@ -253,6 +253,11 @@ data TypedCallSiteID blocks args vars =
                     callSiteDest :: TypedEntryID blocks args,
                     callSiteVars :: CruCtx vars }
 
+-- | Get the 'TypedBlockID' of the callee of a call site
+callSiteDestBlock :: TypedCallSiteID blocks args vars ->
+                     TypedBlockID blocks args
+callSiteDestBlock = entryBlockID . callSiteDest
+
 instance TestEquality (TypedCallSiteID blocks args) where
   testEquality (TypedCallSiteID
                 src1 dest1 vars1) (TypedCallSiteID src2 dest2 vars2)
@@ -938,8 +943,8 @@ instance SubstVar PermVarSubst m =>
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (TypedJumpTarget blocks tops ps) m where
-  genSubst s (mbMatch -> [nuMP| TypedJumpTarget entryID prx ctx perms |]) =
-    TypedJumpTarget (mbLift entryID) (mbLift prx) (mbLift ctx) <$>
+  genSubst s (mbMatch -> [nuMP| TypedJumpTarget siteID prx ctx perms |]) =
+    TypedJumpTarget (mbLift siteID) (mbLift prx) (mbLift ctx) <$>
     genSubst s perms
 
 instance SubstVar PermVarSubst m =>
@@ -1028,26 +1033,42 @@ type family TransData phase a where
 -- | The body of an implication in a call site, which ensures that the
 -- permissions are as expected and gives expressions for the ghost variables. It
 -- also includes a 'TypedEntryID' for the callee, to make translation easier.
-data CallSiteImplRet blocks args ghosts ps_out =
-  CallSiteImplRet (Some (TypedEntryID blocks)) (CruCtx ghosts)
-  (args :++: ghosts :~: ps_out) (PermExprs ghosts)
+data CallSiteImplRet blocks tops args ghosts ps_out =
+  CallSiteImplRet (TypedEntryID blocks args) (CruCtx ghosts)
+  ((tops :++: args) :++: ghosts :~: ps_out) (PermExprs ghosts)
 
-$(mkNuMatching [t| forall blocks args ghosts ps_out.
-                CallSiteImplRet blocks args ghosts ps_out |])
+$(mkNuMatching [t| forall blocks tops args ghosts ps_out.
+                CallSiteImplRet blocks tops args ghosts ps_out |])
 
-instance NuMatchingAny1 (CallSiteImplRet blocks args ghosts) where
+instance NuMatchingAny1 (CallSiteImplRet blocks tops args ghosts) where
   nuMatchingAny1Proof = nuMatchingProof
+
+instance SubstVar PermVarSubst m =>
+         Substable PermVarSubst (CallSiteImplRet
+                                 blocks tops args ghosts ps) m where
+  genSubst s (mbMatch -> [nuMP| CallSiteImplRet entryID ghosts Refl gexprs |]) =
+    CallSiteImplRet (mbLift entryID) (mbLift ghosts) Refl <$>
+    genSubst s gexprs
+
+instance SubstVar PermVarSubst m =>
+         Substable1 PermVarSubst (CallSiteImplRet
+                                  blocks tops args ghosts) m where
+  genSubst1 = genSubst
+
 
 -- | An implication used in a call site, which binds the input variables in an
 -- implication of the output variables
-newtype CallSiteImpl blocks ps_in args ghosts =
-  CallSiteImpl (Mb ps_in (AnnotPermImpl (CallSiteImplRet blocks args ghosts) ps_in))
+newtype CallSiteImpl blocks ps_in tops args ghosts =
+  CallSiteImpl (Mb ps_in (AnnotPermImpl
+                          (CallSiteImplRet blocks tops args ghosts) ps_in))
 
 -- | The identity implication
-idCallSiteImpl :: Some (TypedEntryID blocks) -> CruCtx args -> CruCtx vars ->
-                  CallSiteImpl blocks (args :++: vars) args vars
-idCallSiteImpl entryID args vars =
-  CallSiteImpl $ mbCombine $ nuMulti (cruCtxProxies args) $ \_ ->
+idCallSiteImpl :: TypedEntryID blocks args ->
+                  CruCtx tops -> CruCtx args -> CruCtx vars ->
+                  CallSiteImpl blocks ((tops :++: args) :++: vars) tops args vars
+idCallSiteImpl entryID tops args vars =
+  let tops_args_prxs = cruCtxProxies (appendCruCtx tops args) in
+  CallSiteImpl $ mbCombine $ nuMulti tops_args_prxs $ \_ ->
   nuMulti (cruCtxProxies vars) $ \vars_ns ->
   AnnotPermImpl "" $ PermImpl_Done $
   CallSiteImplRet entryID vars Refl (namesToExprs vars_ns)
@@ -1065,7 +1086,7 @@ data TypedCallSite phase blocks tops args ghosts vars =
     typedCallSiteImpl :: TransData phase (CallSiteImpl
                                           blocks
                                           ((tops :++: args) :++: vars)
-                                          (tops :++: args) ghosts)
+                                          tops args ghosts)
   }
 
 -- | Transition a 'TypedEntry' from type-checking to translation phase if its
@@ -1087,12 +1108,12 @@ emptyTypedCallSite siteID perms = TypedCallSite siteID perms Nothing
 -- | Build a 'TypedCallSite' that uses the identity implication, meaning its
 -- @vars@ will equal the @ghosts@ of its entrypoint
 idTypedCallSite :: TypedCallSiteID blocks args vars ->
-                   CruCtx (tops :++: args) ->
+                   CruCtx tops -> CruCtx args ->
                    MbValuePerms ((tops :++: args) :++: vars) ->
                    TypedCallSite TCPhase blocks tops args vars vars
-idTypedCallSite siteID tops_args perms =
+idTypedCallSite siteID tops args perms =
   TypedCallSite siteID perms $ Just $
-  idCallSiteImpl (Some $ callSiteDest siteID) tops_args (callSiteVars siteID)
+  idCallSiteImpl (callSiteDest siteID) tops args (callSiteVars siteID)
 
 -- | A single, typed entrypoint to a Crucible block. Note that our blocks
 -- implicitly take extra "ghost" arguments, that are needed to express the input
@@ -1152,8 +1173,7 @@ singleCallSiteEntry siteID tops args ret perms_in perms_out =
   {
     typedEntryID = callSiteDest siteID, typedEntryTops = tops,
     typedEntryArgs = args, typedEntryRet = ret,
-    typedEntryCallers = [Some $ idTypedCallSite siteID (appendCruCtx
-                                                        tops args) perms_in],
+    typedEntryCallers = [Some $ idTypedCallSite siteID tops args perms_in],
     typedEntryGhosts = callSiteVars siteID,
     typedEntryPermsIn = perms_in, typedEntryPermsOut = perms_out,
     typedEntryBody = Nothing
@@ -1162,7 +1182,7 @@ singleCallSiteEntry siteID tops args ret perms_in perms_out =
 -- | Test if an entrypoint contains a call site with the same caller as the
 -- supplied call site id, and, if so, return the index in its list of callers
 typedEntryCallerIx :: TypedCallSiteID blocks args vars ->
-                      TypedEntry TCPhase ext blocks tops ret args ghosts ->
+                      TypedEntry phase ext blocks tops ret args ghosts ->
                       Maybe Int
 typedEntryCallerIx (TypedCallSiteID
                     { callSiteSrc = callerID }) (typedEntryCallers -> callers) =
@@ -1176,6 +1196,19 @@ typedEntryHasCaller :: TypedEntryID blocks args_src ->
 typedEntryHasCaller callerID (typedEntryCallers -> callers) =
   any (\(Some site) ->
         callSiteIDCallerEq callerID $ typedCallSiteID site) callers
+
+-- | Return the 'TypedCallSite' structure in an entrypoint for a particular call
+-- site id, if it exists. Unlike 'typedEntryHasCaller', this requires the site
+-- id to have the same variables.
+typedEntryCallerSite ::
+  TypedCallSiteID blocks args vars ->
+  TypedEntry phase ext blocks tops ret args ghosts ->
+  Maybe (TypedCallSite phase blocks tops args ghosts vars)
+typedEntryCallerSite siteID (typedEntryCallers -> callers) =
+  listToMaybe $ flip mapMaybe callers $ \(Some site) ->
+  case testEquality (typedCallSiteID site) siteID of
+    Just Refl -> Just site
+    Nothing -> Nothing
 
 
 -- | A typed Crucible block is either a join block, meaning that all jumps to it
@@ -3561,7 +3594,7 @@ proveCallSiteImpl ::
   TopPermCheckM ext cblocks blocks tops ret (CallSiteImpl
                                              blocks
                                              ((tops :++: args) :++: vars)
-                                             (tops :++: args) ghosts)
+                                             tops args ghosts)
 proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
   fmap CallSiteImpl $ runPermCheckM srcID args vars mb_perms_in $
   \tops_ns args_ns _ perms_in ->
@@ -3571,7 +3604,7 @@ proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
         mbValuePermsToDistPerms mb_perms_out in
   permGetPPInfo >>>= \ppInfo ->
   let err = pretty "Could not prove" <+> permPretty ppInfo perms_out in
-  pcmRunImplM ghosts err (CallSiteImplRet (Some destID) ghosts Refl .
+  pcmRunImplM ghosts err (CallSiteImplRet destID ghosts Refl .
                           exprsOfSubst . completePSubst ghosts)
   (recombinePerms perms_in >>>
    proveVarsImpl perms_out >>> getPSubst) >>>= \impl ->
