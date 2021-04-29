@@ -346,6 +346,7 @@ instance RsConvert w (Generics Span) (Some RustCtx) where
       addTyVar (Some ctx) tyvar =
         Some (ctx :>: Pair (Constant (tyParamName tyvar)) (LLVMShapeRepr (natRepr w)))
 
+-- | Return true if and only if the provided Rust type definition is recursive
 isRecursiveDef :: Item Span -> Bool
 isRecursiveDef item =
   case item of
