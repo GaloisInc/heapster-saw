@@ -49,7 +49,7 @@ import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Language.Rust.Syntax
 import Language.Rust.Parser
-import Language.Rust.Data.Ident (Ident(..))
+import Language.Rust.Data.Ident (Ident(..), mkIdent, name)
 
 import Prettyprinter as PP
 
@@ -202,6 +202,19 @@ sizedIntShapeFun _ sz =
   constShapeFun $ PExpr_FieldShape (LLVMFieldShape $
                                     ValPerm_Exists $ llvmExEqWord sz)
 
+-- | Build a `SomeShapeFun` from `SomeNamedShape`
+namedShapeShapeFun :: NatRepr w -> SomeNamedShape -> RustConvM (SomeShapeFun w)
+namedShapeShapeFun w (SomeNamedShape nmsh)
+  | Just Refl <- testEquality w (natRepr nmsh) = return $
+    SomeShapeFun (namedShapeArgs nmsh)
+                 (nuMulti (cruCtxProxies (namedShapeArgs nmsh))
+                          (\ns -> PExpr_NamedShape Nothing Nothing nmsh (namesToExprs ns)))
+namedShapeShapeFun w (SomeNamedShape nmsh) =
+  fail $ renderDoc $ fillSep
+  [pretty "Incorrect size of shape" <+> pretty (namedShapeName nmsh),
+   pretty "Expected:" <+> pretty (intValue w),
+   pretty "Actual:" <+> pretty (intValue (natRepr nmsh))]
+
 -- | A table for converting Rust base types to shapes
 namedTypeTable :: (1 <= w, KnownNat w) => prx w -> [(String,SomeShapeFun w)]
 namedTypeTable w =
@@ -243,16 +256,17 @@ newtype RustName = RustName [Ident]
 instance Show RustName where
   show (RustName ids) = concat $ intersperse "::" $ map show ids
 
-instance RsConvert w RustName SomeNamedShape where
-  rsConvert _w (RustName elems) =
+instance RsConvert w RustName (SomeShapeFun w) where
+  rsConvert w (RustName elems) =
     -- FIXME: figure out how to actually resolve names; for now we just look at
     -- the last string component...
     do let str = name $ last elems
        env <- rciPermEnv <$> ask
-       let maybe_nmsh = lookupNamedShape env str
-       case maybe_nmsh of
-         Just nmsh -> return nmsh
-         Nothing -> fail ("Unkown Rust type name: " ++ str)
+       case lookupNamedShape env str of
+         Just nmsh -> namedShapeShapeFun (natRepr w) nmsh
+         Nothing ->
+           do n <- lookupName str (LLVMShapeRepr (natRepr w))
+              return $ constShapeFun (PExpr_Var n)
 
 -- | Get the "name" = sequence of identifiers out of a Rust path
 rsPathName :: Path a -> RustName
@@ -301,25 +315,12 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        sh <- rsConvert w tp'
        return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
   rsConvert w (PathTy Nothing path _) =
-    do SomeNamedShape nmsh <- rsConvert w (rsPathName path)
-       Some typed_args <- rsConvert w (rsPathParams path)
-       case (testEquality (typedPermExprsCtx typed_args) (namedShapeArgs nmsh),
-             testEquality (natRepr w) (natRepr nmsh)) of
-         (Just Refl, Just Refl) ->
-           return (PExpr_NamedShape Nothing Nothing nmsh $
-                   typedPermExprsExprs typed_args)
-         (Nothing, _) ->
-           fail $ renderDoc $ fillSep
-           [pretty "Arguments for" <+> pretty (namedShapeName nmsh)
-            <+> pretty "of incorrect type",
-            pretty "Expected:" <+> permPretty emptyPPInfo (namedShapeArgs nmsh),
-            pretty "Actual:"
-            <+> permPretty emptyPPInfo (typedPermExprsCtx typed_args)]
-         (_, Nothing) ->
-           fail $ renderDoc $ fillSep
-           [pretty "Incorrect size of shape" <+> pretty (namedShapeName nmsh),
-            pretty "Expected:" <+> pretty (intValue (natRepr w)),
-            pretty "Actual:" <+> pretty (intValue (natRepr nmsh))]
+    do someShapeFn <- rsConvert w (rsPathName path)
+       someTypedArgs <- rsConvert w (rsPathParams path)
+       case tryApplySomeShapeFun someShapeFn someTypedArgs of
+         Just shTp -> return shTp
+         Nothing ->
+           fail $ renderDoc $ pretty "Failed to apply shape funtion to arguments"
   rsConvert (w :: prx w) (BareFn _ abi rust_ls2 fn_tp span) =
     do Some3FunPerm fun_perm <- rsConvertMonoFun w span abi rust_ls2 fn_tp
        let args = funPermArgs fun_perm
@@ -335,6 +336,90 @@ instance RsConvert w (Arg Span) (PermExpr (LLVMShapeType w)) where
   rsConvert w (Arg _ tp _) = rsConvert w tp
   rsConvert _ _ = error "rsConvert (Arg): argument form not yet handled"
 
+instance RsConvert w (Generics Span) (Some RustCtx) where
+  rsConvert w (Generics ltdefs tyvars _ _) =
+    return $ foldl addTyVar (foldl addLt (Some MNil) ltdefs) tyvars
+    where
+      addLt (Some ctx) ltdef =
+        Some (ctx :>: Pair (Constant (lifetimeDefName ltdef)) LifetimeRepr)
+
+      addTyVar (Some ctx) tyvar =
+        Some (ctx :>: Pair (Constant (tyParamName tyvar)) (LLVMShapeRepr (natRepr w)))
+
+-- | Return true if and only if the provided Rust type definition is recursive
+isRecursiveDef :: Item Span -> Bool
+isRecursiveDef item =
+  case item of
+    Enum _ _ n variants _ _ -> any (containsName n . getVD) variants
+    StructItem _ _ n vd _ _ -> containsName n vd
+    _ -> False
+
+  where
+    -- TODO: I hate this, it needs to be better
+    isBoxed :: Ident -> Ty Span -> Bool
+    isBoxed i (PathTy _ (Path _ [PathSegment box (Just (AngleBracketed _ [PathTy _ (Path _ [PathSegment i' _ _] _) _] _ _)) _] _) _) =
+      box == mkIdent "Box" && i == i'
+    isBoxed _ _ = False
+
+    typeOf :: StructField Span -> Ty Span
+    typeOf (StructField _ _ t _ _) = t
+
+    getVD :: Variant Span -> VariantData Span
+    getVD (Variant _ _ vd _ _) = vd
+
+    containsName :: Ident -> VariantData Span -> Bool
+    containsName i (StructD fields _) = any (isBoxed i) $ typeOf <$> fields
+    containsName i (TupleD fields _) = any (isBoxed i) $ typeOf <$> fields
+    containsName _ (UnitD _) = False
+
+instance RsConvert w (Item Span) SomeNamedShape where
+  rsConvert w s@(StructItem _ _ ident vd generics _)
+    | isRecursiveDef s = error "Recursive struct definitions not yet supported"
+    | otherwise =
+      do Some ctx <- rsConvert w generics
+         sh <- inRustCtx ctx $ rsConvert w vd
+         let nsh = NamedShape { namedShapeName = name ident
+                              , namedShapeArgs = rustCtxCtx ctx
+                              , namedShapeBody = DefinedShapeBody sh
+                              }
+         return $ SomeNamedShape nsh
+  rsConvert w e@(Enum _ _ ident variants generics _)
+    | isRecursiveDef e = error "Recursive enum definitions not yet supported"
+    | otherwise =
+      do Some ctx <- rsConvert w generics
+         sh <- inRustCtx ctx $ rsConvert w variants
+         let nsh = NamedShape { namedShapeName = name ident
+                              , namedShapeArgs = rustCtxCtx ctx
+                              , namedShapeBody = DefinedShapeBody sh
+                              }
+         return $ SomeNamedShape nsh
+  rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
+
+instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
+  rsConvert _ [] = fail "Uninhabited types not supported"
+  rsConvert w variants =
+    do vshs <- mapM (rsConvert w) variants
+       return $ foldr1 PExpr_OrShape (zipWith PExpr_SeqShape tags vshs)
+    where
+      buildTagShape =
+        PExpr_FieldShape . LLVMFieldShape . ValPerm_Eq . PExpr_LLVMWord . bvIntOfSize w
+
+      tags = map buildTagShape [0..]
+
+instance RsConvert w (Variant Span) (PermExpr (LLVMShapeType w)) where
+  rsConvert w (Variant _ _ vd _ _) = rsConvert w vd
+
+instance RsConvert w (VariantData Span) (PermExpr (LLVMShapeType w)) where
+  rsConvert w (StructD sfs _) =
+    do shs <- mapM (rsConvert w) sfs
+       return $ foldr PExpr_SeqShape PExpr_EmptyShape shs
+  rsConvert w (TupleD sfs _) =
+    do shs <- mapM (rsConvert w) sfs
+       return $ foldr PExpr_SeqShape PExpr_EmptyShape shs
+  rsConvert _ (UnitD _) = return PExpr_EmptyShape
+
+instance RsConvert w (StructField Span) (PermExpr (LLVMShapeType w)) where
+  rsConvert w (StructField _ _ t _ _) = rsConvert w t
 
 ----------------------------------------------------------------------
 -- * Computing the ABI-Specific Layout of Rust Types
@@ -714,6 +799,10 @@ lownedPermsForLifetime l (_ :>: vap) =
 lifetimeDefName :: LifetimeDef a -> String
 lifetimeDefName (LifetimeDef _ (Lifetime name _) _ _) = name
 
+-- | Get the 'String' name defined by a 'TyParam'
+tyParamName :: TyParam a -> String
+tyParamName (TyParam _ ident _ _ _) = name ident
+
 extMbOuter :: RAssign prx ctx1 -> Mb ctx2 a -> Mb (ctx1 :++: ctx2) a
 extMbOuter prxs mb_a = mbCombine $ nuMulti prxs $ const mb_a
 
@@ -825,6 +914,19 @@ parseFunPermFromRust env w args ret str
 parseFunPermFromRust _ _ _ _ str =
     fail ("Malformed Rust type: " ++ str)
 
+-- | Parse a polymorphic Rust type declaration and convert it to a Heapster
+-- shape
+-- Note: No CruCtx / TypeRepr as arguments for now
+parseNamedShapeFromRustDecl :: (MonadFail m, 1 <= w, KnownNat w) =>
+                               PermEnv -> prx w -> String ->
+                               m SomeNamedShape
+parseNamedShapeFromRustDecl env w str
+  | Right item <- parse @(Item Span) (inputStreamFromString str) =
+    runLiftRustConvM (mkRustConvInfo env) $ rsConvert w item
+  | Left err <- parse @(Item Span) (inputStreamFromString str) =
+    fail ("Error parsing top-level item: " ++ show err)
+parseNamedShapeFromRustDecl _ _ str =
+  fail ("Malformed Rust type: " ++ str)
 
 $(mkNuMatching [t| ArgLayout |])
 $(mkNuMatching [t| Some3FunPerm |])

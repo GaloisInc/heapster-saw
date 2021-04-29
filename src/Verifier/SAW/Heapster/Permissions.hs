@@ -1213,6 +1213,10 @@ bvRangeSub (BVRange off len) x = BVRange (bvSub off x) len
 bvInt :: (1 <= w, KnownNat w) => Integer -> PermExpr (BVType w)
 bvInt i = PExpr_BV [] $ BV.mkBV knownNat i
 
+-- | Build a bitvector expression of a given size from an integer
+bvIntOfSize :: (1 <= sz, KnownNat sz) => prx sz -> Integer -> PermExpr (BVType sz)
+bvIntOfSize _ = bvInt
+
 -- | Build a bitvector expression from a Haskell bitvector
 bvBV :: (1 <= w, KnownNat w) => BV w -> PermExpr (BVType w)
 bvBV i = PExpr_BV [] i
