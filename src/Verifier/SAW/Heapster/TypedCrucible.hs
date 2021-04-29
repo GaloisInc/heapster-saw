@@ -29,7 +29,7 @@ module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
 import qualified Data.Text as Text
-import Data.List (find, findIndex, any)
+import Data.List (find, findIndex)
 import Data.Functor.Constant
 import Data.Functor.Product
 import Data.Type.Equality
@@ -37,17 +37,11 @@ import Data.Kind
 import qualified Data.BitVector.Sized as BV
 import GHC.TypeLits
 
-import Data.IntMap.Strict (IntMap)
-import qualified Data.IntMap.Strict as IntMap
-import Data.IntSet (IntSet)
-import qualified Data.IntSet as IntSet
-
 import What4.ProgramLoc
 import What4.FunctionName
 import What4.Interface (StringLiteral(..))
 
 import Control.Lens hiding ((:>), Index, ix)
-import Control.Monad
 import Control.Monad.State.Strict hiding (ap)
 import Control.Monad.Reader hiding (ap)
 
@@ -1395,7 +1389,6 @@ initTypedBlockMap env fun_perm cfg sccs =
   let block_map = cfgBlockMap cfg
       cblocks = fmapFC blockInputs block_map
       ret = funPermRet fun_perm
-      ghosts = funPermGhosts fun_perm
       tops = funPermTops fun_perm
       top_perms_in = funPermToBlockInputs fun_perm
       perms_out = funPermOuts fun_perm in
@@ -3709,7 +3702,7 @@ tcCFG :: forall ext cblocks ghosts inits ret. PermCheckExtC ext =>
          FunPerm ghosts (CtxToRList inits) ret ->
          CFG ext cblocks inits ret ->
          TypedCFG ext (CtxCtxToRList cblocks) ghosts (CtxToRList inits) ret
-tcCFG env endianness fun_perm (cfg :: CFG ext cblocks inits ret) =
+tcCFG env endianness fun_perm cfg =
   let h = cfgHandle cfg
       ghosts = funPermGhosts fun_perm
       (nodes, sccs) = cfgOrderWithSCCs cfg
