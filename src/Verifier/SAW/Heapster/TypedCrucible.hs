@@ -313,6 +313,9 @@ $(mkNuMatching [t| forall blocks tops ps_in. TypedJumpTarget blocks tops ps_in |
 instance NuMatchingAny1 (TypedJumpTarget blocks tops) where
   nuMatchingAny1Proof = nuMatchingProof
 
+instance NuMatchingAny1 (TypedEntryID blocks) where
+  nuMatchingAny1Proof = nuMatchingProof
+
 instance Closable (TypedEntryID blocks args) where
   toClosed (TypedEntryID entryBlockID entryIndex) =
     $(mkClosed [| TypedEntryID |])
@@ -1023,26 +1026,31 @@ type family TransData phase a where
   TransData TransPhase a = a
 
 -- | The body of an implication in a call site, which ensures that the
--- permissions are as expected and gives expressions for the ghost variables
-data CallSiteImplRet args ghosts ps_out =
-  CallSiteImplRet (args :++: ghosts :~: ps_out) (PermExprs ghosts)
+-- permissions are as expected and gives expressions for the ghost variables. It
+-- also includes a 'TypedEntryID' for the callee, to make translation easier.
+data CallSiteImplRet blocks args ghosts ps_out =
+  CallSiteImplRet (Some (TypedEntryID blocks)) (CruCtx ghosts)
+  (args :++: ghosts :~: ps_out) (PermExprs ghosts)
 
-$(mkNuMatching [t| forall args ghosts ps_out. CallSiteImplRet args ghosts ps_out |])
+$(mkNuMatching [t| forall blocks args ghosts ps_out.
+                CallSiteImplRet blocks args ghosts ps_out |])
 
-instance NuMatchingAny1 (CallSiteImplRet args ghosts) where
+instance NuMatchingAny1 (CallSiteImplRet blocks args ghosts) where
   nuMatchingAny1Proof = nuMatchingProof
 
 -- | An implication used in a call site, which binds the input variables in an
 -- implication of the output variables
-newtype CallSiteImpl ps_in args ghosts =
-  CallSiteImpl (Mb ps_in (AnnotPermImpl (CallSiteImplRet args ghosts) ps_in))
+newtype CallSiteImpl blocks ps_in args ghosts =
+  CallSiteImpl (Mb ps_in (AnnotPermImpl (CallSiteImplRet blocks args ghosts) ps_in))
 
 -- | The identity implication
-idCallSiteImpl :: RAssign prx args -> RAssign prx vars ->
-                  CallSiteImpl (args :++: vars) args vars
-idCallSiteImpl args vars =
-  CallSiteImpl $ mbCombine $ nuMulti args $ \_ -> nuMulti vars $ \vars_ns ->
-  AnnotPermImpl "" $ PermImpl_Done $ CallSiteImplRet Refl (namesToExprs vars_ns)
+idCallSiteImpl :: Some (TypedEntryID blocks) -> CruCtx args -> CruCtx vars ->
+                  CallSiteImpl blocks (args :++: vars) args vars
+idCallSiteImpl entryID args vars =
+  CallSiteImpl $ mbCombine $ nuMulti (cruCtxProxies args) $ \_ ->
+  nuMulti (cruCtxProxies vars) $ \vars_ns ->
+  AnnotPermImpl "" $ PermImpl_Done $
+  CallSiteImplRet entryID vars Refl (namesToExprs vars_ns)
 
 -- | A jump / branch to a particular entrypoint
 data TypedCallSite phase blocks tops args ghosts vars =
@@ -1055,6 +1063,7 @@ data TypedCallSite phase blocks tops args ghosts vars =
     -- | An implication from the call site perms to the input perms of the
     -- entrypoint we are jumping to
     typedCallSiteImpl :: TransData phase (CallSiteImpl
+                                          blocks
                                           ((tops :++: args) :++: vars)
                                           (tops :++: args) ghosts)
   }
@@ -1083,7 +1092,7 @@ idTypedCallSite :: TypedCallSiteID blocks args vars ->
                    TypedCallSite TCPhase blocks tops args vars vars
 idTypedCallSite siteID tops_args perms =
   TypedCallSite siteID perms $ Just $
-  idCallSiteImpl (cruCtxProxies tops_args) (cruCtxProxies $ callSiteVars siteID)
+  idCallSiteImpl (Some $ callSiteDest siteID) tops_args (callSiteVars siteID)
 
 -- | A single, typed entrypoint to a Crucible block. Note that our blocks
 -- implicitly take extra "ghost" arguments, that are needed to express the input
@@ -3546,13 +3555,14 @@ tcBlockEntryBody blk (TypedEntry {..}) =
 -- entrypoint imply the supplied input permissions of the current entrypoint
 proveCallSiteImpl ::
   KnownRepr ExtRepr ext => TypedEntryID blocks some_args ->
-  CruCtx args -> CruCtx ghosts -> CruCtx vars ->
+  TypedEntryID blocks args -> CruCtx args -> CruCtx ghosts -> CruCtx vars ->
   MbValuePerms ((tops :++: args) :++: vars) ->
   MbValuePerms ((tops :++: args) :++: ghosts) ->
   TopPermCheckM ext cblocks blocks tops ret (CallSiteImpl
+                                             blocks
                                              ((tops :++: args) :++: vars)
                                              (tops :++: args) ghosts)
-proveCallSiteImpl srcID args ghosts vars mb_perms_in mb_perms_out =
+proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
   fmap CallSiteImpl $ runPermCheckM srcID args vars mb_perms_in $
   \tops_ns args_ns _ perms_in ->
   let perms_out =
@@ -3561,7 +3571,7 @@ proveCallSiteImpl srcID args ghosts vars mb_perms_in mb_perms_out =
         mbValuePermsToDistPerms mb_perms_out in
   permGetPPInfo >>>= \ppInfo ->
   let err = pretty "Could not prove" <+> permPretty ppInfo perms_out in
-  pcmRunImplM ghosts err (CallSiteImplRet Refl .
+  pcmRunImplM ghosts err (CallSiteImplRet (Some destID) ghosts Refl .
                           exprsOfSubst . completePSubst ghosts)
   (recombinePerms perms_in >>>
    proveVarsImpl perms_out >>> getPSubst) >>>= \impl ->
@@ -3576,11 +3586,13 @@ visitCallSite :: PermCheckExtC ext =>
                  (TypedCallSite TCPhase blocks tops args ghosts vars)
 visitCallSite _ site@(TypedCallSite { typedCallSiteImpl = Just _ }) =
   return site
-visitCallSite (TypedEntry {..}) site@(TypedCallSite {..}) =
-  fmap (\impl -> site { typedCallSiteImpl = Just impl }) $
-  proveCallSiteImpl typedEntryID typedEntryArgs typedEntryGhosts
-  (callSiteVars typedCallSiteID)
-  typedCallSitePerms typedEntryPermsIn
+visitCallSite (TypedEntry {..}) site@(TypedCallSite {..})
+  | TypedCallSiteID { callSiteSrc = srcID,
+                      callSiteVars = vars } <- typedCallSiteID =
+    fmap (\impl -> site { typedCallSiteImpl = Just impl }) $
+    proveCallSiteImpl srcID typedEntryID
+    typedEntryArgs typedEntryGhosts vars
+    typedCallSitePerms typedEntryPermsIn
 
 -- | Visit an entrypoint, by first proving the required implications at each
 -- call site, meaning that the permissions held at the call site imply the input
