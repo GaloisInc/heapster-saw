@@ -1795,6 +1795,19 @@ lookupEntryTrans entryID blkMap =
   typedBlockTransEntries (RL.get (entryBlockID entryID) blkMap) !!
   entryIndex entryID
 
+-- | Look up the translation of an entry by entry ID and make sure that it has
+-- the supplied ghost arguments
+lookupEntryTransCast :: TypedEntryID blocks args -> CruCtx ghosts ->
+                        TypedBlockMapTrans ext blocks tops ret ->
+                        TypedEntryTrans ext blocks tops ret args ghosts
+lookupEntryTransCast entryID ghosts blkMap
+  | Some entry_trans <- lookupEntryTrans entryID blkMap
+  , Just Refl <- testEquality ghosts (typedEntryGhosts $
+                                      typedEntryTransEntry entry_trans)
+  = entry_trans
+lookupEntryTransCast _ _ _ =
+  error "lookupEntryTransCast: incorrect ghosts argument"
+
 -- | A 'TypedCallSite' with existentially quantified ghost variables
 data SomeTypedCallSite blocks tops args vars =
   forall ghosts.
@@ -3693,20 +3706,16 @@ instance PermCheckExtC ext =>
          (CallSiteImplRet blocks tops args ghosts ps) OpenTerm where
   translate (mbMatch ->
              [nuMP| CallSiteImplRet entryID ghosts Refl mb_gexprs |]) =
-    do Some entry_trans <-
-         lookupEntryTrans (mbLift entryID) <$> itiBlockMapTrans <$> ask
+    do entry_trans <-
+         lookupEntryTransCast (mbLift entryID) (mbLift ghosts) <$>
+         itiBlockMapTrans <$> ask
        -- FIXME: the next line is a bit disingenuous, because translateCallEntry
        -- checks that the perm stack == the input perms, and we are just passing
        -- in the perm stack as the input perms; maybe we should store the
        -- required permissions in CallSiteImplRets? Or just ditch the check in
        -- translateCallEntry?
        mb_perms <- getPermStackDistPerms
-       case testEquality (mbLift ghosts) (typedEntryGhosts $
-                                          typedEntryTransEntry entry_trans) of
-         Just Refl ->
-           translateCallEntry "CallSiteImplRet" entry_trans mb_gexprs mb_perms
-         Nothing ->
-           error "translate CallSiteImplRet: incorrect ghosts argument!"
+       translateCallEntry "CallSiteImplRet" entry_trans mb_gexprs mb_perms
 
 instance PermCheckExtC ext =>
          ImplTranslateF (CallSiteImplRet blocks tops args ghosts)
@@ -4121,8 +4130,6 @@ translateBlockMapBodies mapTrans =
     pairOpenTerm <$> translateEntryBody mapTrans entry <*> restM)
   (trace "translateBlockMapBodies finished" $ return unitOpenTerm)
 
-{-
-FIXME HERE NOW
 
 -- | Translate a typed CFG to a SAW term
 translateCFG :: PermCheckExtC ext => PermEnv ->
@@ -4177,9 +4184,11 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
                  snd $ RL.split ghosts (cruCtxProxies inits) $
                  fst $ RL.split ctx (cruCtxProxies inits) all_membs
                inits_eq_perms = eqPermTransCtx all_membs inits_membs
-               all_pctx = RL.append pctx inits_eq_perms in
+               all_pctx = RL.append pctx inits_eq_perms
+               init_entry =
+                 lookupEntryTransCast (tpcfgEntryID cfg) CruCtxNil mapTrans in
            impTransM all_membs all_pctx mapTrans retTypeTrans $
-           translateCallEntryID "CFG" (tpcfgEntryBlockID cfg) Proxy
+           translateCallEntry "CFG" init_entry
            (nuMulti all_pctx $ \_ -> PExprs_Nil)
            (mbValuePermsToDistPerms $ funPermToBlockInputs fun_perm)
          )
@@ -4363,4 +4372,3 @@ translateCompletePureFun sc env ctx args ret =
                     typeTransTupleType <$> translate ret') env
   where args' = mbCombine . emptyMb $ args
         ret'  = mbCombine . emptyMb $ ret
--}
