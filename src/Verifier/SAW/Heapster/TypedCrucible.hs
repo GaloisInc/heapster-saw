@@ -1693,8 +1693,9 @@ setInputExtState ExtRepr_LLVM _ _ =
   -- of the wrong type
   greturn ()
 
--- | Run a 'PermCheckM' computation for a particular entrypoint (FIXME HERE NOW:
--- document this better)
+-- | Run a 'PermCheckM' computation for a particular entrypoint with a given set
+-- of top-level arguments, local arguments, ghost variables, and permissions on
+-- all three, and return a result inside a binding for these variables
 runPermCheckM ::
   KnownRepr ExtRepr ext => TypedEntryID blocks some_args ->
   CruCtx args -> CruCtx ghosts -> MbValuePerms ((tops :++: args) :++: ghosts) ->
@@ -3344,60 +3345,6 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
 
   tcBlockID blkID >>>= \tpBlkID ->
 
-  -- FIXME HERE NOW: remove all these comments after preserving the parts we
-  -- still need
-  {-
-  -- First test if we should jump to an existing entrypoint or make a new one;
-  -- the former holds if the block has already been visited or if it is a join
-  -- point and has at least one entrypoint already
-  let maybe_entry =
-        case blockInfoEntries blkInfo of
-          entry:_ | (blockInfoVisited blkInfo || join_point_hint) -> Just entry
-          [] | blockInfoVisited blkInfo ->
-                 error "tcJumpTarget: visited block has no entrypoints!"
-          _ -> Nothing in
-
-  case maybe_entry of
-    -- If so, prove the required permissions and jump
-    Just (BlockEntryInfo entryID _ _ _ entry_perms_in) ->
-
-      -- We are jumping to an existing entrypoint, so mark it as post-visited
-      incrEntryJumps entryID >>>
-
-      -- Substitute the top-level and normal args into the input perms
-      let ghosts = entryGhosts entryID
-          ghosts_prxs = cruCtxProxies ghosts
-          ex_perms =
-            varSubst (permVarSubstOfNames tops_args_ns) $
-            mbSeparate ghosts_prxs $
-            mbValuePermsToDistPerms entry_perms_in in
-      (case permSetAllVarPerms (stCurPerms st) of
-          Some cur_var_perms ->
-            stmtTraceM (\i ->
-                         pretty ("tcJumpTarget "
-                                 ++ show blkID ++ " (visited)") <> hardline <>
-                         indent 4
-                         (pretty "Required perms:" <+>
-                          hang 2 (permPretty i ex_perms) <> hardline <>
-                          pretty "Current perms:" <+>
-                          hang 2 (permPretty i cur_var_perms)))) >>>
-
-      -- Prove the required input perms for this entrypoint and return the
-      -- jump target inside an implication
-      pcmRunImplM ghosts
-      (pretty "Could not prove: " <+> permPretty (stPPInfo st) ex_perms)
-      (\(ghost_exprs, perms) ->
-        TypedJumpTarget entryID Proxy (mkCruCtx args_tps) ghost_exprs perms)
-      (proveVarsImpl ex_perms >>> getDistPerms >>>= \perms ->
-        getPSubst >>>= \psubst ->
-        greturn (exprsOfSubst (completePSubst ghosts psubst), perms))
-
-
-    -- If not, make a new entrypoint that takes all of the current permissions
-    -- as input
-    Nothing ->
--}
-
   -- Step 0: run all of the following steps inside a local ImplM computation,
   -- which we run in order to get out an AnnotPermImpl. This ensures that any
   -- simplifications or other changes to permissions that are performed by this
@@ -3496,21 +3443,6 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       implWithoutTracingM (implPushOrReflMultiM perms_in) >>>
       greturn (PermImpl_Done $
                TypedJumpTarget siteID Proxy (mkCruCtx args_tps) perms_in)
-
-      {-
-      (liftGenStateContM $ flip runReaderT top_st $ insNewBlockEntry
-       memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
-
-          -- Step 6: return a TypedJumpTarget inside a PermImpl that proves all
-          -- the required input permissions from the current permission set by
-          -- copying the existing permissions into the current distinguished
-          -- perms, except for the eq permissions for real arguments, which are
-          -- proved by reflexivity.
-          implWithoutTracingM (implPushOrReflMultiM perms_in) >>>
-          greturn (PermImpl_Done $
-                   TypedJumpTarget entryID Proxy (mkCruCtx args_tps)
-                   (namesToExprs ghosts_ns) perms_in)
-      -}
 
 
 -- | Type-check a termination statement
@@ -3685,7 +3617,8 @@ wtoCompsToListWithSCCs =
                 Vertex n -> [(n,False)]
                 SCC n comps -> [(n,True)] ++ wtoCompsToListWithSCCs comps)
 
--- | FIXME HERE NOW: document
+-- | Build a topologically sorted list of 'BlockID's for a 'CFG', along with a
+-- flag for each 'BlockID' indicating whether it is the head of a loop
 cfgOrderWithSCCs :: CFG ext blocks init ret ->
                     ([Some (BlockID blocks)], Assignment (Constant Bool) blocks)
 cfgOrderWithSCCs cfg =
