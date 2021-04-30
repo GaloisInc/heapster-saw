@@ -1821,7 +1821,12 @@ lookupCallSite siteID blkMap
   | Some entry_trans <- lookupEntryTrans (callSiteDest siteID) blkMap
   , Just site <- typedEntryCallerSite siteID (typedEntryTransEntry entry_trans)
   = SomeTypedCallSite site
-lookupCallSite _ _ = error "lookupCallSiteTrans"
+lookupCallSite siteID blkMap
+  | Some entry_trans <- lookupEntryTrans (callSiteDest siteID) blkMap =
+    error ("lookupCallSite: no call site for site ID: " ++ show siteID ++
+           "\n" ++ "call sites for entrypoint: " ++
+           show (map (\(Some site) -> show $ typedCallSiteID site)
+                 (typedEntryCallers $ typedEntryTransEntry entry_trans)))
 
 
 -- | Contextual info for an implication translation
@@ -4077,10 +4082,9 @@ lambdaBlockMap = helper where
            lambdaOpenTermTransM "f" (applyOpenTerm
                                      (globalOpenTerm "Prelude.lrtToType")
                                      entryLRT) $ \fvar ->
-             g (Some (TypedEntryTrans entry $ Just fvar)
-                : entry_transs) blks_trans
+             g (entry_transs ++ [Some (TypedEntryTrans entry $ Just fvar)]) blks_trans
       else
-        g (Some (TypedEntryTrans entry Nothing) : entry_transs) blks_trans)
+        g (entry_transs ++ [Some (TypedEntryTrans entry Nothing)]) blks_trans)
     (\entry_transs blks_trans ->
       f (blks_trans :>: TypedBlockTrans entry_transs))
     (blk ^. typedBlockEntries)

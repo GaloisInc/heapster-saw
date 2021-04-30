@@ -265,6 +265,12 @@ instance TestEquality (TypedCallSiteID blocks args) where
     , dest1 == dest2 = testEquality vars1 vars2
   testEquality _ _ = Nothing
 
+instance Show (TypedCallSiteID blocks args vars) where
+  show (TypedCallSiteID {..}) =
+    "<siteID: src = " ++ show callSiteSrc ++
+    ", dest = " ++ show callSiteDest ++
+    ", vars =" ++ renderDoc (permPretty emptyPPInfo callSiteVars) ++ ">"
+
 -- | Test if the caller of a 'TypedCallSiteID' equals a given entrypoint
 callSiteIDCallerEq :: TypedEntryID blocks args_src ->
                       TypedCallSiteID blocks args vars -> Bool
@@ -1378,13 +1384,15 @@ blockSetCallSite :: TypedCallSiteID blocks args vars ->
                     MbValuePerms (tops :> ret) ->
                     TypedBlock TCPhase ext blocks tops ret args ->
                     TypedBlock TCPhase ext blocks tops ret args
--- If the call site already has an entrypoint, update it with entrySetCallSite
+-- If the entrypoint for the site ID exists, update it with entrySetCallSite
 blockSetCallSite siteID _ _ perms_in _ blk
   | entryIDInBlock (callSiteDest siteID) blk =
+    trace ("blockSetCallSite (existing entrypoint): " ++ show siteID) $
     over (entryByID (callSiteDest siteID))
     (fmapF $ entrySetCallSite siteID perms_in) blk
--- If the call site already has an entrypoint, update it with entrySetCallSite
+-- Otherwise, make a new entrypoint
 blockSetCallSite siteID tops ret perms_in perms_out blk =
+  trace ("blockSetCallSite (new entrypoint): " ++ show siteID) $
   addEntryToBlock (singleCallSiteEntry
                    siteID tops (blockArgs blk) ret perms_in perms_out) blk
 
@@ -3441,7 +3449,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           perms_in = appendDistPerms (appendDistPerms
                                       tops_perms args_perms) ghosts_perms in
       implTraceM (\i ->
-                   pretty ("tcJumpTarget " ++ show blkID ++ " (unvisited)") <>
+                   pretty ("tcJumpTarget " ++ show blkID) <>
                    {- (if gen_perms_hint then pretty "(gen)" else emptyDoc) <> -}
                    line <>
                    (case permSetAllVarPerms orig_cur_perms of
@@ -3482,6 +3490,9 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
             liftGenStateContM $ flip runReaderT top_st $
             callBlockWithPerms curEntryID tpBlkID
             ghosts_tps cl_mb_perms_in) >>>= \siteID ->
+      implTraceM (\_ ->
+                   pretty ("tcJumpTarget " ++ show blkID ++ " siteID =" ++
+                           show siteID)) >>>
 
       -- Step 7: return a TypedJumpTarget inside a PermImpl that proves all the
       -- required input permissions from the current permission set by copying
