@@ -4002,26 +4002,32 @@ instance PermCheckExtC ext =>
 -- * Translating CFGs
 ----------------------------------------------------------------------
 
--- | Fold a function over each 'TypedEntry' in a 'TypedBlockMap' that
--- corresponds to a letrec-bound variable, which is each entry in a 'TypedBlock'
--- with in-degree > 1
+-- | An entrypoint over some regular and ghost arguments
+data SomeTypedEntry ext blocks tops ret args =
+  forall args ghosts.
+  SomeTypedEntry (TypedEntry TransPhase ext blocks tops ret args ghosts)
+
+-- | Get all entrypoints in a block map that will be translated to letrec-bound
+-- variables, which is all entrypoints with in-degree > 1
 --
 -- FIXME: consider whether we want let and not letRec for entrypoints that have
 -- in-degree > 1 but are not the heads of loops
+typedBlockLetRecEntries :: TypedBlockMap TransPhase ext blocks tops ret ->
+                           [SomeTypedEntry ext blocks tops ret args]
+typedBlockLetRecEntries =
+  concat . RL.mapToList (map (\(Some entry) ->
+                               SomeTypedEntry entry)
+                         . filter (anyF typedEntryHasMultiInDegree)
+                         . (^. typedBlockEntries))
+
+-- | Fold a function over each 'TypedEntry' in a 'TypedBlockMap' that
+-- corresponds to a letrec-bound variable
 foldBlockMapLetRec ::
   (forall args ghosts.
    TypedEntry TransPhase ext blocks tops ret args ghosts -> b -> b) ->
   b -> TypedBlockMap TransPhase ext blocks tops ret -> b
-foldBlockMapLetRec = helper where
-  helper ::
-    (forall args ghosts.
-     TypedEntry TransPhase ext blocks tops ret args ghosts -> b -> b) ->
-    b -> RAssign (TypedBlock TransPhase ext blocks tops ret) bs -> b
-  helper _ ret MNil = ret
-  helper f ret (blks :>: blk) =
-    foldr (\(Some entry) -> f entry) (helper f ret blks) $
-    filter (anyF typedEntryHasMultiInDegree) $
-    blk ^. typedBlockEntries
+foldBlockMapLetRec f r =
+  foldr (\(SomeTypedEntry entry) -> f entry) r . typedBlockLetRecEntries
 
 -- | Construct a @LetRecType@ inductive description
 --
@@ -4034,7 +4040,8 @@ piLRTTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
 piLRTTransM x tps body_f =
   foldr (\(i,tp) rest_f vars ->
           (\t -> ctorOpenTerm "Prelude.LRT_Fun" [tp, t]) <$>
-          lambdaOpenTermTransM (x ++ show (i :: Integer)) tp (\var -> rest_f (vars ++ [var])))
+          lambdaOpenTermTransM (x ++ show (i :: Integer)) tp
+          (\var -> rest_f (vars ++ [var])))
   (body_f . typeTransF tps) (zip [0..] $ typeTransTypes tps) []
 
 -- | Build a @LetRecType@ that describes the type of the translation of a
