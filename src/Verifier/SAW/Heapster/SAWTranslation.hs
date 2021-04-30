@@ -4023,10 +4023,15 @@ foldBlockMapLetRec = helper where
     filter (anyF typedEntryHasMultiInDegree) $
     blk ^. typedBlockEntries
 
--- FIXME: documentation
-lambdaLRTTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
-                   TransM info ctx OpenTerm
-lambdaLRTTransM x tps body_f =
+-- | Construct a @LetRecType@ inductive description
+--
+-- > LRT_Fun tp1 \(x1 : tp1) -> ... -> LRT_Fun tpn \(xn : tpn) -> body x1 ... xn
+--
+-- of a pi abstraction over the types @tpi@ in a 'TypeTrans', passing the
+-- abstracted variables to the supplied @body@ function
+piLRTTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
+               TransM info ctx OpenTerm
+piLRTTransM x tps body_f =
   foldr (\(i,tp) rest_f vars ->
           (\t -> ctorOpenTerm "Prelude.LRT_Fun" [tp, t]) <$>
           lambdaOpenTermTransM (x ++ show (i :: Integer)) tp (\var -> rest_f (vars ++ [var])))
@@ -4039,14 +4044,13 @@ translateEntryLRT :: TypedEntry TransPhase ext blocks tops ret args ghosts ->
 translateEntryLRT entry@(TypedEntry {..}) =
   trace "translateEntryLRT starting..." $ inEmptyCtxTransM $
   translateClosed (typedEntryAllArgs entry) >>= \arg_tps ->
-  lambdaLRTTransM "arg" arg_tps $ \ectx ->
+  piLRTTransM "arg" arg_tps $ \ectx ->
   inCtxTransM ectx $
   translate typedEntryPermsIn >>= \perms_in_tps ->
-  lambdaLRTTransM "p" perms_in_tps $ \_ ->
+  piLRTTransM "p" perms_in_tps $ \_ ->
   translateEntryRetType entry >>= \retType ->
   trace "translateEntryLRT finished" $
   return $ ctorOpenTerm "Prelude.LRT_Ret" [retType]
-
 
 -- | Build a @LetRecTypes@ list that describes the types of all of the
 -- entrypoints in a 'TypedBlockMap'
@@ -4062,7 +4066,9 @@ translateBlockMapLRTs =
   (trace "translateBlockMapLRTs finished" $
    return $ ctorOpenTerm "Prelude.LRT_Nil" [])
 
--- | FIXME: documentation
+-- | Lambda-abstract over all the entrypoints in a 'TypedBlockMap' that
+-- correspond to letrec-bound functions, putting the lambda-bound variables into
+-- a 'TypedBlockMapTrans' structure and passing it to the supplied body function
 lambdaBlockMap :: TypedBlockMap TransPhase ext blocks tops ret ->
                   (TypedBlockMapTrans ext blocks tops ret ->
                    TypeTransM ctx OpenTerm) ->
@@ -4075,41 +4081,27 @@ lambdaBlockMap = helper where
   helper MNil f = f MNil
   helper (blks :>: blk) f =
     helper blks $
-    foldr
-    (\(Some entry) g entry_transs blks_trans ->
+    foldl
+    (\g (Some entry) entry_transs blks_trans ->
       if typedEntryHasMultiInDegree entry then
         do entryLRT <- translateEntryLRT entry
            lambdaOpenTermTransM "f" (applyOpenTerm
                                      (globalOpenTerm "Prelude.lrtToType")
                                      entryLRT) $ \fvar ->
-             g (entry_transs ++ [Some (TypedEntryTrans entry $ Just fvar)]) blks_trans
+             g (Some (TypedEntryTrans entry $ Just fvar) : entry_transs) blks_trans
       else
-        g (entry_transs ++ [Some (TypedEntryTrans entry Nothing)]) blks_trans)
+        g (Some (TypedEntryTrans entry Nothing) : entry_transs) blks_trans)
     (\entry_transs blks_trans ->
       f (blks_trans :>: TypedBlockTrans entry_transs))
     (blk ^. typedBlockEntries)
     []
 
-{-
-  helper (bs :>: TypedBlock []) f =
-    helper bs (f . (:>: TypedBlockTrans []))
-  helper (bs :>: TypedBlock (entry:entries)) f
-    | typedEntryHasMultiInDegree entry =
-      do entryLRT <- translateEntryLRT entry
-         lambdaOpenTermTransM "f" (applyOpenTerm
-                                   (globalOpenTerm "Prelude.lrtToType")
-                                   entryLRT) $ \fvar ->
-           helper (bs :>: TypedBlock entries)
-           (\(bsTrans :>: TypedBlockTrans eTranss) ->
-             f (bsTrans :>:
-                TypedBlockTrans (TypedEntryTrans entry (Just fvar):eTranss)))
-  helper (bs :>: TypedBlock (entry:entries)) f =
-    helper (bs :>: TypedBlock entries)
-           (\(bsTrans :>: TypedBlockTrans eTranss) ->
-             f (bsTrans :>:
-                TypedBlockTrans (TypedEntryTrans entry Nothing:eTranss)))
--}
-
+-- | Translate the typed statements of an entrypoint to a function
+--
+-- > \top1 ... topn arg1 ... argm ghost1 ... ghostk p1 ... pj -> stmts_trans
+--
+-- over the top-level, local, and ghost arguments and (the translations of) the
+-- input permissions of the entrypoint
 translateEntryBody :: PermCheckExtC ext =>
                       TypedBlockMapTrans ext blocks tops ret ->
                       TypedEntry TransPhase ext blocks tops ret args ghosts ->
@@ -4122,7 +4114,8 @@ translateEntryBody mapTrans entry =
      impTransM (RL.members pctx) pctx mapTrans retType $ translate $
        typedEntryBody entry
 
-
+-- | Translate all the entrypoints in a 'TypedBlockMap' that correspond to
+-- letrec-bound functions to SAW core functions as in 'translateEntryBody'
 translateBlockMapBodies :: PermCheckExtC ext =>
                            TypedBlockMapTrans ext blocks tops ret ->
                            TypedBlockMap TransPhase ext blocks tops ret ->
@@ -4210,25 +4203,30 @@ data SomeCFGAndPerm ext where
                     FunPerm ghosts (CtxToRList inits) ret ->
                     SomeCFGAndPerm ext
 
+-- | Extract the 'GlobalSymbol' from a 'SomeCFGAndPerm'
 someCFGAndPermSym :: SomeCFGAndPerm ext -> GlobalSymbol
 someCFGAndPermSym (SomeCFGAndPerm sym _ _ _) = sym
 
+-- | Extract the 'String' name from a 'SomeCFGAndPerm'
 someCFGAndPermToName :: SomeCFGAndPerm ext -> String
 someCFGAndPermToName (SomeCFGAndPerm _ nm _ _) = nm
 
+-- | Convert the 'FunPerm' of a 'SomeCFGAndPerm' to an inductive @LetRecType@
+-- description of the SAW core type it translates to
 someCFGAndPermLRT :: PermEnv -> SomeCFGAndPerm ext -> OpenTerm
 someCFGAndPermLRT env (SomeCFGAndPerm _ _ _
                        (FunPerm ghosts args ret perms_in perms_out)) =
   flip runNilTypeTransM env $
   translateClosed (appendCruCtx ghosts args) >>= \ctx_trans ->
-  lambdaLRTTransM "arg" ctx_trans $ \ectx ->
+  piLRTTransM "arg" ctx_trans $ \ectx ->
   inCtxTransM ectx $
   translate perms_in >>= \perms_trans ->
-  lambdaLRTTransM "perm" perms_trans $ \_ ->
+  piLRTTransM "perm" perms_trans $ \_ ->
   translateRetType ret perms_out >>= \ret_tp ->
   return $ ctorOpenTerm "Prelude.LRT_Ret" [ret_tp]
 
-
+-- | Extract the 'FunPerm' of a 'SomeCFGAndPerm' as a permission on LLVM
+-- function pointer values
 someCFGAndPermPtrPerm :: (1 <= ArchWidth arch, KnownNat (ArchWidth arch),
                           w ~ ArchWidth arch) =>
                          NatRepr w -> SomeCFGAndPerm (LLVM arch) ->
