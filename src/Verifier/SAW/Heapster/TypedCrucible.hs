@@ -76,6 +76,7 @@ import Lang.Crucible.LLVM.Errors.UndefinedBehavior as UB
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
 import Verifier.SAW.Heapster.Implication
+import Verifier.SAW.Heapster.Widening
 
 import Debug.Trace
 

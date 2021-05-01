@@ -47,6 +47,7 @@ library
      Verifier.SAW.Heapster.PermParser
      Verifier.SAW.Heapster.RustTypes
      Verifier.SAW.Heapster.Implication
+     Verifier.SAW.Heapster.Widening
      Verifier.SAW.Heapster.TypedCrucible
      Verifier.SAW.Heapster.SAWTranslation
      Verifier.SAW.Heapster.IRTTranslation
