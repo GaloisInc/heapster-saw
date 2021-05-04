@@ -2002,6 +2002,17 @@ offsetsEq (LLVMPermOffset off) NoPermOffset = bvIsZero off
 offsetsEq NoPermOffset (LLVMPermOffset off) = bvIsZero off
 offsetsEq (LLVMPermOffset off1) (LLVMPermOffset off2) = bvEq off1 off2
 
+-- | Add a 'PermOffset' to an expression
+offsetExpr :: PermOffset a -> PermExpr a -> PermExpr a
+offsetExpr NoPermOffset e = e
+offsetExpr (LLVMPermOffset off) e = addLLVMOffset e off
+
+-- | Convert an expression to a variable + optional offset, if this is possible
+asOffset :: PermExpr a -> Maybe (ExprVar a, PermOffset a)
+asOffset (PExpr_Var x) = Just (x, NoPermOffset)
+asOffset (PExpr_LLVMOffset x off) = Just (x, LLVMPermOffset off)
+asOffset _ = Nothing
+
 -- | Negate a 'PermOffset'
 negatePermOffset :: PermOffset a -> PermOffset a
 negatePermOffset NoPermOffset = NoPermOffset
