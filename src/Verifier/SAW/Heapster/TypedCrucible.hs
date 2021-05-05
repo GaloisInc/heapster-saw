@@ -254,6 +254,10 @@ data TypedCallSiteID blocks args vars =
                     callSiteDest :: TypedEntryID blocks args,
                     callSiteVars :: CruCtx vars }
 
+-- FIXME HERE NOW: call sites IDs need an Int index, because the same entrypoint
+-- could call the same entrypoint multiple times, if the latter is a join point
+-- and the former does a disjunctive elimination
+
 -- | Get the 'TypedBlockID' of the callee of a call site
 callSiteDestBlock :: TypedCallSiteID blocks args vars ->
                      TypedBlockID blocks args
@@ -3619,6 +3623,7 @@ proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
         mbSeparate (cruCtxProxies ghosts) $
         mbValuePermsToDistPerms mb_perms_out in
   permGetPPInfo >>>= \ppInfo ->
+  -- FIXME HERE NOW: add the input perms and call site to our error message
   let err = pretty "Could not prove" <+> permPretty ppInfo perms_out in
   pcmRunImplM ghosts err (CallSiteImplRet destID ghosts Refl .
                           exprsOfSubst . completePSubst ghosts)
