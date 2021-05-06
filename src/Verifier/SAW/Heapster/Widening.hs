@@ -29,9 +29,12 @@
 
 module Verifier.SAW.Heapster.Widening where
 
-import Data.Parameterized.Some
+import Data.Maybe
 import Control.Monad.State
 -- import Control.Monad.Cont
+import Control.Lens hiding ((:>), Index, Empty, ix, op)
+
+import Data.Parameterized.Some
 
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
@@ -78,16 +81,35 @@ extExtWidening vars p ext_wid =
 -- newtype MaybeVar a = MaybeVar { unMaybeVar :: Maybe (ExprVar a) }
 
 data WideningState vars1 vars2 =
-  WideningState { wstPSubst1 :: PartialSubst vars1,
-                  wstPSubst2 :: PartialSubst vars2,
-                  wstMbPerms1 :: MbValuePerms vars1,
-                  wstMbPerms2 :: MbValuePerms vars2 }
+  WideningState { _wstPSubst1 :: PartialSubst vars1,
+                  _wstPSubst2 :: PartialSubst vars2,
+                  _wstMbPerms1 :: MbValuePerms vars1,
+                  _wstMbPerms2 :: MbValuePerms vars2 }
+
+makeLenses ''WideningState
 
 emptyWideningState :: CruCtx vars1 -> CruCtx vars2 ->
                       MbValuePerms vars1 -> MbValuePerms vars2 ->
                       WideningState vars1 vars2
 emptyWideningState vars1 vars2 perms1 perms2 =
   WideningState (emptyPSubst vars1) (emptyPSubst vars2) perms1 perms2
+
+-- | A proof that a type argument equals one of two other type arguments
+data TpMux tp1 tp2 tp where
+  TpMux1 :: TpMux tp1 tp2 tp1
+  TpMux2 :: TpMux tp1 tp2 tp2
+
+-- | Return either 'wstPSubst1' or 'wstPSubst2' depending on the 'TpMux'
+wstPSubst :: TpMux evars1 evars2 evars ->
+             Lens' (WideningState evars1 evars2) (PartialSubst evars)
+wstPSubst TpMux1 = wstPSubst1
+wstPSubst TpMux2 = wstPSubst2
+
+-- | Return either 'wstMbPerms1' or 'wstMbPerms2' depending on the 'TpMux'
+wstMbPerms :: TpMux evars1 evars2 evars ->
+              Lens' (WideningState evars1 evars2) (MbValuePerms evars)
+wstMbPerms TpMux1 = wstMbPerms1
+wstMbPerms TpMux2 = wstMbPerms2
 
 newtype PolyContT r m a =
   PolyContT { runPolyContT :: forall x. (a -> m (r x)) -> m (r x) }
@@ -116,6 +138,42 @@ runWideningM vars1 vars2 perms1 perms2 m =
   flip runPolyContT (Just . flip ExtWidening_Base MNil . fst) $
   flip runStateT (emptyWideningState vars1 vars2 perms1 perms2) m
 
+-- | Test if an input evar has been set to an output value
+inputEVarIsSetM :: TpMux vars1 vars2 vars -> Member vars (a :: CrucibleType) ->
+                   WideningM args vars1 vars2 Bool
+inputEVarIsSetM mux evar =
+  isJust <$> flip psubstLookup evar <$> view (wstPSubst mux) <$> get
+
+-- | Apply the current partial substitution for one of the sets of input evars
+-- to an expression
+psubstEVarsM :: (NuMatching a, Substable PartialSubst a Maybe) =>
+                TpMux vars1 vars2 vars -> Mb vars a ->
+                WideningM args vars1 vars2 (Maybe a)
+psubstEVarsM mux mb_a =
+  partialSubst <$> (view (wstPSubst mux) <$> get) <*> return mb_a
+
+-- | Apply the current partial substitution for one of the sets of input evars
+-- to an expression in additional variables bindings, lifting that expression
+-- out of those bindings if possible
+psubstEVarsLiftM :: (NuMatching a, Substable PartialSubst a Maybe) =>
+                    TpMux vars1 vars2 evars -> KnownCruCtx vars ->
+                    Mb (evars :++: vars) a ->
+                    WideningM args vars1 vars2 (Maybe a)
+psubstEVarsLiftM mux vars mb_a =
+  (view (wstPSubst mux) <$> get) >>= \psubst ->
+  let psubst' = psubstAppend psubst $ emptyPSubst $ knownCtxToCruCtx vars in
+  return $ partialSubst psubst' mb_a
+
+-- | Set the substitution for an input evar, assuming it has not been set
+setEVarM :: TpMux vars1 vars2 vars -> Member vars a -> PermExpr a ->
+            WideningM args vars1 vars2 ()
+setEVarM mux evar e = modify (over (wstPSubst mux) (psubstSet evar e))
+
+-- | Get the permissions for an input evar
+getEvarPermsM :: TpMux vars1 vars2 vars -> Member vars a ->
+                 WideningM args vars1 vars2 (Mb vars (ValuePerm a))
+getEvarPermsM mux evar =
+  fmap (RL.get evar) <$> view (wstMbPerms mux) <$> get
 
 -- | Bind a fresh evar in the output 'Widening' whose permissions are given by a
 -- computation, and return that evar for future computations
@@ -197,13 +255,6 @@ asMbTopEVarOffset _ _ = Nothing
 mbCtx :: CruCtx ctx -> (RAssign Name ctx -> a) -> Mb ctx a
 mbCtx ctx = nuMulti (cruCtxProxies ctx)
 
--- | Apply a partial substitution for the top-level evars to an expression in a
--- binding for both top-level and local evars
-psubstTopEVars :: Substable PartialSubst a Maybe =>
-                  PartialSubst evars -> KnownCruCtx vars ->
-                  Mb (evars :++: vars) a -> Maybe (Mb vars a)
-psubstTopEVars = error "FIXME HERE NOW"
-
 -- | FIXME HERE NOW: documentation
 widenPerm :: KnownCruCtx vars -> TypeRepr a ->
              Mb (vars1 :++: vars) (ValuePerm a) ->
@@ -222,33 +273,69 @@ widenPerm' :: KnownCruCtx vars -> TypeRepr a ->
 widenPerm' vars tp [nuMP| ValPerm_Eq mb_e1 |] [nuMP| ValPerm_Eq mb_e2 |]
   | Just (evar1, mb_off1) <- asMbTopEVarOffset vars mb_e1
   , Just (evar2, mb_off2) <- asMbTopEVarOffset vars mb_e2 =
-    get >>= \st ->
-    let psubst1 = wstPSubst1 st
-        psubst2 = wstPSubst2 st in
-    case (psubstLookup psubst1 evar1, psubstLookup psubst2 evar2) of
-      -- If both top-level evars already have values, and e1 == e2, return e1
-      (Just _, Just _)
-        | Just mb_e1' <- psubstTopEVars psubst1 vars mb_e1
-        , Just mb_e2' <- psubstTopEVars psubst2 vars mb_e2
-        , mb_e1' == mb_e2' ->
-          return $ fmap ValPerm_Eq mb_e1'
+    do let vars_ctx = knownCtxToCruCtx vars
+       maybe_e1 <- psubstEVarsLiftM TpMux1 vars mb_e1
+       maybe_e2 <- psubstEVarsLiftM TpMux2 vars mb_e2
+       isset_evar1 <- inputEVarIsSetM TpMux1 evar1
+       isset_evar2 <- inputEVarIsSetM TpMux2 evar2
+       maybe_off1 <- psubstEVarsLiftM TpMux1 vars mb_off1
+       maybe_off2 <- psubstEVarsLiftM TpMux2 vars mb_off2
 
-      -- If neither var is set, make a new variable, whose permissions are given
-      -- by widening the permissions of x1 and x2 against each other
-      (Nothing, Nothing)
-        | vars_psubst <- emptyPSubst (knownCtxToCruCtx vars)
-        , Just off1 <- partialSubst (psubstAppend psubst1 vars_psubst) mb_off1
-        , Just off2 <- partialSubst (psubstAppend psubst2 vars_psubst) mb_off2 ->
-          do let p1 = fmap (offsetPerm off1 . RL.get evar1) (wstMbPerms1 st)
-                 p2 = fmap (offsetPerm off2 . RL.get evar2) (wstMbPerms2 st)
-             n <- bindWideningVar tp $ fmap elimEmptyMb $ widenPerm MNil tp p1 p2
-             put (st { wstPSubst1 =
-                         psubstSet evar1 (offsetExpr (negatePermOffset off1) $
-                                          PExpr_Var n) psubst1
-                     , wstPSubst2 =
-                         psubstSet evar2 (offsetExpr (negatePermOffset off2) $
-                                          PExpr_Var n) psubst2 })
-             return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
+       case (maybe_e1, maybe_e2) of
+         -- If we can substitute into both sides to get some e1==e2, return e1
+         (Just e1, Just e2)
+           | e1 == e2 -> return $ nuMulti vars $ const $ ValPerm_Eq e1
+
+         -- FIXME: if one side is a set evar and the other is an unset evar,
+         -- that means that the side whose evar is set has more equalities than
+         -- the other. This is equivalent to widening permissions of the form
+         -- x:p,y:eq(x) with x:p1,y:p2. There are multiple ways we could widen
+         -- this, by either splitting p into pieces that can be widened against
+         -- p1 and p2, or by returning something like x:p1', y:(eq(x) or p2').
+         -- Right now, we don't do either, and just give up...
+
+         -- If we can substitute into the LHS to get some e1 and the RHS is an
+         -- unset evar x2 with known offset off2, set x2=e1-off2 and return e1
+         {-
+         (Just e1, Nothing)
+           | not isset_evar2
+           , Just off2 <- maybe_off2 ->
+             ...
+
+         -- If we can substitute into the RHS to get some e2 and the LHS is an
+         -- unset evar x1 with known offset off1, set x1=e2-off1 and return e2
+         (Nothing, Just e1)
+           | not isset_evar1
+           , Just off1 <- maybe_off1 ->
+             ...
+         -}
+
+         -- If neither evar is set, make a fresh output evar, whose permissions
+         -- are given by widening those of the two input evars
+         (Nothing, Nothing)
+           | not isset_evar1
+           , not isset_evar2
+           , Just off1 <- maybe_off1
+           , Just off2 <- maybe_off2 ->
+             do p1 <- getEvarPermsM TpMux1 evar1
+                p2 <- getEvarPermsM TpMux2 evar2
+                n <- bindWideningVar tp $ fmap elimEmptyMb $
+                  widenPerm MNil tp p1 p2
+                setEVarM TpMux1 evar1 (offsetExpr (negatePermOffset off1) $
+                                       PExpr_Var n)
+                setEVarM TpMux2 evar2 (offsetExpr (negatePermOffset off2) $
+                                       PExpr_Var n)
+                return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
+
+         -- In any other case, we don't know what to do, so just return true
+         _ -> return $ nuMulti vars $ const ValPerm_True
+
+
+-- If the LHS is of the form eq(x1 &+ off1)
+{-
+widenPerm' vars tp [nuMP| ValPerm_Eq mb_e1 |] mb_p2
+  | Just (evar1, mb_off1) <- asMbTopEVarOffset vars mb_e1 =
+-}
 
 
 -- | Widen a sequence of permissions
