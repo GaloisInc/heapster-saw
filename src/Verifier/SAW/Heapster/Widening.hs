@@ -260,21 +260,12 @@ widenPerm :: KnownCruCtx vars -> TypeRepr a ->
              Mb (vars1 :++: vars) (ValuePerm a) ->
              Mb (vars2 :++: vars) (ValuePerm a) ->
              WideningM args vars1 vars2 (Mb vars (ValuePerm a))
-widenPerm vars tp mb_e1 mb_e2 =
-  widenPerm' vars tp (mbMatch mb_e1) (mbMatch mb_e2)
 
--- | FIXME HERE NOW: documentation
-widenPerm' :: KnownCruCtx vars -> TypeRepr a ->
-              MatchedMb (vars1 :++: vars) (ValuePerm a) ->
-              MatchedMb (vars2 :++: vars) (ValuePerm a) ->
-              WideningM args vars1 vars2 (Mb vars (ValuePerm a))
-
--- If both sides are of the form eq(x &+ off) for top-level evars x
-widenPerm' vars tp [nuMP| ValPerm_Eq mb_e1 |] [nuMP| ValPerm_Eq mb_e2 |]
+-- If both sides are of the form eq(x &+ off) for top-level evars x...
+widenPerm vars tp [nuP| ValPerm_Eq mb_e1 |] [nuP| ValPerm_Eq mb_e2 |]
   | Just (evar1, mb_off1) <- asMbTopEVarOffset vars mb_e1
   , Just (evar2, mb_off2) <- asMbTopEVarOffset vars mb_e2 =
-    do let vars_ctx = knownCtxToCruCtx vars
-       maybe_e1 <- psubstEVarsLiftM TpMux1 vars mb_e1
+    do maybe_e1 <- psubstEVarsLiftM TpMux1 vars mb_e1
        maybe_e2 <- psubstEVarsLiftM TpMux2 vars mb_e2
        isset_evar1 <- inputEVarIsSetM TpMux1 evar1
        isset_evar2 <- inputEVarIsSetM TpMux2 evar2
@@ -320,7 +311,8 @@ widenPerm' vars tp [nuMP| ValPerm_Eq mb_e1 |] [nuMP| ValPerm_Eq mb_e2 |]
              do p1 <- getEvarPermsM TpMux1 evar1
                 p2 <- getEvarPermsM TpMux2 evar2
                 n <- bindWideningVar tp $ fmap elimEmptyMb $
-                  widenPerm MNil tp p1 p2
+                  widenPerm MNil tp
+                  (fmap (offsetPerm off1) p1) (fmap (offsetPerm off2) p2)
                 setEVarM TpMux1 evar1 (offsetExpr (negatePermOffset off1) $
                                        PExpr_Var n)
                 setEVarM TpMux2 evar2 (offsetExpr (negatePermOffset off2) $
@@ -331,11 +323,64 @@ widenPerm' vars tp [nuMP| ValPerm_Eq mb_e1 |] [nuMP| ValPerm_Eq mb_e2 |]
          _ -> return $ nuMulti vars $ const ValPerm_True
 
 
--- If the LHS is of the form eq(x1 &+ off1)
-{-
-widenPerm' vars tp [nuMP| ValPerm_Eq mb_e1 |] mb_p2
+-- If the LHS is of the form eq(x1 &+ off1) for an evar x1...
+widenPerm vars tp [nuP| ValPerm_Eq mb_e1 |] mb_p2
   | Just (evar1, mb_off1) <- asMbTopEVarOffset vars mb_e1 =
--}
+    do isset_evar1 <- inputEVarIsSetM TpMux1 evar1
+       maybe_off1 <- psubstEVarsLiftM TpMux1 vars mb_off1
+       case isset_evar1 of
+
+         -- If x1 is not set, create a fresh output evar x for it, whose
+         -- permissions are given by widening those of x1 with p2, and return
+         -- eq(x) as the permissions for the current location
+         False
+           | Just off1 <- maybe_off1
+           , [nuP| Just p2 |] <- (fmap (partialSubst $ emptyPSubst $
+                                        knownCtxToCruCtx vars) $
+                                  mbSeparate vars mb_p2) ->
+             do p1 <- getEvarPermsM TpMux1 evar1
+                n <- bindWideningVar tp $ fmap elimEmptyMb $
+                  widenPerm MNil tp (fmap (offsetPerm off1) p1) p2
+                setEVarM TpMux1 evar1 (offsetExpr (negatePermOffset off1) $
+                                       PExpr_Var n)
+                return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
+
+         -- FIXME: if x1 is already set, then the LHS has more equalities than
+         -- the RHS, so we should think about splitting the permissions on x1,
+         -- as discussed above, but we are not for now
+
+         -- All other cases: just give up and return true
+         _ -> return $ nuMulti vars $ const ValPerm_True
+
+
+-- If the RHS is of the form eq(x2 &+ off1) for an evar x2...
+widenPerm vars tp mb_p1 [nuP| ValPerm_Eq mb_e2 |]
+  | Just (evar2, mb_off2) <- asMbTopEVarOffset vars mb_e2 =
+    do isset_evar2 <- inputEVarIsSetM TpMux2 evar2
+       maybe_off2 <- psubstEVarsLiftM TpMux2 vars mb_off2
+       case isset_evar2 of
+
+         -- If x2 is not set, create a fresh output evar x for it, whose
+         -- permissions are given by widening those of x2 with p1, and return
+         -- eq(x) as the permissions for the current location
+         False
+           | Just off2 <- maybe_off2
+           , [nuP| Just p1 |] <- (fmap (partialSubst $ emptyPSubst $
+                                        knownCtxToCruCtx vars) $
+                                  mbSeparate vars mb_p1) ->
+             do p2 <- getEvarPermsM TpMux2 evar2
+                n <- bindWideningVar tp $ fmap elimEmptyMb $
+                  widenPerm MNil tp p1 (fmap (offsetPerm off2) p2)
+                setEVarM TpMux2 evar2 (offsetExpr (negatePermOffset off2) $
+                                       PExpr_Var n)
+                return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
+
+         -- FIXME: if x2 is already set, then the RHS has more equalities than
+         -- the RHS, so we should think about splitting the permissions on x2,
+         -- as discussed above, but we are not for now
+
+         -- All other cases: just give up and return true
+         _ -> return $ nuMulti vars $ const ValPerm_True
 
 
 -- | Widen a sequence of permissions
