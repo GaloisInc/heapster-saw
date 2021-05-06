@@ -2008,10 +2008,10 @@ offsetExpr NoPermOffset e = e
 offsetExpr (LLVMPermOffset off) e = addLLVMOffset e off
 
 -- | Convert an expression to a variable + optional offset, if this is possible
-asOffset :: PermExpr a -> Maybe (ExprVar a, PermOffset a)
-asOffset (PExpr_Var x) = Just (x, NoPermOffset)
-asOffset (PExpr_LLVMOffset x off) = Just (x, LLVMPermOffset off)
-asOffset _ = Nothing
+asVarOffset :: PermExpr a -> Maybe (ExprVar a, PermOffset a)
+asVarOffset (PExpr_Var x) = Just (x, NoPermOffset)
+asVarOffset (PExpr_LLVMOffset x off) = Just (x, LLVMPermOffset off)
+asVarOffset _ = Nothing
 
 -- | Negate a 'PermOffset'
 negatePermOffset :: PermOffset a -> PermOffset a
@@ -5238,6 +5238,12 @@ completePSubst ctx (PartialSubst pselems) = PermSubst $ helper ctx pselems where
 -- | Look up an optional expression in a partial substitution
 psubstLookup :: PartialSubst ctx -> Member ctx a -> Maybe (PermExpr a)
 psubstLookup (PartialSubst m) memb = unPSubstElem $ RL.get memb m
+
+-- | Append two partial substitutions
+psubstAppend :: PartialSubst ctx1 -> PartialSubst ctx2 ->
+                PartialSubst (ctx1 :++: ctx2)
+psubstAppend (PartialSubst elems1) (PartialSubst elems2) =
+  PartialSubst $ RL.append elems1 elems2
 
 instance SubstVar PartialSubst Maybe where
   {-

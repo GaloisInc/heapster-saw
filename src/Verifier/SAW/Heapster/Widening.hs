@@ -135,41 +135,140 @@ bindWideningVar tp m =
 ----------------------------------------------------------------------
 
 {-
-class WideningUnify a where
-  wideningUnify' :: MatchedMb vars1 a -> MatchedMb vars2 a ->
-                    WideningM args vars1 vars2 a
+class WidUnify a where
+  widUnify' :: RAssign prx vars -> MatchedMb (vars1 :++: vars) a ->
+               MatchedMb (vars2 :++: vars) a ->
+               WideningM args vars1 vars2 (Mb vars a)
 
-wideningUnify :: WideningEq a => Mb vars1 a -> Mb vars2 a ->
-                 WideningM args vars1 vars2 a
-wideningUnify mb1 mb2 = wideningUnify (mbMatch mb1) (mbMatch mb2)
+widUnify :: WidUnify a => RAssign prx vars -> Mb (vars1 :++: vars) a ->
+            Mb (vars2 :++: vars) a -> WideningM args vars1 vars2 (Mb vars a)
+widUnify vars mb1 mb2 = widUnify' vars (mbMatch mb1) (mbMatch mb2)
 
 instance WideningUnify (PermExpr a) where
-  wideningUnify' = error "FIXME HERE NOW"
+  widUnify' = error "FIXME HERE NOW"
 -}
 
+{-
+-- | The generic function for widening on matched name-bindings
 class WidenM a where
-  widenM' :: MatchedMb vars1 a -> PartialSubst vars1 ->
-             MatchedMb vars2 a -> PartialSubst vars2 ->
-             WideningM args vars1 vars2 a
+  widenM' :: KnownCruCtx vars -> MatchedMb (vars1 :++: vars) a ->
+             MatchedMb (vars2 :++: vars) a ->
+             WideningM args vars1 vars2 (Mb vars a)
 
-widenM :: WidenM a => Mb vars1 a -> Mb vars2 a ->
-          WideningM args vars1 vars2 a
-widenM mb1 mb2 =
-  get >>= \st ->
-  widenM' (mbMatch mb1) (wstPSubst1 st) (mbMatch mb2) (wstPSubst2 st)
+-- | Apply widening to two objects in bindings
+widenM :: WidenM a => KnownCruCtx vars -> Mb (vars1 :++: vars) a ->
+          Mb (vars2 :++: vars) a ->
+          WideningM args vars1 vars2 (Mb vars a)
+widenM vars mb1 mb2 = widenM' vars (mbMatch mb1) (mbMatch mb2)
+-}
 
-instance WidenM (ValuePerm a) where
-  widenM' = error "FIXME HERE NOW"
-  {-
-  widenM' [nuMP| ValPerm_Eq mb_e1 |] [nuMP| ValPerm_Eq mb_e2 |] =
-    FIXME HERE NOW: do we just unify the two sides? Or maybe we have a way
-                       to lift exprs out of their bindings by binding fresh vars? -}
+-- | Convert an expression to a variable + offset, in a binding, if possible
+asMbVarOffset :: MatchedMb ctx (PermExpr a) ->
+                 Maybe (Mb ctx (ExprVar a), Mb ctx (PermOffset a))
+asMbVarOffset [nuMP| PExpr_Var mb_x |] =
+  Just (mb_x, fmap (const NoPermOffset) mb_x)
+asMbVarOffset [nuMP| PExpr_LLVMOffset mb_x mb_off |] =
+  Just (mb_x, fmap LLVMPermOffset mb_off)
+asMbVarOffset _ = Nothing
 
+-- | Test if a 'Member' proof in an appended list @ctx1 :++: ctx2@ is a proof of
+-- membership in the first or second list
+memberAppendCase :: Proxy ctx1 -> RAssign prx ctx2 -> Member (ctx1 :++: ctx2) a ->
+                    Either (Member ctx1 a) (Member ctx2 a)
+memberAppendCase _ MNil memb = Left memb
+memberAppendCase _ (_ :>: _) Member_Base = Right Member_Base
+memberAppendCase ctx1 (ctx2 :>: _) (Member_Step memb) =
+  case memberAppendCase ctx1 ctx2 memb of
+    Left ret -> Left ret
+    Right ret -> Right $ Member_Step ret
+
+-- | Test if an expression in a binding for top-level and local evars is a
+-- top-level evar plus an optional offset
+asMbTopEVarOffset :: KnownCruCtx vars -> Mb (evars :++: vars) (PermExpr a) ->
+                     Maybe (Member evars a, Mb (evars :++: vars) (PermOffset a))
+asMbTopEVarOffset vars mb_e
+  | Just (mb_x, mb_off) <- asMbVarOffset (mbMatch mb_e)
+  , Left memb <- mbNameBoundP mb_x
+  , Left memb_evars <- memberAppendCase Proxy vars memb =
+    Just (memb_evars, mb_off)
+asMbTopEVarOffset _ _ = Nothing
+
+-- | Helper function to make a multi-binding using a 'CruCtx'
+mbCtx :: CruCtx ctx -> (RAssign Name ctx -> a) -> Mb ctx a
+mbCtx ctx = nuMulti (cruCtxProxies ctx)
+
+-- | Apply a partial substitution for the top-level evars to an expression in a
+-- binding for both top-level and local evars
+psubstTopEVars :: Substable PartialSubst a Maybe =>
+                  PartialSubst evars -> KnownCruCtx vars ->
+                  Mb (evars :++: vars) a -> Maybe (Mb vars a)
+psubstTopEVars = error "FIXME HERE NOW"
+
+-- | FIXME HERE NOW: documentation
+widenPerm :: KnownCruCtx vars -> TypeRepr a ->
+             Mb (vars1 :++: vars) (ValuePerm a) ->
+             Mb (vars2 :++: vars) (ValuePerm a) ->
+             WideningM args vars1 vars2 (Mb vars (ValuePerm a))
+widenPerm vars tp mb_e1 mb_e2 =
+  widenPerm' vars tp (mbMatch mb_e1) (mbMatch mb_e2)
+
+-- | FIXME HERE NOW: documentation
+widenPerm' :: KnownCruCtx vars -> TypeRepr a ->
+              MatchedMb (vars1 :++: vars) (ValuePerm a) ->
+              MatchedMb (vars2 :++: vars) (ValuePerm a) ->
+              WideningM args vars1 vars2 (Mb vars (ValuePerm a))
+
+-- If both sides are of the form eq(x &+ off) for top-level evars x
+widenPerm' vars tp [nuMP| ValPerm_Eq mb_e1 |] [nuMP| ValPerm_Eq mb_e2 |]
+  | Just (evar1, mb_off1) <- asMbTopEVarOffset vars mb_e1
+  , Just (evar2, mb_off2) <- asMbTopEVarOffset vars mb_e2 =
+    get >>= \st ->
+    let psubst1 = wstPSubst1 st
+        psubst2 = wstPSubst2 st in
+    case (psubstLookup psubst1 evar1, psubstLookup psubst2 evar2) of
+      -- If both top-level evars already have values, and e1 == e2, return e1
+      (Just _, Just _)
+        | Just mb_e1' <- psubstTopEVars psubst1 vars mb_e1
+        , Just mb_e2' <- psubstTopEVars psubst2 vars mb_e2
+        , mb_e1' == mb_e2' ->
+          return $ fmap ValPerm_Eq mb_e1'
+
+      -- If neither var is set, make a new variable, whose permissions are given
+      -- by widening the permissions of x1 and x2 against each other
+      (Nothing, Nothing)
+        | vars_psubst <- emptyPSubst (knownCtxToCruCtx vars)
+        , Just off1 <- partialSubst (psubstAppend psubst1 vars_psubst) mb_off1
+        , Just off2 <- partialSubst (psubstAppend psubst2 vars_psubst) mb_off2 ->
+          do let p1 = fmap (offsetPerm off1 . RL.get evar1) (wstMbPerms1 st)
+                 p2 = fmap (offsetPerm off2 . RL.get evar2) (wstMbPerms2 st)
+             n <- bindWideningVar tp $ fmap elimEmptyMb $ widenPerm MNil tp p1 p2
+             put (st { wstPSubst1 =
+                         psubstSet evar1 (offsetExpr (negatePermOffset off1) $
+                                          PExpr_Var n) psubst1
+                     , wstPSubst2 =
+                         psubstSet evar2 (offsetExpr (negatePermOffset off2) $
+                                          PExpr_Var n) psubst2 })
+             return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
+
+
+-- | Widen a sequence of permissions
+widenPerms :: KnownCruCtx vars -> CruCtx tps ->
+              Mb (vars1 :++: vars) (ValuePerms tps) ->
+              Mb (vars2 :++: vars) (ValuePerms tps) ->
+              WideningM args vars1 vars2 (Mb vars (ValuePerms tps))
+widenPerms vars tps mb_ps1 mb_ps2 =
+  widenPerms' vars tps (mbMatch mb_ps1) (mbMatch mb_ps2)
+
+-- | The main worker for 'widenPerms'
+--
 -- FIXME HERE NOW: should we do permissions with determined vars first?
-instance WidenM (ValuePerms ps) where
-  widenM' [nuMP| MNil |] _ _ _ = return MNil
-  widenM' [nuMP| ps1 :>: p1 |] _ [nuMP| ps2 :>: p2 |] _ =
-    (:>:) <$> widenM ps1 ps2 <*> widenM p1 p2
+widenPerms' :: KnownCruCtx vars -> CruCtx tps ->
+               MatchedMb (vars1 :++: vars) (ValuePerms tps) ->
+               MatchedMb (vars2 :++: vars) (ValuePerms tps) ->
+               WideningM args vars1 vars2 (Mb vars (ValuePerms tps))
+widenPerms' vars _ [nuMP| MNil |] _ = return $ nuMulti vars $ const MNil
+widenPerms' vars (CruCtxCons tps tp) [nuMP| ps1 :>: p1 |] [nuMP| ps2 :>: p2 |] =
+  mbMap2 (:>:) <$> widenPerms vars tps ps1 ps2 <*> widenPerm vars tp p1 p2
 
 
 ----------------------------------------------------------------------
@@ -209,6 +308,6 @@ widen args vars1 vars2 mb_perms_args1_vars1 mb_perms_args2_vars2 =
                perms_args2 = fmap (fst . RL.split args prxs2) perms_args2_vars2
                perms_vars2 = fmap (snd . RL.split args prxs2) perms_args2_vars2 in
            runWideningM vars1 vars2 perms_vars1 perms_vars2 $
-           widenM perms_args1 perms_args2)
+           fmap elimEmptyMb $ widenPerms MNil args perms_args1 perms_args2)
   (mbSeparate prxs1 mb_perms_args1_vars1)
   (mbSeparate prxs2 mb_perms_args2_vars2)
