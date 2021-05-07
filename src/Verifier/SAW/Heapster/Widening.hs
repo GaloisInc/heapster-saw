@@ -30,8 +30,10 @@
 module Verifier.SAW.Heapster.Widening where
 
 import Data.Maybe
+import Data.Functor.Constant
+import Data.Functor.Product
 import Control.Monad.State
--- import Control.Monad.Cont
+import Control.Monad.Cont
 import Control.Lens hiding ((:>), Index, Empty, ix, op)
 
 import Data.Parameterized.Some
@@ -41,10 +43,149 @@ import Verifier.SAW.Heapster.Permissions
 
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
+import Data.Binding.Hobbits.NameMap (NameMap)
+import qualified Data.Binding.Hobbits.NameMap as NameMap
 
 import Lang.Crucible.Types
 
 
+----------------------------------------------------------------------
+-- * A New Widening Monad
+----------------------------------------------------------------------
+
+-- | A 'Widening' for some list of variables that extends @vars@
+data ExtWidening vars
+  = ExtWidening_Base (ValuePerms vars)
+  | forall var. ExtWidening_Mb (TypeRepr var) (Binding var
+                                               (ExtWidening (vars :> var)))
+
+$(mkNuMatching [t| forall vars. ExtWidening vars |])
+
+newtype ExtWideningFun vars =
+  ExtWideningFun { applyExtWideningFun ::
+                     RAssign Name vars -> ExtWidening vars }
+
+type WidNameMap = NameMap (Product ValuePerm (Constant Bool))
+
+wnMapIns :: Name a -> ValuePerm a -> WidNameMap -> WidNameMap
+wnMapIns n p = NameMap.insert n (Pair p (Constant False))
+
+wnMapFromPerms :: RAssign Name ps -> RAssign ValuePerm ps -> WidNameMap
+wnMapFromPerms ns ps =
+  RL.foldr (\(Pair n p) -> wnMapIns n p) NameMap.empty $
+  RL.map2 Pair ns ps
+
+wnMapFromPermsVisiteds :: RAssign Name ps -> RAssign ValuePerm ps ->
+                          RAssign (Constant Bool) ps ->
+                          WidNameMap
+wnMapFromPermsVisiteds = error "FIXME HERE NOW"
+
+-- | Look up the permission for a name in a 'WidNameMap'
+wnMapGetPerm :: Name a -> WidNameMap -> ValuePerm a
+wnMapGetPerm n nmap | Just (Pair p _) <- NameMap.lookup n nmap = p
+wnMapGetPerm _ _ = ValPerm_True
+
+wnMapExtWidFun :: WidNameMap -> ExtWideningFun vars
+wnMapExtWidFun wnmap =
+  ExtWideningFun $ \ns -> ExtWidening_Base $ RL.map (flip wnMapGetPerm wnmap) ns
+
+newtype PolyContT r m a =
+  PolyContT { runPolyContT :: forall x. (forall y. a -> m (r y)) -> m (r x) }
+
+instance Functor (PolyContT r m) where
+  fmap f m = m >>= return . f
+
+instance Applicative (PolyContT r m) where
+  pure = return
+  (<*>) = ap
+
+instance Monad (PolyContT r m) where
+  return x = PolyContT $ \k -> k x
+  (PolyContT m) >>= f =
+    PolyContT $ \k -> m $ \a -> runPolyContT (f a) k
+
+type WideningM =
+  StateT WidNameMap (PolyContT ExtWideningFun Identity)
+
+runWideningM :: WideningM () -> WidNameMap -> RAssign Name args ->
+                ExtWidening args
+runWideningM m wnmap =
+  applyExtWideningFun $ runIdentity $
+  runPolyContT (runStateT m wnmap) (Identity . wnMapExtWidFun . snd)
+
+bindWideningVar :: TypeRepr tp -> WideningM (ExprVar tp)
+bindWideningVar tp =
+  lift $ PolyContT $ \k -> Identity $ ExtWideningFun $ \ns ->
+  ExtWidening_Mb tp $ nu $ \n ->
+  applyExtWideningFun (runIdentity $ k n) (ns :>: n)
+
+visitVar :: Name a -> WideningM ()
+visitVar n = error "FIXME HERE NOW: what if n has no perms?"
+
+setVarPermM :: Name a -> ValuePerm a -> WideningM ()
+setVarPermM = error "FIXME HERE NOW"
+
+{-
+data SomeMbs a
+  = NoMbs a
+  | forall tp. ConsMb (TypeRepr tp) (Binding tp (SomeMbs a))
+
+instance Functor SomeMbs where
+  fmap f m = m >>= return . f
+
+instance Applicative SomeMbs where
+  pure = return
+  (<*>) = ap
+
+instance Monad SomeMbs where
+  return x = NoMbs x
+  NoMbs a >>= f = f a
+  ConsMb tp mb_m >>= f =
+    ConsMb tp $ fmap (>>= f) mb_m
+
+type WidNameMap = NameMap (Product ValuePerm (Constant Bool))
+
+wnMapIns :: Name a -> ValuePerm a -> WidNameMap -> WidNameMap
+wnMapIns n p = NameMap.insert n (Pair p (Constant False))
+
+wnMapFromPerms :: RAssign Name ps -> RAssign ValuePerm ps -> WidNameMap
+wnMapFromPerms ns ps =
+  RL.foldr (\(Pair n p) -> wnMapIns n p) NameMap.empty $
+  RL.map2 Pair ns ps
+
+-- | Look up the permission for a name in a 'WidNameMap'
+wnMapGetPerm :: Name a -> WidNameMap -> ValuePerm a
+wnMapGetPerm n nmap | Just (Pair p _) <- NameMap.lookup n nmap = p
+wnMapGetPerm _ _ = ValPerm_True
+
+type WideningM = StateT WidNameMap Cont (SomeMbs )
+
+lookupEVar :: Name a -> WideningM (Maybe (ValuePerm a, Bool))
+lookupEVar n =
+  fmap (\(Pair p (Constant b)) -> (p,b)) <$> NameMap.lookup n <$> get
+
+data SomeTypedMb a = forall ctx. SomeTypedMb (CruCtx ctx) (Mb ctx a)
+
+instance Functor SomeTypedMb where
+  fmap f (SomeTypedMb vars mb_a) = SomeTypedMb vars $ fmap f mb_a
+
+runMbSomeMbs :: NuMatching a => CruCtx vars -> Mb vars (SomeMbs a) ->
+                SomeTypedMb a
+runMbSomeMbs vars mb_mbs =
+  case mbMatch mb_mbs of
+    [nuMP| NoMbs mb_a |] -> SomeTypedMb vars mb_a
+    [nuMP| ConsMb tp mb_mbs' |] ->
+      runMbSomeMbs (CruCtxCons vars $ mbLift tp) $ mbCombine mb_mbs'
+
+runSomeMbs :: SomeMbs a -> SomeTypedMb a
+runSomeMbs = runMbSomeMbs CruCtxNil . emptyMb
+
+unWideningM :: WideningM () -> WidNameMap -> SomeTypedMb WidNameMap
+unWideningM m nmap =
+  fmap snd $ runSomeMbs $ runStateT (runContT m return) nmap
+-}
+
+{-
 ----------------------------------------------------------------------
 -- * The Widening Monad
 ----------------------------------------------------------------------
@@ -186,12 +327,37 @@ bindWideningVar tp m =
   fmap (ExtWidening_Mb tp) $ mbMaybe $ nu $ \x ->
   runPolyContT (runStateT m s) $ \(p,s') ->
   fmap (extExtWidening Proxy p) $ k (x,s')
-
+-}
 
 ----------------------------------------------------------------------
 -- * Widening Itself
 ----------------------------------------------------------------------
 
+widenPerm :: KnownCruCtx vars -> TypeRepr a ->
+             Mb vars (ValuePerm a) -> Mb vars (ValuePerm a) ->
+             WideningM (Mb vars (ValuePerm a))
+widenPerm = error "FIXME HERE NOW"
+
+-- | Widen a sequence of permissions
+widenPerms :: KnownCruCtx vars -> CruCtx tps ->
+              Mb vars (ValuePerms tps) -> Mb vars (ValuePerms tps) ->
+              WideningM (Mb vars (ValuePerms tps))
+widenPerms vars tps mb_ps1 mb_ps2 =
+  widenPerms' vars tps (mbMatch mb_ps1) (mbMatch mb_ps2)
+
+-- | The main worker for 'widenPerms'
+--
+-- FIXME HERE NOW: should we do permissions with determined vars first?
+widenPerms' :: KnownCruCtx vars -> CruCtx tps ->
+               MatchedMb vars (ValuePerms tps) ->
+               MatchedMb vars (ValuePerms tps) ->
+               WideningM (Mb vars (ValuePerms tps))
+widenPerms' vars _ [nuMP| MNil |] _ = return $ nuMulti vars $ const MNil
+widenPerms' vars (CruCtxCons tps tp) [nuMP| ps1 :>: p1 |] [nuMP| ps2 :>: p2 |] =
+  mbMap2 (:>:) <$> widenPerms vars tps ps1 ps2 <*> widenPerm vars tp p1 p2
+
+
+{-
 {-
 class WidUnify a where
   widUnify' :: RAssign prx vars -> MatchedMb (vars1 :++: vars) a ->
@@ -406,6 +572,7 @@ widenPerms' vars (CruCtxCons tps tp) [nuMP| ps1 :>: p1 |] [nuMP| ps2 :>: p2 |] =
 ----------------------------------------------------------------------
 -- * Top-Level Entrypoints
 ----------------------------------------------------------------------
+-}
 
 data Widening args vars =
   Widening { wideningVars :: CruCtx vars,
@@ -414,32 +581,67 @@ data Widening args vars =
 $(mkNuMatching [t| forall args vars. Widening args vars |])
 
 completeMbExtWidening :: CruCtx vars ->
-                         Mb (args :++: vars) (ExtWidening args vars) ->
+                         Mb (args :++: vars) (ExtWidening (args :++: vars)) ->
                          Some (Widening args)
-completeMbExtWidening vars (mbMatch -> [nuMP| ExtWidening_Base arg_ps ps |]) =
-  Some $ Widening vars $ mbMap2 RL.append arg_ps ps
+completeMbExtWidening vars (mbMatch -> [nuMP| ExtWidening_Base ps |]) =
+  Some $ Widening vars ps
 completeMbExtWidening vars (mbMatch ->
                             [nuMP| ExtWidening_Mb var mb_ext_wid |]) =
   completeMbExtWidening (CruCtxCons vars (mbLift var)) (mbCombine mb_ext_wid)
 
-completeExtWidening :: Mb args (ExtWidening args RNil) -> Some (Widening args)
+completeExtWidening :: Mb args (ExtWidening args) -> Some (Widening args)
 completeExtWidening = completeMbExtWidening CruCtxNil
+
+{-
+completeWideningM :: CruCtx args -> MbValuePerms args -> Mb args (WideningM ()) ->
+                     Some (Widening args)
+completeWideningM args mb_arg_perms mb_m =
+  widMapWidening args $
+  flip nuMultiWithElim (MNil :>: mb_m :>: mb_arg_perms) $
+  \ns (_ :>: Identity m :>: Identity arg_perms) ->
+  unWideningM m $ wnMapFromPerms ns arg_perms
+-}
+
+rlMap2ToList :: (forall a. f a -> g a -> c) -> RAssign f ctx ->
+                RAssign g ctx -> [c]
+rlMap2ToList _ MNil MNil = []
+rlMap2ToList f (xs :>: x) (ys :>: y) = rlMap2ToList f xs ys ++ [f x y]
+
+-- | Extend the context of a name-binding on the left with multiple types
+extMbMultiL :: RAssign f ctx1 -> Mb ctx2 a -> Mb (ctx1 :++: ctx2) a
+extMbMultiL ns mb = mbCombine $ nuMulti ns $ const mb
+
+mbSeparatePrx :: prx ctx1 -> RAssign any ctx2 -> Mb (ctx1 :++: ctx2) a ->
+                 Mb ctx1 (Mb ctx2 a)
+mbSeparatePrx _ = mbSeparate
 
 -- | Top-level entrypoint
 widen :: CruCtx args -> CruCtx vars1 -> CruCtx vars2 ->
          MbValuePerms (args :++: vars1) ->
          MbValuePerms (args :++: vars2) ->
-         Maybe (Some (Widening args))
+         Some (Widening args)
 widen args vars1 vars2 mb_perms_args1_vars1 mb_perms_args2_vars2 =
   let prxs1 = cruCtxProxies vars1
       prxs2 = cruCtxProxies vars2 in
-  fmap completeExtWidening $ mbMaybe $
-  mbMap2 (\perms_args1_vars1 perms_args2_vars2 ->
-           let perms_args1 = fmap (fst . RL.split args prxs1) perms_args1_vars1
-               perms_vars1 = fmap (snd . RL.split args prxs1) perms_args1_vars1
-               perms_args2 = fmap (fst . RL.split args prxs2) perms_args2_vars2
-               perms_vars2 = fmap (snd . RL.split args prxs2) perms_args2_vars2 in
-           runWideningM vars1 vars2 perms_vars1 perms_vars2 $
-           fmap elimEmptyMb $ widenPerms MNil args perms_args1 perms_args2)
-  (mbSeparate prxs1 mb_perms_args1_vars1)
-  (mbSeparate prxs2 mb_perms_args2_vars2)
+  completeMbExtWidening (appendCruCtx vars1 vars2) $
+  mbMap3 (\ns perms_args1_vars1 perms_args2_vars2 ->
+           let (perms_a1, perms_v1) = RL.split args prxs1 perms_args1_vars1
+               (perms_a2, perms_v2) = RL.split args prxs2 perms_args2_vars2
+               (ns_args, ns12) = RL.split args (RL.append prxs1 prxs2) ns
+               (ns1, ns2) = RL.split prxs1 prxs2 ns12
+               wnmap =
+                 wnMapFromPerms ns (RL.map (const ValPerm_True) ns_args
+                                    `RL.append` (perms_v1
+                                                 `RL.append` perms_v2)) in
+           runWideningM
+           (do sequence_ $ RL.mapToList visitVar ns_args
+               ps <- elimEmptyMb <$>
+                 widenPerms MNil args (emptyMb perms_a1) (emptyMb perms_a2)
+               sequence_ $ rlMap2ToList setVarPermM ns_args ps
+           )
+           wnmap ns)
+  (nuMulti (cruCtxProxies args `RL.append` (prxs1 `RL.append` prxs2)) id)
+  (mbCombine $ fmap (extMbMulti prxs2) $
+   mbSeparatePrx args prxs1 mb_perms_args1_vars1)
+  (mbCombine $ fmap (extMbMultiL prxs1) $
+   mbSeparatePrx args prxs2 mb_perms_args2_vars2)
