@@ -61,6 +61,13 @@ data ExtWidening vars
 
 $(mkNuMatching [t| forall vars. ExtWidening vars |])
 
+extWidening_MbMulti :: CruCtx ctx -> Mb ctx (ExtWidening (vars :++: ctx)) ->
+                       ExtWidening vars
+extWidening_MbMulti CruCtxNil mb_ewid = elimEmptyMb mb_ewid
+extWidening_MbMulti (CruCtxCons ctx tp) mb_ewid =
+  extWidening_MbMulti ctx $
+  fmap (ExtWidening_Mb tp) $ mbSeparate (MNil :>: Proxy) mb_ewid
+
 newtype ExtWideningFun vars =
   ExtWideningFun { applyExtWideningFun ::
                      RAssign Name vars -> ExtWidening vars }
@@ -113,17 +120,33 @@ runWideningM m wnmap =
   applyExtWideningFun $ runIdentity $
   runPolyContT (runStateT m wnmap) (Identity . wnMapExtWidFun . snd)
 
+openMb :: CruCtx ctx -> Mb ctx a -> WideningM (RAssign Name ctx, a)
+openMb ctx mb_a =
+  lift $ PolyContT $ \k -> Identity $ ExtWideningFun $ \ns ->
+  extWidening_MbMulti ctx $
+  mbMap2 (\ns' a ->
+           applyExtWideningFun (runIdentity $ k (ns',a)) (RL.append ns ns'))
+  (nuMulti (cruCtxProxies ctx) id) mb_a
+
+bindWideningVar :: TypeRepr tp -> WideningM (ExprVar tp)
+bindWideningVar tp = snd <$> openMb (singletonCruCtx tp) (nu id)
+
+{-
 bindWideningVar :: TypeRepr tp -> WideningM (ExprVar tp)
 bindWideningVar tp =
   lift $ PolyContT $ \k -> Identity $ ExtWideningFun $ \ns ->
   ExtWidening_Mb tp $ nu $ \n ->
   applyExtWideningFun (runIdentity $ k n) (ns :>: n)
+-}
 
 visitVar :: Name a -> WideningM ()
 visitVar n = error "FIXME HERE NOW: what if n has no perms?"
 
 setVarPermM :: Name a -> ValuePerm a -> WideningM ()
 setVarPermM = error "FIXME HERE NOW"
+
+setVarPermsM :: RAssign Name ctx -> RAssign ValuePerm ctx -> WideningM ()
+setVarPermsM = error "FIXME HERE NOW"
 
 {-
 data SomeMbs a
@@ -623,25 +646,15 @@ widen :: CruCtx args -> CruCtx vars1 -> CruCtx vars2 ->
 widen args vars1 vars2 mb_perms_args1_vars1 mb_perms_args2_vars2 =
   let prxs1 = cruCtxProxies vars1
       prxs2 = cruCtxProxies vars2 in
-  completeMbExtWidening (appendCruCtx vars1 vars2) $
-  mbMap3 (\ns perms_args1_vars1 perms_args2_vars2 ->
-           let (perms_a1, perms_v1) = RL.split args prxs1 perms_args1_vars1
-               (perms_a2, perms_v2) = RL.split args prxs2 perms_args2_vars2
-               (ns_args, ns12) = RL.split args (RL.append prxs1 prxs2) ns
-               (ns1, ns2) = RL.split prxs1 prxs2 ns12
-               wnmap =
-                 wnMapFromPerms ns (RL.map (const ValPerm_True) ns_args
-                                    `RL.append` (perms_v1
-                                                 `RL.append` perms_v2)) in
-           runWideningM
-           (do sequence_ $ RL.mapToList visitVar ns_args
-               ps <- elimEmptyMb <$>
-                 widenPerms MNil args (emptyMb perms_a1) (emptyMb perms_a2)
-               sequence_ $ rlMap2ToList setVarPermM ns_args ps
-           )
-           wnmap ns)
-  (nuMulti (cruCtxProxies args `RL.append` (prxs1 `RL.append` prxs2)) id)
-  (mbCombine $ fmap (extMbMulti prxs2) $
-   mbSeparatePrx args prxs1 mb_perms_args1_vars1)
-  (mbCombine $ fmap (extMbMultiL prxs1) $
-   mbSeparatePrx args prxs2 mb_perms_args2_vars2)
+  completeExtWidening $ nuMulti (cruCtxProxies args) $ \ns ->
+  (\m -> runWideningM m NameMap.empty ns) $
+  do (ns1, ps1) <- openMb (appendCruCtx args vars1) mb_perms_args1_vars1
+     (ns2, ps2) <- openMb (appendCruCtx args vars2) mb_perms_args2_vars2
+     setVarPermsM ns1 ps1
+     setVarPermsM ns2 ps2
+     let (ps1_args, ps1_vars) = RL.split args prxs1 ps1
+         (ps2_args, ps2_vars) = RL.split args prxs2 ps2
+         ns1_args = fst $ RL.split args prxs1 ns1
+         ns2_args = fst $ RL.split args prxs2 ns2
+     error "FIXME HERE NOW"
+     -- FIXME HERE NOW: visit ns and give them perms by widening ps1 and ps2
