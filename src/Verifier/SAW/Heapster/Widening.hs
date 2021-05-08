@@ -50,7 +50,7 @@ import Lang.Crucible.Types
 
 
 ----------------------------------------------------------------------
--- * A New Widening Monad
+-- * The Widening Monad
 ----------------------------------------------------------------------
 
 -- | A 'Widening' for some list of variables that extends @vars@
@@ -74,6 +74,7 @@ newtype ExtWideningFun vars =
 
 type WidNameMap = NameMap (Product ValuePerm (Constant Bool))
 
+{-
 wnMapIns :: Name a -> ValuePerm a -> WidNameMap -> WidNameMap
 wnMapIns n p = NameMap.insert n (Pair p (Constant False))
 
@@ -86,6 +87,7 @@ wnMapFromPermsVisiteds :: RAssign Name ps -> RAssign ValuePerm ps ->
                           RAssign (Constant Bool) ps ->
                           WidNameMap
 wnMapFromPermsVisiteds = error "FIXME HERE NOW"
+-}
 
 -- | Look up the permission for a name in a 'WidNameMap'
 wnMapGetPerm :: Name a -> WidNameMap -> ValuePerm a
@@ -128,239 +130,153 @@ openMb ctx mb_a =
            applyExtWideningFun (runIdentity $ k (ns',a)) (RL.append ns ns'))
   (nuMulti (cruCtxProxies ctx) id) mb_a
 
-bindWideningVar :: TypeRepr tp -> WideningM (ExprVar tp)
-bindWideningVar tp = snd <$> openMb (singletonCruCtx tp) (nu id)
+bindFreshVar :: TypeRepr tp -> WideningM (ExprVar tp)
+bindFreshVar tp = snd <$> openMb (singletonCruCtx tp) (nu id)
 
-{-
-bindWideningVar :: TypeRepr tp -> WideningM (ExprVar tp)
-bindWideningVar tp =
-  lift $ PolyContT $ \k -> Identity $ ExtWideningFun $ \ns ->
-  ExtWidening_Mb tp $ nu $ \n ->
-  applyExtWideningFun (runIdentity $ k n) (ns :>: n)
--}
+visitM :: Name a -> WideningM ()
+visitM n =
+  modify $ flip NameMap.alter n $ \case
+  Just (Pair p _) -> Just (Pair p (Constant True))
+  Nothing -> Just (Pair ValPerm_True (Constant True)))
 
-visitVar :: Name a -> WideningM ()
-visitVar n = error "FIXME HERE NOW: what if n has no perms?"
+isVisitedM :: Name a -> WideningM Bool
+isVisitedM n =
+  maybe False (\(Pair _ (Constant b)) -> b) <$> NameMap.lookup n <$> get
+
+getVarPermM :: Name a -> WideningM (ValuePerm a)
+getVarPermM n = wnMapGetPerm n <$> get
 
 setVarPermM :: Name a -> ValuePerm a -> WideningM ()
 setVarPermM = error "FIXME HERE NOW"
 
+-- | Set the permissions for @x &+ off@ to @p@, by setting the permissions for
+-- @x@ to @p - off@
+setOffVarPermM :: Name a -> PermOffset a -> ValuePerm a -> WideningM ()
+setOffVarPermM x off p =
+  setVarPermM x (offsetPerm (negatePermOffset off) p)
+
 setVarPermsM :: RAssign Name ctx -> RAssign ValuePerm ctx -> WideningM ()
 setVarPermsM = error "FIXME HERE NOW"
 
-{-
-data SomeMbs a
-  = NoMbs a
-  | forall tp. ConsMb (TypeRepr tp) (Binding tp (SomeMbs a))
-
-instance Functor SomeMbs where
-  fmap f m = m >>= return . f
-
-instance Applicative SomeMbs where
-  pure = return
-  (<*>) = ap
-
-instance Monad SomeMbs where
-  return x = NoMbs x
-  NoMbs a >>= f = f a
-  ConsMb tp mb_m >>= f =
-    ConsMb tp $ fmap (>>= f) mb_m
-
-type WidNameMap = NameMap (Product ValuePerm (Constant Bool))
-
-wnMapIns :: Name a -> ValuePerm a -> WidNameMap -> WidNameMap
-wnMapIns n p = NameMap.insert n (Pair p (Constant False))
-
-wnMapFromPerms :: RAssign Name ps -> RAssign ValuePerm ps -> WidNameMap
-wnMapFromPerms ns ps =
-  RL.foldr (\(Pair n p) -> wnMapIns n p) NameMap.empty $
-  RL.map2 Pair ns ps
-
--- | Look up the permission for a name in a 'WidNameMap'
-wnMapGetPerm :: Name a -> WidNameMap -> ValuePerm a
-wnMapGetPerm n nmap | Just (Pair p _) <- NameMap.lookup n nmap = p
-wnMapGetPerm _ _ = ValPerm_True
-
-type WideningM = StateT WidNameMap Cont (SomeMbs )
-
-lookupEVar :: Name a -> WideningM (Maybe (ValuePerm a, Bool))
-lookupEVar n =
-  fmap (\(Pair p (Constant b)) -> (p,b)) <$> NameMap.lookup n <$> get
-
-data SomeTypedMb a = forall ctx. SomeTypedMb (CruCtx ctx) (Mb ctx a)
-
-instance Functor SomeTypedMb where
-  fmap f (SomeTypedMb vars mb_a) = SomeTypedMb vars $ fmap f mb_a
-
-runMbSomeMbs :: NuMatching a => CruCtx vars -> Mb vars (SomeMbs a) ->
-                SomeTypedMb a
-runMbSomeMbs vars mb_mbs =
-  case mbMatch mb_mbs of
-    [nuMP| NoMbs mb_a |] -> SomeTypedMb vars mb_a
-    [nuMP| ConsMb tp mb_mbs' |] ->
-      runMbSomeMbs (CruCtxCons vars $ mbLift tp) $ mbCombine mb_mbs'
-
-runSomeMbs :: SomeMbs a -> SomeTypedMb a
-runSomeMbs = runMbSomeMbs CruCtxNil . emptyMb
-
-unWideningM :: WideningM () -> WidNameMap -> SomeTypedMb WidNameMap
-unWideningM m nmap =
-  fmap snd $ runSomeMbs $ runStateT (runContT m return) nmap
--}
-
-{-
-----------------------------------------------------------------------
--- * The Widening Monad
-----------------------------------------------------------------------
-
--- | A 'Widening' for some list of variables that extends @vars@
-data ExtWidening args vars
-  = ExtWidening_Base (ValuePerms args) (ValuePerms vars)
-  | forall var. ExtWidening_Mb (TypeRepr var) (Binding var
-                                               (ExtWidening args (vars :> var)))
-
-$(mkNuMatching [t| forall args vars. ExtWidening args vars |])
-
-extMbExtWidening :: prx vars1 -> CruCtx vars2 -> ValuePerm var ->
-                    Mb vars2 (ExtWidening args (vars1 :++: vars2)) ->
-                    Mb vars2 (ExtWidening args (vars1 :> var :++: vars2))
-extMbExtWidening vars1 vars2 p (mbMatch ->
-                                [nuMP| ExtWidening_Base mb_arg_ps mb_ps |]) =
-  mbMap2 ExtWidening_Base mb_arg_ps $
-  flip fmap mb_ps (\ps ->
-                    let (ps1, ps2) = RL.split vars1 (cruCtxProxies vars2) ps in
-                    RL.append (ps1 :>: p) ps2)
-extMbExtWidening vars1 vars2 p (mbMatch ->
-                                [nuMP| ExtWidening_Mb mb_tp mb_ext_wid |]) =
-  mbMap2 ExtWidening_Mb mb_tp $
-  mbSeparate (MNil :>: Proxy) $
-  extMbExtWidening vars1 (CruCtxCons vars2 $ mbLift mb_tp) p $
-  mbCombine mb_ext_wid
-
-extExtWidening :: prx vars -> ValuePerm var -> ExtWidening args vars ->
-                  ExtWidening args (vars :> var)
-extExtWidening vars p ext_wid =
-  elimEmptyMb $ extMbExtWidening vars CruCtxNil p $ emptyMb ext_wid
-
--- newtype MaybeVar a = MaybeVar { unMaybeVar :: Maybe (ExprVar a) }
-
-data WideningState vars1 vars2 =
-  WideningState { _wstPSubst1 :: PartialSubst vars1,
-                  _wstPSubst2 :: PartialSubst vars2,
-                  _wstMbPerms1 :: MbValuePerms vars1,
-                  _wstMbPerms2 :: MbValuePerms vars2 }
-
-makeLenses ''WideningState
-
-emptyWideningState :: CruCtx vars1 -> CruCtx vars2 ->
-                      MbValuePerms vars1 -> MbValuePerms vars2 ->
-                      WideningState vars1 vars2
-emptyWideningState vars1 vars2 perms1 perms2 =
-  WideningState (emptyPSubst vars1) (emptyPSubst vars2) perms1 perms2
-
--- | A proof that a type argument equals one of two other type arguments
-data TpMux tp1 tp2 tp where
-  TpMux1 :: TpMux tp1 tp2 tp1
-  TpMux2 :: TpMux tp1 tp2 tp2
-
--- | Return either 'wstPSubst1' or 'wstPSubst2' depending on the 'TpMux'
-wstPSubst :: TpMux evars1 evars2 evars ->
-             Lens' (WideningState evars1 evars2) (PartialSubst evars)
-wstPSubst TpMux1 = wstPSubst1
-wstPSubst TpMux2 = wstPSubst2
-
--- | Return either 'wstMbPerms1' or 'wstMbPerms2' depending on the 'TpMux'
-wstMbPerms :: TpMux evars1 evars2 evars ->
-              Lens' (WideningState evars1 evars2) (MbValuePerms evars)
-wstMbPerms TpMux1 = wstMbPerms1
-wstMbPerms TpMux2 = wstMbPerms2
-
-newtype PolyContT r m a =
-  PolyContT { runPolyContT :: forall x. (a -> m (r x)) -> m (r x) }
-
-instance Functor (PolyContT r m) where
-  fmap f m = m >>= return . f
-
-instance Applicative (PolyContT r m) where
-  pure = return
-  (<*>) = ap
-
-instance Monad (PolyContT r m) where
-  return x = PolyContT $ \k -> k x
-  (PolyContT m) >>= f =
-    PolyContT $ \k -> m $ \a -> runPolyContT (f a) k
-
-type WideningM args vars1 vars2 =
-  StateT (WideningState vars1 vars2)
-  (PolyContT (ExtWidening args) Maybe)
-
-runWideningM :: CruCtx vars1 -> CruCtx vars2 ->
-                MbValuePerms vars1 -> MbValuePerms vars2 ->
-                WideningM args vars1 vars2 (ValuePerms args) ->
-                Maybe (ExtWidening args RNil)
-runWideningM vars1 vars2 perms1 perms2 m =
-  flip runPolyContT (Just . flip ExtWidening_Base MNil . fst) $
-  flip runStateT (emptyWideningState vars1 vars2 perms1 perms2) m
-
--- | Test if an input evar has been set to an output value
-inputEVarIsSetM :: TpMux vars1 vars2 vars -> Member vars (a :: CrucibleType) ->
-                   WideningM args vars1 vars2 Bool
-inputEVarIsSetM mux evar =
-  isJust <$> flip psubstLookup evar <$> view (wstPSubst mux) <$> get
-
--- | Apply the current partial substitution for one of the sets of input evars
--- to an expression
-psubstEVarsM :: (NuMatching a, Substable PartialSubst a Maybe) =>
-                TpMux vars1 vars2 vars -> Mb vars a ->
-                WideningM args vars1 vars2 (Maybe a)
-psubstEVarsM mux mb_a =
-  partialSubst <$> (view (wstPSubst mux) <$> get) <*> return mb_a
-
--- | Apply the current partial substitution for one of the sets of input evars
--- to an expression in additional variables bindings, lifting that expression
--- out of those bindings if possible
-psubstEVarsLiftM :: (NuMatching a, Substable PartialSubst a Maybe) =>
-                    TpMux vars1 vars2 evars -> KnownCruCtx vars ->
-                    Mb (evars :++: vars) a ->
-                    WideningM args vars1 vars2 (Maybe a)
-psubstEVarsLiftM mux vars mb_a =
-  (view (wstPSubst mux) <$> get) >>= \psubst ->
-  let psubst' = psubstAppend psubst $ emptyPSubst $ knownCtxToCruCtx vars in
-  return $ partialSubst psubst' mb_a
-
--- | Set the substitution for an input evar, assuming it has not been set
-setEVarM :: TpMux vars1 vars2 vars -> Member vars a -> PermExpr a ->
-            WideningM args vars1 vars2 ()
-setEVarM mux evar e = modify (over (wstPSubst mux) (psubstSet evar e))
-
--- | Get the permissions for an input evar
-getEvarPermsM :: TpMux vars1 vars2 vars -> Member vars a ->
-                 WideningM args vars1 vars2 (Mb vars (ValuePerm a))
-getEvarPermsM mux evar =
-  fmap (RL.get evar) <$> view (wstMbPerms mux) <$> get
-
--- | Bind a fresh evar in the output 'Widening' whose permissions are given by a
--- computation, and return that evar for future computations
---
--- FIXME: figure out a nicer way to write this?
-bindWideningVar :: TypeRepr tp -> WideningM args vars1 vars2 (ValuePerm tp) ->
-                   WideningM args vars1 vars2 (ExprVar tp)
-bindWideningVar tp m =
-  StateT $ \s -> PolyContT $ \k ->
-  fmap (ExtWidening_Mb tp) $ mbMaybe $ nu $ \x ->
-  runPolyContT (runStateT m s) $ \(p,s') ->
-  fmap (extExtWidening Proxy p) $ k (x,s')
--}
 
 ----------------------------------------------------------------------
 -- * Widening Itself
 ----------------------------------------------------------------------
 
+-- | Test if an expression in a binding is a free variable plus offset
+mbAsOffsetVar :: KnownCruCtx vars -> Mb vars (PermExpr a) ->
+                 Maybe (Name a, PermOffset a)
+mbAsOffsetVar vars [nuP| PExpr_Var mb_x |]
+  | Right n <- mbNameBoundP mb_x = Just (n, NoPermOffset)
+mbAsOffsetVar vars [nuP| PExpr_LLVMOffset mb_x mb_off |]
+  | Right n <- mbNameBoundP mb_x
+  , Just off <- partialSubst (emptyPSubst vars) mb_off
+  = Just (n, LLVMPermOffset off)
+mbAsOffsetVar _ _ = Nothing
+
+-- | Take a permission @p1@ at some existing location and split it into some
+-- @p1'*p1''@ such that @p1'@ will remain at the existing location and @p1''@
+-- will be widened against @p1''@. Return @p1'@ and the result of widening
+-- @p1''@ against @p2@.
+splitWidenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a ->
+                  WideningM (ValuePerm a, ValuePerm a)
+splitWidenPerm tp p1 p2
+  | permIsCopyable p1 = (p1,) <$> widenPerm MNil tp p1 p2
+splitWidenPerm _ p1 _ = return (p1, ValPerm_True)
+
+-- | Take permissions @p1@ and @p2@ that are both on existing locations and
+-- split them both into @p1'*p1''@ and @p2'*p2''@ such that @p1'@ and @p2'@
+-- remain at the existing locations and @p1''@ and @p2''@ are widened against
+-- each other. Return @p1'@, @p2'@, and the result of the further widening of
+-- @p1''@ against @p2''@.
+doubleSplitWidenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a ->
+                        WideningM ((ValuePerm a, ValuePerm a), ValuePerm a)
+doubleSplitWidenPerm tp p1 p2
+  | permIsCopyable p1 && permIsCopyable p2
+  = ((p1,p2),) <$> widenPerm MNil tp p1 p2
+doubleSplitWidenPerm _ p1 p2 =
+  return ((p1, p2), ValPerm_True)
+
+
+widenExpr :: KnownCruCtx vars -> TypeRepr a ->
+             Mb vars (PermExpr a) -> Mb vars (PermExpr a) ->
+             WideningM (Mb vars (PermExpr a))
+
+-- If both sides are equal, return one of the sides
+widenExpr vars tp mb_e1 mb_e2 | mb_e1 == mb_e2 = mb_e1
+
+-- If both sides are free variables, look up their permissions and whether they
+-- have been visited and use that information to decide what to do
+widenExpr vars tp mb_e1@(mbAsOffsetVar -> (x1, off1)) mb_e2@(mbAsOffsetVar ->
+                                                             (x2, off2)) =
+  do p1 <- getVarPermM x1
+     p2 <- getVarPermM x2
+     isv1 <- isVisitedM x1
+     isv2 <- isVisitedM x2
+     case (p1, p2, isv1, isv2) of
+
+       -- If we have the same variable with the same offsets (it can avoid the
+       -- case above of mb_e1 == mb_e2 if the offsets are offsetsEq but not ==)
+       -- then we are done, though we do want to visit the variable
+       _ | x1 == x2 && offsetsEq off1 off2 ->
+           visitM x1 >> return mb_e1
+
+       -- If we have the same variable but different offsets, then the two sides
+       -- cannot be equal, so we generalize with a new variable
+       _ | x1 == x2 ->
+           do x <- bindFreshVar tp
+              visitM x
+              ((p1,p2), p') <-
+                doubleSplitWidenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
+              setOffVarPermM x1 off1 p1
+              setOffVarPermM x2 off2 p2
+              setVarPermM x p'
+              return $ mbPure vars $ PExpr_Var x
+
+       -- If one variable has an eq(e) permission, replace it with e and recurse
+       (ValPerm_Eq e1', _, _, _) ->
+         visitM x1 >> widenExpr (mbPure vars $ offsetExpr off1 e1') mb_e2
+       (_, ValPerm_Eq e2', _, _, _) ->
+         visitM x2 >> widenExpr mb_e1 (mbPure vars $ offsetExpr off2 e2')
+
+       -- If either side has been visited but didn't match the above case, then
+       -- it is equal to some other location, and its perms need to be split
+       -- between that other location and here
+       (p1, p2, True, _) ->
+         do (p1', p2') <-
+              splitWidenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
+            setVarPermM x1 (offsetPerm (negatePermOffset off1) p1')
+            setVarPermM x2 (offsetPerm (negatePermOffset off2) p2')
+            return mb_e2
+       (p1, p2, _, True) ->
+         do (p2', p1') <-
+              splitWidenPerm tp (offsetPerm off2 p2) (offsetPerm off1 p2)
+            setVarPermM x1 (offsetPerm (negatePermOffset off1) p1')
+            setVarPermM x2 (offsetPerm (negatePermOffset off2) p2')
+            return mb_e1
+
+       -- If we get here, then neither x1 nor x2 has been visited, so choose x1,
+       -- set x2 equal to x1 &+ (off1 - off2), and set x1's permissions to be
+       -- the result of widening p1 against p2
+       _ ->
+         do visitM x1 >> visitM x2
+            setVarPermM x2 (ValPerm_Eq $
+                            offsetExpr (addPermOffsets off1 $
+                                        negatePermOffset off2) $ PExpr_Var x1)
+            p' <- widenPerm MNil tp
+              (emptyMb $ offsetPerm off1 p1) (emptyMb $ offsetPerm off2 p2)
+            setVarPermM x1 (offsetPerm (negatePermOffset off1) p')
+            return mb_e1
+
+
 widenExprs :: KnownCruCtx vars -> CruCtx tps ->
               Mb vars (RAssign PermExpr tps) ->
               Mb vars (RAssign PermExpr tps) ->
-              WideningM (RAssign PermExpr tps)
-widenExprs = error "FIXME HERE NOW"
+              WideningM (Mb vars (RAssign PermExpr tps))
+widenExprs vars tps mb_es1 mb_es2 = case (mbMatch mb_es1, mbMatch mb_es2) of
+  [nuMP| MNil |] _ -> nuMulti vars (const MNil)
+  [nuMP| es1 :>: e1 |] [nuMP| es2 :>: e2 |] ->
+    mbMap2 (:>:) <$> widenExprs vars tps ps1 ps2 <*> widenExpr vars tp p1 p2
 
 widenPerm :: KnownCruCtx vars -> TypeRepr a ->
              Mb vars (ValuePerm a) -> Mb vars (ValuePerm a) ->
