@@ -356,6 +356,12 @@ bindWideningVar tp m =
 -- * Widening Itself
 ----------------------------------------------------------------------
 
+widenExprs :: KnownCruCtx vars -> CruCtx tps ->
+              Mb vars (RAssign PermExpr tps) ->
+              Mb vars (RAssign PermExpr tps) ->
+              WideningM (RAssign PermExpr tps)
+widenExprs = error "FIXME HERE NOW"
+
 widenPerm :: KnownCruCtx vars -> TypeRepr a ->
              Mb vars (ValuePerm a) -> Mb vars (ValuePerm a) ->
              WideningM (Mb vars (ValuePerm a))
@@ -643,18 +649,17 @@ widen :: CruCtx args -> CruCtx vars1 -> CruCtx vars2 ->
          MbValuePerms (args :++: vars1) ->
          MbValuePerms (args :++: vars2) ->
          Some (Widening args)
-widen args vars1 vars2 mb_perms_args1_vars1 mb_perms_args2_vars2 =
+widen args vars1 vars2 mb_perms1 mb_perms2 =
   let prxs1 = cruCtxProxies vars1
-      prxs2 = cruCtxProxies vars2 in
-  completeExtWidening $ nuMulti (cruCtxProxies args) $ \ns ->
-  (\m -> runWideningM m NameMap.empty ns) $
-  do (ns1, ps1) <- openMb (appendCruCtx args vars1) mb_perms_args1_vars1
-     (ns2, ps2) <- openMb (appendCruCtx args vars2) mb_perms_args2_vars2
-     setVarPermsM ns1 ps1
-     setVarPermsM ns2 ps2
-     let (ps1_args, ps1_vars) = RL.split args prxs1 ps1
-         (ps2_args, ps2_vars) = RL.split args prxs2 ps2
-         ns1_args = fst $ RL.split args prxs1 ns1
-         ns2_args = fst $ RL.split args prxs2 ns2
-     error "FIXME HERE NOW"
-     -- FIXME HERE NOW: visit ns and give them perms by widening ps1 and ps2
+      prxs2 = cruCtxProxies vars2
+      mb_mb_perms1 = mbSeparate prxs1 mb_perms1 in
+  completeExtWidening $ flip nuMultiWithElim1 mb_mb_perms1 $
+  \args_ns1 mb_perms1' ->
+  (\m -> runWideningM m NameMap.empty args_ns1) $
+  do (vars1_ns, ps1) <- openMb vars1 mb_perms1'
+     (ns2, ps2) <- openMb (appendCruCtx args vars2) mb_perms2
+     let (args_ns2, _) = RL.split args prxs2 ns2
+     setVarPermsM (RL.append args_ns1 vars1_ns) ps1
+     widenExprs MNil args (emptyMb $ RL.map PExpr_Var args_ns1)
+       (emptyMb $ RL.map PExpr_Var args_ns2)
+     return ()
