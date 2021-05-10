@@ -30,10 +30,12 @@
 module Verifier.SAW.Heapster.Widening where
 
 import Data.Maybe
+import Data.List
 import Data.Functor.Constant
 import Data.Functor.Product
 import Control.Monad.State
 import Control.Monad.Cont
+import GHC.TypeLits
 import Control.Lens hiding ((:>), Index, Empty, ix, op)
 
 import Data.Parameterized.Some
@@ -73,28 +75,27 @@ newtype ExtWideningFun vars =
   ExtWideningFun { applyExtWideningFun ::
                      RAssign Name vars -> ExtWidening vars }
 
+-- | A map from free variables to their permissions and whether they have been
+-- "visited" yet
 type WidNameMap = NameMap (Product ValuePerm (Constant Bool))
 
-{-
-wnMapIns :: Name a -> ValuePerm a -> WidNameMap -> WidNameMap
-wnMapIns n p = NameMap.insert n (Pair p (Constant False))
-
-wnMapFromPerms :: RAssign Name ps -> RAssign ValuePerm ps -> WidNameMap
-wnMapFromPerms ns ps =
-  RL.foldr (\(Pair n p) -> wnMapIns n p) NameMap.empty $
-  RL.map2 Pair ns ps
-
-wnMapFromPermsVisiteds :: RAssign Name ps -> RAssign ValuePerm ps ->
-                          RAssign (Constant Bool) ps ->
-                          WidNameMap
-wnMapFromPermsVisiteds = error "FIXME HERE NOW"
--}
+-- | Modify the entry in a 'WidNameMap' associated with a particular free
+-- variable, starting from the default entry of @('ValPerm_True','False')@ if
+-- the variable has not been entered into the map yet
+wnMapAlter :: (Product ValuePerm (Constant Bool) a ->
+               Product ValuePerm (Constant Bool) a) -> ExprVar a ->
+              WidNameMap -> WidNameMap
+wnMapAlter f =
+  NameMap.alter $ \case
+  Just entry -> Just $ f entry
+  Nothing -> Just $ f (Pair ValPerm_True (Constant False))
 
 -- | Look up the permission for a name in a 'WidNameMap'
 wnMapGetPerm :: Name a -> WidNameMap -> ValuePerm a
 wnMapGetPerm n nmap | Just (Pair p _) <- NameMap.lookup n nmap = p
 wnMapGetPerm _ _ = ValPerm_True
 
+-- | Build an 'ExtWideningFun' from a widening name map
 wnMapExtWidFun :: WidNameMap -> ExtWideningFun vars
 wnMapExtWidFun wnmap =
   ExtWideningFun $ \ns -> ExtWidening_Base $ RL.map (flip wnMapGetPerm wnmap) ns
@@ -135,10 +136,7 @@ bindFreshVar :: TypeRepr tp -> WideningM (ExprVar tp)
 bindFreshVar tp = snd <$> openMb (singletonCruCtx tp) (nu id)
 
 visitM :: ExprVar a -> WideningM ()
-visitM n =
-  modify $ flip NameMap.alter n $ \case
-  Just (Pair p _) -> Just (Pair p (Constant True))
-  Nothing -> Just (Pair ValPerm_True (Constant True))
+visitM n = modify $ wnMapAlter (\(Pair p _) -> Pair p (Constant True)) n
 
 isVisitedM :: ExprVar a -> WideningM Bool
 isVisitedM n =
@@ -148,7 +146,7 @@ getVarPermM :: ExprVar a -> WideningM (ValuePerm a)
 getVarPermM n = wnMapGetPerm n <$> get
 
 setVarPermM :: ExprVar a -> ValuePerm a -> WideningM ()
-setVarPermM = error "FIXME HERE NOW"
+setVarPermM n p = modify $ wnMapAlter (\(Pair _ isv) -> Pair p isv) n
 
 -- | Set the permissions for @x &+ off@ to @p@, by setting the permissions for
 -- @x@ to @p - off@
@@ -157,7 +155,8 @@ setOffVarPermM x off p =
   setVarPermM x (offsetPerm (negatePermOffset off) p)
 
 setVarPermsM :: RAssign Name ctx -> RAssign ValuePerm ctx -> WideningM ()
-setVarPermsM = error "FIXME HERE NOW"
+setVarPermsM MNil MNil = return ()
+setVarPermsM (ns :>: n) (ps :>: p) = setVarPermsM ns ps >> setVarPermM n p
 
 
 ----------------------------------------------------------------------
@@ -323,6 +322,8 @@ widenExpr (StructRepr tps) (PExpr_Struct es1) (PExpr_Struct es2) =
 widenExpr (LLVMPointerRepr w) (PExpr_LLVMWord e1) (PExpr_LLVMWord e2) =
   PExpr_LLVMWord <$> widenExpr (BVRepr w) e1 e2
 
+-- FIXME HERE NOW: widen the various shape constructs
+
 -- Default case: widen two unequal expressions by making a fresh output
 -- existential variable, which could be equal to either
 widenExpr tp _ _ =
@@ -339,10 +340,62 @@ widenExprs (CruCtxCons tps tp) (es1 :>: e1) (es2 :>: e2) =
   (:>:) <$> widenExprs tps es1 es2 <*> widenExpr tp e1 e2
 
 
+-- | Take two block permissions @bp1@ and @bp2@ whose ranges overlap and use
+-- 'splitLLVMBlockPerm' to remove any parts of them that do not overlap,
+-- returning some @bp1'@ and @bp2'@ with the same range, along with additional
+-- portions of @bp1@ and @bp2@ that were removed
+equalizeLLVMBlockRanges :: (1 <= w, KnownNat w) =>
+                           LLVMBlockPerm w -> LLVMBlockPerm w ->
+                           Maybe (LLVMBlockPerm w, LLVMBlockPerm w,
+                                  [LLVMBlockPerm w], [LLVMBlockPerm w])
+equalizeLLVMBlockRanges = error "FIXME HERE NOW"
+
+
+-- | Widen two block permissions against each other, assuming they already have
+-- the same range
+widenBlockPerm :: (1 <= w, KnownNat w) => LLVMBlockPerm w -> LLVMBlockPerm w ->
+                  WideningM (LLVMBlockPerm w)
+widenBlockPerm bp1 bp2 =
+  LLVMBlockPerm <$>
+  widenExpr knownRepr (llvmBlockRW bp1) (llvmBlockRW bp2) <*>
+  widenExpr knownRepr (llvmBlockLifetime bp1) (llvmBlockLifetime bp2) <*>
+  return (llvmBlockOffset bp1) <*> return (llvmBlockLen bp1) <*>
+  widenExpr knownRepr (llvmBlockShape bp1) (llvmBlockShape bp2)
+
+
 -- | Widen a sequence of atomic permissions against each other
-widenAtomicPerms :: TypeRepr tp -> [AtomicPerm a] -> [AtomicPerm a] ->
+widenAtomicPerms :: TypeRepr a -> [AtomicPerm a] -> [AtomicPerm a] ->
                     WideningM [AtomicPerm a]
-widenAtomicPerms = error "FIXME HERE NOW"
+
+-- If one side is empty, we return the empty list, i.e., true
+widenAtomicPerms _ [] _ = return []
+widenAtomicPerms _ _ [] = return []
+
+-- If there is a permission on the right that equals p1, use p1, and recursively
+-- widen the remaining permissions
+widenAtomicPerms tp (p1 : ps1) ps2
+  | Just i <- findIndex (== p1) ps2 =
+    (p1 :) <$> widenAtomicPerms tp ps1 (deleteNth i ps2)
+
+-- If the first permission on the left is an LLVM permission overlaps with some
+-- permission on the right, widen these against each other
+widenAtomicPerms tp@(LLVMPointerRepr w) (p1 : ps1) ps2
+  | Just bp1 <- llvmAtomicPermToBlock p1
+  , rng1 <- llvmBlockRange bp1
+  , Just i <-
+      withKnownNat w (findIndex ((== Just True) . fmap (bvRangesOverlap rng1)
+                                 . llvmAtomicPermRange) ps2)
+  , Just bp2 <- llvmAtomicPermToBlock (ps2!!i)
+  , Just (bp1', bp2', bps1_rem, bps2_rem) <-
+      withKnownNat w (equalizeLLVMBlockRanges bp1 bp2)
+  = withKnownNat w (
+      (:) <$> (Perm_LLVMBlock <$> widenBlockPerm bp1' bp2') <*>
+      widenAtomicPerms tp (map Perm_LLVMBlock bps1_rem ++ ps1)
+      (map Perm_LLVMBlock bps2_rem ++ deleteNth i ps2))
+
+-- Default: cannot widen p1 against any p2 on the right, so drop it and recurse
+widenAtomicPerms tp (_ : ps1) ps2 = widenAtomicPerms tp ps1 ps2
+
 
 -- | Widen permissions against each other
 widenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a -> WideningM (ValuePerm a)
@@ -381,222 +434,9 @@ widenPerms (CruCtxCons tps tp) (ps1 :>: p1) (ps2 :>: p2) =
   (:>:) <$> widenPerms tps ps1 ps2 <*> widenPerm tp p1 p2
 
 
-{-
-{-
-class WidUnify a where
-  widUnify' :: RAssign prx vars -> MatchedMb (vars1 :++: vars) a ->
-               MatchedMb (vars2 :++: vars) a ->
-               WideningM args vars1 vars2 (Mb vars a)
-
-widUnify :: WidUnify a => RAssign prx vars -> Mb (vars1 :++: vars) a ->
-            Mb (vars2 :++: vars) a -> WideningM args vars1 vars2 (Mb vars a)
-widUnify vars mb1 mb2 = widUnify' vars (mbMatch mb1) (mbMatch mb2)
-
-instance WideningUnify (PermExpr a) where
-  widUnify' = error "FIXME HERE NOW"
--}
-
-{-
--- | The generic function for widening on matched name-bindings
-class WidenM a where
-  widenM' :: KnownCruCtx vars -> MatchedMb (vars1 :++: vars) a ->
-             MatchedMb (vars2 :++: vars) a ->
-             WideningM args vars1 vars2 (Mb vars a)
-
--- | Apply widening to two objects in bindings
-widenM :: WidenM a => KnownCruCtx vars -> Mb (vars1 :++: vars) a ->
-          Mb (vars2 :++: vars) a ->
-          WideningM args vars1 vars2 (Mb vars a)
-widenM vars mb1 mb2 = widenM' vars (mbMatch mb1) (mbMatch mb2)
--}
-
--- | Convert an expression to a variable + offset, in a binding, if possible
-asMbVarOffset :: MatchedMb ctx (PermExpr a) ->
-                 Maybe (Mb ctx (ExprVar a), Mb ctx (PermOffset a))
-asMbVarOffset [nuMP| PExpr_Var mb_x |] =
-  Just (mb_x, fmap (const NoPermOffset) mb_x)
-asMbVarOffset [nuMP| PExpr_LLVMOffset mb_x mb_off |] =
-  Just (mb_x, fmap LLVMPermOffset mb_off)
-asMbVarOffset _ = Nothing
-
--- | Test if a 'Member' proof in an appended list @ctx1 :++: ctx2@ is a proof of
--- membership in the first or second list
-memberAppendCase :: Proxy ctx1 -> RAssign prx ctx2 -> Member (ctx1 :++: ctx2) a ->
-                    Either (Member ctx1 a) (Member ctx2 a)
-memberAppendCase _ MNil memb = Left memb
-memberAppendCase _ (_ :>: _) Member_Base = Right Member_Base
-memberAppendCase ctx1 (ctx2 :>: _) (Member_Step memb) =
-  case memberAppendCase ctx1 ctx2 memb of
-    Left ret -> Left ret
-    Right ret -> Right $ Member_Step ret
-
--- | Test if an expression in a binding for top-level and local evars is a
--- top-level evar plus an optional offset
-asMbTopEVarOffset :: KnownCruCtx vars -> Mb (evars :++: vars) (PermExpr a) ->
-                     Maybe (Member evars a, Mb (evars :++: vars) (PermOffset a))
-asMbTopEVarOffset vars mb_e
-  | Just (mb_x, mb_off) <- asMbVarOffset (mbMatch mb_e)
-  , Left memb <- mbNameBoundP mb_x
-  , Left memb_evars <- memberAppendCase Proxy vars memb =
-    Just (memb_evars, mb_off)
-asMbTopEVarOffset _ _ = Nothing
-
--- | Helper function to make a multi-binding using a 'CruCtx'
-mbCtx :: CruCtx ctx -> (RAssign Name ctx -> a) -> Mb ctx a
-mbCtx ctx = nuMulti (cruCtxProxies ctx)
-
--- | FIXME HERE NOW: documentation
-widenPerm :: KnownCruCtx vars -> TypeRepr a ->
-             Mb (vars1 :++: vars) (ValuePerm a) ->
-             Mb (vars2 :++: vars) (ValuePerm a) ->
-             WideningM args vars1 vars2 (Mb vars (ValuePerm a))
-
--- If both sides are of the form eq(x &+ off) for top-level evars x...
-widenPerm vars tp [nuP| ValPerm_Eq mb_e1 |] [nuP| ValPerm_Eq mb_e2 |]
-  | Just (evar1, mb_off1) <- asMbTopEVarOffset vars mb_e1
-  , Just (evar2, mb_off2) <- asMbTopEVarOffset vars mb_e2 =
-    do maybe_e1 <- psubstEVarsLiftM TpMux1 vars mb_e1
-       maybe_e2 <- psubstEVarsLiftM TpMux2 vars mb_e2
-       isset_evar1 <- inputEVarIsSetM TpMux1 evar1
-       isset_evar2 <- inputEVarIsSetM TpMux2 evar2
-       maybe_off1 <- psubstEVarsLiftM TpMux1 vars mb_off1
-       maybe_off2 <- psubstEVarsLiftM TpMux2 vars mb_off2
-
-       case (maybe_e1, maybe_e2) of
-         -- If we can substitute into both sides to get some e1==e2, return e1
-         (Just e1, Just e2)
-           | e1 == e2 -> return $ nuMulti vars $ const $ ValPerm_Eq e1
-
-         -- FIXME: if one side is a set evar and the other is an unset evar,
-         -- that means that the side whose evar is set has more equalities than
-         -- the other. This is equivalent to widening permissions of the form
-         -- x:p,y:eq(x) with x:p1,y:p2. There are multiple ways we could widen
-         -- this, by either splitting p into pieces that can be widened against
-         -- p1 and p2, or by returning something like x:p1', y:(eq(x) or p2').
-         -- Right now, we don't do either, and just give up...
-
-         -- If we can substitute into the LHS to get some e1 and the RHS is an
-         -- unset evar x2 with known offset off2, set x2=e1-off2 and return e1
-         {-
-         (Just e1, Nothing)
-           | not isset_evar2
-           , Just off2 <- maybe_off2 ->
-             ...
-
-         -- If we can substitute into the RHS to get some e2 and the LHS is an
-         -- unset evar x1 with known offset off1, set x1=e2-off1 and return e2
-         (Nothing, Just e1)
-           | not isset_evar1
-           , Just off1 <- maybe_off1 ->
-             ...
-         -}
-
-         -- If neither evar is set, make a fresh output evar, whose permissions
-         -- are given by widening those of the two input evars
-         (Nothing, Nothing)
-           | not isset_evar1
-           , not isset_evar2
-           , Just off1 <- maybe_off1
-           , Just off2 <- maybe_off2 ->
-             do p1 <- getEvarPermsM TpMux1 evar1
-                p2 <- getEvarPermsM TpMux2 evar2
-                n <- bindWideningVar tp $ fmap elimEmptyMb $
-                  widenPerm MNil tp
-                  (fmap (offsetPerm off1) p1) (fmap (offsetPerm off2) p2)
-                setEVarM TpMux1 evar1 (offsetExpr (negatePermOffset off1) $
-                                       PExpr_Var n)
-                setEVarM TpMux2 evar2 (offsetExpr (negatePermOffset off2) $
-                                       PExpr_Var n)
-                return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
-
-         -- In any other case, we don't know what to do, so just return true
-         _ -> return $ nuMulti vars $ const ValPerm_True
-
-
--- If the LHS is of the form eq(x1 &+ off1) for an evar x1...
-widenPerm vars tp [nuP| ValPerm_Eq mb_e1 |] mb_p2
-  | Just (evar1, mb_off1) <- asMbTopEVarOffset vars mb_e1 =
-    do isset_evar1 <- inputEVarIsSetM TpMux1 evar1
-       maybe_off1 <- psubstEVarsLiftM TpMux1 vars mb_off1
-       case isset_evar1 of
-
-         -- If x1 is not set, create a fresh output evar x for it, whose
-         -- permissions are given by widening those of x1 with p2, and return
-         -- eq(x) as the permissions for the current location
-         False
-           | Just off1 <- maybe_off1
-           , [nuP| Just p2 |] <- (fmap (partialSubst $ emptyPSubst $
-                                        knownCtxToCruCtx vars) $
-                                  mbSeparate vars mb_p2) ->
-             do p1 <- getEvarPermsM TpMux1 evar1
-                n <- bindWideningVar tp $ fmap elimEmptyMb $
-                  widenPerm MNil tp (fmap (offsetPerm off1) p1) p2
-                setEVarM TpMux1 evar1 (offsetExpr (negatePermOffset off1) $
-                                       PExpr_Var n)
-                return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
-
-         -- FIXME: if x1 is already set, then the LHS has more equalities than
-         -- the RHS, so we should think about splitting the permissions on x1,
-         -- as discussed above, but we are not for now
-
-         -- All other cases: just give up and return true
-         _ -> return $ nuMulti vars $ const ValPerm_True
-
-
--- If the RHS is of the form eq(x2 &+ off1) for an evar x2...
-widenPerm vars tp mb_p1 [nuP| ValPerm_Eq mb_e2 |]
-  | Just (evar2, mb_off2) <- asMbTopEVarOffset vars mb_e2 =
-    do isset_evar2 <- inputEVarIsSetM TpMux2 evar2
-       maybe_off2 <- psubstEVarsLiftM TpMux2 vars mb_off2
-       case isset_evar2 of
-
-         -- If x2 is not set, create a fresh output evar x for it, whose
-         -- permissions are given by widening those of x2 with p1, and return
-         -- eq(x) as the permissions for the current location
-         False
-           | Just off2 <- maybe_off2
-           , [nuP| Just p1 |] <- (fmap (partialSubst $ emptyPSubst $
-                                        knownCtxToCruCtx vars) $
-                                  mbSeparate vars mb_p1) ->
-             do p2 <- getEvarPermsM TpMux2 evar2
-                n <- bindWideningVar tp $ fmap elimEmptyMb $
-                  widenPerm MNil tp p1 (fmap (offsetPerm off2) p2)
-                setEVarM TpMux2 evar2 (offsetExpr (negatePermOffset off2) $
-                                       PExpr_Var n)
-                return $ nuMulti vars $ const $ ValPerm_Eq $ PExpr_Var n
-
-         -- FIXME: if x2 is already set, then the RHS has more equalities than
-         -- the RHS, so we should think about splitting the permissions on x2,
-         -- as discussed above, but we are not for now
-
-         -- All other cases: just give up and return true
-         _ -> return $ nuMulti vars $ const ValPerm_True
-
-
--- | Widen a sequence of permissions
-widenPerms :: KnownCruCtx vars -> CruCtx tps ->
-              Mb (vars1 :++: vars) (ValuePerms tps) ->
-              Mb (vars2 :++: vars) (ValuePerms tps) ->
-              WideningM args vars1 vars2 (Mb vars (ValuePerms tps))
-widenPerms vars tps mb_ps1 mb_ps2 =
-  widenPerms' vars tps (mbMatch mb_ps1) (mbMatch mb_ps2)
-
--- | The main worker for 'widenPerms'
---
--- FIXME HERE NOW: should we do permissions with determined vars first?
-widenPerms' :: KnownCruCtx vars -> CruCtx tps ->
-               MatchedMb (vars1 :++: vars) (ValuePerms tps) ->
-               MatchedMb (vars2 :++: vars) (ValuePerms tps) ->
-               WideningM args vars1 vars2 (Mb vars (ValuePerms tps))
-widenPerms' vars _ [nuMP| MNil |] _ = return $ nuMulti vars $ const MNil
-widenPerms' vars (CruCtxCons tps tp) [nuMP| ps1 :>: p1 |] [nuMP| ps2 :>: p2 |] =
-  mbMap2 (:>:) <$> widenPerms vars tps ps1 ps2 <*> widenPerm vars tp p1 p2
-
-
 ----------------------------------------------------------------------
 -- * Top-Level Entrypoints
 ----------------------------------------------------------------------
--}
 
 data Widening args vars =
   Widening { wideningVars :: CruCtx vars,
