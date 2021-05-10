@@ -38,6 +38,7 @@ import Control.Lens hiding ((:>), Index, Empty, ix, op)
 
 import Data.Parameterized.Some
 
+import Lang.Crucible.LLVM.MemModel
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
 
@@ -133,25 +134,25 @@ openMb ctx mb_a =
 bindFreshVar :: TypeRepr tp -> WideningM (ExprVar tp)
 bindFreshVar tp = snd <$> openMb (singletonCruCtx tp) (nu id)
 
-visitM :: Name a -> WideningM ()
+visitM :: ExprVar a -> WideningM ()
 visitM n =
   modify $ flip NameMap.alter n $ \case
   Just (Pair p _) -> Just (Pair p (Constant True))
-  Nothing -> Just (Pair ValPerm_True (Constant True)))
+  Nothing -> Just (Pair ValPerm_True (Constant True))
 
-isVisitedM :: Name a -> WideningM Bool
+isVisitedM :: ExprVar a -> WideningM Bool
 isVisitedM n =
   maybe False (\(Pair _ (Constant b)) -> b) <$> NameMap.lookup n <$> get
 
-getVarPermM :: Name a -> WideningM (ValuePerm a)
+getVarPermM :: ExprVar a -> WideningM (ValuePerm a)
 getVarPermM n = wnMapGetPerm n <$> get
 
-setVarPermM :: Name a -> ValuePerm a -> WideningM ()
+setVarPermM :: ExprVar a -> ValuePerm a -> WideningM ()
 setVarPermM = error "FIXME HERE NOW"
 
 -- | Set the permissions for @x &+ off@ to @p@, by setting the permissions for
 -- @x@ to @p - off@
-setOffVarPermM :: Name a -> PermOffset a -> ValuePerm a -> WideningM ()
+setOffVarPermM :: ExprVar a -> PermOffset a -> ValuePerm a -> WideningM ()
 setOffVarPermM x off p =
   setVarPermM x (offsetPerm (negatePermOffset off) p)
 
@@ -163,6 +164,7 @@ setVarPermsM = error "FIXME HERE NOW"
 -- * Widening Itself
 ----------------------------------------------------------------------
 
+{-
 -- | Test if an expression in a binding is a free variable plus offset
 mbAsOffsetVar :: KnownCruCtx vars -> Mb vars (PermExpr a) ->
                  Maybe (Name a, PermOffset a)
@@ -173,6 +175,7 @@ mbAsOffsetVar vars [nuP| PExpr_LLVMOffset mb_x mb_off |]
   , Just off <- partialSubst (emptyPSubst vars) mb_off
   = Just (n, LLVMPermOffset off)
 mbAsOffsetVar _ _ = Nothing
+-}
 
 -- | Take a permission @p1@ at some existing location and split it into some
 -- @p1'*p1''@ such that @p1'@ will remain at the existing location and @p1''@
@@ -181,7 +184,7 @@ mbAsOffsetVar _ _ = Nothing
 splitWidenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a ->
                   WideningM (ValuePerm a, ValuePerm a)
 splitWidenPerm tp p1 p2
-  | permIsCopyable p1 = (p1,) <$> widenPerm MNil tp p1 p2
+  | permIsCopyable p1 = (p1,) <$> widenPerm tp p1 p2
 splitWidenPerm _ p1 _ = return (p1, ValPerm_True)
 
 -- | Take permissions @p1@ and @p2@ that are both on existing locations and
@@ -193,22 +196,20 @@ doubleSplitWidenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a ->
                         WideningM ((ValuePerm a, ValuePerm a), ValuePerm a)
 doubleSplitWidenPerm tp p1 p2
   | permIsCopyable p1 && permIsCopyable p2
-  = ((p1,p2),) <$> widenPerm MNil tp p1 p2
+  = ((p1,p2),) <$> widenPerm tp p1 p2
 doubleSplitWidenPerm _ p1 p2 =
   return ((p1, p2), ValPerm_True)
 
 
-widenExpr :: KnownCruCtx vars -> TypeRepr a ->
-             Mb vars (PermExpr a) -> Mb vars (PermExpr a) ->
-             WideningM (Mb vars (PermExpr a))
+widenExpr :: TypeRepr a -> PermExpr a -> PermExpr a -> WideningM (PermExpr a)
 
 -- If both sides are equal, return one of the sides
-widenExpr vars tp mb_e1 mb_e2 | mb_e1 == mb_e2 = mb_e1
+widenExpr tp e1 e2 | e1 == e2 = return e1
 
--- If both sides are free variables, look up their permissions and whether they
--- have been visited and use that information to decide what to do
-widenExpr vars tp mb_e1@(mbAsOffsetVar -> (x1, off1)) mb_e2@(mbAsOffsetVar ->
-                                                             (x2, off2)) =
+-- If both sides are variables, look up their permissions and whether they have
+-- been visited and use that information to decide what to do
+widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2@(asVarOffset ->
+                                                     Just (x2, off2)) =
   do p1 <- getVarPermM x1
      p2 <- getVarPermM x2
      isv1 <- isVisitedM x1
@@ -216,10 +217,10 @@ widenExpr vars tp mb_e1@(mbAsOffsetVar -> (x1, off1)) mb_e2@(mbAsOffsetVar ->
      case (p1, p2, isv1, isv2) of
 
        -- If we have the same variable with the same offsets (it can avoid the
-       -- case above of mb_e1 == mb_e2 if the offsets are offsetsEq but not ==)
-       -- then we are done, though we do want to visit the variable
+       -- case above of e1 == e2 if the offsets are offsetsEq but not ==) then
+       -- we are done, though we do want to visit the variable
        _ | x1 == x2 && offsetsEq off1 off2 ->
-           visitM x1 >> return mb_e1
+           visitM x1 >> return e1
 
        -- If we have the same variable but different offsets, then the two sides
        -- cannot be equal, so we generalize with a new variable
@@ -231,29 +232,42 @@ widenExpr vars tp mb_e1@(mbAsOffsetVar -> (x1, off1)) mb_e2@(mbAsOffsetVar ->
               setOffVarPermM x1 off1 p1
               setOffVarPermM x2 off2 p2
               setVarPermM x p'
-              return $ mbPure vars $ PExpr_Var x
+              return $ PExpr_Var x
 
-       -- If one variable has an eq(e) permission, replace it with e and recurse
+       -- If a variable has an eq(e) permission, replace it with e and recurse
        (ValPerm_Eq e1', _, _, _) ->
-         visitM x1 >> widenExpr (mbPure vars $ offsetExpr off1 e1') mb_e2
-       (_, ValPerm_Eq e2', _, _, _) ->
-         visitM x2 >> widenExpr mb_e1 (mbPure vars $ offsetExpr off2 e2')
+         visitM x1 >> widenExpr tp (offsetExpr off1 e1') e2
+       (_, ValPerm_Eq e2', _, _) ->
+         visitM x2 >> widenExpr tp e1 (offsetExpr off2 e2')
 
-       -- If either side has been visited but didn't match the above case, then
-       -- it is equal to some other location, and its perms need to be split
-       -- between that other location and here
+       -- If both variables have been visited and are not equal and do not have
+       -- eq permissions, then they are equal to different locations elsewhere
+       -- in our widening, and so this location should not be equated to either
+       -- of them; thus we make a fresh variable
+       (p1, p2, True, True) ->
+         do x <- bindFreshVar tp
+            visitM x
+            ((p1,p2), p') <-
+              doubleSplitWidenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
+            setOffVarPermM x1 off1 p1
+            setOffVarPermM x2 off2 p2
+            setVarPermM x p'
+            return $ PExpr_Var x
+
+       -- If only one variable has been visited, its perms need to be split
+       -- between its other location(s) and here
        (p1, p2, True, _) ->
          do (p1', p2') <-
               splitWidenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
             setVarPermM x1 (offsetPerm (negatePermOffset off1) p1')
             setVarPermM x2 (offsetPerm (negatePermOffset off2) p2')
-            return mb_e2
+            return e2
        (p1, p2, _, True) ->
          do (p2', p1') <-
               splitWidenPerm tp (offsetPerm off2 p2) (offsetPerm off1 p2)
             setVarPermM x1 (offsetPerm (negatePermOffset off1) p1')
             setVarPermM x2 (offsetPerm (negatePermOffset off2) p2')
-            return mb_e1
+            return e1
 
        -- If we get here, then neither x1 nor x2 has been visited, so choose x1,
        -- set x2 equal to x1 &+ (off1 - off2), and set x1's permissions to be
@@ -263,43 +277,108 @@ widenExpr vars tp mb_e1@(mbAsOffsetVar -> (x1, off1)) mb_e2@(mbAsOffsetVar ->
             setVarPermM x2 (ValPerm_Eq $
                             offsetExpr (addPermOffsets off1 $
                                         negatePermOffset off2) $ PExpr_Var x1)
-            p' <- widenPerm MNil tp
-              (emptyMb $ offsetPerm off1 p1) (emptyMb $ offsetPerm off2 p2)
+            p' <- widenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
             setVarPermM x1 (offsetPerm (negatePermOffset off1) p')
-            return mb_e1
+            return e1
 
 
-widenExprs :: KnownCruCtx vars -> CruCtx tps ->
-              Mb vars (RAssign PermExpr tps) ->
-              Mb vars (RAssign PermExpr tps) ->
-              WideningM (Mb vars (RAssign PermExpr tps))
-widenExprs vars tps mb_es1 mb_es2 = case (mbMatch mb_es1, mbMatch mb_es2) of
-  [nuMP| MNil |] _ -> nuMulti vars (const MNil)
-  [nuMP| es1 :>: e1 |] [nuMP| es2 :>: e2 |] ->
-    mbMap2 (:>:) <$> widenExprs vars tps ps1 ps2 <*> widenExpr vars tp p1 p2
+-- If one side is a variable x and the other is not, then the non-variable side
+-- cannot have any permissions, and there are fewer cases than the above
+widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2 =
+  do p1 <- getVarPermM x1
+     case p1 of
 
-widenPerm :: KnownCruCtx vars -> TypeRepr a ->
-             Mb vars (ValuePerm a) -> Mb vars (ValuePerm a) ->
-             WideningM (Mb vars (ValuePerm a))
-widenPerm = error "FIXME HERE NOW"
+       -- If x1 has an eq(e) permission, replace it with e and recurse
+       ValPerm_Eq e1' ->
+         visitM x1 >> widenExpr tp (offsetExpr off1 e1') e2
+
+       -- Otherwise bind a fresh variable, because even if x1 has not been
+       -- visited before, it could still occur somewhere we haven't visited yet
+       _ ->
+         do x <- bindFreshVar tp
+            visitM x
+            return $ PExpr_Var x
+
+-- Similar to the previous case, but with the variable on the right
+widenExpr tp e1 e2@(asVarOffset -> Just (x2, off2)) =
+  do p2 <- getVarPermM x2
+     case p2 of
+
+       -- If x2 has an eq(e) permission, replace it with e and recurse
+       ValPerm_Eq e2' ->
+         visitM x2 >> widenExpr tp e1 (offsetExpr off2 e2')
+
+       -- Otherwise bind a fresh variable, because even if x1 has not been
+       -- visited before, it could still occur somewhere we haven't visited yet
+       _ ->
+         do x <- bindFreshVar tp
+            visitM x
+            return $ PExpr_Var x
+
+-- Widen two structs by widening their contents
+widenExpr (StructRepr tps) (PExpr_Struct es1) (PExpr_Struct es2) =
+  PExpr_Struct <$> widenExprs (mkCruCtx tps) es1 es2
+
+-- Widen llvmwords by widening the words
+widenExpr (LLVMPointerRepr w) (PExpr_LLVMWord e1) (PExpr_LLVMWord e2) =
+  PExpr_LLVMWord <$> widenExpr (BVRepr w) e1 e2
+
+-- Default case: widen two unequal expressions by making a fresh output
+-- existential variable, which could be equal to either
+widenExpr tp _ _ =
+  do x <- bindFreshVar tp
+     visitM x
+     return $ PExpr_Var x
+
+
+-- | Widen a sequence of expressions
+widenExprs :: CruCtx tps -> PermExprs tps -> PermExprs tps ->
+              WideningM (PermExprs tps)
+widenExprs _ MNil MNil = return MNil
+widenExprs (CruCtxCons tps tp) (es1 :>: e1) (es2 :>: e2) =
+  (:>:) <$> widenExprs tps es1 es2 <*> widenExpr tp e1 e2
+
+
+-- | Widen a sequence of atomic permissions against each other
+widenAtomicPerms :: TypeRepr tp -> [AtomicPerm a] -> [AtomicPerm a] ->
+                    WideningM [AtomicPerm a]
+widenAtomicPerms = error "FIXME HERE NOW"
+
+-- | Widen permissions against each other
+widenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a -> WideningM (ValuePerm a)
+widenPerm tp (ValPerm_Eq e1) (ValPerm_Eq e2) =
+  ValPerm_Eq <$> widenExpr tp e1 e2
+widenPerm tp (ValPerm_Eq (asVarOffset -> Just (x1, off1))) p2 =
+  error "FIXME HERE NOW"
+widenPerm tp p1 (ValPerm_Eq (asVarOffset -> Just (x2, off2))) =
+  error "FIXME HERE NOW"
+
+widenPerm tp (ValPerm_Or p1 p1') (ValPerm_Or p2 p2') =
+  ValPerm_Or <$> widenPerm tp p1 p2 <*> widenPerm tp p1' p2'
+widenPerm tp (ValPerm_Exists mb_p1) p2 =
+  do x <- bindFreshVar knownRepr
+     widenPerm tp (varSubst (singletonVarSubst x) mb_p1) p2
+widenPerm tp p1 (ValPerm_Exists mb_p2) =
+  do x <- bindFreshVar knownRepr
+     widenPerm tp p1 (varSubst (singletonVarSubst x) mb_p2)
+widenPerm tp (ValPerm_Named npn1 args1 off1) (ValPerm_Named npn2 args2 off2)
+  | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn1 npn2
+  , offsetsEq off1 off2 =
+    (\args -> ValPerm_Named npn1 args off1) <$>
+    widenExprs (namedPermNameArgs npn1) args1 args2
+widenPerm tp (ValPerm_Var x1 off1) (ValPerm_Var x2 off2)
+  | x1 == x2 && offsetsEq off1 off2 = return $ ValPerm_Var x1 off1
+widenPerm tp (ValPerm_Conj ps1) (ValPerm_Conj ps2) =
+  ValPerm_Conj <$> widenAtomicPerms tp ps1 ps2
+widenPerm _ _ _ = return ValPerm_True
+
 
 -- | Widen a sequence of permissions
-widenPerms :: KnownCruCtx vars -> CruCtx tps ->
-              Mb vars (ValuePerms tps) -> Mb vars (ValuePerms tps) ->
-              WideningM (Mb vars (ValuePerms tps))
-widenPerms vars tps mb_ps1 mb_ps2 =
-  widenPerms' vars tps (mbMatch mb_ps1) (mbMatch mb_ps2)
-
--- | The main worker for 'widenPerms'
---
--- FIXME HERE NOW: should we do permissions with determined vars first?
-widenPerms' :: KnownCruCtx vars -> CruCtx tps ->
-               MatchedMb vars (ValuePerms tps) ->
-               MatchedMb vars (ValuePerms tps) ->
-               WideningM (Mb vars (ValuePerms tps))
-widenPerms' vars _ [nuMP| MNil |] _ = return $ nuMulti vars $ const MNil
-widenPerms' vars (CruCtxCons tps tp) [nuMP| ps1 :>: p1 |] [nuMP| ps2 :>: p2 |] =
-  mbMap2 (:>:) <$> widenPerms vars tps ps1 ps2 <*> widenPerm vars tp p1 p2
+widenPerms :: CruCtx tps -> ValuePerms tps -> ValuePerms tps ->
+              WideningM (ValuePerms tps)
+widenPerms _ MNil MNil = return MNil
+widenPerms (CruCtxCons tps tp) (ps1 :>: p1) (ps2 :>: p2) =
+  (:>:) <$> widenPerms tps ps1 ps2 <*> widenPerm tp p1 p2
 
 
 {-
@@ -576,6 +655,5 @@ widen args vars1 vars2 mb_perms1 mb_perms2 =
      (ns2, ps2) <- openMb (appendCruCtx args vars2) mb_perms2
      let (args_ns2, _) = RL.split args prxs2 ns2
      setVarPermsM (RL.append args_ns1 vars1_ns) ps1
-     widenExprs MNil args (emptyMb $ RL.map PExpr_Var args_ns1)
-       (emptyMb $ RL.map PExpr_Var args_ns2)
+     widenExprs args (RL.map PExpr_Var args_ns1) (RL.map PExpr_Var args_ns2)
      return ()
