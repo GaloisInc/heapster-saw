@@ -5901,7 +5901,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
       implSplitSwapConjsM x ps' 1 >>>
   
       -- Prove an existential around the memblock permission we proved
-       partialSubstForceM (mbMap2 (,)
+      partialSubstForceM (mbMap2 (,)
                           mb_bp mb_mb_sh) "proveVarLLVMBlock" >>>= \(bp,mb_sh) ->
       introExistsM x e (fmap (\sh -> ValPerm_LLVMBlock $
                                      bp { llvmBlockShape = sh }) mb_sh) >>>

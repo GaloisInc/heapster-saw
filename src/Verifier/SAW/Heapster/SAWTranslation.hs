@@ -2991,8 +2991,8 @@ translatePermImplUnary ::
   Mb ctx (MbPermImpls r (RNil :> '(bs,ps_out))) ->
   (ImpTransM ext blocks tops ret ps_out (ctx :++: bs) OpenTerm ->
    ImpTransM ext blocks tops ret ps ctx OpenTerm) ->
-  PermImplTransM (ImplFailCont ->
-  ImpTransM ext blocks tops ret ps ctx OpenTerm)
+  PermImplTransM
+    (ImplFailCont -> ImpTransM ext blocks tops ret ps ctx OpenTerm)
 translatePermImplUnary (mbMatch -> [nuMP| MbPermImpls_Cons _ _ mb_impl |]) f =
   translatePermImpl Proxy (mbCombine RL.typeCtxProxies mb_impl) >>= \trans ->
   return $ \k -> f $ trans k
