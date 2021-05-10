@@ -137,7 +137,7 @@ rustCtxOfNames tp =
 inRustCtx :: NuMatching a => RustCtx ctx -> RustConvM a ->
              RustConvM (Mb ctx a)
 inRustCtx ctx m =
-  mbM $ nuMulti ctx $ \ns ->
+  mbM $ nuMulti (RL.map (\_-> Proxy) ctx) $ \ns ->
   let ns_ctx =
         RL.toList $ RL.map2 (\n (Pair (Constant str) tp) ->
                               Constant (str, Some (Typed tp n))) ns ctx in
@@ -436,7 +436,8 @@ data ArgLayout where
 instance Semigroup ArgLayout where
   ArgLayout ghosts1 args1 mb_ps1 <> ArgLayout ghosts2 args2 mb_ps2 =
     ArgLayout (RL.append ghosts1 ghosts2) (RL.append args1 args2) $
-    mbCombine $ fmap (\ps1 -> fmap (\ps2 -> RL.append ps1 ps2) mb_ps2) mb_ps1
+    mbCombine (RL.mapRAssign (const Proxy) ghosts2) $
+    fmap (\ps1 -> fmap (\ps2 -> RL.append ps1 ps2) mb_ps2) mb_ps1
 
 instance Monoid ArgLayout where
   mempty = ArgLayout MNil MNil (emptyMb $ MNil)
@@ -450,8 +451,8 @@ argLayout1 p =
 -- additional ghost argument for the bound name
 mbArgLayout :: KnownRepr TypeRepr a => Binding a ArgLayout -> ArgLayout
 mbArgLayout (mbMatch -> [nuMP| ArgLayout ghosts args mb_ps |]) =
-  ArgLayout (mbLift ghosts :>: KnownReprObj) (mbLift args) (mbCombine $
-                                                            mbSwap mb_ps)
+  ArgLayout (mbLift ghosts :>: KnownReprObj) (mbLift args)
+            (mbCombine RL.typeCtxProxies (mbSwap (RL.mapRAssign (const Proxy) (mbLift ghosts)) mb_ps))
 
 -- | Convert an 'ArgLayout' to a permission on a @struct@ of its arguments
 argLayoutStructPerm :: ArgLayout -> Some (Typed ValuePerm)
@@ -518,18 +519,23 @@ funPerm3FromArgLayout (ArgLayout ghosts args mb_arg_perms) ret_tp ret_perm =
   let gs_args_prxs = RL.map (const Proxy) (RL.append ghosts args) in
   Some3FunPerm $ FunPerm (knownCtxToCruCtx ghosts) (knownCtxToCruCtx args)
   ret_tp
-  (extMbMulti args $
+  (extMbMulti (RL.map (\_ -> Proxy) args) $
    fmap (RL.append $ RL.map (const ValPerm_True) ghosts) mb_arg_perms)
   (nuMulti (gs_args_prxs :>: Proxy) $ const
    (RL.map (const ValPerm_True) gs_args_prxs :>: ret_perm))
 
 -- | Extend a name binding by adding a name in the middle
-extMbMiddle :: prx1 ctx1 -> RAssign prx2 ctx2 -> prxb b ->
-               Mb (ctx1 :++: ctx2) a ->
-               Mb (ctx1 :++: ((RNil :> b) :++: ctx2)) a
+extMbMiddle ::
+  forall prx1 ctx1 prx2 ctx2 prxb a b.
+  prx1 ctx1 -> RAssign prx2 ctx2 -> prxb b ->
+  Mb (ctx1 :++: ctx2) a ->
+  Mb (ctx1 :++: ((RNil :> b) :++: ctx2)) a
 extMbMiddle (_ :: prx1 ctx1) ctx2 (_ :: prxb b) mb_a =
-  mbCombine $ fmap (mbCombine . nu @_ @b . const) $
+  mbCombine (RL.append (MNil :>: (Proxy :: Proxy b)) pxys) $
+  fmap (mbCombine pxys . nu @_ @b . const) $
   mbSeparate @_ @ctx1 ctx2 mb_a
+  where
+    pxys = RL.mapRAssign (const Proxy) ctx2
 
 -- | Insert an object into the middle of an 'RAssign'
 rassignInsertMiddle :: prx1 ctx1 -> RAssign prx2 ctx2 -> f b ->
@@ -560,15 +566,22 @@ mbAssoc :: prx1 ctx1 -> RAssign prx2 ctx2 -> RAssign prx3 ctx3 ->
            Mb (ctx1 :++: (ctx2 :++: ctx3)) a ->
            Mb ((ctx1 :++: ctx2) :++: ctx3) a
 mbAssoc ctx1 ctx2 ctx3 mb_a =
-  mbCombine $ mbCombine $ fmap (mbSeparatePrx ctx2 ctx3) $
+  mbCombine (RL.mapRAssign (const Proxy) ctx3) $
+  mbCombine (RL.mapRAssign (const Proxy) ctx2) $
+  fmap (mbSeparatePrx ctx2 ctx3) $
   mbSeparatePrx ctx1 (RL.append (RL.map (const Proxy) ctx2)
                       (RL.map (const Proxy) ctx3)) mb_a
 
-mbCombineAssoc :: prx1 ctx1 -> prx2 ctx2 -> RAssign prx3 ctx3 ->
-                  Mb ctx1 (Mb (ctx2 :++: ctx3) a) ->
-                  Mb ((ctx1 :++: ctx2) :++: ctx3) a
-mbCombineAssoc _ ctx2 ctx3 =
-  mbCombine . mbCombine . fmap (mbSeparatePrx ctx2 ctx3)
+mbCombineAssoc ::
+  prx1 ctx1 ->
+  RAssign prx2 ctx2 ->
+  RAssign prx3 ctx3 ->
+  Mb ctx1 (Mb (ctx2 :++: ctx3) a) ->
+  Mb ((ctx1 :++: ctx2) :++: ctx3) a
+mbCombineAssoc _ ctx2 ctx3
+  = mbCombine (RL.mapRAssign (const Proxy) ctx3)
+  . mbCombine (RL.mapRAssign (const Proxy) ctx2)
+  . fmap (mbSeparatePrx ctx2 ctx3)
 
 assocAppend :: RAssign f ctx1 -> prx2 ctx2 -> RAssign prx3 ctx3 ->
                RAssign f (ctx2 :++: ctx3) ->
@@ -590,10 +603,12 @@ mbGhostsFunPerm3 new_ghosts (mbMatch -> [nuMP| Some3FunPerm
                           mbLift ghosts) (mbLift args) (mbLift ret)
   (mbAssoc new_prxs ghosts_prxs args_prxs $
    fmap (assocAppend (RL.map (const ValPerm_True) new_prxs)
-         ghosts_prxs args_prxs) $ mbCombine ps_in)
+         ghosts_prxs args_prxs) $
+         mbCombine (RL.append ghosts_prxs args_prxs) ps_in)
   (mbAssoc new_prxs ghosts_prxs (args_prxs :>: Proxy) $
    fmap (assocAppend (RL.map (const ValPerm_True) new_prxs)
-         ghosts_prxs (args_prxs :>: Proxy)) $ mbCombine ps_out)
+         ghosts_prxs (args_prxs :>: Proxy)) $
+         mbCombine (RL.append ghosts_prxs args_prxs :>: Proxy) ps_out)
 
 -- | Try to compute the layout of a structure of the given shape as a value,
 -- over 1 or more registers, if this is possible
@@ -741,7 +756,8 @@ instance Functor SomeTypedMb where
 instance Applicative SomeTypedMb where
   pure a = SomeTypedMb CruCtxNil $ emptyMb a
   liftA2 f (SomeTypedMb ctx1 mb_a1) (SomeTypedMb ctx2 mb_a2) =
-    SomeTypedMb (appendCruCtx ctx1 ctx2) $ mbCombine $
+    SomeTypedMb (appendCruCtx ctx1 ctx2) $
+    mbCombine (cruCtxProxies ctx2) $
     flip fmap mb_a1 $ \a1 -> flip fmap mb_a2 $ \a2 -> f a1 a2
 
 -- | Abstract over all the read/write and lifetime modalities in an
@@ -803,8 +819,9 @@ lifetimeDefName (LifetimeDef _ (Lifetime name _) _ _) = name
 tyParamName :: TyParam a -> String
 tyParamName (TyParam _ ident _ _ _) = name ident
 
-extMbOuter :: RAssign prx ctx1 -> Mb ctx2 a -> Mb (ctx1 :++: ctx2) a
-extMbOuter prxs mb_a = mbCombine $ nuMulti prxs $ const mb_a
+extMbOuter :: RAssign Proxy ctx1 -> Mb ctx2 a -> Mb (ctx1 :++: ctx2) a
+extMbOuter prxs mb_a = mbCombine (mbToProxy mb_a) $ nuMulti prxs $ const mb_a
+
 
 -- | Add a lifetime described by a 'LifetimeDef' to a 'Some3FunPerm'
 mbLifetimeFunPerm :: LifetimeDef Span -> Binding LifetimeType Some3FunPerm ->
@@ -816,10 +833,10 @@ mbLifetimeFunPerm (LifetimeDef _ _ [] _)
      let args_prxs = cruCtxProxies args
      let ret = mbLift $ fmap funPermRet fun_perm
      let mb_ps_in =
-           mbCombineAssoc (MNil :>: Proxy) ghosts args_prxs $
+           mbCombineAssoc (MNil :>: Proxy) (cruCtxProxies ghosts) args_prxs $
            fmap (mbValuePermsToDistPerms . funPermIns) fun_perm
      let mb_ps_out =
-           mbCombineAssoc (MNil :>: Proxy) ghosts (args_prxs :>: Proxy) $
+           mbCombineAssoc (MNil :>: Proxy) (cruCtxProxies ghosts) (args_prxs :>: Proxy) $
            fmap (mbValuePermsToDistPerms . funPermOuts) fun_perm
      let mb_l =
            extMbMulti (cruCtxProxies args) $
