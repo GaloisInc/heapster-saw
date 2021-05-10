@@ -31,6 +31,7 @@ module Verifier.SAW.Heapster.IRTTranslation (
 import Numeric.Natural
 import Data.Foldable
 import Data.Functor.Const
+import Data.Reflection
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Except
@@ -106,12 +107,16 @@ inExtIRTTyVarsTransM = withReaderT $
 
 -- | Combine a binding inside an @args :++: ext@ binding into a single
 -- @args :++: ext'@ binding
-irtTMbCombine :: forall args ext ctx a.
-                 Mb (args :++: ext) (Mb ctx a) ->
-                 IRTTyVarsTransM args ext (Mb (args :++: (ext :++: ctx)) a)
+irtTMbCombine ::
+  forall args ext c a.
+  Mb (args :++: ext) (Binding c a) ->
+  IRTTyVarsTransM args ext (Mb (args :++: (ext :> c)) a)
 irtTMbCombine x =
   do ext <- irtTExtCtx <$> ask
-     return $ mbCombine (fmap mbCombine (mbSeparate @_ @args ext x))
+     return $
+       mbCombine (ext :>: Proxy) $
+       fmap (mbCombine RL.typeCtxProxies ) $
+       mbSeparate @_ @args ext x
 
 -- | Create an @args :++: ext@ binding
 irtNus :: (RAssign Name args -> RAssign Name ext -> b) ->
@@ -119,7 +124,7 @@ irtNus :: (RAssign Name args -> RAssign Name ext -> b) ->
 irtNus f = 
   do args <- irtTArgsCtx <$> ask
      ext  <- irtTExtCtx  <$> ask
-     return $ mbCombine (nus args (nus ext . f))
+     return $ mbCombine ext (nus (RL.map (\_->Proxy) args) (nus ext . f))
 
 -- | Turn an @args :++: ext@ binding into just an @args@ binding using
 -- 'partialSubst'
@@ -128,9 +133,10 @@ irtTSubstExt :: (Substable PartialSubst a Maybe, NuMatching a) =>
                 IRTTyVarsTransM args ext (Mb args a)
 irtTSubstExt x =
   do ext <- irtTExtCtx <$> ask
-     let x' = mbSwap (mbSeparate ext x)
+     let x' = mbSwap ext (mbSeparate ext x)
          emptyPS = PartialSubst $ RL.map (\_ -> PSubstElem Nothing) ext
-     case partialSubst emptyPS x' of
+     args <- RL.map (const Proxy) . irtTArgsCtx <$> ask
+     case give args (partialSubst emptyPS x') of
        Just x'' -> return x''
        Nothing -> throwError $ "non-array permission in a recursive perm body"
                                ++ " depends on an existential variable!"
@@ -253,7 +259,7 @@ irtTTranslateVar p x =
      extCtx  <- irtTExtCtx  <$> ask
      let err _ = error "arguments to irtTTranslateVar do not match"
          memb = mbLift $ fmap (either id err . mbNameBoundP)
-                              (mbSwap (mbSeparate extCtx x))
+                              (mbSwap extCtx (mbSeparate extCtx x))
          tp_trans = getConst $ RL.get memb argsCtx
      -- if x (and thus also p) has no translation, return an empty list
      case tp_trans of
@@ -450,7 +456,7 @@ valuePermIRTDesc mb_p ixs = case (mbMatch mb_p, ixs) of
     do let tp = mbBindingType p
        tp_trans <- tupleTypeTrans <$> translateClosed tp
        xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
-               valuePermIRTDesc (mbCombine p) ixs' >>= irtProd)
+               valuePermIRTDesc (mbCombine RL.typeCtxProxies p) ixs' >>= irtProd)
        irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
   ([nuMP| ValPerm_Named npn args off |], _) ->
     namedPermIRTDesc npn args off ixs
@@ -551,7 +557,7 @@ shapeExprIRTDesc mb_expr ixs = case (mbMatch mb_expr, ixs) of
     do let tp = mbBindingType mb_sh
        tp_trans <- tupleTypeTrans <$> translateClosed tp
        xf <- lambdaTransM "x_irt" tp_trans (\x -> inExtTransM x $
-               shapeExprIRTDesc (mbCombine mb_sh) ixs' >>= irtProd)
+               shapeExprIRTDesc (mbCombine RL.typeCtxProxies mb_sh) ixs' >>= irtProd)
        irtCtor "Prelude.IRT_sigT" [natOpenTerm ix, xf]
   _ -> error $ "malformed IRTVarIdxs: " ++ show ixs
 

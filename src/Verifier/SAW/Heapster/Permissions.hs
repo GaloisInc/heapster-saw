@@ -34,6 +34,7 @@ import Data.List hiding (sort)
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.String
 import Data.Proxy
+import Data.Reflection
 import Data.Functor.Constant
 import qualified Data.BitVector.Sized as BV
 import Data.BitVector.Sized (BV)
@@ -4318,13 +4319,17 @@ mbFunPerm :: CruCtx ctx -> Mb ctx (ValuePerms ctx) ->
 mbFunPerm ctx mb_ps (mbMatch -> [nuMP| FunPerm mb_ghosts mb_args mb_ret ps_in ps_out |]) =
   let ghosts = mbLift mb_ghosts
       args = mbLift mb_args
-      ctx_perms = trueValuePerms $ cruCtxToTypes ctx in
-  case RL.appendAssoc ctx ghosts (cruCtxToTypes args) of
+      ctx_perms = trueValuePerms $ cruCtxToTypes ctx
+      arg_types = cruCtxToTypes args
+      ghost_types = cruCtxToTypes ghosts
+      prxys = mapRAssign (const Proxy) (RL.append ghost_types arg_types) in
+  case RL.appendAssoc ctx ghosts arg_types of
     Refl ->
       FunPerm (appendCruCtx ctx ghosts) args (mbLift mb_ret)
-      (mbCombine $
+      (mbCombine prxys $
        mbMap2 (\ps mb_ps_in -> fmap (RL.append ps) mb_ps_in) mb_ps ps_in)
-      (fmap (RL.append ctx_perms) $ mbCombine ps_out)
+      (fmap (RL.append ctx_perms) $
+       mbCombine (prxys :>: Proxy) ps_out)
 
 -- | Substitute ghost and regular arguments into a function permission to get
 -- its input permissions for those arguments, where ghost arguments are given
@@ -4909,17 +4914,30 @@ instance (Substable s a m, Substable s b m,
           Substable s c m, Substable s d m) => Substable s (a,b,c,d) m where
   genSubst s abcd =
     (,,,) <$> genSubst s (fmap (\(a,_,_,_) -> a) abcd)
-    <*> genSubst s (fmap (\(_,b,_,_) -> b) abcd)
-    <*> genSubst s (fmap (\(_,_,c,_) -> c) abcd)
-    <*> genSubst s (fmap (\(_,_,_,d) -> d) abcd)
+          <*> genSubst s (fmap (\(_,b,_,_) -> b) abcd)
+          <*> genSubst s (fmap (\(_,_,c,_) -> c) abcd)
+          <*> genSubst s (fmap (\(_,_,_,d) -> d) abcd)
 
 instance (NuMatching a, Substable s a m) => Substable s (Maybe a) m where
   genSubst s mb_x = case mbMatch mb_x of
     [nuMP| Just a |] -> Just <$> genSubst s a
     [nuMP| Nothing |] -> return Nothing
 
-instance (Substable s a m, NuMatching a) => Substable s (Mb ctx a) m where
-  genSubst s mbmb = mbM $ fmap (genSubst s) (mbSwap mbmb)
+instance {-# INCOHERENT #-} (Given (RAssign Proxy ctx), Substable s a m, NuMatching a) => Substable s (Mb ctx a) m where
+   genSubst = genSubstMb given
+
+instance {-# INCOHERENT #-} (Substable s a m, NuMatching a) => Substable s (Mb RNil a) m where
+   genSubst = genSubstMb RL.typeCtxProxies
+
+instance {-# INCOHERENT #-} (Substable s a m, NuMatching a) => Substable s (Binding c a) m where
+   genSubst = genSubstMb RL.typeCtxProxies
+
+genSubstMb ::
+  Substable s a m =>
+  NuMatching a =>
+  RAssign Proxy ctx ->
+  s ctx' -> Mb ctx' (Mb ctx a) -> m (Mb ctx a)
+genSubstMb p s mbmb = mbM (fmap (genSubst s) (mbSwap p mbmb))
 
 instance SubstVar s m => Substable s (Member ctx a) m where
   genSubst _ mb_memb = return $ mbLift mb_memb
@@ -5003,7 +5021,7 @@ instance SubstVar s m => Substable s (PermExpr a) m where
     [nuMP| PExpr_OrShape sh1 sh2 |] ->
       PExpr_OrShape <$> genSubst s sh1 <*> genSubst s sh2
     [nuMP| PExpr_ExShape mb_sh |] ->
-      PExpr_ExShape <$> genSubst s mb_sh
+      PExpr_ExShape <$> genSubstMb RL.typeCtxProxies s mb_sh
     [nuMP| PExpr_ValPerm p |] ->
       PExpr_ValPerm <$> genSubst s p
 
@@ -5050,17 +5068,22 @@ instance SubstVar s m => Substable s (AtomicPerm a) m where
 
 instance SubstVar s m => Substable s (NamedShape b args w) m where
   genSubst s (mbMatch -> [nuMP| NamedShape str args body |]) =
-    NamedShape (mbLift str) (mbLift args) <$> genSubst s body
+    NamedShape (mbLift str) (mbLift args) <$> genSubstNSB (cruCtxProxies (mbLift args)) s body
 
-instance SubstVar s m => Substable s (NamedShapeBody b args w) m where
-  genSubst s mb_body = case mbMatch mb_body of
+genSubstNSB ::
+  SubstVar s m =>
+  RAssign Proxy args ->
+  s ctx -> Mb ctx (NamedShapeBody b args w) -> m (NamedShapeBody b args w)
+genSubstNSB px s mb_body = case mbMatch mb_body of
     [nuMP| DefinedShapeBody mb_sh |] ->
-      DefinedShapeBody <$> genSubst s mb_sh
+      DefinedShapeBody <$> genSubstMb px s mb_sh
     [nuMP| OpaqueShapeBody mb_len trans_id |] ->
-      OpaqueShapeBody <$> genSubst s mb_len <*> return (mbLift trans_id)
+      OpaqueShapeBody <$> genSubstMb px s mb_len <*> return (mbLift trans_id)
     [nuMP| RecShapeBody mb_sh trans_id fold_id unfold_id |] ->
-      RecShapeBody <$> genSubst s mb_sh <*> return (mbLift trans_id)
-                   <*> return (mbLift fold_id) <*> return (mbLift unfold_id)
+      RecShapeBody <$> genSubstMb (px :>: Proxy) s mb_sh
+                   <*> return (mbLift trans_id)
+                   <*> return (mbLift fold_id)
+                   <*> return (mbLift unfold_id)
 
 instance SubstVar s m => Substable s (NamedPermName ns args a) m where
   genSubst _ mb_rpn = return $ mbLift mb_rpn
@@ -5072,8 +5095,8 @@ instance SubstVar s m => Substable s (PermOffset a) m where
 
 instance SubstVar s m => Substable s (NamedPerm ns args a) m where
   genSubst s mb_np = case mbMatch mb_np of
-    [nuMP| NamedPerm_Opaque p |] -> NamedPerm_Opaque <$> genSubst s p
-    [nuMP| NamedPerm_Rec p |] -> NamedPerm_Rec <$> genSubst s p
+    [nuMP| NamedPerm_Opaque  p |] -> NamedPerm_Opaque  <$> genSubst s p
+    [nuMP| NamedPerm_Rec     p |] -> NamedPerm_Rec     <$> genSubst s p
     [nuMP| NamedPerm_Defined p |] -> NamedPerm_Defined <$> genSubst s p
 
 instance SubstVar s m => Substable s (OpaquePerm ns args a) m where
@@ -5083,11 +5106,11 @@ instance SubstVar s m => Substable s (OpaquePerm ns args a) m where
 instance SubstVar s m => Substable s (RecPerm ns reach args a) m where
   genSubst s (mbMatch -> [nuMP| RecPerm rpn dt_i f_i u_i reachMeths cases |]) =
     RecPerm (mbLift rpn) (mbLift dt_i) (mbLift f_i) (mbLift u_i)
-            (mbLift reachMeths) <$> mapM (genSubst s) (mbList cases)
+            (mbLift reachMeths) <$> mapM (genSubstMb (cruCtxProxies (mbLift (fmap namedPermNameArgs rpn))) s) (mbList cases)
 
 instance SubstVar s m => Substable s (DefinedPerm ns args a) m where
   genSubst s (mbMatch -> [nuMP| DefinedPerm n p |]) =
-    DefinedPerm (mbLift n) <$> genSubst s p
+    DefinedPerm (mbLift n) <$> genSubstMb (cruCtxProxies (mbLift (fmap namedPermNameArgs n))) s p
 
 instance SubstVar s m => Substable s (ValuePerm a) m where
   genSubst s mb_p = case mbMatch mb_p of
@@ -5097,7 +5120,7 @@ instance SubstVar s m => Substable s (ValuePerm a) m where
     [nuMP| ValPerm_Exists p |] ->
       -- FIXME: maybe we don't need extSubst at all, but can just use the
       -- Substable instance for Mb ctx a from above
-      ValPerm_Exists <$> genSubst s p
+      ValPerm_Exists <$> genSubstMb RL.typeCtxProxies s p
       -- nuM (\x -> genSubst (extSubst s x) $ mbCombine p)
     [nuMP| ValPerm_Named n args off |] ->
       ValPerm_Named (mbLift n) <$> genSubst s args <*> genSubst s off
@@ -5170,8 +5193,13 @@ instance SubstVar s m => Substable1 s LOwnedPerm m where
 
 instance SubstVar s m => Substable s (FunPerm ghosts args ret) m where
   genSubst s (mbMatch -> [nuMP| FunPerm ghosts args ret perms_in perms_out |]) =
-    FunPerm (mbLift ghosts) (mbLift args) (mbLift ret)
-    <$> genSubst s perms_in <*> genSubst s perms_out
+    let gpx = mbLift ghosts
+        apx = mbLift args
+        rpx = mbLift ret
+        gapx = RL.append (cruCtxProxies gpx) (cruCtxProxies apx) in
+    FunPerm gpx apx rpx
+    <$> genSubstMb gapx s perms_in
+    <*> genSubstMb (gapx :>: Proxy) s perms_out
 
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (LifetimeCurrentPerms ps) m where
@@ -5387,7 +5415,7 @@ emptyPSubst = PartialSubst . helper where
 -- substitution inside a binding for all of its variables
 psubstMbDom :: PartialSubst ctx -> Mb ctx (NameSet CrucibleType)
 psubstMbDom (PartialSubst elems) =
-  nuMulti elems $ \ns ->
+  nuMulti (RL.map (\_-> Proxy) elems) $ \ns ->
   NameSet.fromList $ catMaybes $ RL.toList $
   RL.map2 (\n (PSubstElem maybe_e) ->
             if isJust maybe_e
@@ -5398,7 +5426,7 @@ psubstMbDom (PartialSubst elems) =
 -- substitution inside a binding for all of its variables
 psubstMbUnsetVars :: PartialSubst ctx -> Mb ctx (NameSet CrucibleType)
 psubstMbUnsetVars (PartialSubst elems) =
-  nuMulti elems $ \ns ->
+  nuMulti (RL.map (\_ -> Proxy) elems) $ \ns ->
   NameSet.fromList $ catMaybes $ RL.toList $
   RL.map2 (\n (PSubstElem maybe_e) ->
             if maybe_e == Nothing
@@ -5456,7 +5484,7 @@ instance SubstVar PartialSubst Maybe where
 -- | Wrapper function to apply a partial substitution to an expression type
 partialSubst :: Substable PartialSubst a Maybe => PartialSubst ctx ->
                 Mb ctx a -> Maybe a
-partialSubst s mb = genSubst s mb
+partialSubst = genSubst
 
 -- | Apply a partial substitution, raising an error (with the given string) if
 -- this fails
@@ -5627,7 +5655,8 @@ instance AbstractVars a => AbstractVars (Mb (ctx :: RList Type) a) where
     mbLift $
     nuMultiWithElim1
     (\ns a ->
-      clApply ( $(mkClosed [| \prxs -> fmap mbSwap . mbSeparate prxs |])
+      clApply ( $(mkClosed [| \prxs2 prxs -> fmap (mbSwap prxs2) . mbSeparate prxs |])
+                `clApply` closedProxies ns2
                 `clApply` closedProxies ns) <$>
       abstractPEVars (append ns1 ns) ns2 a)
     mb

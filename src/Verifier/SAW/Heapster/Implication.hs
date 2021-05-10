@@ -33,6 +33,7 @@ import Data.Maybe
 import Data.List
 import Data.Kind as Kind
 import Data.Functor.Compose
+import Data.Reflection
 import qualified Data.BitVector.Sized as BV
 import GHC.TypeLits
 import Control.Lens hiding ((:>), ix)
@@ -1245,7 +1246,9 @@ data PermImpl r ps where
 -- contexts of bound variables for that implication tree.
 data MbPermImpls r bs_pss where
   MbPermImpls_Nil :: MbPermImpls r RNil
-  MbPermImpls_Cons :: !(MbPermImpls r bs_pss) -> !(Mb bs (PermImpl r ps)) ->
+  MbPermImpls_Cons :: CruCtx bs ->
+                      !(MbPermImpls r bs_pss) ->
+                      !(Mb bs (PermImpl r ps)) ->
                       MbPermImpls r (bs_pss :> '(bs,ps))
 
 -- | A local implication, from an input to an output permission set
@@ -1297,8 +1300,8 @@ permImplStep :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
 permImplStep impl1@(Impl1_Fail _) mb_impls = PermImpl_Step impl1 mb_impls
 
 -- Catch --> call the permImplCatch function
-permImplStep Impl1_Catch ((MbPermImpls_Cons
-                           (MbPermImpls_Cons _ mb_pimpl1) mb_pimpl2)) =
+permImplStep Impl1_Catch ((MbPermImpls_Cons _
+                           (MbPermImpls_Cons _ _ mb_pimpl1) mb_pimpl2)) =
   permImplCatch (elimEmptyMb mb_pimpl1) (elimEmptyMb mb_pimpl2)
 
 -- Unary rules applied to failure --> failures
@@ -1326,8 +1329,8 @@ permImplStep impl1@(Impl1_TryProveBVProp _ _ _) mb_impls =
   permImplStepUnary impl1 mb_impls
 
 -- An or elimination fails if both branches fail
-permImplStep (Impl1_ElimOr _ _ _) (MbPermImpls_Cons
-                                   (MbPermImpls_Cons MbPermImpls_Nil
+permImplStep (Impl1_ElimOr _ _ _) (MbPermImpls_Cons _
+                                   (MbPermImpls_Cons _ MbPermImpls_Nil
                                     (matchMbImplFail -> Just msg1))
                                    (matchMbImplFail -> Just msg2)) =
   PermImpl_Step (Impl1_Fail
@@ -1346,7 +1349,7 @@ permImplStepUnary :: NuMatchingAny1 r =>
                      MbPermImpls r (RNil :> '(bs, ps_out)) -> PermImpl r ps_in
 
 -- If the continuation implication is a failure, percolate it up
-permImplStepUnary _ (MbPermImpls_Cons _ (matchMbImplFail -> Just msg)) =
+permImplStepUnary _ (MbPermImpls_Cons _ _ (matchMbImplFail -> Just msg)) =
   PermImpl_Step (Impl1_Fail msg) MbPermImpls_Nil
 
 -- If the continuation implication is a catch with a failure on the right-hand
@@ -1382,10 +1385,10 @@ matchMbImplCatchFail :: NuMatchingAny1 r =>
                         Maybe (Mb ctx (PermImpl r ps), String)
 matchMbImplCatchFail mb_impl = case mbMatch mb_impl of
   [nuMP| PermImpl_Step Impl1_Catch
-                      (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1)
+                      (MbPermImpls_Cons _ (MbPermImpls_Cons _ _ mb_impl1)
                       mb_impl2) |]
-    | Just msg <- matchMbImplFail (mbCombine mb_impl2) ->
-      Just (mbCombine mb_impl1, msg)
+    | Just msg <- matchMbImplFail (mbCombine RL.typeCtxProxies mb_impl2) ->
+      Just (mbCombine RL.typeCtxProxies mb_impl1, msg)
   _ -> Nothing
 
 -- | Produce a branching proof tree that performs the first implication and, if
@@ -1403,13 +1406,13 @@ permImplCatch (PermImpl_Step (Impl1_Fail str1) _) (PermImpl_Step
 permImplCatch pimpl1@(PermImpl_Step (Impl1_Fail _) _) pimpl2 =
   permImplCatch pimpl2 pimpl1
 permImplCatch (PermImpl_Step Impl1_Catch
-               (MbPermImpls_Cons
-                (MbPermImpls_Cons _ mb_pimpl_1a) mb_pimpl_1b)) pimpl2 =
+               (MbPermImpls_Cons _
+                (MbPermImpls_Cons _ _ mb_pimpl_1a) mb_pimpl_1b)) pimpl2 =
   permImplCatch (elimEmptyMb mb_pimpl_1a) $
   permImplCatch (elimEmptyMb mb_pimpl_1b) pimpl2
 permImplCatch pimpl1 pimpl2 =
   PermImpl_Step Impl1_Catch $
-  MbPermImpls_Cons (MbPermImpls_Cons MbPermImpls_Nil $ emptyMb pimpl1) $
+  MbPermImpls_Cons knownRepr (MbPermImpls_Cons knownRepr MbPermImpls_Nil $ emptyMb pimpl1) $
   emptyMb pimpl2
 
 
@@ -1422,57 +1425,57 @@ permImplSucceeds :: PermImpl r ps -> Int
 permImplSucceeds (PermImpl_Done _) = 2
 permImplSucceeds (PermImpl_Step (Impl1_Fail _) _) = 0
 permImplSucceeds (PermImpl_Step Impl1_Catch
-                  (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2)) =
+                  (MbPermImpls_Cons _ (MbPermImpls_Cons _ _ mb_impl1) mb_impl2)) =
   max (mbLift $ fmap permImplSucceeds mb_impl1)
   (mbLift $ fmap permImplSucceeds mb_impl2)
-permImplSucceeds (PermImpl_Step (Impl1_Push _ _) (MbPermImpls_Cons _ mb_impl)) =
+permImplSucceeds (PermImpl_Step (Impl1_Push _ _) (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
-permImplSucceeds (PermImpl_Step (Impl1_Pop _ _) (MbPermImpls_Cons _ mb_impl)) =
+permImplSucceeds (PermImpl_Step (Impl1_Pop _ _) (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimOr _ _ _)
-                  (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2)) =
+                  (MbPermImpls_Cons _ (MbPermImpls_Cons _ _ mb_impl1) mb_impl2)) =
   max (mbLift (fmap permImplSucceeds mb_impl1))
   (mbLift (fmap permImplSucceeds mb_impl2))
 permImplSucceeds (PermImpl_Step (Impl1_ElimExists _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_Simpl _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_LetBind _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimStructField _ _ _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMFieldContents _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_ElimLLVMBlockToEq _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step Impl1_BeginLifetime
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 permImplSucceeds (PermImpl_Step (Impl1_TryProveBVProp _ _ _)
-                  (MbPermImpls_Cons _ mb_impl)) =
+                  (MbPermImpls_Cons _ _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 
 
 -- FIXME: no longer needed...?
-traversePermImpl :: forall m ps r1 r2.
-                    MonadStrongBind m => (forall ps'. r1 ps' -> m (r2 ps')) ->
-                    PermImpl r1 ps -> m (PermImpl r2 ps)
-traversePermImpl f (PermImpl_Done r) = PermImpl_Done <$> f r
-traversePermImpl f (PermImpl_Step impl1 mb_perm_impls) =
-  PermImpl_Step impl1 <$> helper mb_perm_impls
-  where
-    helper :: MbPermImpls r1 bs_pss -> m (MbPermImpls r2 bs_pss)
-    helper MbPermImpls_Nil = return MbPermImpls_Nil
-    helper (MbPermImpls_Cons mb_impls mb_impl) =
-      do mb_impls' <- helper mb_impls
-         mb_impl' <- strongMbM (fmap (traversePermImpl f) mb_impl)
-         return (MbPermImpls_Cons mb_impls' mb_impl')
+-- traversePermImpl :: forall m ps r1 r2.
+--                     MonadStrongBind m => (forall ps'. r1 ps' -> m (r2 ps')) ->
+--                     PermImpl r1 ps -> m (PermImpl r2 ps)
+-- traversePermImpl f (PermImpl_Done r) = PermImpl_Done <$> f r
+-- traversePermImpl f (PermImpl_Step impl1 mb_perm_impls) =
+--   PermImpl_Step impl1 <$> helper mb_perm_impls
+--   where
+--     helper :: MbPermImpls r1 bs_pss -> m (MbPermImpls r2 bs_pss)
+--     helper MbPermImpls_Nil = return MbPermImpls_Nil
+--     helper (MbPermImpls_Cons _ mb_impls mb_impl) =
+--       do mb_impls' <- helper mb_impls
+--          mb_impl' <- strongMbM (fmap (traversePermImpl f) mb_impl)
+--          return (MbPermImpls_Cons _ mb_impls' mb_impl')
 
 -- | Assert a condition and print an error message if it fails
 --
@@ -2491,8 +2494,9 @@ instance (NuMatchingAny1 r, SubstVar PermVarSubst m,
          Substable PermVarSubst (MbPermImpls r bs_pss) m where
   genSubst s mb_impls = case mbMatch mb_impls of
     [nuMP| MbPermImpls_Nil |] -> return MbPermImpls_Nil
-    [nuMP| MbPermImpls_Cons mb_impl mb_impls' |] ->
-      MbPermImpls_Cons <$> genSubst s mb_impl <*> genSubst s mb_impls'
+    [nuMP| MbPermImpls_Cons mpx mb_impl mb_impls' |] ->
+      let px = mbLift mpx in
+      MbPermImpls_Cons px <$> genSubst s mb_impl <*> genSubstMb (cruCtxProxies px) s mb_impls'
 
 -- FIXME: shouldn't need the SubstVar PermVarSubst m assumption...
 instance SubstVar PermVarSubst m =>
@@ -3199,7 +3203,7 @@ implApplyImpl1 impl1 mb_ms =
               (State (Closed s) (MbPermImpls r ps_outs)) a
     helper MbPermSets_Nil _ = gabortM (return MbPermImpls_Nil)
     helper (MbPermSets_Cons mbperms ctx mbperm) (args :>: Impl1Cont f) =
-      gparallel (\m1 m2 -> MbPermImpls_Cons <$> m1 <*> m2)
+      gparallel (\m1 m2 -> MbPermImpls_Cons ctx <$> m1 <*> m2)
       (helper mbperms args)
       (gopenBinding strongMbM mbperm >>>= \(ns, perms') ->
         gmodify (set implStatePerms perms' .
@@ -4139,7 +4143,7 @@ implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
   -- SImpl_IntroLLVMBlockFromEq, and then recursively eliminate the resulting
   -- memblock permission
   mbVarsM () >>>= \mb_unit ->
-  withExtVarsM (proveVarImplInt y $ mbCombine $ flip fmap mb_unit $ const $
+  withExtVarsM (proveVarImplInt y $ mbCombine RL.typeCtxProxies $ flip fmap mb_unit $ const $
                 nu $ \sh -> ValPerm_Conj1 $
                             Perm_LLVMBlockShape $ PExpr_Var sh) >>>= \(_, sh) ->
   let bp' = bp { llvmBlockShape = sh } in
@@ -4780,7 +4784,7 @@ type NeededPerms vars = Some (RAssign (Compose (Mb vars) VarAndPerm))
 neededPermsToExDistPerms :: RAssign prx vars ->
                             RAssign (Compose (Mb vars) VarAndPerm) ps ->
                             Mb vars (DistPerms ps)
-neededPermsToExDistPerms vars MNil = nuMulti vars (const MNil)
+neededPermsToExDistPerms vars MNil = nuMulti (RL.map (\_-> Proxy) vars) (const MNil)
 neededPermsToExDistPerms vars (ps :>: Compose mb_vap) =
   mbMap2 (:>:) (neededPermsToExDistPerms vars ps) mb_vap
 
@@ -5591,7 +5595,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
   
       -- Locally bind z_sh for the shape of the memblock perm and recurse
       let mb_bp' =
-            mbCombine $ flip fmap mb_bp $ \bp ->
+            mbCombine RL.typeCtxProxies $ flip fmap mb_bp $ \bp ->
             nu $ \z_sh -> bp { llvmBlockShape = PExpr_Var z_sh } in
       proveVarLLVMBlocksExt1 x ps psubst mb_bp' mb_bps mb_ps >>>
   
@@ -5692,7 +5696,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
   
       -- Locally bind z_sh for the shape of the memblock perm and recurse
       let mb_bp' =
-            mbCombine $ flip fmap mb_bp $ \bp ->
+            mbCombine RL.typeCtxProxies $ flip fmap mb_bp $ \bp ->
             nu $ \z_sh -> bp { llvmBlockShape = PExpr_Var z_sh } in
       proveVarLLVMBlocksExt1 x ps psubst mb_bp' mb_bps mb_ps >>>
   
@@ -5886,7 +5890,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
   
       -- Prove the sub-shape in the context of a new existential variable
       let mb_bp' =
-            mbCombine $
+            mbCombine RL.typeCtxProxies $
             mbMap2 (\bp mb_sh ->
                      fmap (\sh -> bp { llvmBlockShape = sh }) mb_sh)
             mb_bp mb_mb_sh in
@@ -5897,7 +5901,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
       implSplitSwapConjsM x ps' 1 >>>
   
       -- Prove an existential around the memblock permission we proved
-      partialSubstForceM (mbMap2 (,)
+       partialSubstForceM (mbMap2 (,)
                           mb_bp mb_mb_sh) "proveVarLLVMBlock" >>>= \(bp,mb_sh) ->
       introExistsM x e (fmap (\sh -> ValPerm_LLVMBlock $
                                      bp { llvmBlockShape = sh }) mb_sh) >>>
@@ -5945,7 +5949,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
   
       -- Recursively prove a membblock with shape fieldsh(eq(y)) for fresh evar y
       let mb_bp' =
-            mbCombine $ flip fmap mb_bp $ \bp ->
+            mbCombine RL.typeCtxProxies $ flip fmap mb_bp $ \bp ->
             nu $ \(y :: ExprVar (LLVMPointerType sz)) ->
             bp { llvmBlockShape =
                    PExpr_FieldShape $ LLVMFieldShape $
@@ -5994,7 +5998,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
       -- the first one has the length of the atomic perm we found and the other
       -- has the remaining length, and recurse
       let mb_bps12 =
-            mbCombine $ flip fmap mb_bp $ \bp ->
+            mbCombine RL.typeCtxProxies $ flip fmap mb_bp $ \bp ->
             nuMulti (MNil :>: Proxy :>: Proxy) $ \(_ :>: z_sh1 :>: z_sh2) ->
             [bp { llvmBlockLen = len1, llvmBlockShape = PExpr_Var z_sh1 },
              bp { llvmBlockOffset = bvAdd (llvmBlockOffset bp) len1,
@@ -6120,9 +6124,12 @@ proveVarAtomicImplUnfoldOrFail x ps mb_ap =
 -- the LHS is on the top of the stack and represents all the permissions on @x@,
 -- i.e., we also assume the variable permissions for @x@ are currently
 -- @true@. Any remaining perms for @x@ are popped off of the stack.
-proveVarAtomicImpl :: NuMatchingAny1 r => ExprVar a -> [AtomicPerm a] ->
-                      Mb vars (AtomicPerm a) ->
-                      ImplM vars s r (ps :> a) (ps :> a) ()
+proveVarAtomicImpl ::
+  NuMatchingAny1 r =>
+  ExprVar a ->
+  [AtomicPerm a] ->
+  Mb vars (AtomicPerm a) ->
+  ImplM vars s r (ps :> a) (ps :> a) ()
 proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
 
   [nuMP| Perm_LLVMField mb_fp |] ->
@@ -6217,7 +6224,9 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       -- just builds the equality proofs and computes the new LHS and RHS, but
       -- we don't actually perform the casts until later.
       substEqsWithProof (ps_inL, ps_outL) >>>= \eqp_psL ->
-      substEqsWithProof (mb_ps_inR, mb_ps_outR) >>>= \eqp_mb_psR ->
+      gget >>>= \s ->
+      give (cruCtxProxies (view implStateVars s))
+        (substEqsWithProof (mb_ps_inR, mb_ps_outR)) >>>= \eqp_mb_psR ->
       let (ps_inL',ps_outL') = someEqProofRHS eqp_psL
           (mb_ps_inR',mb_ps_outR') = someEqProofRHS eqp_mb_psR in
 
@@ -6484,7 +6493,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
   
   -- Prove x:exists (z:tp).p by proving x:p in an extended vars context
   (_, [nuMP| ValPerm_Exists mb_p' |]) ->
-    withExtVarsM (proveVarImplH x p $ mbCombine mb_p') >>>= \((), e) ->
+    withExtVarsM (proveVarImplH x p (mbCombine RL.typeCtxProxies mb_p')) >>>= \((), e) ->
     partialSubstForceM mb_p' "proveVarImpl" >>>=
     introExistsM x e
   
