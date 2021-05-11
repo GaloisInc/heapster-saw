@@ -200,6 +200,9 @@ doubleSplitWidenPerm _ p1 p2 =
   return ((p1, p2), ValPerm_True)
 
 
+-- | Widen two expressions against each other
+--
+-- FIXME: document this more
 widenExpr :: TypeRepr a -> PermExpr a -> PermExpr a -> WideningM (PermExpr a)
 
 -- If both sides are equal, return one of the sides
@@ -322,7 +325,65 @@ widenExpr (StructRepr tps) (PExpr_Struct es1) (PExpr_Struct es2) =
 widenExpr (LLVMPointerRepr w) (PExpr_LLVMWord e1) (PExpr_LLVMWord e2) =
   PExpr_LLVMWord <$> widenExpr (BVRepr w) e1 e2
 
--- FIXME HERE NOW: widen the various shape constructs
+-- Widen named shapes with the same names
+--
+-- FIXME: we currently only handle shapes with no modalities, because the
+-- modalities only come about when proving equality shapes, which themselves are
+-- only really used by memcpy and similar functions
+widenExpr tp (PExpr_NamedShape Nothing Nothing nmsh1 args1)
+  (PExpr_NamedShape Nothing Nothing nmsh2 args2)
+  | Just (Refl,Refl) <- namedShapeEq nmsh1 nmsh2 =
+    PExpr_NamedShape Nothing Nothing nmsh1 <$>
+    widenExprs (namedShapeArgs nmsh1) args1 args2
+
+widenExpr (LLVMShapeRepr w) (PExpr_EqShape e1) (PExpr_EqShape e2) =
+  PExpr_EqShape <$> widenExpr (LLVMBlockRepr w) e1 e2
+
+widenExpr tp (PExpr_PtrShape Nothing Nothing sh1)
+  (PExpr_PtrShape Nothing Nothing sh2) =
+  PExpr_PtrShape Nothing Nothing <$> widenExpr tp sh1 sh2
+
+widenExpr _ (PExpr_FieldShape (LLVMFieldShape p1)) (PExpr_FieldShape
+                                                    (LLVMFieldShape p2))
+  | Just Refl <- testEquality (exprLLVMTypeWidth p1) (exprLLVMTypeWidth p2) =
+    PExpr_FieldShape <$> LLVMFieldShape <$> widenPerm knownRepr p1 p2
+
+-- Array shapes can only be widened if they have the same length, stride, and
+-- fields whose ith fields have the same size for each i
+widenExpr _ (PExpr_ArrayShape len1 stride1 flds1) (PExpr_ArrayShape
+                                                   len2 stride2 flds2)
+  | bvEq len1 len2 && stride1 == stride2
+  , and (zipWith
+         (\(LLVMFieldShape p1) (LLVMFieldShape p2) ->
+           isJust $ testEquality (exprLLVMTypeWidth p1) (exprLLVMTypeWidth p2))
+         flds1 flds2) =
+    PExpr_ArrayShape len1 stride1 <$>
+    zipWithM (\(LLVMFieldShape p1) (LLVMFieldShape p2) ->
+               case testEquality (exprLLVMTypeWidth p1) (exprLLVMTypeWidth p2) of
+                 Just Refl -> LLVMFieldShape <$> widenPerm knownRepr p1 p2
+                 Nothing -> error "widenExpr: unreachable!")
+    flds1 flds2
+
+-- FIXME: there should be some check that the first shapes have the same length,
+-- though this is more complex if they might have free variables...?
+widenExpr tp (PExpr_SeqShape sh1 sh1') (PExpr_SeqShape sh2 sh2') =
+  PExpr_SeqShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh2 sh2'
+
+widenExpr tp (PExpr_OrShape sh1 sh1') (PExpr_OrShape sh2 sh2') =
+  PExpr_OrShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh2 sh2'
+
+widenExpr tp (PExpr_ExShape mb_sh1) sh2 =
+  do x <- bindFreshVar knownRepr
+     widenExpr tp (varSubst (singletonVarSubst x) mb_sh1) sh2
+
+widenExpr tp sh1 (PExpr_ExShape mb_sh2) =
+  do x <- bindFreshVar knownRepr
+     widenExpr tp sh1 (varSubst (singletonVarSubst x) mb_sh2)
+
+-- NOTE: this assumes that permission expressions only occur in covariant
+-- positions
+widenExpr (ValuePermRepr tp) (PExpr_ValPerm p1) (PExpr_ValPerm p2) =
+  PExpr_ValPerm <$> widenPerm tp p1 p2
 
 -- Default case: widen two unequal expressions by making a fresh output
 -- existential variable, which could be equal to either
