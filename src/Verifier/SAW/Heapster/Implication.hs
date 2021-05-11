@@ -1462,6 +1462,10 @@ permImplSucceeds (PermImpl_Step (Impl1_TryProveBVProp _ _ _)
                   (MbPermImpls_Cons _ mb_impl)) =
   mbLift $ fmap permImplSucceeds mb_impl
 
+-- | Test if a 'PermImpl' fails, meaning 'permImplSucceeds' returns 0
+permImplFails :: PermImpl r ps -> Bool
+permImplFails = (== 0) . permImplSucceeds
+
 
 -- FIXME: no longer needed...?
 traversePermImpl :: forall m ps r1 r2.

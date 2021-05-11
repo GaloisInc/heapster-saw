@@ -56,24 +56,24 @@ import Lang.Crucible.Types
 -- * The Widening Monad
 ----------------------------------------------------------------------
 
--- | A 'Widening' for some list of variables that extends @vars@
-data ExtWidening vars
-  = ExtWidening_Base (ValuePerms vars)
-  | forall var. ExtWidening_Mb (TypeRepr var) (Binding var
-                                               (ExtWidening (vars :> var)))
+-- | A sequence of permissions for some list of variables that extends @vars@
+data ExtVarPerms vars
+  = ExtVarPerms_Base (ValuePerms vars)
+  | forall var. ExtVarPerms_Mb (TypeRepr var) (Binding var
+                                               (ExtVarPerms (vars :> var)))
 
-$(mkNuMatching [t| forall vars. ExtWidening vars |])
+$(mkNuMatching [t| forall vars. ExtVarPerms vars |])
 
-extWidening_MbMulti :: CruCtx ctx -> Mb ctx (ExtWidening (vars :++: ctx)) ->
-                       ExtWidening vars
-extWidening_MbMulti CruCtxNil mb_ewid = elimEmptyMb mb_ewid
-extWidening_MbMulti (CruCtxCons ctx tp) mb_ewid =
-  extWidening_MbMulti ctx $
-  fmap (ExtWidening_Mb tp) $ mbSeparate (MNil :>: Proxy) mb_ewid
+extVarPerms_MbMulti :: CruCtx ctx -> Mb ctx (ExtVarPerms (vars :++: ctx)) ->
+                       ExtVarPerms vars
+extVarPerms_MbMulti CruCtxNil mb_ewid = elimEmptyMb mb_ewid
+extVarPerms_MbMulti (CruCtxCons ctx tp) mb_ewid =
+  extVarPerms_MbMulti ctx $
+  fmap (ExtVarPerms_Mb tp) $ mbSeparate (MNil :>: Proxy) mb_ewid
 
-newtype ExtWideningFun vars =
-  ExtWideningFun { applyExtWideningFun ::
-                     RAssign Name vars -> ExtWidening vars }
+newtype ExtVarPermsFun vars =
+  ExtVarPermsFun { applyExtVarPermsFun ::
+                     RAssign Name vars -> ExtVarPerms vars }
 
 -- | A map from free variables to their permissions and whether they have been
 -- "visited" yet
@@ -95,10 +95,10 @@ wnMapGetPerm :: Name a -> WidNameMap -> ValuePerm a
 wnMapGetPerm n nmap | Just (Pair p _) <- NameMap.lookup n nmap = p
 wnMapGetPerm _ _ = ValPerm_True
 
--- | Build an 'ExtWideningFun' from a widening name map
-wnMapExtWidFun :: WidNameMap -> ExtWideningFun vars
+-- | Build an 'ExtVarPermsFun' from a widening name map
+wnMapExtWidFun :: WidNameMap -> ExtVarPermsFun vars
 wnMapExtWidFun wnmap =
-  ExtWideningFun $ \ns -> ExtWidening_Base $ RL.map (flip wnMapGetPerm wnmap) ns
+  ExtVarPermsFun $ \ns -> ExtVarPerms_Base $ RL.map (flip wnMapGetPerm wnmap) ns
 
 newtype PolyContT r m a =
   PolyContT { runPolyContT :: forall x. (forall y. a -> m (r y)) -> m (r x) }
@@ -116,20 +116,20 @@ instance Monad (PolyContT r m) where
     PolyContT $ \k -> m $ \a -> runPolyContT (f a) k
 
 type WideningM =
-  StateT WidNameMap (PolyContT ExtWideningFun Identity)
+  StateT WidNameMap (PolyContT ExtVarPermsFun Identity)
 
 runWideningM :: WideningM () -> WidNameMap -> RAssign Name args ->
-                ExtWidening args
+                ExtVarPerms args
 runWideningM m wnmap =
-  applyExtWideningFun $ runIdentity $
+  applyExtVarPermsFun $ runIdentity $
   runPolyContT (runStateT m wnmap) (Identity . wnMapExtWidFun . snd)
 
 openMb :: CruCtx ctx -> Mb ctx a -> WideningM (RAssign Name ctx, a)
 openMb ctx mb_a =
-  lift $ PolyContT $ \k -> Identity $ ExtWideningFun $ \ns ->
-  extWidening_MbMulti ctx $
+  lift $ PolyContT $ \k -> Identity $ ExtVarPermsFun $ \ns ->
+  extVarPerms_MbMulti ctx $
   mbMap2 (\ns' a ->
-           applyExtWideningFun (runIdentity $ k (ns',a)) (RL.append ns ns'))
+           applyExtVarPermsFun (runIdentity $ k (ns',a)) (RL.append ns ns'))
   (nuMulti (cruCtxProxies ctx) id) mb_a
 
 bindFreshVar :: TypeRepr tp -> WideningM (ExprVar tp)
@@ -559,23 +559,24 @@ widenPerms (CruCtxCons tps tp) (ps1 :>: p1) (ps2 :>: p2) =
 -- * Top-Level Entrypoints
 ----------------------------------------------------------------------
 
-data Widening args vars =
-  Widening { wideningVars :: CruCtx vars,
-             wideningPerms :: MbValuePerms (args :++: vars) }
+-- | A sequence of permissions on some regular and ghost arguments
+data ArgVarPerms args vars =
+  ArgVarPerms { wideningVars :: CruCtx vars,
+                wideningPerms :: MbValuePerms (args :++: vars) }
 
-$(mkNuMatching [t| forall args vars. Widening args vars |])
+$(mkNuMatching [t| forall args vars. ArgVarPerms args vars |])
 
-completeMbExtWidening :: CruCtx vars ->
-                         Mb (args :++: vars) (ExtWidening (args :++: vars)) ->
-                         Some (Widening args)
-completeMbExtWidening vars (mbMatch -> [nuMP| ExtWidening_Base ps |]) =
-  Some $ Widening vars ps
-completeMbExtWidening vars (mbMatch ->
-                            [nuMP| ExtWidening_Mb var mb_ext_wid |]) =
-  completeMbExtWidening (CruCtxCons vars (mbLift var)) (mbCombine mb_ext_wid)
+completeMbArgVarPerms :: CruCtx vars ->
+                         Mb (args :++: vars) (ExtVarPerms (args :++: vars)) ->
+                         Some (ArgVarPerms args)
+completeMbArgVarPerms vars (mbMatch -> [nuMP| ExtVarPerms_Base ps |]) =
+  Some $ ArgVarPerms vars ps
+completeMbArgVarPerms vars (mbMatch ->
+                            [nuMP| ExtVarPerms_Mb var mb_ext_wid |]) =
+  completeMbArgVarPerms (CruCtxCons vars (mbLift var)) (mbCombine mb_ext_wid)
 
-completeExtWidening :: Mb args (ExtWidening args) -> Some (Widening args)
-completeExtWidening = completeMbExtWidening CruCtxNil
+completeArgVarPerms :: Mb args (ExtVarPerms args) -> Some (ArgVarPerms args)
+completeArgVarPerms = completeMbArgVarPerms CruCtxNil
 
 {-
 completeWideningM :: CruCtx args -> MbValuePerms args -> Mb args (WideningM ()) ->
@@ -600,16 +601,16 @@ mbSeparatePrx :: prx ctx1 -> RAssign any ctx2 -> Mb (ctx1 :++: ctx2) a ->
                  Mb ctx1 (Mb ctx2 a)
 mbSeparatePrx _ = mbSeparate
 
--- | Top-level entrypoint
-widen :: CruCtx args -> CruCtx vars1 -> CruCtx vars2 ->
-         MbValuePerms (args :++: vars1) ->
-         MbValuePerms (args :++: vars2) ->
-         Some (Widening args)
-widen args vars1 vars2 mb_perms1 mb_perms2 =
+-- | Widen two lists of permissions-in-bindings
+widen :: CruCtx args -> Some (ArgVarPerms args) ->
+         Some (ArgVarPerms args) ->
+         Some (ArgVarPerms args)
+widen args (Some (ArgVarPerms vars1 mb_perms1)) (Some (ArgVarPerms
+                                                       vars2 mb_perms2)) =
   let prxs1 = cruCtxProxies vars1
       prxs2 = cruCtxProxies vars2
       mb_mb_perms1 = mbSeparate prxs1 mb_perms1 in
-  completeExtWidening $ flip nuMultiWithElim1 mb_mb_perms1 $
+  completeArgVarPerms $ flip nuMultiWithElim1 mb_mb_perms1 $
   \args_ns1 mb_perms1' ->
   (\m -> runWideningM m NameMap.empty args_ns1) $
   do (vars1_ns, ps1) <- openMb vars1 mb_perms1'

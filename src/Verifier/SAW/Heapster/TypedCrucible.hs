@@ -29,7 +29,7 @@ module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
 import qualified Data.Text as Text
-import Data.List (find, findIndex)
+import Data.List hiding (sort)
 import Data.Functor.Constant
 import Data.Functor.Product
 import Data.Type.Equality
@@ -1126,6 +1126,20 @@ idTypedCallSite siteID tops args perms =
   TypedCallSite siteID perms $ Just $
   idCallSiteImpl (callSiteDest siteID) tops args (callSiteVars siteID)
 
+-- | Test if the implication of a call site fails or is not present
+typedCallSiteImplFails :: TypedCallSite TCPhase blocks tops args ghosts vars ->
+                          Bool
+typedCallSiteImplFails (TypedCallSite { typedCallSiteImpl =
+                                          Just (CallSiteImpl mb_annot_impl) }) =
+  mbLift $ fmap (\(AnnotPermImpl _ impl) -> permImplFails impl) mb_annot_impl
+typedCallSiteImplFails _ = True
+
+-- | Extract the caller permissions of a call site as an 'ArgVarPerms'
+typedCallSiteArgVarPerms :: TypedCallSite phase blocks tops args ghsots vars ->
+                            ArgVarPerms (tops :++: args) vars
+typedCallSiteArgVarPerms (TypedCallSite {..}) =
+  ArgVarPerms (callSiteVars typedCallSiteID) typedCallSitePerms
+
 -- | A single, typed entrypoint to a Crucible block. Note that our blocks
 -- implicitly take extra "ghost" arguments, that are needed to express the input
 -- and output permissions. The first of these ghost arguments are the top-level
@@ -1244,6 +1258,9 @@ data TypedBlock phase ext blocks tops ret args =
     typedBlockBlock :: Block ext (RListToCtxCtx blocks) ret cargs,
     -- | What sort of block is this
     typedBlockSort :: TypedBlockSort,
+    -- | Whether widening is allowed for entrypoints in this block; widening
+    -- disallowed for user-supplied permissions
+    typedBlockCanWiden :: Bool,
     -- | The entrypoints into this block; note that the 'entryIndex' of each
     -- entrypoint ID should equal the position of its entrypoint in this list
     _typedBlockEntries :: [Some (TypedEntry phase ext blocks tops ret args)]
@@ -1274,7 +1291,7 @@ emptyBlockOfSort :: Assignment CtxRepr cblocks -> TypedBlockSort ->
 emptyBlockOfSort cblocks sort blk
   | Refl <- reprReprToCruCtxCtxEq cblocks
   = TypedBlock (indexCtxToMember (size cblocks) $
-                blockIDIndex $ blockID blk) blk sort []
+                blockIDIndex $ blockID blk) blk sort True []
 
 -- | Build a block with a user-supplied input permission
 emptyBlockForPerms :: Assignment CtxRepr cblocks ->
@@ -1288,7 +1305,7 @@ emptyBlockForPerms cblocks blk tops ret ghosts perms_in perms_out
   | Refl <- reprReprToCruCtxCtxEq cblocks
   , blockID <- indexCtxToMember (size cblocks) $ blockIDIndex $ blockID blk
   , args <- mkCruCtx (blockInputs blk) =
-    TypedBlock blockID blk JoinSort
+    TypedBlock blockID blk JoinSort False
     [Some $ TypedEntry {
         typedEntryID = TypedEntryID blockID 0, typedEntryTops = tops,
         typedEntryArgs = args, typedEntryRet = ret,
@@ -3631,6 +3648,13 @@ proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
    proveVarsImpl perms_out >>> getPSubst) >>>= \impl ->
   gmapRet (>> return impl)
 
+-- | Set the entrypoint ghost variables of a call site, erasing its implication
+callSiteSetGhosts :: CruCtx ghosts' ->
+                     TypedCallSite TCPhase blocks tops args ghosts vars ->
+                     TypedCallSite TCPhase blocks tops args ghosts' vars
+callSiteSetGhosts _ (TypedCallSite {..}) =
+  TypedCallSite typedCallSiteID typedCallSitePerms Nothing
+
 -- | Visit a call site, proving its implication of the entrypoint input
 -- permissions if that implication does not already exist
 visitCallSite :: PermCheckExtC ext =>
@@ -3648,22 +3672,47 @@ visitCallSite (TypedEntry {..}) site@(TypedCallSite {..})
     typedEntryArgs typedEntryGhosts vars
     typedCallSitePerms typedEntryPermsIn
 
+-- | Widen the permissions held by all callers of an entrypoint to compute new,
+-- weaker input permissions that can hopefully be satisfied by them
+widenEntry :: PermCheckExtC ext =>
+              TypedEntry TCPhase ext blocks tops ret args ghosts ->
+              Some (TypedEntry TCPhase ext blocks tops ret args)
+widenEntry (TypedEntry {..}) =
+  case foldl1' (widen $ appendCruCtx typedEntryTops typedEntryArgs) $
+       map (fmapF typedCallSiteArgVarPerms) typedEntryCallers of
+    Some (ArgVarPerms ghosts perms_in) ->
+      let callers =
+            map (fmapF (callSiteSetGhosts ghosts)) typedEntryCallers in
+      Some $
+      TypedEntry { typedEntryCallers = callers, typedEntryGhosts = ghosts,
+                   typedEntryPermsIn = perms_in, typedEntryBody = Nothing, .. }
+
 -- | Visit an entrypoint, by first proving the required implications at each
 -- call site, meaning that the permissions held at the call site imply the input
 -- permissions of the entrypoint, and then type-checking the body of the block
--- with those input permissions, if it has not been type-checked already
+-- with those input permissions, if it has not been type-checked already.
 --
--- FIXME HERE: if some of the call site implications fail, recompute the
--- entrypoint input permissions using widening
+-- If any of the call site implications fail, and the input "can widen" flag is
+-- 'True', recompute the entrypoint input permissions using widening
 visitEntry :: (PermCheckExtC ext, CtxToRList cargs ~ args) =>
-              Block ext cblocks ret cargs ->
+              Bool -> Block ext cblocks ret cargs ->
               TypedEntry TCPhase ext blocks tops ret args ghosts ->
               TopPermCheckM ext cblocks blocks tops ret
-              (TypedEntry TCPhase ext blocks tops ret args ghosts)
-visitEntry blk entry@(TypedEntry {..}) =
-  do callers <- mapM (traverseF $ visitCallSite entry) typedEntryCallers
-     body <- maybe (tcBlockEntryBody blk entry) return typedEntryBody
-     return $ entry { typedEntryCallers = callers, typedEntryBody = Just body }
+              (Some (TypedEntry TCPhase ext blocks tops ret args))
+
+-- If the entry is already complete, do nothing
+visitEntry _ _ entry
+  | isJust $ completeTypedEntry entry = return $ Some entry
+-- Otherwise, visit the call sites, widen if needed, and type-check the body
+visitEntry can_widen blk entry =
+  mapM (traverseF $
+        visitCallSite entry) (typedEntryCallers entry) >>= \callers ->
+  if can_widen && any (anyF typedCallSiteImplFails) callers then
+    case widenEntry entry of
+      Some entry' -> visitEntry False blk entry'
+  else
+    do body <- maybe (tcBlockEntryBody blk entry) return (typedEntryBody entry)
+       return $ Some $ entry { typedEntryBody = Just body }
 
 -- | Visit a block by visiting all its entrypoints
 visitBlock :: PermCheckExtC ext =>
@@ -3673,7 +3722,8 @@ visitBlock :: PermCheckExtC ext =>
 visitBlock blk@(TypedBlock {..}) =
   (stCBlocksEq <$> get) >>= \Refl ->
   flip (set typedBlockEntries) blk <$>
-  mapM (traverseF $ visitEntry typedBlockBlock) _typedBlockEntries
+  mapM (\(Some entry) ->
+         visitEntry typedBlockCanWiden typedBlockBlock entry) _typedBlockEntries
 
 -- | Flatten a list of topological ordering components to a list of nodes in
 -- topological order paired with a flag denoting which nodes were loop heads
