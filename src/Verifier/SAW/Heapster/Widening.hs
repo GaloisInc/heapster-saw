@@ -34,7 +34,7 @@ import Data.List
 import Data.Functor.Constant
 import Data.Functor.Product
 import Control.Monad.State
-import Control.Monad.Cont
+-- import Control.Monad.Cont
 import GHC.TypeLits
 import Control.Lens hiding ((:>), Index, Empty, ix, op)
 
@@ -206,7 +206,7 @@ doubleSplitWidenPerm _ p1 p2 =
 widenExpr :: TypeRepr a -> PermExpr a -> PermExpr a -> WideningM (PermExpr a)
 
 -- If both sides are equal, return one of the sides
-widenExpr tp e1 e2 | e1 == e2 = return e1
+widenExpr _ e1 e2 | e1 == e2 = return e1
 
 -- If both sides are variables, look up their permissions and whether they have
 -- been visited and use that information to decide what to do
@@ -229,10 +229,10 @@ widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2@(asVarOffset ->
        _ | x1 == x2 ->
            do x <- bindFreshVar tp
               visitM x
-              ((p1,p2), p') <-
+              ((p1',p2'), p') <-
                 doubleSplitWidenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
-              setOffVarPermM x1 off1 p1
-              setOffVarPermM x2 off2 p2
+              setOffVarPermM x1 off1 p1'
+              setOffVarPermM x2 off2 p2'
               setVarPermM x p'
               return $ PExpr_Var x
 
@@ -246,25 +246,25 @@ widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2@(asVarOffset ->
        -- eq permissions, then they are equal to different locations elsewhere
        -- in our widening, and so this location should not be equated to either
        -- of them; thus we make a fresh variable
-       (p1, p2, True, True) ->
+       (_, _, True, True) ->
          do x <- bindFreshVar tp
             visitM x
-            ((p1,p2), p') <-
+            ((p1',p2'), p') <-
               doubleSplitWidenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
-            setOffVarPermM x1 off1 p1
-            setOffVarPermM x2 off2 p2
+            setOffVarPermM x1 off1 p1'
+            setOffVarPermM x2 off2 p2'
             setVarPermM x p'
             return $ PExpr_Var x
 
        -- If only one variable has been visited, its perms need to be split
        -- between its other location(s) and here
-       (p1, p2, True, _) ->
+       (_, _, True, _) ->
          do (p1', p2') <-
               splitWidenPerm tp (offsetPerm off1 p1) (offsetPerm off2 p2)
             setVarPermM x1 (offsetPerm (negatePermOffset off1) p1')
             setVarPermM x2 (offsetPerm (negatePermOffset off2) p2')
             return e2
-       (p1, p2, _, True) ->
+       (_, _, _, True) ->
          do (p2', p1') <-
               splitWidenPerm tp (offsetPerm off2 p2) (offsetPerm off1 p2)
             setVarPermM x1 (offsetPerm (negatePermOffset off1) p1')
@@ -286,7 +286,7 @@ widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2@(asVarOffset ->
 
 -- If one side is a variable x and the other is not, then the non-variable side
 -- cannot have any permissions, and there are fewer cases than the above
-widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2 =
+widenExpr tp (asVarOffset -> Just (x1, off1)) e2 =
   do p1 <- getVarPermM x1
      case p1 of
 
@@ -302,7 +302,7 @@ widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2 =
             return $ PExpr_Var x
 
 -- Similar to the previous case, but with the variable on the right
-widenExpr tp e1 e2@(asVarOffset -> Just (x2, off2)) =
+widenExpr tp e1 (asVarOffset -> Just (x2, off2)) =
   do p2 <- getVarPermM x2
      case p2 of
 
@@ -330,7 +330,7 @@ widenExpr (LLVMPointerRepr w) (PExpr_LLVMWord e1) (PExpr_LLVMWord e2) =
 -- FIXME: we currently only handle shapes with no modalities, because the
 -- modalities only come about when proving equality shapes, which themselves are
 -- only really used by memcpy and similar functions
-widenExpr tp (PExpr_NamedShape Nothing Nothing nmsh1 args1)
+widenExpr _ (PExpr_NamedShape Nothing Nothing nmsh1 args1)
   (PExpr_NamedShape Nothing Nothing nmsh2 args2)
   | Just (Refl,Refl) <- namedShapeEq nmsh1 nmsh2 =
     PExpr_NamedShape Nothing Nothing nmsh1 <$>
@@ -367,10 +367,10 @@ widenExpr _ (PExpr_ArrayShape len1 stride1 flds1) (PExpr_ArrayShape
 -- FIXME: there should be some check that the first shapes have the same length,
 -- though this is more complex if they might have free variables...?
 widenExpr tp (PExpr_SeqShape sh1 sh1') (PExpr_SeqShape sh2 sh2') =
-  PExpr_SeqShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh2 sh2'
+  PExpr_SeqShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh1' sh2'
 
 widenExpr tp (PExpr_OrShape sh1 sh1') (PExpr_OrShape sh2 sh2') =
-  PExpr_OrShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh2 sh2'
+  PExpr_OrShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh1' sh2'
 
 widenExpr tp (PExpr_ExShape mb_sh1) sh2 =
   do x <- bindFreshVar knownRepr
@@ -409,7 +409,33 @@ equalizeLLVMBlockRanges :: (1 <= w, KnownNat w) =>
                            LLVMBlockPerm w -> LLVMBlockPerm w ->
                            Maybe (LLVMBlockPerm w, LLVMBlockPerm w,
                                   [LLVMBlockPerm w], [LLVMBlockPerm w])
-equalizeLLVMBlockRanges = error "FIXME HERE NOW"
+equalizeLLVMBlockRanges bp1 bp2
+  | bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2)
+  , bvEq (llvmBlockLen bp1) (llvmBlockLen bp2) =
+    return (bp1, bp2, [], [])
+equalizeLLVMBlockRanges bp1 bp2
+  | bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2)
+  , bvLeq (llvmBlockLen bp1) (llvmBlockLen bp2) =
+    do (bp2', bp2'') <- splitLLVMBlockPerm (bvAdd (llvmBlockOffset bp1)
+                                            (llvmBlockLen bp1)) bp2
+       return (bp1, bp2', [], [bp2''])
+equalizeLLVMBlockRanges bp1 bp2
+  | bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2)
+  , bvLeq (llvmBlockLen bp2) (llvmBlockLen bp1) =
+    do (bp1', bp1'') <- splitLLVMBlockPerm (bvAdd (llvmBlockOffset bp2)
+                                            (llvmBlockLen bp2)) bp1
+       return (bp1', bp2, [bp1''], [])
+equalizeLLVMBlockRanges bp1 bp2
+  | bvLeq (llvmBlockOffset bp1) (llvmBlockOffset bp2) =
+    do (bp1', bp1'') <- splitLLVMBlockPerm (llvmBlockOffset bp2) bp1
+       (bp1_ret, bp2_ret, bps1, bps2) <- equalizeLLVMBlockRanges bp1'' bp2
+       return (bp1_ret, bp2_ret, bp1':bps1, bps2)
+equalizeLLVMBlockRanges bp1 bp2
+  | bvLeq (llvmBlockOffset bp2) (llvmBlockOffset bp1) =
+    do (bp2', bp2'') <- splitLLVMBlockPerm (llvmBlockOffset bp1) bp2
+       (bp1_ret, bp2_ret, bps1, bps2) <- equalizeLLVMBlockRanges bp1 bp2''
+       return (bp1_ret, bp2_ret, bps1, bp2':bps2)
+equalizeLLVMBlockRanges _ _ = Nothing
 
 
 -- | Widen two block permissions against each other, assuming they already have
@@ -462,10 +488,44 @@ widenAtomicPerms tp (_ : ps1) ps2 = widenAtomicPerms tp ps1 ps2
 widenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a -> WideningM (ValuePerm a)
 widenPerm tp (ValPerm_Eq e1) (ValPerm_Eq e2) =
   ValPerm_Eq <$> widenExpr tp e1 e2
+
 widenPerm tp (ValPerm_Eq (asVarOffset -> Just (x1, off1))) p2 =
-  error "FIXME HERE NOW"
+  do p1 <- getVarPermM x1
+     isv1 <- isVisitedM x1
+     case (p1, isv1) of
+       (ValPerm_Eq e1, _) ->
+         visitM x1 >> widenPerm tp (ValPerm_Eq $ offsetExpr off1 e1) p2
+       (_, False) ->
+         do visitM x1
+            p1' <- widenPerm tp (offsetPerm off1 p1) p2
+            setVarPermM x1 (offsetPerm (negatePermOffset off1) p1')
+            return (ValPerm_Eq $ offsetExpr off1 $ PExpr_Var x1)
+       (_, True) ->
+         do x <- bindFreshVar tp
+            visitM x
+            (p1', p1'') <- splitWidenPerm tp (offsetPerm off1 p1) p2
+            setVarPermM x1 p1'
+            setVarPermM x p1''
+            return (ValPerm_Eq $ PExpr_Var x)
+
 widenPerm tp p1 (ValPerm_Eq (asVarOffset -> Just (x2, off2))) =
-  error "FIXME HERE NOW"
+  do p2 <- getVarPermM x2
+     isv2 <- isVisitedM x2
+     case (p2, isv2) of
+       (ValPerm_Eq e2, _) ->
+         visitM x2 >> widenPerm tp p1 (ValPerm_Eq $ offsetExpr off2 e2)
+       (_, False) ->
+         do visitM x2
+            p2' <- widenPerm tp p1 (offsetPerm off2 p2)
+            setVarPermM x2 (offsetPerm (negatePermOffset off2) p2')
+            return (ValPerm_Eq $ offsetExpr off2 $ PExpr_Var x2)
+       (_, True) ->
+         do x <- bindFreshVar tp
+            visitM x
+            (p2', p2'') <- splitWidenPerm tp (offsetPerm off2 p2) p1
+            setVarPermM x2 p2'
+            setVarPermM x p2''
+            return (ValPerm_Eq $ PExpr_Var x)
 
 widenPerm tp (ValPerm_Or p1 p1') (ValPerm_Or p2 p2') =
   ValPerm_Or <$> widenPerm tp p1 p2 <*> widenPerm tp p1' p2'
@@ -475,12 +535,12 @@ widenPerm tp (ValPerm_Exists mb_p1) p2 =
 widenPerm tp p1 (ValPerm_Exists mb_p2) =
   do x <- bindFreshVar knownRepr
      widenPerm tp p1 (varSubst (singletonVarSubst x) mb_p2)
-widenPerm tp (ValPerm_Named npn1 args1 off1) (ValPerm_Named npn2 args2 off2)
+widenPerm _ (ValPerm_Named npn1 args1 off1) (ValPerm_Named npn2 args2 off2)
   | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn1 npn2
   , offsetsEq off1 off2 =
     (\args -> ValPerm_Named npn1 args off1) <$>
     widenExprs (namedPermNameArgs npn1) args1 args2
-widenPerm tp (ValPerm_Var x1 off1) (ValPerm_Var x2 off2)
+widenPerm _ (ValPerm_Var x1 off1) (ValPerm_Var x2 off2)
   | x1 == x2 && offsetsEq off1 off2 = return $ ValPerm_Var x1 off1
 widenPerm tp (ValPerm_Conj ps1) (ValPerm_Conj ps2) =
   ValPerm_Conj <$> widenAtomicPerms tp ps1 ps2
@@ -556,5 +616,7 @@ widen args vars1 vars2 mb_perms1 mb_perms2 =
      (ns2, ps2) <- openMb (appendCruCtx args vars2) mb_perms2
      let (args_ns2, _) = RL.split args prxs2 ns2
      setVarPermsM (RL.append args_ns1 vars1_ns) ps1
-     widenExprs args (RL.map PExpr_Var args_ns1) (RL.map PExpr_Var args_ns2)
+     setVarPermsM ns2 ps2
+     void $ widenExprs args (RL.map PExpr_Var args_ns1) (RL.map
+                                                         PExpr_Var args_ns2)
      return ()
