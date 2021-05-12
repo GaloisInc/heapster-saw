@@ -48,7 +48,7 @@ import Verifier.SAW.Heapster.Permissions
 
 import qualified Data.Type.RList as RL
 import Data.Binding.Hobbits
-import Data.Binding.Hobbits.NameMap (NameMap)
+import Data.Binding.Hobbits.NameMap (NameMap, NameAndElem(..))
 import qualified Data.Binding.Hobbits.NameMap as NameMap
 
 import Lang.Crucible.Types
@@ -229,13 +229,19 @@ doubleSplitWidenPerm _ p1 p2 =
 --
 -- FIXME: document this more
 widenExpr :: TypeRepr a -> PermExpr a -> PermExpr a -> WideningM (PermExpr a)
+widenExpr tp e1 e2 =
+  traceM (\i ->
+           fillSep [pretty "widenExpr", permPretty i e1, permPretty i e2]) >>
+  widenExpr' tp e1 e2
+
+widenExpr' :: TypeRepr a -> PermExpr a -> PermExpr a -> WideningM (PermExpr a)
 
 -- If both sides are equal, return one of the sides
-widenExpr _ e1 e2 | e1 == e2 = return e1
+widenExpr' _ e1 e2 | e1 == e2 = return e1
 
 -- If both sides are variables, look up their permissions and whether they have
 -- been visited and use that information to decide what to do
-widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2@(asVarOffset ->
+widenExpr' tp e1@(asVarOffset -> Just (x1, off1)) e2@(asVarOffset ->
                                                      Just (x2, off2)) =
   do p1 <- getVarPermM x1
      p2 <- getVarPermM x2
@@ -311,7 +317,7 @@ widenExpr tp e1@(asVarOffset -> Just (x1, off1)) e2@(asVarOffset ->
 
 -- If one side is a variable x and the other is not, then the non-variable side
 -- cannot have any permissions, and there are fewer cases than the above
-widenExpr tp (asVarOffset -> Just (x1, off1)) e2 =
+widenExpr' tp (asVarOffset -> Just (x1, off1)) e2 =
   do p1 <- getVarPermM x1
      case p1 of
 
@@ -327,7 +333,7 @@ widenExpr tp (asVarOffset -> Just (x1, off1)) e2 =
             return $ PExpr_Var x
 
 -- Similar to the previous case, but with the variable on the right
-widenExpr tp e1 (asVarOffset -> Just (x2, off2)) =
+widenExpr' tp e1 (asVarOffset -> Just (x2, off2)) =
   do p2 <- getVarPermM x2
      case p2 of
 
@@ -343,11 +349,11 @@ widenExpr tp e1 (asVarOffset -> Just (x2, off2)) =
             return $ PExpr_Var x
 
 -- Widen two structs by widening their contents
-widenExpr (StructRepr tps) (PExpr_Struct es1) (PExpr_Struct es2) =
+widenExpr' (StructRepr tps) (PExpr_Struct es1) (PExpr_Struct es2) =
   PExpr_Struct <$> widenExprs (mkCruCtx tps) es1 es2
 
 -- Widen llvmwords by widening the words
-widenExpr (LLVMPointerRepr w) (PExpr_LLVMWord e1) (PExpr_LLVMWord e2) =
+widenExpr' (LLVMPointerRepr w) (PExpr_LLVMWord e1) (PExpr_LLVMWord e2) =
   PExpr_LLVMWord <$> widenExpr (BVRepr w) e1 e2
 
 -- Widen named shapes with the same names
@@ -355,27 +361,27 @@ widenExpr (LLVMPointerRepr w) (PExpr_LLVMWord e1) (PExpr_LLVMWord e2) =
 -- FIXME: we currently only handle shapes with no modalities, because the
 -- modalities only come about when proving equality shapes, which themselves are
 -- only really used by memcpy and similar functions
-widenExpr _ (PExpr_NamedShape Nothing Nothing nmsh1 args1)
+widenExpr' _ (PExpr_NamedShape Nothing Nothing nmsh1 args1)
   (PExpr_NamedShape Nothing Nothing nmsh2 args2)
   | Just (Refl,Refl) <- namedShapeEq nmsh1 nmsh2 =
     PExpr_NamedShape Nothing Nothing nmsh1 <$>
     widenExprs (namedShapeArgs nmsh1) args1 args2
 
-widenExpr (LLVMShapeRepr w) (PExpr_EqShape e1) (PExpr_EqShape e2) =
+widenExpr' (LLVMShapeRepr w) (PExpr_EqShape e1) (PExpr_EqShape e2) =
   PExpr_EqShape <$> widenExpr (LLVMBlockRepr w) e1 e2
 
-widenExpr tp (PExpr_PtrShape Nothing Nothing sh1)
+widenExpr' tp (PExpr_PtrShape Nothing Nothing sh1)
   (PExpr_PtrShape Nothing Nothing sh2) =
   PExpr_PtrShape Nothing Nothing <$> widenExpr tp sh1 sh2
 
-widenExpr _ (PExpr_FieldShape (LLVMFieldShape p1)) (PExpr_FieldShape
+widenExpr' _ (PExpr_FieldShape (LLVMFieldShape p1)) (PExpr_FieldShape
                                                     (LLVMFieldShape p2))
   | Just Refl <- testEquality (exprLLVMTypeWidth p1) (exprLLVMTypeWidth p2) =
     PExpr_FieldShape <$> LLVMFieldShape <$> widenPerm knownRepr p1 p2
 
 -- Array shapes can only be widened if they have the same length, stride, and
 -- fields whose ith fields have the same size for each i
-widenExpr _ (PExpr_ArrayShape len1 stride1 flds1) (PExpr_ArrayShape
+widenExpr' _ (PExpr_ArrayShape len1 stride1 flds1) (PExpr_ArrayShape
                                                    len2 stride2 flds2)
   | bvEq len1 len2 && stride1 == stride2
   , and (zipWith
@@ -391,28 +397,28 @@ widenExpr _ (PExpr_ArrayShape len1 stride1 flds1) (PExpr_ArrayShape
 
 -- FIXME: there should be some check that the first shapes have the same length,
 -- though this is more complex if they might have free variables...?
-widenExpr tp (PExpr_SeqShape sh1 sh1') (PExpr_SeqShape sh2 sh2') =
+widenExpr' tp (PExpr_SeqShape sh1 sh1') (PExpr_SeqShape sh2 sh2') =
   PExpr_SeqShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh1' sh2'
 
-widenExpr tp (PExpr_OrShape sh1 sh1') (PExpr_OrShape sh2 sh2') =
+widenExpr' tp (PExpr_OrShape sh1 sh1') (PExpr_OrShape sh2 sh2') =
   PExpr_OrShape <$> widenExpr tp sh1 sh2 <*> widenExpr tp sh1' sh2'
 
-widenExpr tp (PExpr_ExShape mb_sh1) sh2 =
+widenExpr' tp (PExpr_ExShape mb_sh1) sh2 =
   do x <- bindFreshVar knownRepr
      widenExpr tp (varSubst (singletonVarSubst x) mb_sh1) sh2
 
-widenExpr tp sh1 (PExpr_ExShape mb_sh2) =
+widenExpr' tp sh1 (PExpr_ExShape mb_sh2) =
   do x <- bindFreshVar knownRepr
      widenExpr tp sh1 (varSubst (singletonVarSubst x) mb_sh2)
 
 -- NOTE: this assumes that permission expressions only occur in covariant
 -- positions
-widenExpr (ValuePermRepr tp) (PExpr_ValPerm p1) (PExpr_ValPerm p2) =
+widenExpr' (ValuePermRepr tp) (PExpr_ValPerm p1) (PExpr_ValPerm p2) =
   PExpr_ValPerm <$> widenPerm tp p1 p2
 
 -- Default case: widen two unequal expressions by making a fresh output
 -- existential variable, which could be equal to either
-widenExpr tp _ _ =
+widenExpr' tp _ _ =
   do x <- bindFreshVar tp
      visitM x
      return $ PExpr_Var x
@@ -511,10 +517,18 @@ widenAtomicPerms tp (_ : ps1) ps2 = widenAtomicPerms tp ps1 ps2
 
 -- | Widen permissions against each other
 widenPerm :: TypeRepr a -> ValuePerm a -> ValuePerm a -> WideningM (ValuePerm a)
-widenPerm tp (ValPerm_Eq e1) (ValPerm_Eq e2) =
+widenPerm tp p1 p2 =
+  traceM (\i ->
+           fillSep [pretty "widenPerm", permPretty i p1, permPretty i p2]) >>
+  widenPerm' tp p1 p2
+
+widenPerm' :: TypeRepr a -> ValuePerm a -> ValuePerm a ->
+              WideningM (ValuePerm a)
+
+widenPerm' tp (ValPerm_Eq e1) (ValPerm_Eq e2) =
   ValPerm_Eq <$> widenExpr tp e1 e2
 
-widenPerm tp (ValPerm_Eq (asVarOffset -> Just (x1, off1))) p2 =
+widenPerm' tp (ValPerm_Eq (asVarOffset -> Just (x1, off1))) p2 =
   do p1 <- getVarPermM x1
      isv1 <- isVisitedM x1
      case (p1, isv1) of
@@ -533,7 +547,7 @@ widenPerm tp (ValPerm_Eq (asVarOffset -> Just (x1, off1))) p2 =
             setVarPermM x p1''
             return (ValPerm_Eq $ PExpr_Var x)
 
-widenPerm tp p1 (ValPerm_Eq (asVarOffset -> Just (x2, off2))) =
+widenPerm' tp p1 (ValPerm_Eq (asVarOffset -> Just (x2, off2))) =
   do p2 <- getVarPermM x2
      isv2 <- isVisitedM x2
      case (p2, isv2) of
@@ -552,24 +566,24 @@ widenPerm tp p1 (ValPerm_Eq (asVarOffset -> Just (x2, off2))) =
             setVarPermM x p2''
             return (ValPerm_Eq $ PExpr_Var x)
 
-widenPerm tp (ValPerm_Or p1 p1') (ValPerm_Or p2 p2') =
+widenPerm' tp (ValPerm_Or p1 p1') (ValPerm_Or p2 p2') =
   ValPerm_Or <$> widenPerm tp p1 p2 <*> widenPerm tp p1' p2'
-widenPerm tp (ValPerm_Exists mb_p1) p2 =
+widenPerm' tp (ValPerm_Exists mb_p1) p2 =
   do x <- bindFreshVar knownRepr
      widenPerm tp (varSubst (singletonVarSubst x) mb_p1) p2
-widenPerm tp p1 (ValPerm_Exists mb_p2) =
+widenPerm' tp p1 (ValPerm_Exists mb_p2) =
   do x <- bindFreshVar knownRepr
      widenPerm tp p1 (varSubst (singletonVarSubst x) mb_p2)
-widenPerm _ (ValPerm_Named npn1 args1 off1) (ValPerm_Named npn2 args2 off2)
+widenPerm' _ (ValPerm_Named npn1 args1 off1) (ValPerm_Named npn2 args2 off2)
   | Just (Refl, Refl, Refl) <- testNamedPermNameEq npn1 npn2
   , offsetsEq off1 off2 =
     (\args -> ValPerm_Named npn1 args off1) <$>
     widenExprs (namedPermNameArgs npn1) args1 args2
-widenPerm _ (ValPerm_Var x1 off1) (ValPerm_Var x2 off2)
+widenPerm' _ (ValPerm_Var x1 off1) (ValPerm_Var x2 off2)
   | x1 == x2 && offsetsEq off1 off2 = return $ ValPerm_Var x1 off1
-widenPerm tp (ValPerm_Conj ps1) (ValPerm_Conj ps2) =
+widenPerm' tp (ValPerm_Conj ps1) (ValPerm_Conj ps2) =
   ValPerm_Conj <$> widenAtomicPerms tp ps1 ps2
-widenPerm _ _ _ = return ValPerm_True
+widenPerm' _ _ _ = return ValPerm_True
 
 
 -- | Widen a sequence of permissions
@@ -646,14 +660,26 @@ widen tops args (Some (ArgVarPerms vars1 mb_perms1)) (Some (ArgVarPerms
      setVarPermsM ns2 ps2
      let (tops1, locals1) = RL.split tops (cruCtxProxies args) args_ns1
      let (tops2, locals2) = RL.split tops (cruCtxProxies args) args_ns2
-     setVarNamesM "top" (RL.append tops1 tops2)
-     setVarNamesM "local" (RL.append locals1 locals2)
-     setVarNamesM "var" (RL.append vars1_ns vars2_ns)
+     setVarNamesM "topL" tops1
+     setVarNamesM "topR" tops2
+     setVarNamesM "localL" locals1
+     setVarNamesM "localR" locals2
+     setVarNamesM "varL" vars1_ns
+     setVarNamesM "varR" vars2_ns
+     let dist_ps1 = RL.map2 VarAndPerm (RL.append args_ns1 vars1_ns) ps1
+     let dist_ps2 = RL.map2 VarAndPerm ns2 ps2
      traceM (\i ->
-              fillSep [pretty "Widening",
-                       permPretty i ps1,
-                       pretty "Against",
-                       permPretty i ps2])
+              pretty "Widening" <> line <>
+              indent 2 (permPretty i dist_ps1) <> line <>
+              pretty "Against" <> line <>
+              indent 2 (permPretty i dist_ps2))
      void $ widenExprs all_args (RL.map PExpr_Var args_ns1) (RL.map
                                                              PExpr_Var args_ns2)
+     wnmap <- view wsNameMap <$> get
+     traceM (\i ->
+              pretty "Widening returning:" <> line <>
+              indent 2 (fillSep $
+                        map (\(NameAndElem x (Pair p _)) ->
+                              permPretty i x <> colon <> permPretty i p) $
+                        NameMap.assocs wnmap))
      return ()
