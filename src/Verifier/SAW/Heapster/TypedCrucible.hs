@@ -1383,16 +1383,18 @@ entrySetCallSite siteID perms_in entry
   , Just Refl <- testEquality (callSiteVars siteID) (callSiteVars $
                                                      typedCallSiteID site)
   , perms_in == typedCallSitePerms site =
-    entry
+    trace ("entrySetCallSite (no change): " ++ show siteID) entry
 -- If the caller is in the list of call sites but does not have the right
 -- permissions, replace it with a new, empty call site
 entrySetCallSite siteID perms_in entry
   | Just i <- typedEntryCallerIx siteID entry =
+    trace ("entrySetCallSite (replacing call site): " ++ show siteID) $
     entry { typedEntryCallers =
               replaceNth i (Some $ emptyTypedCallSite siteID perms_in)
               (typedEntryCallers entry) }
 -- Otherwise, the caller does not already have a call site, so add a new one
 entrySetCallSite siteID perms_in entry =
+  trace ("entrySetCallSite (new call site): " ++ show siteID) $
   entry { typedEntryCallers =
             typedEntryCallers entry ++ [Some $
                                         emptyTypedCallSite siteID perms_in] }
@@ -3700,13 +3702,16 @@ visitEntry :: (PermCheckExtC ext, CtxToRList cargs ~ args) =>
               TopPermCheckM ext cblocks blocks tops ret
               (Some (TypedEntry TCPhase ext blocks tops ret args))
 
-visitEntry _ _ (TypedEntry {..})
-  | tracePretty (vsep [pretty "vistEntry with input perms:",
-                       permPretty emptyPPInfo typedEntryPermsIn]) False = undefined
 -- If the entry is already complete, do nothing
 visitEntry _ _ entry
-  | isJust $ completeTypedEntry entry = return $ Some entry
+  | isJust $ completeTypedEntry entry =
+    trace ("visitEntry " ++ show (typedEntryID entry) ++ ": no change") $
+    return $ Some entry
 -- Otherwise, visit the call sites, widen if needed, and type-check the body
+visitEntry _ _ (TypedEntry {..})
+  | tracePretty (vsep [pretty ("visitEntry " ++ show typedEntryID
+                               ++ " with input perms:"),
+                       permPretty emptyPPInfo typedEntryPermsIn]) False = undefined
 visitEntry can_widen blk entry =
   mapM (traverseF $
         visitCallSite entry) (typedEntryCallers entry) >>= \callers ->
@@ -3715,7 +3720,8 @@ visitEntry can_widen blk entry =
       Some entry' -> visitEntry False blk entry'
   else
     do body <- maybe (tcBlockEntryBody blk entry) return (typedEntryBody entry)
-       return $ Some $ entry { typedEntryBody = Just body }
+       return $ Some $ entry { typedEntryCallers = callers,
+                               typedEntryBody = Just body }
 
 -- | Visit a block by visiting all its entrypoints
 visitBlock :: PermCheckExtC ext =>
