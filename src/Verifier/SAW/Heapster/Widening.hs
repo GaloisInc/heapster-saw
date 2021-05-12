@@ -432,6 +432,32 @@ widenExprs (CruCtxCons tps tp) (es1 :>: e1) (es2 :>: e2) =
   (:>:) <$> widenExprs tps es1 es2 <*> widenExpr tp e1 e2
 
 
+-- | Take two block permissions @bp1@ and @bp2@ with the same offset and use
+-- 'splitLLVMBlockPerm' to remove any parts of them that do not overlap,
+-- returning some @bp1'@ and @bp2'@ with the same range, along with additional
+-- portions of @bp1@ and @bp2@ that were removed
+equalizeLLVMBlockRanges' :: (1 <= w, KnownNat w) =>
+                            LLVMBlockPerm w -> LLVMBlockPerm w ->
+                            Maybe (LLVMBlockPerm w, LLVMBlockPerm w,
+                                   [LLVMBlockPerm w], [LLVMBlockPerm w])
+equalizeLLVMBlockRanges' bp1 bp2
+  | not (bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2)) =
+    error "equalizeLLVMBlockRanges'"
+equalizeLLVMBlockRanges' bp1 bp2
+  | bvEq (llvmBlockLen bp1) (llvmBlockLen bp2) =
+    return (bp1, bp2, [], [])
+equalizeLLVMBlockRanges' bp1 bp2
+  | bvLeq (llvmBlockLen bp1) (llvmBlockLen bp2) =
+    do (bp2', bp2'') <- splitLLVMBlockPerm (bvAdd (llvmBlockOffset bp1)
+                                            (llvmBlockLen bp1)) bp2
+       return (bp1, bp2', [], [bp2''])
+equalizeLLVMBlockRanges' bp1 bp2
+  | bvLeq (llvmBlockLen bp2) (llvmBlockLen bp1) =
+    do (bp1', bp1'') <- splitLLVMBlockPerm (bvAdd (llvmBlockOffset bp2)
+                                            (llvmBlockLen bp2)) bp1
+       return (bp1', bp2, [bp1''], [])
+equalizeLLVMBlockRanges' _ _ = Nothing
+
 -- | Take two block permissions @bp1@ and @bp2@ whose ranges overlap and use
 -- 'splitLLVMBlockPerm' to remove any parts of them that do not overlap,
 -- returning some @bp1'@ and @bp2'@ with the same range, along with additional
@@ -441,30 +467,17 @@ equalizeLLVMBlockRanges :: (1 <= w, KnownNat w) =>
                            Maybe (LLVMBlockPerm w, LLVMBlockPerm w,
                                   [LLVMBlockPerm w], [LLVMBlockPerm w])
 equalizeLLVMBlockRanges bp1 bp2
-  | bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2)
-  , bvEq (llvmBlockLen bp1) (llvmBlockLen bp2) =
-    return (bp1, bp2, [], [])
-equalizeLLVMBlockRanges bp1 bp2
-  | bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2)
-  , bvLeq (llvmBlockLen bp1) (llvmBlockLen bp2) =
-    do (bp2', bp2'') <- splitLLVMBlockPerm (bvAdd (llvmBlockOffset bp1)
-                                            (llvmBlockLen bp1)) bp2
-       return (bp1, bp2', [], [bp2''])
-equalizeLLVMBlockRanges bp1 bp2
-  | bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2)
-  , bvLeq (llvmBlockLen bp2) (llvmBlockLen bp1) =
-    do (bp1', bp1'') <- splitLLVMBlockPerm (bvAdd (llvmBlockOffset bp2)
-                                            (llvmBlockLen bp2)) bp1
-       return (bp1', bp2, [bp1''], [])
+  | bvEq (llvmBlockOffset bp1) (llvmBlockOffset bp2) =
+    equalizeLLVMBlockRanges' bp1 bp2
 equalizeLLVMBlockRanges bp1 bp2
   | bvLeq (llvmBlockOffset bp1) (llvmBlockOffset bp2) =
     do (bp1', bp1'') <- splitLLVMBlockPerm (llvmBlockOffset bp2) bp1
-       (bp1_ret, bp2_ret, bps1, bps2) <- equalizeLLVMBlockRanges bp1'' bp2
+       (bp1_ret, bp2_ret, bps1, bps2) <- equalizeLLVMBlockRanges' bp1'' bp2
        return (bp1_ret, bp2_ret, bp1':bps1, bps2)
 equalizeLLVMBlockRanges bp1 bp2
   | bvLeq (llvmBlockOffset bp2) (llvmBlockOffset bp1) =
     do (bp2', bp2'') <- splitLLVMBlockPerm (llvmBlockOffset bp1) bp2
-       (bp1_ret, bp2_ret, bps1, bps2) <- equalizeLLVMBlockRanges bp1 bp2''
+       (bp1_ret, bp2_ret, bps1, bps2) <- equalizeLLVMBlockRanges' bp1 bp2''
        return (bp1_ret, bp2_ret, bps1, bp2':bps2)
 equalizeLLVMBlockRanges _ _ = Nothing
 
@@ -484,20 +497,50 @@ widenBlockPerm bp1 bp2 =
 -- | Widen a sequence of atomic permissions against each other
 widenAtomicPerms :: TypeRepr a -> [AtomicPerm a] -> [AtomicPerm a] ->
                     WideningM [AtomicPerm a]
+widenAtomicPerms tp ps1 ps2 =
+  traceM (\i ->
+           fillSep [pretty "widenAtomicPerms",
+                    permPretty i ps1, permPretty i ps2]) >>
+  widenAtomicPerms' tp ps1 ps2
+
+widenAtomicPerms' :: TypeRepr a -> [AtomicPerm a] -> [AtomicPerm a] ->
+                     WideningM [AtomicPerm a]
 
 -- If one side is empty, we return the empty list, i.e., true
-widenAtomicPerms _ [] _ = return []
-widenAtomicPerms _ _ [] = return []
+widenAtomicPerms' _ [] _ = return []
+widenAtomicPerms' _ _ [] = return []
 
 -- If there is a permission on the right that equals p1, use p1, and recursively
 -- widen the remaining permissions
-widenAtomicPerms tp (p1 : ps1) ps2
+widenAtomicPerms' tp (p1 : ps1) ps2
   | Just i <- findIndex (== p1) ps2 =
     (p1 :) <$> widenAtomicPerms tp ps1 (deleteNth i ps2)
 
+-- FIXME HERE NOW: need to unify the lengths of array perms
+
+-- If we have array permissions with the same offset, length, and stride on both
+-- sides, check that their fields are the same and equalize their borrows
+--
+-- FIXME: handle arrays with different lengths, and widen their fields
+widenAtomicPerms' tp (Perm_LLVMArray ap1 : ps1) ps2
+  | Just i <- findIndex (\case
+                            Perm_LLVMArray ap2 ->
+                              llvmArrayAbsOffsets ap1
+                              == llvmArrayAbsOffsets ap2
+                            _ -> False) ps2
+  , Perm_LLVMArray ap2 <- ps2!!i
+  , llvmArrayStride ap1 == llvmArrayStride ap2
+  , llvmArrayFields ap1 == llvmArrayFields ap2 =
+    -- NOTE: at this point, ap1 and ap2 are equal except for perhaps their
+    -- borrows, so we just filter out the borrows in ap1 that are also in ap2
+    (Perm_LLVMArray (ap1 { llvmArrayBorrows =
+                             filter (flip elem (llvmArrayBorrows ap2))
+                             (llvmArrayBorrows ap1) }) :) <$>
+    widenAtomicPerms tp ps1 (deleteNth i ps2)
+
 -- If the first permission on the left is an LLVM permission overlaps with some
 -- permission on the right, widen these against each other
-widenAtomicPerms tp@(LLVMPointerRepr w) (p1 : ps1) ps2
+widenAtomicPerms' tp@(LLVMPointerRepr w) (p1 : ps1) ps2
   | Just bp1 <- llvmAtomicPermToBlock p1
   , rng1 <- llvmBlockRange bp1
   , Just i <-
@@ -512,7 +555,7 @@ widenAtomicPerms tp@(LLVMPointerRepr w) (p1 : ps1) ps2
       (map Perm_LLVMBlock bps2_rem ++ deleteNth i ps2))
 
 -- Default: cannot widen p1 against any p2 on the right, so drop it and recurse
-widenAtomicPerms tp (_ : ps1) ps2 = widenAtomicPerms tp ps1 ps2
+widenAtomicPerms' tp (_ : ps1) ps2 = widenAtomicPerms tp ps1 ps2
 
 
 -- | Widen permissions against each other
