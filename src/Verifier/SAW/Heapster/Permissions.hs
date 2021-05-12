@@ -3079,7 +3079,8 @@ llvmAtomicPermToBlock :: AtomicPerm (LLVMPointerType w) ->
                          Maybe (LLVMBlockPerm w)
 llvmAtomicPermToBlock (Perm_LLVMField fp) = Just $ llvmFieldPermToBlock fp
 llvmAtomicPermToBlock (Perm_LLVMArray ap)
-  | LLVMArrayField fp : _ <- llvmArrayFields ap
+  | [] <- llvmArrayBorrows ap
+  , LLVMArrayField fp : _ <- llvmArrayFields ap
   , Just shs <-
       mapM (\case
                LLVMArrayField fp'
@@ -3131,7 +3132,8 @@ llvmAtomicPermLen :: AtomicPerm (LLVMPointerType w) ->
                      Maybe (PermExpr (BVType w))
 llvmAtomicPermLen = fmap llvmBlockLen . llvmAtomicPermToBlock
 
--- | Get the range of offsets of an atomic permission, if it has one
+-- | Get the range of offsets of an atomic permission, if it has one. Note that
+-- arrays with borrows do not have a well-defined range.
 llvmAtomicPermRange :: AtomicPerm (LLVMPointerType w) -> Maybe (BVRange w)
 llvmAtomicPermRange p = fmap llvmBlockRange $ llvmAtomicPermToBlock p
 
