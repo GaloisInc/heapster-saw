@@ -302,6 +302,8 @@ permPrettyExprMb f mb =
   do docs <- traverseRAssign (\n -> Constant <$> permPrettyM n) ns
      f docs $ permPrettyM a
 
+-- FIXME: no longer needed?
+{-
 permPrettyPermMb :: PermPretty a =>
                     (RAssign (Constant (Doc ann)) ctx -> PermPPM (Doc ann) -> PermPPM (Doc ann)) ->
                     Mb (ctx :: RList Type) a -> PermPPM (Doc ann)
@@ -310,16 +312,21 @@ permPrettyPermMb f mb =
   local (ppInfoAddPermNames "z" ns) $
   do docs <- traverseRAssign (\n -> Constant <$> permPrettyM n) ns
      f docs $ permPrettyM a
+-}
 
 instance PermPretty a => PermPretty (Mb (ctx :: RList CrucibleType) a) where
   permPrettyM =
     permPrettyExprMb $ \docs ppm ->
-    (\pp -> hang 2 (tupled (RL.toList docs) <> dot <> softline <> pp)) <$> ppm
+    (\pp ->
+      PP.group (tupled (RL.toList docs) <> dot <> line <> indent 2 pp)) <$> ppm
 
+-- FIXME: no longer needed?
+{-
 instance PermPretty a => PermPretty (Mb (ctx :: RList Type) a) where
   permPrettyM =
     permPrettyPermMb $ \docs ppm ->
-    (\pp -> hang 2 (tupled (RL.toList docs) <> dot <> softline <> pp)) <$> ppm
+    (\pp -> PP.group (tupled (RL.toList docs) <> dot <> line <> pp)) <$> ppm
+-}
 
 instance PermPretty Integer where
   permPrettyM = return . pretty
@@ -2582,10 +2589,10 @@ instance (1 <= w, KnownNat w) => PermPretty (LLVMArrayPerm w) where
        let pp_stride = pretty (show llvmArrayStride)
        pp_flds <- mapM permPrettyM llvmArrayFields
        pp_bs <- mapM permPrettyM llvmArrayBorrows
-       return (pretty "array" <>
-               parens (ppCommaSep [pp_off, pretty "<" <> pp_len,
-                                   pretty "*" <> pp_stride,
-                                   list pp_flds, list pp_bs]))
+       return $ PP.group (pretty "array" <>
+                          parens (ppCommaSep [pp_off, pretty "<" <> pp_len,
+                                              pretty "*" <> pp_stride,
+                                              list pp_flds, list pp_bs]))
 
 instance (1 <= w, KnownNat w) => PermPretty (LLVMBlockPerm w) where
   permPrettyM (LLVMBlockPerm {..}) =
@@ -2594,8 +2601,8 @@ instance (1 <= w, KnownNat w) => PermPretty (LLVMBlockPerm w) where
        pp_off <- permPrettyM llvmBlockOffset
        pp_len <- permPrettyM llvmBlockLen
        pp_sh <- permPrettyM llvmBlockShape
-       return (pp_l <> pretty "memblock" <>
-               parens (ppCommaSep [pp_rw, pp_off, pp_len, pp_sh]))
+       return $ PP.group (pp_l <> pretty "memblock" <>
+                          parens (ppCommaSep [pp_rw, pp_off, pp_len, pp_sh]))
 
 instance PermPretty (AtomicPerm a) where
   permPrettyM (Perm_LLVMField fp) = permPrettyLLVMField False fp
