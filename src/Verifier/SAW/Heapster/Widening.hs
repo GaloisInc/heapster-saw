@@ -40,6 +40,8 @@ import Control.Lens hiding ((:>), Index, Empty, ix, op)
 
 import Data.Parameterized.Some
 
+import Prettyprinter
+
 import Lang.Crucible.LLVM.MemModel
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
@@ -115,14 +117,20 @@ instance Monad (PolyContT r m) where
   (PolyContT m) >>= f =
     PolyContT $ \k -> m $ \a -> runPolyContT (f a) k
 
+data WidState = WidState { _wsNameMap :: WidNameMap,
+                           _wsPPInfo :: PPInfo }
+
+makeLenses ''WidState
+
 type WideningM =
-  StateT WidNameMap (PolyContT ExtVarPermsFun Identity)
+  StateT WidState (PolyContT ExtVarPermsFun Identity)
 
 runWideningM :: WideningM () -> WidNameMap -> RAssign Name args ->
                 ExtVarPerms args
 runWideningM m wnmap =
   applyExtVarPermsFun $ runIdentity $
-  runPolyContT (runStateT m wnmap) (Identity . wnMapExtWidFun . snd)
+  runPolyContT (runStateT m $ WidState wnmap emptyPPInfo)
+  (Identity . wnMapExtWidFun . _wsNameMap . snd)
 
 openMb :: CruCtx ctx -> Mb ctx a -> WideningM (RAssign Name ctx, a)
 openMb ctx mb_a =
@@ -133,20 +141,26 @@ openMb ctx mb_a =
   (nuMulti (cruCtxProxies ctx) id) mb_a
 
 bindFreshVar :: TypeRepr tp -> WideningM (ExprVar tp)
-bindFreshVar tp = snd <$> openMb (singletonCruCtx tp) (nu id)
+bindFreshVar tp =
+  (snd <$> openMb (singletonCruCtx tp) (nu id)) >>= \n ->
+  setVarNameM "var" n >>
+  return n
 
 visitM :: ExprVar a -> WideningM ()
-visitM n = modify $ wnMapAlter (\(Pair p _) -> Pair p (Constant True)) n
+visitM n = modify $ over wsNameMap $ wnMapAlter (\(Pair p _) ->
+                                                  Pair p (Constant True)) n
 
 isVisitedM :: ExprVar a -> WideningM Bool
 isVisitedM n =
-  maybe False (\(Pair _ (Constant b)) -> b) <$> NameMap.lookup n <$> get
+  maybe False (\(Pair _ (Constant b)) -> b) <$>
+  NameMap.lookup n <$> view wsNameMap <$> get
 
 getVarPermM :: ExprVar a -> WideningM (ValuePerm a)
-getVarPermM n = wnMapGetPerm n <$> get
+getVarPermM n = wnMapGetPerm n <$> view wsNameMap <$> get
 
 setVarPermM :: ExprVar a -> ValuePerm a -> WideningM ()
-setVarPermM n p = modify $ wnMapAlter (\(Pair _ isv) -> Pair p isv) n
+setVarPermM n p =
+  modify $ over wsNameMap $ wnMapAlter (\(Pair _ isv) -> Pair p isv) n
 
 -- | Set the permissions for @x &+ off@ to @p@, by setting the permissions for
 -- @x@ to @p - off@
@@ -157,6 +171,17 @@ setOffVarPermM x off p =
 setVarPermsM :: RAssign Name ctx -> RAssign ValuePerm ctx -> WideningM ()
 setVarPermsM MNil MNil = return ()
 setVarPermsM (ns :>: n) (ps :>: p) = setVarPermsM ns ps >> setVarPermM n p
+
+setVarNameM :: String -> ExprVar tp -> WideningM ()
+setVarNameM base x = modify $ over wsPPInfo $ ppInfoAddExprName base x
+
+setVarNamesM :: String -> RAssign ExprVar tps -> WideningM ()
+setVarNamesM base xs = modify $ over wsPPInfo $ ppInfoAddExprNames base xs
+
+traceM :: (PPInfo -> Doc ()) -> WideningM ()
+traceM f =
+  (f <$> view wsPPInfo <$> get) >>= \doc ->
+  tracePretty doc (return ())
 
 
 ----------------------------------------------------------------------
@@ -602,22 +627,33 @@ mbSeparatePrx :: prx ctx1 -> RAssign any ctx2 -> Mb (ctx1 :++: ctx2) a ->
 mbSeparatePrx _ = mbSeparate
 
 -- | Widen two lists of permissions-in-bindings
-widen :: CruCtx args -> Some (ArgVarPerms args) ->
-         Some (ArgVarPerms args) ->
-         Some (ArgVarPerms args)
-widen args (Some (ArgVarPerms vars1 mb_perms1)) (Some (ArgVarPerms
-                                                       vars2 mb_perms2)) =
-  let prxs1 = cruCtxProxies vars1
+widen :: CruCtx tops -> CruCtx args -> Some (ArgVarPerms (tops :++: args)) ->
+         Some (ArgVarPerms (tops :++: args)) ->
+         Some (ArgVarPerms (tops :++: args))
+widen tops args (Some (ArgVarPerms vars1 mb_perms1)) (Some (ArgVarPerms
+                                                            vars2 mb_perms2)) =
+  let all_args = appendCruCtx tops args
+      prxs1 = cruCtxProxies vars1
       prxs2 = cruCtxProxies vars2
       mb_mb_perms1 = mbSeparate prxs1 mb_perms1 in
   completeArgVarPerms $ flip nuMultiWithElim1 mb_mb_perms1 $
   \args_ns1 mb_perms1' ->
   (\m -> runWideningM m NameMap.empty args_ns1) $
   do (vars1_ns, ps1) <- openMb vars1 mb_perms1'
-     (ns2, ps2) <- openMb (appendCruCtx args vars2) mb_perms2
-     let (args_ns2, _) = RL.split args prxs2 ns2
+     (ns2, ps2) <- openMb (appendCruCtx all_args vars2) mb_perms2
+     let (args_ns2, vars2_ns) = RL.split all_args prxs2 ns2
      setVarPermsM (RL.append args_ns1 vars1_ns) ps1
      setVarPermsM ns2 ps2
-     void $ widenExprs args (RL.map PExpr_Var args_ns1) (RL.map
-                                                         PExpr_Var args_ns2)
+     let (tops1, locals1) = RL.split tops (cruCtxProxies args) args_ns1
+     let (tops2, locals2) = RL.split tops (cruCtxProxies args) args_ns2
+     setVarNamesM "top" (RL.append tops1 tops2)
+     setVarNamesM "local" (RL.append locals1 locals2)
+     setVarNamesM "var" (RL.append vars1_ns vars2_ns)
+     traceM (\i ->
+              fillSep [pretty "Widening",
+                       permPretty i ps1,
+                       pretty "Against",
+                       permPretty i ps2])
+     void $ widenExprs all_args (RL.map PExpr_Var args_ns1) (RL.map
+                                                             PExpr_Var args_ns2)
      return ()

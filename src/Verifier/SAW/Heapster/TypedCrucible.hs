@@ -3678,7 +3678,7 @@ widenEntry :: PermCheckExtC ext =>
               TypedEntry TCPhase ext blocks tops ret args ghosts ->
               Some (TypedEntry TCPhase ext blocks tops ret args)
 widenEntry (TypedEntry {..}) =
-  case foldl1' (widen $ appendCruCtx typedEntryTops typedEntryArgs) $
+  case foldl1' (widen typedEntryTops typedEntryArgs) $
        map (fmapF typedCallSiteArgVarPerms) typedEntryCallers of
     Some (ArgVarPerms ghosts perms_in) ->
       let callers =
@@ -3700,6 +3700,9 @@ visitEntry :: (PermCheckExtC ext, CtxToRList cargs ~ args) =>
               TopPermCheckM ext cblocks blocks tops ret
               (Some (TypedEntry TCPhase ext blocks tops ret args))
 
+visitEntry _ _ (TypedEntry {..})
+  | tracePretty (vsep [pretty "vistEntry with input perms:",
+                       permPretty emptyPPInfo typedEntryPermsIn]) False = undefined
 -- If the entry is already complete, do nothing
 visitEntry _ _ entry
   | isJust $ completeTypedEntry entry = return $ Some entry
