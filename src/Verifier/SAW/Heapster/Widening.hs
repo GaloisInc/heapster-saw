@@ -554,6 +554,19 @@ widenAtomicPerms' tp@(LLVMPointerRepr w) (p1 : ps1) ps2
       widenAtomicPerms tp (map Perm_LLVMBlock bps1_rem ++ ps1)
       (map Perm_LLVMBlock bps2_rem ++ deleteNth i ps2))
 
+-- If the LHS is a frame permission such that there is a frame permission on the
+-- RHS with the same list of lengths, widen the expressions
+widenAtomicPerms' tp@(LLVMFrameRepr w) (Perm_LLVMFrame frmps1 : ps1) ps2
+  | Just i <- findIndex (\case
+                            Perm_LLVMFrame _ -> True
+                            _ -> False) ps2
+  , Perm_LLVMFrame frmps2 <- ps2 !! i
+  , map snd frmps1 == map snd frmps2 =
+    do es <- zipWithM (widenExpr
+                       (LLVMPointerRepr w)) (map fst frmps1) (map fst frmps2)
+       (Perm_LLVMFrame (zip es (map snd frmps1)) :) <$>
+         widenAtomicPerms tp ps1 (deleteNth i ps2)
+
 -- Default: cannot widen p1 against any p2 on the right, so drop it and recurse
 widenAtomicPerms' tp (_ : ps1) ps2 = widenAtomicPerms tp ps1 ps2
 
