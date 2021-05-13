@@ -3641,6 +3641,11 @@ proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
         varSubst (permVarSubstOfNames $ RL.append tops_ns args_ns) $
         mbSeparate (cruCtxProxies ghosts) $
         mbValuePermsToDistPerms mb_perms_out in
+  stmtTraceM (\i ->
+               pretty "proveCallSiteImpl:" <> line <>
+               indent 2 (permPretty i perms_in) <> line <>
+               pretty "-o" <> line <>
+               indent 2 (permPretty i perms_out)) >>>
   permGetPPInfo >>>= \ppInfo ->
   -- FIXME HERE NOW: add the input perms and call site to our error message
   let err = pretty "Could not prove" <+> permPretty ppInfo perms_out in
