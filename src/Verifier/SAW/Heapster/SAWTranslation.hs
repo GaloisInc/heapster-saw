@@ -1969,7 +1969,9 @@ assertTopPermM nm x p =
              permPrettyString emptyPPInfo (mbMap2 distPerms1 x p) ++
              "\nFound top permissions:\n" ++
              permPrettyString emptyPPInfo (mbMap2 distPerms1 x' p') ++
-             nlPrettyCallStack callStack)
+             nlPrettyCallStack callStack ++
+             "\nCurrent perm stack:\n" ++
+             permPrettyString emptyPPInfo stack_perms)
 
 -- | Get the (translation of the) perms for a variable
 getVarPermM :: Mb ctx (ExprVar tp) ->
