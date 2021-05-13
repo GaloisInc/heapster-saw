@@ -4767,6 +4767,9 @@ instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (ExprVar a) m where
   genSubst s mb_x = return $ varSubstVar s mb_x
 
+instance SubstVar PermVarSubst m => Substable1 PermVarSubst ExprVar m where
+  genSubst1 = genSubst
+
 instance SubstVar s m => Substable s (PermExpr a) m where
   genSubst s mb_expr = case mbMatch mb_expr of
     [nuMP| PExpr_Var x |] -> substExprVar s x
