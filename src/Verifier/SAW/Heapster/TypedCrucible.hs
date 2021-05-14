@@ -2133,6 +2133,11 @@ stmtRecombinePerms =
   pcmEmbedImplM TypedImplStmt emptyCruCtx (recombinePerms dist_perms) >>>
   greturn ()
 
+-- | Helper function to pretty print "Could not prove ps" for permissions @ps@
+ppProofError :: PermPretty a => PPInfo -> a -> Doc ()
+ppProofError ppInfo mb_ps =
+  nest 2 $ sep [pretty "Could not prove", PP.group (permPretty ppInfo mb_ps)]
+
 -- | Prove a sequence of permissions over some existential variables and append
 -- them to the top of the stack
 stmtProvePermsAppend :: PermCheckExtC ext =>
@@ -2141,7 +2146,7 @@ stmtProvePermsAppend :: PermCheckExtC ext =>
                         (ps_in :++: ps) ps_in (PermSubst vars)
 stmtProvePermsAppend vars ps =
   permGetPPInfo >>>= \ppInfo ->
-  let err = pretty "Could not prove" <+> permPretty ppInfo ps in
+  let err = ppProofError ppInfo ps in
   pcmEmbedImplWithErrM TypedImplStmt vars err (proveVarsImplAppend
                                                ps) >>>= \(s,_) ->
   greturn s
@@ -2154,7 +2159,7 @@ stmtProvePerms :: PermCheckExtC ext =>
                   ps RNil (PermSubst vars)
 stmtProvePerms vars ps =
   permGetPPInfo >>>= \ppInfo ->
-  let err = pretty "Could not prove" <+> permPretty ppInfo ps in
+  let err = ppProofError ppInfo ps in
   pcmEmbedImplWithErrM TypedImplStmt vars err (proveVarsImpl ps) >>>= \(s,_) ->
   greturn s
 
@@ -2167,7 +2172,7 @@ stmtProvePermsFreshLs :: PermCheckExtC ext =>
                          ps RNil (PermSubst vars)
 stmtProvePermsFreshLs vars ps =
   permGetPPInfo >>>= \ppInfo ->
-  let err = pretty "Could not prove" <+> permPretty ppInfo ps in
+  let err = ppProofError ppInfo ps in
   pcmEmbedImplWithErrM TypedImplStmt vars err (instantiateLifetimeVars ps >>>
                                                proveVarsImpl ps) >>>= \(s,_) ->
   greturn s
@@ -2179,9 +2184,7 @@ stmtProvePerm :: (PermCheckExtC ext, KnownRepr CruCtx vars) =>
                  (ps :> a) ps (PermSubst vars)
 stmtProvePerm (TypedReg x) mb_p =
   permGetPPInfo >>>= \ppInfo ->
-  let err =
-        pretty "Could not prove" <+>
-        permPretty ppInfo (fmap (distPerms1 x) mb_p) in
+  let err = ppProofError ppInfo (fmap (distPerms1 x) mb_p) in
   pcmEmbedImplWithErrM TypedImplStmt knownRepr err (proveVarImpl
                                                     x mb_p) >>>= \(s,_) ->
   greturn s
@@ -3560,7 +3563,7 @@ tcTermStmt ctx (Return reg) =
         mbValuePermsToDistPerms (stRetPerms top_st)
       req_perms =
         varSubst (singletonVarSubst $ typedRegVar treg) mb_ret_perms
-      err = pretty "Could not prove:" <+> permPretty (stPPInfo st) req_perms in
+      err = ppProofError (stPPInfo st) req_perms in
   TypedReturn <$>
   pcmRunImplM CruCtxNil err
   (const $ TypedRet Refl (stRetType top_st) treg mb_ret_perms)
@@ -3649,7 +3652,7 @@ proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
                indent 2 (permPretty i perms_out)) >>>
   permGetPPInfo >>>= \ppInfo ->
   -- FIXME HERE NOW: add the input perms and call site to our error message
-  let err = pretty "Could not prove" <+> permPretty ppInfo perms_out in
+  let err = ppProofError ppInfo perms_out in
   pcmRunImplM ghosts err
   (CallSiteImplRet destID ghosts Refl (RL.append tops_ns args_ns))
   (recombinePerms perms_in >>> proveVarsImplVarEVars perms_out) >>>= \impl ->
