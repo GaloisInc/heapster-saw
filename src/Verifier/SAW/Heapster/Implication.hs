@@ -31,14 +31,12 @@ module Verifier.SAW.Heapster.Implication where
 
 import Data.Maybe
 import Data.List
-import Data.Kind as Kind
 import Data.Functor.Compose
 import Data.Reflection
 import qualified Data.BitVector.Sized as BV
 import GHC.TypeLits
 import Control.Lens hiding ((:>), ix)
 import Control.Applicative
-import qualified Control.Monad as M
 import Control.Monad.State.Strict hiding (ap)
 
 import qualified Data.Type.RList as RL
@@ -61,6 +59,7 @@ import Verifier.SAW.Term.Functor (Ident)
 import Data.Binding.Hobbits
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
+import Verifier.SAW.Heapster.GenMonad
 
 import Debug.Trace
 
@@ -2511,307 +2510,6 @@ instance SubstVar s m => Substable1 s (LocalImplRet ps) m where
 
 
 ----------------------------------------------------------------------
--- * Generalized Monads
-----------------------------------------------------------------------
-
--- | A generalized monad has additional "input" and "output" types, that
--- sequence together "backwards" through the generalized bind operation. Mostly
--- this is to support 'GenContM', below.
---
--- Note that a generalized monad @m@ should always be a standard monad when the
--- input and output types are the same; i.e., @m r r@ should always be a
--- monad. I do not know a nice way to encode this in Haskell, however...
-class GenMonad (m :: k -> k -> Type -> Type) where
-  -- | Generalized return
-  greturn :: a -> m r r a
-  -- | Generalized bind, that passes the output of @f@ to the input of @m@
-  (>>>=) :: m r2 r3 a -> (a -> m r1 r2 b) -> m r1 r3 b
-
-infixl 1 >>>=
-infixl 1 >>>
-
-(>>>) :: GenMonad m => m r2 r3 a -> m r1 r2 b -> m r1 r3 b
-m1 >>> m2 = m1 >>>= \a -> seq a m2
-
-class GenMonadT (t :: (k1 -> k1 -> Type -> Type) ->
-                 k2 -> k2 -> Type -> Type) p1 p2 q1 q2 |
-  t q1 q2 -> p1 p2 , t q1 p2 -> q2 p1 , t p1 q2 -> p2 q1 where
-  glift :: GenMonad m => m p1 p2 a -> t m q1 q2 a
-
-
--- | The generalized continuation transformer, which can have different types
--- for the input vs output continuations
-newtype GenContM rin rout a =
-  GenContM { runGenContM :: (a -> rin) -> rout }
-
-liftGenContM :: Monad m => m a -> GenContM (m b) (m b) a
-liftGenContM m = GenContM $ \k -> m >>= k
-
-instance Functor (GenContM r r) where
-  fmap f m = m >>= return . f
-
-instance Applicative (GenContM r r) where
-  pure = return
-  (<*>) = M.ap
-
-instance Monad (GenContM r r) where
-  return x = GenContM $ \(!k) -> k x
-  GenContM m >>= f = GenContM $ \(!k) -> m $ \(!a) -> runGenContM (f a) k
-
-instance GenMonad GenContM where
-  greturn x = GenContM $ \(!k) -> k x
-  (GenContM m) >>>= f = GenContM $ \(!k) -> m $ \(!a) -> runGenContM (f a) k
-
-{-
--- | Change the return type constructor @r@ by mapping the new input type to the
--- old and mapping the old output type to the new
-withAltContM :: (r2 pin2 -> r1 pin1) -> (r1 pout1 -> r2 pout2) ->
-                GenContM r1 pin1 pout1 a -> GenContM r2 pin2 pout2 a
-withAltContM f_in f_out (GenContM m) =
-  GenContM $ \k -> f_out (m (f_in . k))
--}
-
--- | Typeclass for generalized monads that allow a pure capture of the CC
-class GenMonad m => GenMonadCaptureCC rin rout m p1 p2 |
-  m p1 -> rin , m p2 -> rout , m p1 rout -> p2 , m p2 rin -> p1 where
-  gcaptureCC :: ((a -> rin) -> rout) -> m p1 p2 a
-
-instance GenMonadCaptureCC r1 r2 GenContM r1 r2 where
-  gcaptureCC f = GenContM f
-
-instance GenMonadCaptureCC rin rout m q1 q2 =>
-         GenMonadCaptureCC rin rout (GenStateT m) '(s,q1) '(s,q2) where
-  gcaptureCC f = glift $ gcaptureCC f
-
-gmapRet :: GenMonadCaptureCC rin rout m p1 p2 => (rin -> rout) -> m p1 p2 ()
-gmapRet f_ret =
-  gcaptureCC $ \(!k) -> f_ret $ k ()
-
--- | Name-binding in the generalized continuation monad (FIXME: explain)
-gopenBinding :: GenMonadCaptureCC rin rout m p1 p2 =>
-                (Mb ctx rin -> rout) -> Mb ctx a ->
-                m p1 p2 (RAssign Name ctx, a)
-gopenBinding f_ret !mb_a =
-  gcaptureCC $ \ !k ->
-  f_ret $ flip nuMultiWithElim1 mb_a $ \ !names !a ->
-  k (names, a)
-
-gopenBinding1 :: GenMonadCaptureCC rin rout m p1 p2 =>
-                 (Binding a rin -> rout) -> Binding a b ->
-                 m p1 p2 (Name a, b)
-gopenBinding1 f_ret !mb_b =
-  gopenBinding f_ret mb_b >>>= \(_ :>: nm, b) -> greturn (nm,b)
-
-
-{-
-class GenMonad m => GenMonadShift r m | m -> r where
-  gshift :: ((a -> m p1 p1 (r p2)) -> m p3 p4 (r p3)) -> m p2 p4 a
-
-instance GenMonadShift r (GenContM r) where
-  gshift f = GenContM $ \k -> runGenContM (f (\a -> greturn (k a))) id
--}
-
-{-
--- | Running generalized computations in "parallel"
-class GenMonad m => GenMonadPar r m p1 p2 | m p1 p2 -> r where
-  gparallel :: (r -> r -> r) -> m p1 p2 a -> m p1 p2 a -> m p1 p2 a
-
-instance GenMonadPar r2 GenContM r1 r2 where
-  gparallel f (GenContM m1) (GenContM m2) =
-    GenContM $ \k -> f (m1 k) (m2 k)
-
-instance GenMonadPar r m q1 q2 =>
-         GenMonadPar r (GenStateT m) '(s1,q1) '(s2,q2) where
-  gparallel f m1 m2 =
-    GenStateT $ \s ->
-    gparallel f
-    (unGenStateT m1 s) (unGenStateT m2 s)
--}
-
-type family Fst (p :: (k1,k2)) :: k1 where
-  Fst '(x,_) = x
-
-type family Snd (p :: (k1,k2)) :: k2 where
-  Snd '(_,y) = y
-
--- | The generalized state monad. Don't get confused: the parameters are
--- reversed, so @p2@ is the /input/ state param type and @p1@ is the /output/.
-newtype GenStateT (m :: k -> k -> Type -> Type) p1 p2 a =
-  GenStateT { unGenStateT :: Fst p2 -> m (Snd p1) (Snd p2) (a, Fst p1) }
-
--- | This version of 'unGenStateT' tells GHC to make the parameters into actual
--- type-level pairs, i.e., it makes GHC reason extensionally about pairs
-runGenStateT :: GenStateT m '(s1,q1) '(s2,q2) a -> s2 -> m q1 q2 (a, s1)
-runGenStateT = unGenStateT
-
-instance Monad (m (Snd p) (Snd p)) => Functor (GenStateT m p p) where
-  fmap f m = m >>= return . f
-
-instance Monad (m (Snd p) (Snd p)) => Applicative (GenStateT m p p) where
-  pure = return
-  (<*>) = M.ap
-
-instance Monad (m (Snd p) (Snd p)) => Monad (GenStateT m p p) where
-  return x = GenStateT $ \s -> return (x, s)
-  (GenStateT m) >>= f =
-    GenStateT $ \s -> m s >>= \(a, s') -> unGenStateT (f a) s'
-
-instance GenMonadT GenStateT q1 q2 '(s,q1) '(s,q2) where
-  glift m = GenStateT $ \s -> m >>>= \a -> greturn (a, s)
-
-instance GenMonad m => GenMonad (GenStateT m) where
-  greturn x = GenStateT $ \s -> greturn (x, s)
-  (GenStateT m) >>>= f =
-    GenStateT $ \s -> m s >>>= \(a, s') -> unGenStateT (f a) s'
-
--- | FIXME: documentation
-gliftGenStateT :: (GenMonad m) =>
-                  m q1 q2 a -> GenStateT m '(s, q1) '(s, q2) a
-gliftGenStateT m = glift m
-
--- | Run a generalized state computation with a different state type @s2@ inside
--- one with state type @s1@, using a lens-like pair of a getter function to
--- extract out the starting inner @s2@ state from the outer @s1@ state and an
--- update function to update the resulting outer @s1@ state with the final inner
--- @s2@ state.
-withAltStateM :: GenMonad m => (s2' -> s2) -> (s2' -> s1 -> s1') ->
-                 GenStateT m '(s1,q1) '(s2,q2) a ->
-                 GenStateT m '(s1',q1) '(s2',q2) a
-withAltStateM s_get s_update m =
-  gget >>>= \s ->
-  gput (s_get s) >>>
-  m >>>= \a ->
-  gget >>>= \s' ->
-  gput (s_update s s') >>>
-  greturn a
-
-instance (Monad (m (Snd p) (Snd p)), s ~ Fst p) =>
-         MonadState s (GenStateT m p p) where
-  get = GenStateT $ \s -> return (s, s)
-  put s = GenStateT $ \_ -> return ((), s)
-
-class GenMonad m => GenMonadGet s m p | m p -> s where
-  gget :: m p p s
-
-class GenMonad m => GenMonadPut s m p1 p2 | m p1 p2 -> s where
-  gput :: s -> m p1 p2 ()
-
-instance GenMonad m => GenMonadGet s (GenStateT m) '(s,q) where
-  gget = GenStateT $ \(!s) -> greturn (s, s)
-
-instance GenMonad m =>
-         GenMonadPut s1 (GenStateT m) '(s1,q) '(s2,q) where
-  gput !s = GenStateT $ \_ -> greturn ((), s)
-
-gmodify :: (GenMonadGet s1 m p2, GenMonadPut s2 m p1 p2) =>
-           (s1 -> s2) -> m p1 p2 ()
-gmodify f =
-  gget >>>= \(!s) -> gput $! (f s)
-
-{-
-class GenMonad m =>
-      GenMonadState (s :: sk -> Type) (m :: k -> k -> Type -> Type) | m -> s where
-  type GStateParam m (p :: k) :: sk
-  gget :: m p p (s (GStateParam m p))
-  gput :: s (GStateParam m p) -> m p p ()
-
-instance GenMonad m => GenMonadState s (GenStateT s m) where
-  type GStateParam (GenStateT s m) p = Fst p
-  gget = GenStateT $ \s -> greturn (s, s)
-  gput s = GenStateT $ \_ -> greturn ((), s)
--}
-
-
--- | The generalized state-continuation monad
-type GenStateContM s1 r1 s2 r2 = GenStateT GenContM '(s1,r1) '(s2,r2)
-
-{-
--- | Change both the state and return types for the state-continuation monad
-withAltContStateM :: (r2 qin -> r1 qin) -> (r1 qout -> r2 qout) ->
-                     (s2 pout -> s1 pout) -> (s2 pout -> s1 pin -> s2 pin) ->
-                     GenStateContM s1 r1 pin qin pout qout a ->
-                     GenStateContM s2 r2 pin qin pout qout a
-withAltContStateM f_in f_out s_get s_update m =
-  gget >>>= \s ->
-  glift (withAltContM f_in f_out $
-         runGenStateT m $ s_get s) >>>= \(a,s') ->
-  gput (s_update s s') >>>
-  greturn a
--}
-
--- | Map both the state and return types for the state-continuation monad
-gmapRetAndState :: (s2 -> s1) -> (r1 -> r2) -> GenStateContM s1 r1 s2 r2 ()
-gmapRetAndState f_st f_ret =
-  gmodify f_st >>> gmapRet f_ret
-
--- | Run two generalized monad computations "in parallel" and combine their
--- results
---
--- FIXME: figure out an elegant way to write this as a gmonad effect
-gparallel :: (r1 -> r2 -> r_out) ->
-             GenStateContM s_in r_in s_out r1 a ->
-             GenStateContM s_in r_in s_out r2 a ->
-             GenStateContM s_in r_in s_out r_out a
-gparallel f m1 m2 =
-  GenStateT $ \s -> GenContM $ \k ->
-  f (runGenContM (unGenStateT m1 s) k) (runGenContM (unGenStateT m2 s) k)
-
--- | Abort the current state-continuation computation and just return an @r2@
---
--- FIXME: figure out how to write this with something like 'gcaptureCC'...? The
--- problem is that 'gcaptureCC' will not allow us to change the state type...
---
--- IDEA: maybe we can do this with gmapRet (const $ return ret)?
-gabortM :: r2 -> GenStateContM s1 r1 s2 r2 a
-gabortM ret = GenStateT $ \_ -> GenContM $ \_ -> ret
-
--- | Lift a monadic action into a generalized state-continuation monad
-liftGenStateContM :: Monad m => m a -> GenStateContM s (m b) s (m b) a
-liftGenStateContM m = glift $ liftGenContM m
-
-
--- | The generalized reader transformer with a monomorphic read type
-newtype GenMonoReaderT r (m :: k -> k -> Type -> Type) p1 p2 a =
-  GenMonoReaderT { unGenMonoReaderT :: r -> m p1 p2 a }
-
-instance Monad (m p p) => Functor (GenMonoReaderT r m p p) where
-  fmap f m = m >>= return . f
-
-instance Monad (m p p) => Applicative (GenMonoReaderT r m p p) where
-  pure = return
-  (<*>) = M.ap
-
-instance Monad (m p p) => Monad (GenMonoReaderT r m p p) where
-  return x = GenMonoReaderT $ \_ -> return x
-  (GenMonoReaderT m) >>= f =
-    GenMonoReaderT $ \r -> m r >>= \a -> unGenMonoReaderT (f a) r
-
-instance GenMonad m => GenMonad (GenMonoReaderT r m) where
-  greturn x = GenMonoReaderT $ \_ -> greturn x
-  (GenMonoReaderT m) >>>= f =
-    GenMonoReaderT $ \r -> m r >>>= \a -> unGenMonoReaderT (f a) r
-
-instance GenMonadT (GenMonoReaderT r) q1 q2 q1 q2 where
-  glift m = GenMonoReaderT $ \_ -> m
-
-instance GenMonadCaptureCC rin rout m q1 q2 =>
-         GenMonadCaptureCC rin rout (GenMonoReaderT r m) q1 q2 where
-  gcaptureCC f = glift $ gcaptureCC f
-
-instance GenMonadGet s m q => GenMonadGet s (GenMonoReaderT r m) q where
-  gget = glift gget
-
-instance GenMonadPut s m q1 q2 => GenMonadPut s (GenMonoReaderT r m) q1 q2 where
-  gput = glift . gput
-
-class GenMonad m => GenMonadAsk r m p | m p -> r where
-  gask :: m p p r
-
-instance GenMonad m => GenMonadAsk r (GenMonoReaderT r m) p where
-  gask = GenMonoReaderT $ \r -> greturn r
-
-
-----------------------------------------------------------------------
 -- * Permission Implication Monad
 ----------------------------------------------------------------------
 
@@ -2872,7 +2570,7 @@ unextImplState s =
 
 -- | The implication monad is a state-continuation monad that uses 'ImplState'
 type ImplM vars s r ps_out ps_in =
-  GenStateContM (ImplState vars ps_out) (State (Closed s) (PermImpl r ps_out))
+  GenStateCont (ImplState vars ps_out) (State (Closed s) (PermImpl r ps_out))
   (ImplState vars ps_in) (State (Closed s) (PermImpl r ps_in))
 
 
@@ -2883,9 +2581,10 @@ runImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
             ((a, ImplState vars ps_out) -> State (Closed s) (r ps_out)) ->
             ImplM vars s r ps_out ps_in a -> State (Closed s) (PermImpl r ps_in)
 runImplM vars perms env ppInfo fail_prefix do_trace nameTypes k m =
-  runGenContM (runGenStateT m (mkImplState vars perms env ppInfo
-                               fail_prefix do_trace nameTypes))
-  (\as -> PermImpl_Done <$> k as)
+  runGenStateCont
+    m
+    (mkImplState vars perms env ppInfo fail_prefix do_trace nameTypes)
+    (\s a -> PermImpl_Done <$> k (a, s))
 
 -- | Run an 'ImplM' computation that returns a 'PermImpl', by inserting that
 -- 'PermImpl' inside of the larger 'PermImpl' that is built up by the 'ImplM'
@@ -2895,9 +2594,10 @@ runImplImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
                 ImplM vars s r ps_out ps_in (PermImpl r ps_out) ->
                 State (Closed s) (PermImpl r ps_in)
 runImplImplM vars perms env ppInfo fail_prefix do_trace nameTypes m =
-  runGenContM (runGenStateT m (mkImplState vars perms env ppInfo
-                               fail_prefix do_trace nameTypes))
-  (return . fst)
+  runGenStateCont
+    m
+    (mkImplState vars perms env ppInfo fail_prefix do_trace nameTypes)
+    (\_ -> pure)
 
 -- | Embed a sub-computation in a name-binding inside another 'ImplM'
 -- computation, throwing away any state from that sub-computation and returning
@@ -2906,8 +2606,8 @@ embedImplM :: DistPerms ps_in ->
               ImplM RNil s r' ps_out ps_in (r' ps_out) ->
               ImplM vars s r ps ps (PermImpl r' ps_in)
 embedImplM ps_in m =
-  gget >>>= \s ->
-  liftGenStateContM $
+  get >>>= \s ->
+  liftGenStateCont $
   runImplM CruCtxNil (distPermSet ps_in)
   (view implStatePermEnv s) (view implStatePPInfo s)
   (view implStateFailPrefix s) (view implStateDoTrace s)
@@ -2920,8 +2620,8 @@ embedMbImplM :: Mb ctx (PermSet ps_in) ->
                 Mb ctx (ImplM RNil s r' ps_out ps_in (r' ps_out)) ->
                 ImplM vars s r ps ps (Mb ctx (PermImpl r' ps_in))
 embedMbImplM mb_ps_in mb_m =
-  gget >>>= \s ->
-  liftGenStateContM $
+  get >>>= \s ->
+  liftGenStateCont $
   strongMbM (mbMap2
        (\ps_in m ->
          runImplM CruCtxNil ps_in
@@ -2939,29 +2639,29 @@ localImplM ::
   ImplM vars s r ps_out ps_in (PermImpl r ps_out) ->
   ImplM vars s r ps_in ps_in (PermImpl r ps_in)
 localImplM m =
-  gget >>>= \st ->
-  gcaptureCC $ \k -> runGenContM (runGenStateT m st) (return . fst) >>= k
+  get >>>= \st ->
+  gcaptureCC $ \k -> runGenStateCont m st (\_ -> pure) >>= k
 
 -- | Look up the type of an existential variable
 getExVarType :: Member vars tp -> ImplM vars s r ps ps (TypeRepr tp)
 getExVarType memb =
-  (view implStateVars <$> gget) >>>= \varTypes ->
-  greturn (cruCtxLookup varTypes memb)
+  (view implStateVars <$> get) >>>= \varTypes ->
+  pure (cruCtxLookup varTypes memb)
 
 -- | Look up the current partial substitution
 getPSubst :: ImplM vars s r ps ps (PartialSubst vars)
-getPSubst = view implStatePSubst <$> gget
+getPSubst = view implStatePSubst <$> get
 
 -- | Look up the current pretty-printing info
 getPPInfo :: ImplM vars s r ps ps PPInfo
-getPPInfo = view implStatePPInfo <$> gget
+getPPInfo = view implStatePPInfo <$> get
 
 -- | Add a multi-binding for the current existential variables around a value
 -- (that does not use those variables)
 mbVarsM :: a -> ImplM vars s r ps ps (Mb vars a)
 mbVarsM a =
-  (view implStateVars <$> gget) >>>= \vars ->
-  greturn $ mbPure (cruCtxProxies vars) a
+  (view implStateVars <$> get) >>>= \vars ->
+  pure $ mbPure (cruCtxProxies vars) a
 
 -- | Apply the current partial substitution to an expression, failing if the
 -- partial substitution is not complete enough. The supplied 'String' is the
@@ -2972,7 +2672,7 @@ partialSubstForceM :: (NuMatchingAny1 r, PermPretty a,
 partialSubstForceM mb_e caller =
   getPSubst >>>= \psubst ->
   case partialSubst psubst mb_e of
-    Just e -> greturn e
+    Just e -> pure e
     Nothing ->
       implTraceM (\i -> sep [pretty ("Incomplete susbtitution in " ++ caller
                                      ++ " for:"),
@@ -2987,7 +2687,7 @@ modifyPSubst f = gmodify (over implStatePSubst f)
 -- raising an error if it is already set
 setVarM :: Member vars a -> PermExpr a -> ImplM vars s r ps ps ()
 setVarM memb e =
-  (cruCtxProxies <$> view implStateVars <$> gget) >>>= \vars ->
+  (cruCtxProxies <$> view implStateVars <$> get) >>>= \vars ->
   implTraceM (\i -> pretty "Setting" <+>
                     permPretty i (nuMulti vars $ \ns -> RL.get memb ns) <+>
                     pretty "=" <+> permPretty i e) >>>
@@ -3003,14 +2703,13 @@ withExtVarsM m =
   withAltStateM extImplState (const unextImplState) $
   (m >>>= \a ->
     getPSubst >>>= \psubst ->
-    greturn (a,
-             case psubstLookup psubst Member_Base of
+    pure (a, case psubstLookup psubst Member_Base of
                Just e -> e
                Nothing -> zeroOfType knownRepr))
 
 -- | Get the recursive permission recursion flag
 implGetRecRecurseFlag :: ImplM vars s r ps ps (Maybe (Either () ()))
-implGetRecRecurseFlag = view implStateRecRecurseFlag <$> gget
+implGetRecRecurseFlag = view implStateRecRecurseFlag <$> get
 
 -- | Perform either the first, second, or both computations with an 'implCatchM'
 -- between, depending on the recursion flag
@@ -3028,7 +2727,7 @@ implRecFlagCaseM m1 m2 =
 -- right, or fail if we are already recursing on the left
 implSetRecRecurseRightM :: NuMatchingAny1 r => ImplM vars s r ps ps ()
 implSetRecRecurseRightM =
-  gget >>>= \s ->
+  get >>>= \s ->
   case view implStateRecRecurseFlag s of
     Just (Left ()) ->
       implFailMsgM "Tried to unfold a mu on the right after unfolding on the left"
@@ -3038,7 +2737,7 @@ implSetRecRecurseRightM =
 -- if we are already recursing on the right
 implSetRecRecurseLeftM :: NuMatchingAny1 r => ImplM vars s r ps ps ()
 implSetRecRecurseLeftM =
-  gget >>>= \s ->
+  get >>>= \s ->
   case view implStateRecRecurseFlag s of
     Just (Right ()) ->
       implFailMsgM "Tried to unfold a mu on the left after unfolding on the right"
@@ -3048,34 +2747,34 @@ implSetRecRecurseLeftM =
 implLookupNamedPerm :: NamedPermName ns args a ->
                        ImplM vars s r ps ps (NamedPerm ns args a)
 implLookupNamedPerm npn =
-  (view implStatePermEnv <$> gget) >>>= \env ->
+  (view implStatePermEnv <$> get) >>>= \env ->
   case lookupNamedPerm env npn of
-    Just np -> greturn np
+    Just np -> pure np
     Nothing -> error ("Named permission " ++ namedPermNameName npn
                       ++ " not defined!")
 
 -- | Get the current 'PermSet'
 getPerms :: ImplM vars s r ps ps (PermSet ps)
-getPerms = view implStatePerms <$> gget
+getPerms = view implStatePerms <$> get
 
 -- | Look up the current permission for a given variable
 getPerm :: ExprVar a -> ImplM vars s r ps ps (ValuePerm a)
-getPerm x = view (implStatePerms . varPerm x) <$> gget
+getPerm x = view (implStatePerms . varPerm x) <$> get
 
 -- | Get the pointer permissions for a variable @x@, assuming @x@ has LLVM
 -- pointer permissions
 getLLVMPtrPerms :: ExprVar (LLVMPointerType w) ->
                    ImplM vars s r ps ps [LLVMPtrPerm w]
 getLLVMPtrPerms x =
-  view (implStatePerms . varPerm x . llvmPtrPerms) <$> gget
+  view (implStatePerms . varPerm x . llvmPtrPerms) <$> get
 
 -- | Get the distinguished permission stack
 getDistPerms :: ImplM vars s r ps ps (DistPerms ps)
-getDistPerms = view (implStatePerms . distPerms) <$> gget
+getDistPerms = view (implStatePerms . distPerms) <$> get
 
 -- | Get the top permission in the stack
 getTopDistPerm :: ExprVar a -> ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
-getTopDistPerm x = view (implStatePerms . topDistPerm x) <$> gget
+getTopDistPerm x = view (implStatePerms . topDistPerm x) <$> get
 
 -- | Set the current 'PermSet'
 setPerms :: PermSet ps -> ImplM vars s r ps ps ()
@@ -3088,9 +2787,9 @@ setPerm x p = modify $ set (implStatePerms . varPerm x) p
 -- | Get the current lifetime
 getCurLifetime :: ImplM vars s r ps ps (ExprVar LifetimeType)
 getCurLifetime =
-  (view implStateLifetimes <$> gget) >>>= \ls ->
+  (view implStateLifetimes <$> get) >>>= \ls ->
   case ls of
-    l:_ -> greturn l
+    l:_ -> pure l
     [] -> error "getCurLifetime: no current lifetime!"
 
 -- | Push a lifetime onto the lifetimes stack
@@ -3102,14 +2801,14 @@ popLifetime :: ImplM vars s r ps ps (ExprVar LifetimeType)
 popLifetime =
   getCurLifetime >>>= \l ->
   gmodify (over implStateLifetimes tail) >>>
-  greturn l
+  pure l
 
 -- | Push (as in 'implPushM') the permission for the current lifetime
 implPushCurLifetimePermM :: NuMatchingAny1 r => ExprVar LifetimeType ->
                             ImplM vars s r (ps :> LifetimeType) ps ()
 implPushCurLifetimePermM l =
   getCurLifetime >>>= \l' ->
-  (if l == l' then greturn () else
+  (if l == l' then pure () else
      error "implPushLifetimePermM: wrong value for the current lifetime!") >>>
   getPerm l >>>= \p ->
   case p of
@@ -3121,7 +2820,7 @@ implPopCurLifetimePermM :: NuMatchingAny1 r => ExprVar LifetimeType ->
                            ImplM vars s r ps (ps :> LifetimeType) ()
 implPopCurLifetimePermM l =
   getCurLifetime >>>= \l' ->
-  (if l == l' then greturn () else
+  (if l == l' then pure () else
      error "implPopLifetimePermM: wrong value for the current lifetime!") >>>
   getTopDistPerm l >>>= \p ->
   case p of
@@ -3141,9 +2840,9 @@ gmapRetAndPerms f_perms f_impl =
 -- | Look up the type of a free variable
 implGetVarType :: Name a -> ImplM vars s r ps ps (TypeRepr a)
 implGetVarType n =
-  (view implStateNameTypes <$> gget) >>>= \varTypes ->
+  (view implStateNameTypes <$> get) >>>= \varTypes ->
   case NameMap.lookup n varTypes of
-    Just tp -> greturn tp
+    Just tp -> pure tp
     Nothing ->
       implTraceM (\i -> pretty "Could not find type for variable:" <+>
                         permPretty i n) >>>
@@ -3151,14 +2850,14 @@ implGetVarType n =
 
 -- | Look up the types of a list of free variables
 implGetVarTypes :: RAssign Name a -> ImplM vars s r ps ps (CruCtx a)
-implGetVarTypes MNil = greturn CruCtxNil
+implGetVarTypes MNil = pure CruCtxNil
 implGetVarTypes (xs :>: x) =
   CruCtxCons <$> implGetVarTypes xs <*> implGetVarType x
 
 -- | Find the first variable of a specific type
 implFindVarOfType :: TypeRepr a -> ImplM vars s r ps ps (Maybe (Name a))
 implFindVarOfType tp =
-  (view implStateNameTypes <$> gget) >>>= \varTypes ->
+  (view implStateNameTypes <$> get) >>>= \varTypes ->
   return (foldr (\(NameAndElem n tp') rest ->
                   case testEquality tp tp' of
                     Just Refl -> return n
@@ -3168,7 +2867,7 @@ implFindVarOfType tp =
 -- | Remember the types associated with a list of 'Name's, and also ensure those
 -- names have permissions
 implSetNameTypes :: RAssign Name ctx -> CruCtx ctx -> ImplM vars s r ps ps ()
-implSetNameTypes MNil _ = greturn ()
+implSetNameTypes MNil _ = pure ()
 implSetNameTypes (ns :>: n) (CruCtxCons tps tp) =
   gmodify (over implStateNameTypes $ NameMap.insert n tp) >>
   gmodify (over implStatePerms $ initVarPerm n) >>
@@ -3178,6 +2877,9 @@ implSetNameTypes (ns :>: n) (CruCtxCons tps tp) =
 ----------------------------------------------------------------------
 -- * The Permission Implication Rules as Monadic Operations
 ----------------------------------------------------------------------
+
+type family Fst (p :: (k1,k2)) :: k1 where Fst '(x,_) = x
+type family Snd (p :: (k1,k2)) :: k2 where Snd '(_,y) = y
 
 -- | An 'ImplM' continuation for a permission implication rule
 newtype Impl1Cont vars s r ps_r a bs_ps =
@@ -3190,14 +2892,14 @@ implApplyImpl1 :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
                   ImplM vars s r ps_r ps_in a
 implApplyImpl1 impl1 mb_ms =
   getPerms >>>= \perms ->
-  (view implStatePPInfo <$> gget) >>>= \pp_info ->
+  (view implStatePPInfo <$> get) >>>= \pp_info ->
   gmapRet (PermImpl_Step impl1 <$>) >>>
   -- gmapRet (permImplStep impl1 <$>) >>>
   helper (applyImpl1 pp_info impl1 perms) mb_ms
   where
     helper :: MbPermSets ps_outs ->
               RAssign (Impl1Cont vars s r ps_r a) ps_outs ->
-              GenStateContM (ImplState vars ps_r)
+              GenStateCont (ImplState vars ps_r)
               (State (Closed s) (PermImpl r ps_r))
               (ImplState vars ps_in)
               (State (Closed s) (MbPermImpls r ps_outs)) a
@@ -3215,9 +2917,9 @@ implApplyImpl1 impl1 mb_ms =
 -- flag is set
 implTraceM :: (PPInfo -> PP.Doc ann) -> ImplM vars s r ps ps String
 implTraceM f =
-  (view implStateDoTrace <$> gget) >>>= \do_trace ->
-  (f <$> view implStatePPInfo <$> gget) >>>= \doc ->
-  let str = renderDoc doc in fn do_trace str (greturn str)
+  (view implStateDoTrace <$> get) >>>= \do_trace ->
+  (f <$> view implStatePPInfo <$> get) >>>= \doc ->
+  let str = renderDoc doc in fn do_trace str (pure str)
   where fn True  = trace
         fn False = const id
 
@@ -3225,16 +2927,16 @@ implTraceM f =
 implWithoutTracingM :: ImplM vars s r ps_out ps_in a ->
                        ImplM vars s r ps_out ps_in a
 implWithoutTracingM m =
-  (view implStateDoTrace <$> gget) >>>= \saved ->
+  (view implStateDoTrace <$> get) >>>= \saved ->
   gmodify (set implStateDoTrace False) >>>
   m >>>= \a ->
   gmodify (set implStateDoTrace saved) >>>
-  greturn a
+  pure a
 
 -- | Terminate the current proof branch with a failure
 implFailM :: NuMatchingAny1 r => String -> ImplM vars s r ps_any ps a
 implFailM str =
-  (view implStateFailPrefix <$> gget) >>>= \prefix ->
+  (view implStateFailPrefix <$> get) >>>= \prefix ->
   implTraceM (const $ pretty (prefix ++ "Implication failed")) >>>
   implApplyImpl1 (Impl1_Fail (prefix ++ str)) MNil
 
@@ -3276,11 +2978,11 @@ implCatchM m1 m2 =
 implPushM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
              ImplM vars s r (ps :> a) ps ()
 implPushM x p =
-  implApplyImpl1 (Impl1_Push x p) (MNil :>: Impl1Cont (const $ greturn ()))
+  implApplyImpl1 (Impl1_Push x p) (MNil :>: Impl1Cont (const $ pure ()))
 
 -- | Call 'implPushM' for multiple @x:p@ permissions
 implPushMultiM :: NuMatchingAny1 r => DistPerms ps -> ImplM vars s r ps RNil ()
-implPushMultiM DistPermsNil = greturn ()
+implPushMultiM DistPermsNil = pure ()
 implPushMultiM (DistPermsCons ps x p) =
   implPushMultiM ps >>> implPushM x p
 
@@ -3288,7 +2990,7 @@ implPushMultiM (DistPermsCons ps x p) =
 -- by reflexivity if @p=eq(x)@ or push @x:p@ if @x@ has permissions @p@
 implPushOrReflMultiM :: NuMatchingAny1 r => DistPerms ps ->
                         ImplM vars s r ps RNil ()
-implPushOrReflMultiM DistPermsNil = greturn ()
+implPushOrReflMultiM DistPermsNil = pure ()
 implPushOrReflMultiM (DistPermsCons ps x (ValPerm_Eq (PExpr_Var x')))
   | x == x' = implPushOrReflMultiM ps >>> introEqReflM x
 implPushOrReflMultiM (DistPermsCons ps x p) =
@@ -3300,7 +3002,7 @@ implPushOrReflMultiM (DistPermsCons ps x p) =
 implPopM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
             ImplM vars s r ps (ps :> a) ()
 implPopM x p =
-  implApplyImpl1 (Impl1_Pop x p) (MNil :>: Impl1Cont (const $ greturn ()))
+  implApplyImpl1 (Impl1_Pop x p) (MNil :>: Impl1Cont (const $ pure ()))
 
 -- | Eliminate a disjunctive permission @x:(p1 \/ p2)@, building proof trees
 -- that proceed with both @x:p1@ and @x:p2@
@@ -3310,7 +3012,7 @@ implElimOrM x p1 p2 =
   implTraceM (\pp_info -> pretty "Eliminating or:" <+>
                           permPretty pp_info (ValPerm_Or p1 p2)) >>>
   implApplyImpl1 (Impl1_ElimOr x p1 p2)
-  (MNil :>: Impl1Cont (const $ greturn ()) :>: Impl1Cont (const $ greturn ()))
+  (MNil :>: Impl1Cont (const $ pure ()) :>: Impl1Cont (const $ pure ()))
 
 -- | Eliminate an existential permission @x:(exists (y:tp).p)@ in the current
 -- permission set
@@ -3319,14 +3021,14 @@ implElimExistsM :: (NuMatchingAny1 r, KnownRepr TypeRepr tp) =>
                    ImplM vars s r (ps :> a) (ps :> a) ()
 implElimExistsM x p =
   implApplyImpl1 (Impl1_ElimExists x p)
-  (MNil :>: Impl1Cont (const $ greturn ()))
+  (MNil :>: Impl1Cont (const $ pure ()))
 
 -- | Apply a simple implication rule to the top permissions on the stack
 implSimplM :: NuMatchingAny1 r => Proxy ps -> SimplImpl ps_in ps_out ->
               ImplM vars s r (ps :++: ps_out) (ps :++: ps_in) ()
 implSimplM prx simpl =
   implApplyImpl1 (Impl1_Simpl simpl prx)
-  (MNil :>: Impl1Cont (const $ greturn ()))
+  (MNil :>: Impl1Cont (const $ pure ()))
 
 -- | Bind a new variable @x@ that is set to the supplied expression @e@ and has
 -- permissions @eq(e)@. Return @x@.
@@ -3334,9 +3036,9 @@ implLetBindVar :: NuMatchingAny1 r => TypeRepr tp -> PermExpr tp ->
                   ImplM vars s r ps ps (Name tp)
 implLetBindVar tp e =
   implApplyImpl1 (Impl1_LetBind tp e)
-  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \n ->
+  (MNil :>: Impl1Cont (\(_ :>: n) -> pure n)) >>>= \n ->
   implPopM n (ValPerm_Eq e) >>>
-  greturn n
+  pure n
 
 -- | Project out a field of a struct @x@ by binding a fresh variable @y@ for its
 -- contents, and assign the permissions for that field to @y@, replacing them
@@ -3348,14 +3050,14 @@ implElimStructField ::
   RAssign ValuePerm (CtxToRList ctx) -> Member (CtxToRList ctx) a ->
   ImplM vars s r (ps :> StructType ctx) (ps :> StructType ctx) (ExprVar a)
 implElimStructField _ ps memb
-  | ValPerm_Eq (PExpr_Var y) <- RL.get memb ps = greturn y
+  | ValPerm_Eq (PExpr_Var y) <- RL.get memb ps = pure y
 implElimStructField x ps memb =
   implGetVarType x >>>= \(StructRepr tps) ->
   let tp = RL.get memb (assignToRList tps) in
   implApplyImpl1 (Impl1_ElimStructField x ps tp memb)
-  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
+  (MNil :>: Impl1Cont (\(_ :>: n) -> pure n)) >>>= \y ->
   implPopM y (RL.get memb ps) >>>
-  greturn y
+  pure y
 
 -- | Apply 'implElimStructField' to a sequence of fields in a struct permission,
 -- to get out a sequence of variables for the corrsponding fields of that struct
@@ -3363,12 +3065,12 @@ implElimStructFields ::
   NuMatchingAny1 r => ExprVar (StructType ctx) ->
   RAssign ValuePerm (CtxToRList ctx) -> RAssign (Member (CtxToRList ctx)) fs ->
   ImplM vars s r (ps :> StructType ctx) (ps :> StructType ctx) (RAssign ExprVar fs)
-implElimStructFields _ _ MNil = greturn MNil
+implElimStructFields _ _ MNil = pure MNil
 implElimStructFields x ps (membs :>: memb) =
   implElimStructField x ps memb >>>= \y ->
   implElimStructFields x (RL.set memb (ValPerm_Eq $
                                        PExpr_Var y) ps) membs >>>= \ys ->
-  greturn (ys :>: y)
+  pure (ys :>: y)
 
 -- | Apply 'implElimStructField' to all fields in a struct permission, to get
 -- out a sequence of variables for the fields of that struct
@@ -3387,7 +3089,7 @@ implIntroStructFields ::
   NuMatchingAny1 r => ExprVar (StructType ctx) ->
   RAssign ValuePerm (CtxToRList ctx) -> RAssign (Member (CtxToRList ctx)) fs ->
   ImplM vars s r (ps :> StructType ctx) (ps :++: fs :> StructType ctx) ()
-implIntroStructFields _ _ MNil = greturn ()
+implIntroStructFields _ _ MNil = pure ()
 implIntroStructFields x ps (membs :>: memb)
   | ValPerm_Eq (PExpr_Var y) <- RL.get memb ps =
     (distPermsHeadPerm <$> distPermsSnoc <$> getDistPerms) >>>= \y_p ->
@@ -3420,12 +3122,12 @@ implElimLLVMFieldContentsM ::
   (ExprVar (LLVMPointerType sz))
 implElimLLVMFieldContentsM _ fp
   | ValPerm_Eq (PExpr_Var y) <- llvmFieldContents fp
-  = greturn y
+  = pure y
 implElimLLVMFieldContentsM x fp =
   implApplyImpl1 (Impl1_ElimLLVMFieldContents x fp)
-  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
+  (MNil :>: Impl1Cont (\(_ :>: n) -> pure n)) >>>= \y ->
   implPopM y (llvmFieldContents fp) >>>
-  greturn y
+  pure y
 
 -- | Prove a reachability permission @x:P<args,e>@ from a proof of @x:eq(e)@ on
 -- the top of the stack
@@ -3470,12 +3172,12 @@ implElimLLVMBlockToEq ::
   (ExprVar (LLVMBlockType w))
 implElimLLVMBlockToEq _ (LLVMBlockPerm
                          { llvmBlockShape = PExpr_EqShape (PExpr_Var y)}) =
-  greturn y
+  pure y
 implElimLLVMBlockToEq x bp =
   implApplyImpl1 (Impl1_ElimLLVMBlockToEq x bp)
-  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \y ->
+  (MNil :>: Impl1Cont (\(_ :>: n) -> pure n)) >>>= \y ->
   implPopM y (ValPerm_Conj1 $ Perm_LLVMBlockShape $ modalizeBlockShape bp) >>>
-  greturn y
+  pure y
 
 -- | Try to prove a proposition about bitvectors dynamically, failing as in
 -- 'implFailM' if the proposition does not hold
@@ -3486,7 +3188,7 @@ implTryProveBVProp x p =
   getPPInfo >>>= \i ->
   let str = renderDoc (permPretty i p) in
   implApplyImpl1 (Impl1_TryProveBVProp x p str)
-  (MNil :>: Impl1Cont (const $ greturn ()))
+  (MNil :>: Impl1Cont (const $ pure ()))
 
 -- | Try to prove a sequence of propositions using 'implTryProveBVProp'
 implTryProveBVProps :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
@@ -3549,7 +3251,7 @@ elimOrsExistsM x =
     ValPerm_Or p1 p2 -> implElimOrM x p1 p2 >>> elimOrsExistsM x
     ValPerm_Exists mb_p ->
       implElimExistsM x mb_p >>> elimOrsExistsM x
-    _ -> greturn p
+    _ -> pure p
 
 -- | Eliminate disjunctives, existentials, recusive permissions, and
 -- defined permissions on the top of the stack
@@ -3567,7 +3269,7 @@ elimOrsExistsNamesM x =
     ValPerm_Named npn args off
       | TrueRepr <- nameIsConjRepr npn ->
         implNamedToConjM x npn args off >>> getTopDistPerm x
-    _ -> greturn p
+    _ -> pure p
 
 -- | Eliminate any disjunctions, existentials, recursive permissions, or defined
 -- permissions for a variable and then return the resulting "simple" permission
@@ -3577,7 +3279,7 @@ getSimpleVarPerm x =
   getPerm x >>>= \p_init ->
   implPushM x p_init >>>
   elimOrsExistsNamesM x >>>= \p ->
-  implPopM x p >>> greturn p
+  implPopM x p >>> pure p
 
 -- | Eliminate any disjunctions, existentials, recursive permissions, or defined
 -- permissions for a variable to try to get an equality permission
@@ -3587,13 +3289,13 @@ getVarEqPerm :: NuMatchingAny1 r => ExprVar a ->
 getVarEqPerm x =
   getPerm x >>>= \p_init -> implPushM x p_init >>> elimOrsExistsNamesM x >>>=
   \case
-    p@(ValPerm_Eq e) -> implPopM x p >>> greturn (Just e)
+    p@(ValPerm_Eq e) -> implPopM x p >>> pure (Just e)
     ValPerm_Conj [Perm_Struct ps] ->
       implElimStructAllFields x ps >>>= \ys ->
       implSimplM Proxy (SImpl_StructPermToEq x $ namesToExprs ys) >>>
       implPopM x (ValPerm_Eq $ PExpr_Struct $ namesToExprs ys) >>>
-      greturn (Just $ PExpr_Struct $ namesToExprs ys)
-    p -> implPopM x p >>> greturn Nothing
+      pure (Just $ PExpr_Struct $ namesToExprs ys)
+    p -> implPopM x p >>> pure Nothing
 
 -- | Eliminate any disjunctions, existentials, recursive permissions, or defined
 -- permissions for any variables in the supplied expression and substitute any
@@ -3603,7 +3305,7 @@ getEqualsExpr :: NuMatchingAny1 r => PermExpr a ->
                  ImplM vars s r ps ps (PermExpr a)
 getEqualsExpr e@(PExpr_Var x) =
   getVarEqPerm x >>>= \case Just e' -> getEqualsExpr e'
-                            Nothing -> greturn e
+                            Nothing -> pure e
 getEqualsExpr (PExpr_BV factors off) =
   foldr bvAdd (PExpr_BV [] off) <$>
   mapM (\(BVFactor (BV.BV i) x) ->
@@ -3613,8 +3315,8 @@ getEqualsExpr (PExpr_LLVMWord e) =
 getEqualsExpr (PExpr_LLVMOffset x off) =
   getEqualsExpr (PExpr_Var x) >>>= \e ->
   getEqualsExpr off >>>= \off' ->
-  greturn (addLLVMOffset e off')
-getEqualsExpr e = greturn e
+  pure (addLLVMOffset e off')
+getEqualsExpr e = pure e
 
 
 -- | Introduce a proof of @x:eq(x)@ onto the top of the stack
@@ -3661,7 +3363,7 @@ introCastM x y p = implSimplM Proxy (SImpl_Cast x y p)
 -- permission set for @ei@ not equal to @xi@.
 implProveEqPerms :: NuMatchingAny1 r => DistPerms ps' ->
                     ImplM vars s r (ps :++: (RNil :> a :++: ps')) (ps :> a) ()
-implProveEqPerms DistPermsNil = greturn ()
+implProveEqPerms DistPermsNil = pure ()
 implProveEqPerms (DistPermsCons ps' x (ValPerm_Eq (PExpr_Var y)))
   | x == y
   = implProveEqPerms ps' >>> introEqReflM x
@@ -3752,7 +3454,7 @@ implGetPopConjM x ps i =
 implMaybeCopyPopM :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
                      ImplM vars s r (ps :> a) (ps :> a) ()
 implMaybeCopyPopM x p | permIsCopyable p = implCopyM x p >>> implPopM x p
-implMaybeCopyPopM _ _ = greturn ()
+implMaybeCopyPopM _ _ = pure ()
 
 -- | Insert an atomic permission below the top of the stack at the @i@th
 -- position in the conjunct on the top of the stack, where @i@ must be between
@@ -3851,7 +3553,7 @@ implUnfoldNamedM :: (NameSortCanFold ns ~ 'True, NuMatchingAny1 r) =>
 implUnfoldNamedM x npn args off =
   implLookupNamedPerm npn >>>= \np ->
   implSimplM Proxy (SImpl_UnfoldNamed x np args off) >>>
-  greturn (unfoldPerm np args off)
+  pure (unfoldPerm np args off)
 
 -- | Map a named permission that is conjoinable to a conjunction
 implNamedToConjM :: (NameSortIsConj ns ~ 'True, NuMatchingAny1 r) =>
@@ -3874,9 +3576,9 @@ implBeginLifetimeM :: NuMatchingAny1 r =>
                       ImplM vars s r ps ps (ExprVar LifetimeType)
 implBeginLifetimeM =
   implApplyImpl1 Impl1_BeginLifetime
-  (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \l ->
+  (MNil :>: Impl1Cont (\(_ :>: n) -> pure n)) >>>= \l ->
   implPopM l (ValPerm_LOwned MNil MNil) >>>
-  greturn l
+  pure l
 
 -- | End a lifetime, assuming the top of the stack is of the form
 --
@@ -3953,7 +3655,7 @@ implLLVMArrayIndexBorrow ::
 implLLVMArrayIndexBorrow x ap ix =
   implTryProveBVProps x (llvmArrayIndexInArray ap ix) >>>
   implSimplM Proxy (SImpl_LLVMArrayIndexBorrow x ap ix) >>>
-  greturn (llvmArrayAddBorrow (FieldBorrow ix) ap,
+  pure (llvmArrayAddBorrow (FieldBorrow ix) ap,
            llvmArrayFieldWithOffset ap ix)
 
 -- | Copy a field from an LLVM array permission on the top of the stack, after
@@ -4012,7 +3714,7 @@ implLLVMArrayReturn ::
   (LLVMArrayPerm w)
 implLLVMArrayReturn x ap ret_ap =
   implSimplM Proxy (SImpl_LLVMArrayReturn x ap ret_ap) >>>
-  greturn (llvmArrayRemBorrow (llvmSubArrayBorrow ap ret_ap) $
+  pure (llvmArrayRemBorrow (llvmSubArrayBorrow ap ret_ap) $
            llvmArrayAddArrayBorrows ap ret_ap)
 
 -- | Add a borrow to an LLVM array permission, failing if that is not possible
@@ -4025,14 +3727,14 @@ implLLVMArrayBorrowBorrow ::
   (ps :> LLVMPointerType w) (ValuePerm (LLVMPointerType w))
 implLLVMArrayBorrowBorrow x ap (FieldBorrow ix) =
   implLLVMArrayIndexBorrow x ap ix >>>= \(_,field) ->
-  greturn $ ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm field
+  pure $ ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm field
 implLLVMArrayBorrowBorrow x ap b@(RangeBorrow _) =
   let p = permForLLVMArrayBorrow ap b
       ValPerm_Conj1 (Perm_LLVMArray sub_ap) = p
       ap' = llvmArrayAddBorrow b ap in
   implLLVMArrayBorrow x ap' sub_ap >>>
   implSwapM x p x (ValPerm_Conj1 $ Perm_LLVMArray ap') >>>
-  greturn p
+  pure p
 
 -- | Return a borrow to an LLVM array permission, assuming the array is at the
 -- top of the stack and the borrowed permission, which should be that returned
@@ -4047,7 +3749,7 @@ implLLVMArrayReturnBorrow x ap (FieldBorrow ix) =
 implLLVMArrayReturnBorrow x ap b@(RangeBorrow _) =
   let ValPerm_Conj1 (Perm_LLVMArray ap_ret) = permForLLVMArrayBorrow ap b in
   implLLVMArrayReturn x ap ap_ret >>>
-  greturn ()
+  pure ()
 
 
 -- | Append to array permissions, assuming one ends where the other begins and
@@ -4098,7 +3800,7 @@ implIntroLLVMBlock x (Perm_LLVMField fp) =
 implIntroLLVMBlock x p@(Perm_LLVMArray ap)
   | isJust (llvmAtomicPermToBlock p) =
     implSimplM Proxy (SImpl_IntroLLVMBlockArray x ap)
-implIntroLLVMBlock _ (Perm_LLVMBlock _bp) = greturn ()
+implIntroLLVMBlock _ (Perm_LLVMBlock _bp) = pure ()
 implIntroLLVMBlock _ _ = error "implIntroLLVMBlock: malformed permission"
 
 -- | Prove a @memblock@ permission with a foldable named shape from its
@@ -4134,7 +3836,7 @@ implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
   | TrueRepr <- namedShapeCanUnfoldRepr nmsh
   , Just sh' <- unfoldModalizeNamedShape rw l nmsh args =
     (if namedShapeIsRecursive nmsh
-     then implSetRecRecurseLeftM else greturn ()) >>>
+     then implSetRecRecurseLeftM else pure ()) >>>
     implSimplM Proxy (SImpl_ElimLLVMBlockNamed x bp nmsh) >>>
     implElimLLVMBlock x (bp { llvmBlockShape = sh' })
 implElimLLVMBlock x bp@(LLVMBlockPerm { llvmBlockShape =
@@ -4201,16 +3903,16 @@ implElimPopLLVMBlock x bp =
 -- the current permission set, failing if this is not possible
 getLifetimeCurrentPerms :: NuMatchingAny1 r => PermExpr LifetimeType ->
                            ImplM vars s r ps ps (Some LifetimeCurrentPerms)
-getLifetimeCurrentPerms PExpr_Always = greturn $ Some AlwaysCurrentPerms
+getLifetimeCurrentPerms PExpr_Always = pure $ Some AlwaysCurrentPerms
 getLifetimeCurrentPerms (PExpr_Var l) =
   getPerm l >>>= \p ->
   case p of
     ValPerm_LOwned ps_in ps_out ->
-      greturn $ Some $ LOwnedCurrentPerms l ps_in ps_out
+      pure $ Some $ LOwnedCurrentPerms l ps_in ps_out
     ValPerm_LCurrent l' ->
       getLifetimeCurrentPerms l' >>>= \some_cur_perms ->
       case some_cur_perms of
-        Some cur_perms -> greturn $ Some $ CurrentTransPerms cur_perms l
+        Some cur_perms -> pure $ Some $ CurrentTransPerms cur_perms l
     _ ->
       implTraceM (\i -> pretty "Could not prove lifetime is current:" <+>
                         permPretty i l) >>>=
@@ -4219,7 +3921,7 @@ getLifetimeCurrentPerms (PExpr_Var l) =
 -- | Prove the permissions represented by a 'LifetimeCurrentPerms'
 proveLifetimeCurrent :: NuMatchingAny1 r => LifetimeCurrentPerms ps_l ->
                         ImplM vars s r (ps :++: ps_l) ps ()
-proveLifetimeCurrent AlwaysCurrentPerms = greturn ()
+proveLifetimeCurrent AlwaysCurrentPerms = pure ()
 proveLifetimeCurrent (LOwnedCurrentPerms l ps_in ps_out) =
   implPushM l (ValPerm_LOwned ps_in ps_out)
 proveLifetimeCurrent (CurrentTransPerms cur_perms l) =
@@ -4244,15 +3946,15 @@ simplEqPerm x e@(PExpr_Var y) =
   getPerm y >>>= \case
   p@(ValPerm_Eq e') ->
     implPushM y p >>> implCopyM y p >>> implPopM y p >>>
-    introCastM x y p >>> greturn e'
-  _ -> greturn e
+    introCastM x y p >>> pure e'
+  _ -> pure e
 simplEqPerm x e@(PExpr_LLVMOffset y off) =
   getPerm y >>>= \case
   p@(ValPerm_Eq e') ->
     implPushM y p >>> implCopyM y p >>> implPopM y p >>>
-    castLLVMPtrM y p off x >>> greturn (addLLVMOffset e' off)
-  _ -> greturn e
-simplEqPerm _ e = greturn e
+    castLLVMPtrM y p off x >>> pure (addLLVMOffset e' off)
+  _ -> pure e
+simplEqPerm _ e = pure e
 
 -- | Recombine the permission @x:p@ on top of the stack back into the existing
 -- permission for @x@
@@ -4342,13 +4044,13 @@ recombinePermConj x x_ps p@(Perm_LLVMField fp)
   , PExpr_Read <- llvmFieldRW fp
   , PExpr_Read <- llvmFieldRW fp' =
     implDropM x (ValPerm_Conj1 p) >>>
-    greturn x_ps
+    pure x_ps
 
 -- If p is an is_llvmptr permission and x_ps already contains one, drop it
 recombinePermConj x x_ps p@Perm_IsLLVMPtr
   | elem Perm_IsLLVMPtr x_ps =
     implDropM x (ValPerm_Conj1 p) >>>
-    greturn x_ps
+    pure x_ps
 
 -- If p is a field that was borrowed from an array, return it; i.e., if we are
 -- returning x:ptr((rw,off+i*stride+j) |-> p) and x has a permission of the form
@@ -4392,19 +4094,19 @@ recombinePermConj x x_ps p =
   implPushM x (ValPerm_Conj x_ps) >>>
   implInsertConjM x p x_ps (length x_ps) >>>
   implPopM x (ValPerm_Conj (x_ps ++ [p])) >>>
-  greturn (x_ps ++ [p])
+  pure (x_ps ++ [p])
 
 
 -- | Recombine the permissions on the stack back into the permission set
 recombinePerms :: NuMatchingAny1 r => DistPerms ps -> ImplM vars s r RNil ps ()
-recombinePerms DistPermsNil = greturn ()
+recombinePerms DistPermsNil = pure ()
 recombinePerms (DistPermsCons ps' x p) =
   recombinePerm x p >>> recombinePerms ps'
 
 -- | Recombine some of the permissions on the stack back into the permission set
 recombinePermsPartial :: NuMatchingAny1 r => f ps -> DistPerms ps' ->
                          ImplM vars s r ps (ps :++: ps') ()
-recombinePermsPartial _ DistPermsNil = greturn ()
+recombinePermsPartial _ DistPermsNil = pure ()
 recombinePermsPartial ps (DistPermsCons ps' x p) =
   recombinePerm x p >>> recombinePermsPartial ps ps'
 
@@ -4412,7 +4114,7 @@ recombinePermsPartial ps (DistPermsCons ps' x p) =
 recombineLifetimeCurrentPerms :: NuMatchingAny1 r =>
                                  LifetimeCurrentPerms ps_l ->
                                  ImplM vars s r ps (ps :++: ps_l) ()
-recombineLifetimeCurrentPerms AlwaysCurrentPerms = greturn ()
+recombineLifetimeCurrentPerms AlwaysCurrentPerms = pure ()
 recombineLifetimeCurrentPerms (LOwnedCurrentPerms l ps_in ps_out) =
   recombinePermExpl l ValPerm_True (ValPerm_LOwned ps_in ps_out)
 recombineLifetimeCurrentPerms (CurrentTransPerms cur_perms l) =
@@ -4446,7 +4148,7 @@ instance (Eq a, Eq b, ProveEq a, ProveEq b, Substable PermSubst a Identity,
   proveEq (a,b) mb_ab =
     proveEq a (fmap fst mb_ab) >>>= \eqp1 ->
     proveEq b (fmap snd mb_ab) >>>= \eqp2 ->
-    greturn ((,) <$> eqp1 <*> eqp2)
+    pure ((,) <$> eqp1 <*> eqp2)
 
 instance (Eq a, Eq b, Eq c, ProveEq a, ProveEq b, ProveEq c,
           Substable PermSubst a Identity,
@@ -4456,18 +4158,18 @@ instance (Eq a, Eq b, Eq c, ProveEq a, ProveEq b, ProveEq c,
     proveEq a (fmap (\(x,_,_) -> x) mb_abc) >>>= \eqp1 ->
     proveEq b (fmap (\(_,y,_) -> y) mb_abc) >>>= \eqp2 ->
     proveEq c (fmap (\(_,_,z) -> z) mb_abc) >>>= \eqp3 ->
-    greturn ((,,) <$> eqp1 <*> eqp2 <*> eqp3)
+    pure ((,,) <$> eqp1 <*> eqp2 <*> eqp3)
 
 instance ProveEq (PermExpr a) where
   proveEq e mb_e = getPSubst >>>= \psubst -> proveEqH psubst e mb_e
 
 instance ProveEq (LLVMFramePerm w) where
-  proveEq [] [nuP| [] |] = greturn $ SomeEqProofRefl []
+  proveEq [] [nuP| [] |] = pure $ SomeEqProofRefl []
   proveEq ((e,i):fperms) [nuP| ((mb_e,mb_i)):mb_fperms |]
     | mbLift mb_i == i =
       proveEq e mb_e >>>= \eqp1 ->
       proveEq fperms mb_fperms >>>= \eqp2 ->
-      greturn (liftA2 (\x y -> (x,i):y) eqp1 eqp2)
+      pure (liftA2 (\x y -> (x,i):y) eqp1 eqp2)
   proveEq perms mb = proveEqFail perms mb
 
 instance ProveEq (LLVMBlockPerm w) where
@@ -4477,7 +4179,7 @@ instance ProveEq (LLVMBlockPerm w) where
     proveEq (llvmBlockOffset bp) (fmap llvmBlockOffset mb_bp) >>>= \eqp_off ->
     proveEq (llvmBlockLen bp) (fmap llvmBlockLen mb_bp) >>>= \eqp_len ->
     proveEq (llvmBlockShape bp) (fmap llvmBlockShape mb_bp) >>>= \eqp_sh ->
-    greturn (LLVMBlockPerm <$>
+    pure (LLVMBlockPerm <$>
              eqp_rw <*> eqp_l <*> eqp_off <*> eqp_len <*> eqp_sh)
 
 
@@ -4493,7 +4195,7 @@ substEqsWithProof :: (AbstractVars a, FreeVars a,
                      a -> ImplM vars s r ps ps (SomeEqProof a)
 substEqsWithProof a =
   (view varPermMap <$> getPerms) >>>= \var_ps ->
-  greturn (someEqProofFromSubst var_ps a)
+  pure (someEqProofFromSubst var_ps a)
 
 
 -- | The main work horse for 'proveEq' on expressions
@@ -4508,7 +4210,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
     | Left memb <- mbNameBoundP z
     , Nothing <- psubstLookup psubst memb ->
       substEqsWithProof e >>>= \eqp ->
-      setVarM memb (someEqProofRHS eqp) >>> greturn eqp
+      setVarM memb (someEqProofRHS eqp) >>> pure eqp
   
   -- If the RHS is a set variable, substitute for it and recurse
   (_, [nuMP| PExpr_Var z |])
@@ -4518,7 +4220,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
   
   -- If the RHS = LHS, do a proof by reflexivity
   _ | Just e' <- partialSubst psubst mb_e
-    , e == e' -> greturn (SomeEqProofRefl e)
+    , e == e' -> pure (SomeEqProofRefl e)
   
   -- To prove x=y, try to see if either side has an eq permission, if necessary by
   -- eliminating compound permissions, and proceed by transitivity if possible
@@ -4530,11 +4232,11 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
         (ValPerm_Eq e', _) ->
           -- If we have x:eq(e'), prove e' = y and apply transitivity
           proveEq e' mb_e >>>= \some_eqp ->
-          greturn $ someEqProofTrans (someEqProofPerm x e' True) some_eqp
+          pure $ someEqProofTrans (someEqProofPerm x e' True) some_eqp
         (_, ValPerm_Eq e') ->
           -- If we have y:eq(e'), prove x = e' and apply transitivity
           proveEq e (fmap (const e') mb_e) >>>= \some_eqp ->
-          greturn $ someEqProofTrans some_eqp (someEqProofPerm y e' False)
+          pure $ someEqProofTrans some_eqp (someEqProofPerm y e' False)
         (_, _) ->
           -- If we have no equality perms, eliminate perms on x and y to see if we
           -- can get one; if so, recurse, and otherwise, raise an error
@@ -4549,7 +4251,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
     getVarEqPerm x >>>= \case
     Just e' ->
       proveEq e' mb_e >>>= \eqp2 ->
-      greturn (someEqProofTrans (someEqProofPerm x e' True) eqp2)
+      pure (someEqProofTrans (someEqProofPerm x e' True) eqp2)
     Nothing -> proveEqFail e mb_e
   
   -- To prove e=x, try to see if x:eq(e') and proceed by transitivity
@@ -4558,7 +4260,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
       getVarEqPerm x >>>= \case
         Just e' ->
           proveEq e (fmap (const e') mb_e) >>>= \eqp ->
-          greturn (someEqProofTrans eqp (someEqProofPerm x e' False))
+          pure (someEqProofTrans eqp (someEqProofPerm x e' False))
         Nothing -> proveEqFail e mb_e
   
   -- FIXME: if proving word(e1)=word(e2) for ground e2, we could add an assertion
@@ -4574,7 +4276,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
     , Nothing <- psubstLookup psubst memb
     , bvIsZero (bvMod (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) ->
       setVarM memb (bvDiv (bvSub e (bvInt $ mbLift mb_m)) (mbLift mb_n)) >>>
-      greturn (SomeEqProofRefl e)
+      pure (SomeEqProofRefl e)
   
   -- FIXME: add cases to prove struct(es1)=struct(es2) 
   
@@ -4745,7 +4447,7 @@ proveVarLifetimeFunctor' x f args l mb_l psubst = case mbMatch mb_l of
   
   -- If mb_l==l, we are done
   _ | mbLift $ fmap (== l) mb_l ->
-      greturn ()
+      pure ()
   
   -- If mb_l is a free variable l2 /= l, we need to split or weaken the lifetime
   [nuMP| PExpr_Var mb_z |]
@@ -4802,8 +4504,8 @@ tryUnifyLifetimes l mb_l = case mbMatch mb_l of
       getPSubst >>>= \psubst ->
       case psubstLookup psubst memb of
         Nothing -> setVarM memb l
-        _ -> greturn ()
-  _ -> greturn ()
+        _ -> pure ()
+  _ -> pure ()
 
 -- | Find all the permissions that need to be added to the given list of
 -- permissions to prove the given block permission
@@ -4815,7 +4517,7 @@ solveForPermListImplBlock :: (NuMatchingAny1 r, 1 <= w, KnownNat w) =>
 
 -- If the LHS is empty, return the input block permission
 solveForPermListImplBlock MNil x mb_bp =
-  greturn (neededPerms1 (fmap (const x) mb_bp) (fmap ValPerm_LLVMBlock mb_bp))
+  pure (neededPerms1 (fmap (const x) mb_bp) (fmap ValPerm_LLVMBlock mb_bp))
 
 -- If the LHS starts with a field permission, treat it like a block permission
 solveForPermListImplBlock (ps_l :>: LOwnedPermField e fp_l) x mb_bp =
@@ -4848,7 +4550,7 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
 
   -- If the RHS is empty, we are done
   [nuMP| MNil |] ->
-    greturn mempty
+    pure mempty
   
   -- If the RHS starts with a field perm, convert to a block perm and call
   -- solveForPermListImplBlock
@@ -4857,14 +4559,14 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
     , mb_bp <- fmap llvmFieldPermToBlock mb_fp ->
       solveForPermListImplBlock ps_l x mb_bp >>>= \needed1 ->
       solveForPermListImpl ps_l mb_ps_r >>>= \needed2 ->
-      greturn (needed1 <> needed2)
+      pure (needed1 <> needed2)
   
   -- If the RHS starts with a block perm, call solveForPermListImplBlock
   [nuMP| mb_ps_r :>: LOwnedPermBlock (PExpr_Var mb_x) mb_bp |]
     | Right x <- mbNameBoundP mb_x ->
       solveForPermListImplBlock ps_l x mb_bp >>>= \needed1 ->
       solveForPermListImpl ps_l mb_ps_r >>>= \needed2 ->
-      greturn (needed1 <> needed2)
+      pure (needed1 <> needed2)
   
   -- If the RHS is an lowned perm that is in the LHS, return nothing
   --
@@ -4886,7 +4588,7 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
   
   -- Otherwise, we don't know what to do, so do nothing and return
   _ ->
-    greturn mempty
+    pure mempty
 
 
 ----------------------------------------------------------------------
@@ -4911,7 +4613,7 @@ proveVarLLVMField x ps i _ mb_fp
     proveVarImplInt x (fmap (ValPerm_Conj1 . Perm_LLVMField) mb_fp)
 
 proveVarLLVMField x ps i off mb_fp =
-  (if i < length ps then greturn () else
+  (if i < length ps then pure () else
      error "proveVarLLVMField: index too large") >>>= \() ->
   implExtractConjM x ps i >>>
   let ps_rem = deleteNth i ps in
@@ -4942,11 +4644,11 @@ proveVarLLVMFieldFromField x fp off' mb_fp =
 
   -- Step 2: cast the field offset to off' if necessary
   (if bvEq (llvmFieldOffset fp') off' then
-     greturn fp'
+     pure fp'
    else
      implTryProveBVProp x (BVProp_Eq (llvmFieldOffset fp') off') >>>
      implSimplM Proxy (SImpl_CastLLVMFieldOffset x fp' off') >>>
-     greturn (fp' { llvmFieldOffset = off' })) >>>= \fp'' ->
+     pure (fp' { llvmFieldOffset = off' })) >>>= \fp'' ->
 
   -- Step 3: prove the contents
   proveVarImplInt y (fmap llvmFieldContents mb_fp) >>>
@@ -5014,7 +4716,7 @@ extractNeededLLVMFieldPerm x (Perm_LLVMField fp) _ _ mb_fp
   , PExpr_Read <- llvmFieldRW fp
   , [nuMP| PExpr_Read |] <- mbMatch $ fmap llvmFieldRW mb_fp
   = implCopyConjM x [Perm_LLVMField fp] 0 >>>
-    greturn (fp, Just (Perm_LLVMField fp))
+    pure (fp, Just (Perm_LLVMField fp))
 
 -- Cannot prove x:ptr((rw,off) |-> p) |- x:ptr((W,off') |-> p') if rw is not W,
 -- so fail
@@ -5037,7 +4739,7 @@ extractNeededLLVMFieldPerm x (Perm_LLVMField fp) _ _ mb_fp
     implSimplM Proxy (SImpl_DemoteLLVMFieldRW x fp') >>>
     let fp'' = fp' { llvmFieldRW = PExpr_Read } in
     implCopyConjM x [Perm_LLVMField fp''] 0 >>>
-    greturn (fp'', Just (Perm_LLVMField fp''))
+    pure (fp'', Just (Perm_LLVMField fp''))
 
 -- If proving x:ptr((rw,off) |-> p) |- x:ptr((rw,off') |-> p') for any other
 -- case, just push a true permission, because there is no remaining permission
@@ -5045,7 +4747,7 @@ extractNeededLLVMFieldPerm x (Perm_LLVMField fp) _ _ mb_fp
   | Just Refl <- testEquality (llvmFieldSize fp) (mbLift $
                                                   fmap llvmFieldSize mb_fp)
   , mbLift (fmap ((llvmFieldRW fp ==) . llvmFieldRW) mb_fp)
-  = introConjM x >>> greturn (fp, Nothing)
+  = introConjM x >>> pure (fp, Nothing)
 
 -- If proving x:array(off,<len,*stride,fps,bs) |- x:ptr((R,off) |-> p) such that
 -- off=i*stride+j and the jth field of the ith index of the array is of the
@@ -5060,7 +4762,7 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' _ mb_fp
   , permIsCopyable (llvmFieldContents fp)
   , [nuMP| PExpr_Read |] <- mbMatch $ fmap llvmFieldRW mb_fp =
     implLLVMArrayIndexCopy x ap ix >>>
-    greturn (fp, Just (Perm_LLVMArray ap))
+    pure (fp, Just (Perm_LLVMArray ap))
 
 -- If proving x:array(off,<len,*stride,fps,bs) |- x:ptr((rw,off) |-> p) such
 -- that off=i*stride+j and the corresponding array field is of the right size in
@@ -5081,7 +4783,7 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' psubst mb_fp
     implDropM x (maybe ValPerm_True ValPerm_Conj1 maybe_p_rem) >>>
     implSwapM x (ValPerm_Conj1 $
                  Perm_LLVMArray ap') x (ValPerm_Conj1 $ Perm_LLVMField fp) >>>
-    greturn (fp', Just (Perm_LLVMArray ap'))
+    pure (fp', Just (Perm_LLVMArray ap'))
 
 -- If proving x:array(off,<len,*stride,fps,bs) |- x:ptr((rw,off) |-> p) such
 -- that off=i*stride+j but the corresponding array field is of a smaller size,
@@ -5108,7 +4810,7 @@ extractNeededLLVMFieldPerm x (Perm_LLVMArray ap) off' _ mb_fp
     implSwapM x (ValPerm_Conj1 $
                  Perm_LLVMArray ap') x (ValPerm_Conj1 $
                                         Perm_LLVMField fp) >>>
-    greturn (fp, Just (Perm_LLVMArray ap'))
+    pure (fp, Just (Perm_LLVMArray ap'))
 
 
 -- All other cases fail
@@ -5308,14 +5010,14 @@ proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
        implLLVMArrayCopy x ap_lhs ap_first >>>
        implPushM x (ValPerm_Conj $ deleteNth i ps) >>>
        implInsertConjM x (Perm_LLVMArray ap_lhs) (deleteNth i ps) i >>>
-       greturn ps
+       pure ps
      else
        implLLVMArrayBorrow x ap_lhs ap_first >>>
        implPushM x (ValPerm_Conj $ deleteNth i ps) >>>
        let ap_lhs' =
              llvmArrayAddBorrow (llvmSubArrayBorrow ap_lhs ap_first) ap_lhs in
        implInsertConjM x (Perm_LLVMArray ap_lhs') (deleteNth i ps) i >>>
-       greturn (replaceNth i (Perm_LLVMArray ap_lhs') ps)) >>>= \ps' ->
+       pure (replaceNth i (Perm_LLVMArray ap_lhs') ps)) >>>= \ps' ->
 
     -- Recursively prove ap_rest
     proveVarLLVMArray x False ps' ap_rest >>>
@@ -5499,7 +5201,7 @@ proveVarLLVMBlocksExt2 x ps psubst mb_bps_ext mb_bps mb_ps =
    proveVarLLVMBlocks x ps (extPSubst $ extPSubst psubst)
    (mbMap2 (++) mb_bps_ext (extMb $ extMb mb_bps))
    (extMb $ extMb mb_ps)) >>>= \((_,e2),e1) ->
-  greturn (e1,e2)
+  pure (e1,e2)
 
 
 -- | The "real" version of 'proveVarLLVMBlocks'; that function is just a debug
@@ -5531,14 +5233,14 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
   
       -- Copy or extract the memblock perm we chose to the top of the stack
       (if atomicPermIsCopyable (ps!!i) then
-         implCopySwapConjM x ps i >>> greturn ps
+         implCopySwapConjM x ps i >>> pure ps
        else
-         implExtractSwapConjM x ps i >>> greturn (deleteNth i ps)) >>>= \ps' ->
+         implExtractSwapConjM x ps i >>> pure (deleteNth i ps)) >>>= \ps' ->
   
       -- Cast it to have the correct RW modality
       (case (llvmBlockRW bp, fmap llvmBlockRW mb_bp) of
           -- If the modalities are already equal, do nothing
-          (rw, mb_rw) | mbLift (fmap (== rw) mb_rw) -> greturn ()
+          (rw, mb_rw) | mbLift (fmap (== rw) mb_rw) -> pure ()
           (_, mbMatch -> [nuMP| PExpr_Read |]) ->
             implSimplM Proxy (SImpl_DemoteLLVMBlockRW x bp)
           _ ->
@@ -5859,7 +5561,7 @@ proveVarLLVMBlocks' x ps psubst mb_bps_in mb_ps = case mbMatch mb_bps_in of
   
       -- Build a computation that tries returning True here, and if that fails
       -- returns False; True is used for sh1 while False is used for sh2
-      implCatchM (greturn True) (greturn False) >>>= \is_case1 ->
+      implCatchM (pure True) (pure False) >>>= \is_case1 ->
   
       -- Prove the chosen shape by recursively calling proveVarLLVMBlocks
       let mb_sh = if is_case1 then mb_sh1 else mb_sh2 in
@@ -6048,7 +5750,7 @@ proveVarImplUnfoldLeft x (ValPerm_Named npn args off) mb_p Nothing
   | TrueRepr <- nameCanFoldRepr npn =
     (case namedPermNameSort npn of
         RecursiveSortRepr _ _ -> implSetRecRecurseLeftM
-        _ -> greturn ()) >>>
+        _ -> pure ()) >>>
     implUnfoldNamedM x npn args off >>>= \p' ->
     implPopM x p' >>>
     proveVarImplInt x mb_p
@@ -6059,7 +5761,7 @@ proveVarImplUnfoldLeft x (ValPerm_Conj ps) mb_p (Just i)
   , TrueRepr <- nameCanFoldRepr npn =
     (case namedPermNameSort npn of
         RecursiveSortRepr _ _ -> implSetRecRecurseLeftM
-        _ -> greturn ()) >>>
+        _ -> pure ()) >>>
     implExtractConjM x ps i >>> implPopM x (ValPerm_Conj $ deleteNth i ps) >>>
     implNamedFromConjM x npn args off >>>
     implUnfoldNamedM x npn args off >>>= \p' ->
@@ -6081,7 +5783,7 @@ proveVarImplFoldRight x p mb_p = case mbMatch mb_p of
     , TrueRepr <- nameCanFoldRepr npn ->
       (case namedPermNameSort npn of
           RecursiveSortRepr _ _ -> implSetRecRecurseRightM
-          _ -> greturn ()) >>>
+          _ -> pure ()) >>>
       implLookupNamedPerm npn >>>= \np ->
       implPopM x p >>>
       proveVarImplInt x (mbMap2 (unfoldPerm np) mb_args mb_off) >>>
@@ -6224,7 +5926,7 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       -- just builds the equality proofs and computes the new LHS and RHS, but
       -- we don't actually perform the casts until later.
       substEqsWithProof (ps_inL, ps_outL) >>>= \eqp_psL ->
-      gget >>>= \s ->
+      get >>>= \s ->
       give (cruCtxProxies (view implStateVars s))
         (substEqsWithProof (mb_ps_inR, mb_ps_outR)) >>>= \eqp_mb_psR ->
       let (ps_inL',ps_outL') = someEqProofRHS eqp_psL
@@ -6243,7 +5945,7 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       let mb_ps_inL' = fmap (const ps_inL') mb_ps_inR' in
       solveForPermListImpl ps_inR' mb_ps_inL' >>>= \(Some neededs1) ->
       solveForPermListImpl ps_outL' mb_ps_outR' >>>= \(Some neededs2) ->
-      (cruCtxProxies <$> view implStateVars <$> gget) >>>= \prxs ->
+      (cruCtxProxies <$> view implStateVars <$> get) >>>= \prxs ->
       let mb_ps1 = neededPermsToExDistPerms prxs neededs1
           mb_ps2 = neededPermsToExDistPerms prxs neededs2 in
 
@@ -6270,7 +5972,7 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       (case (lownedPermsToDistPerms ps_inL', lownedPermsToDistPerms ps_outL',
              lownedPermsToDistPerms ps_inR', lownedPermsToDistPerms ps_outR') of
           (Just dps_inL, Just dps_outL, Just dps_inR, Just dps_outR) ->
-            greturn (dps_inL, dps_outL, dps_inR, dps_outR)
+            pure (dps_inL, dps_outL, dps_inR, dps_outR)
           _ -> implFailM "proveVarAtomicImpl: lownedPermsToDistPerms")
       >>>= \(dps_inL, dps_outL, dps_inR, dps_outR) ->
       localProveVars (RL.append ps1 dps_inR) dps_inL >>>= \impl_in ->
@@ -6291,7 +5993,7 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       _ | l' == PExpr_Var x ->
           implPopM x (ValPerm_Conj ps) >>>
           implSimplM Proxy (SImpl_LCurrentRefl x)
-      [Perm_LCurrent l] | l == l' -> greturn ()
+      [Perm_LCurrent l] | l == l' -> pure ()
       [Perm_LCurrent (PExpr_Var l)] ->
         proveVarImplInt l (fmap ValPerm_Conj1 mb_p) >>>
         implSimplM Proxy (SImpl_LCurrentTrans x l l')
@@ -6326,7 +6028,7 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       getPSubst >>>= \psubst ->
       case psubstLookup psubst memb of
         Just fun_perm'
-          | Just Refl <- funPermEq fun_perm fun_perm' -> greturn ()
+          | Just Refl <- funPermEq fun_perm fun_perm' -> pure ()
         Just _ -> implFailM
         Nothing -> setVarM memb fun_perm
   -}
@@ -6431,7 +6133,7 @@ proveVarImplInt x mb_p =
   -- Check that the top of the stack == mb_p
   partialSubstForceM mb_p "proveVarImpl" >>>= \p_req ->
   getTopDistPerm x >>>= \p_actual ->
-  if p_req == p_actual then greturn () else
+  if p_req == p_actual then pure () else
     implTraceM (\i ->
                  pretty "proveVarImpl: incorrect permission on top of the stack" <> softline <>
                  pretty "expected:" <+> permPretty i p_req <> softline <>
@@ -6520,7 +6222,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
       (implMaybeCopyPopM x p >>>
        proveNamedArgs x npn args1 off (fmap (:>: e1) mb_args2_pre) >>>
        (case e1 of
-           PExpr_Var y -> greturn y
+           PExpr_Var y -> pure y
            _  ->
              -- If e1 is not a variable, bind a fresh variable y:eq(e1), then
              -- cast x:P<args1,e1> to x:P<args1,y>
@@ -6528,7 +6230,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
              implLetBindVar tp e1 >>>= \y ->
              proveEqCast x (\z -> ValPerm_Named npn (args1_pre :>: z) off) e1
              (fmap (const $ PExpr_Var y) mb_npn) >>>
-             greturn y) >>>= \y ->
+             pure y) >>>= \y ->
        proveVarImplInt y mb_p >>>
        partialSubstForceM mb_args2 "proveVarImpl" >>>= \args2 ->
        implReachabilityTransM x npn args2 off y)
@@ -6624,7 +6326,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
     partialSubstForceM mb_p'_body
     "proveVarImpl: incomplete psubst: implMu" >>>= \p'_body ->
     embedMbImplM (fmap (\p -> distPermSet $ distPerms1 x p) p_body)
-    (mbMap2 (\p p' -> proveVarImplH x p (emptyMb p') >>> greturn Refl)
+    (mbMap2 (\p p' -> proveVarImplH x p (emptyMb p') >>> pure Refl)
      p_body p'_body) >>>= \mb_impl ->
     implSimplM Proxy (SImpl_Mu x p_body p'_body mb_impl)
   -}
@@ -6643,7 +6345,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
   -- If proving a function permission for an x we know equals a constant function
   -- handle f, look up the function permission for f
   (ValPerm_Eq (PExpr_Fun f), [nuMP| ValPerm_Conj [Perm_Fun mb_fun_perm] |]) ->
-    (view implStatePermEnv <$> gget) >>>= \env ->
+    (view implStatePermEnv <$> get) >>>= \env ->
     case lookupFunPerm env f of
       Just (SomeFunPerm fun_perm, ident)
         | [nuMP| Just (Refl,Refl,Refl) |] <-
@@ -6684,7 +6386,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
   (ValPerm_Var z off, [nuMP| ValPerm_Var mb_z' mb_off |])
     | Right z' <- mbNameBoundP mb_z'
     , z' == z
-    , mbLift (fmap (offsetsEq off) mb_off) -> greturn ()
+    , mbLift (fmap (offsetsEq off) mb_off) -> pure ()
   
   -- Fail if nothing else matched
   _ -> implFailVarM "proveVarImplH" x p mb_p
@@ -6704,7 +6406,7 @@ proveExVarImpl :: NuMatchingAny1 r => PartialSubst vars -> Mb vars (Name tp) ->
 -- If the variable is instantiated to another variable, just call proveVarImpl
 proveExVarImpl psubst mb_x mb_p
   | Just (PExpr_Var n) <- partialSubst psubst (fmap PExpr_Var mb_x)
-  = proveVarImplInt n mb_p >>> greturn n
+  = proveVarImplInt n mb_p >>> pure n
 
 -- If the variable is instantiated to a non-variable expression, bind a fresh
 -- variable for it and then call proveVarImpl
@@ -6714,7 +6416,7 @@ proveExVarImpl psubst mb_x mb_p
         Left memb -> getExVarType memb
         Right x -> implGetVarType x) >>>= \tp ->
     implLetBindVar tp e >>>= \n ->
-    proveVarImplInt n mb_p >>> greturn n
+    proveVarImplInt n mb_p >>> pure n
 
 -- Special case: if proving an LLVM frame permission, look for an LLVM frame in
 -- the current context and use it
@@ -6724,7 +6426,7 @@ proveExVarImpl _ mb_x mb_p@(mbMatch -> [nuMP| ValPerm_Conj [Perm_LLVMFrame _] |]
     implFindVarOfType x_tp >>>= \maybe_n ->
     case maybe_n of
       Just n ->
-        setVarM memb (PExpr_Var n) >>> proveVarImplInt n mb_p >>> greturn n
+        setVarM memb (PExpr_Var n) >>> proveVarImplInt n mb_p >>> pure n
       Nothing ->
         implFailMsgM "proveExVarImpl: No LLVM frame pointer in scope"
 
@@ -6859,7 +6561,7 @@ instantiateLifetimeVars mb_ps =
 instantiateLifetimeVars' :: NuMatchingAny1 r => PartialSubst vars ->
                             ExDistPerms vars ps -> ImplM vars s r ps_in ps_in ()
 instantiateLifetimeVars' psubst mb_ps = case mbMatch mb_ps of
-  [nuMP| DistPermsNil |] -> greturn ()
+  [nuMP| DistPermsNil |] -> pure ()
   [nuMP| DistPermsCons mb_ps' mb_x (ValPerm_Conj1 mb_p) |]
     | Just Refl <- mbLift $ fmap isLifetimePerm mb_p
     , Left memb <- mbNameBoundP mb_x
@@ -6914,7 +6616,7 @@ localProveVars ps_in ps_out =
   LocalPermImpl <$>
   embedImplM ps_in (recombinePerms ps_in >>>
                     proveVarsImplInt (emptyMb ps_out) >>>
-                    greturn (LocalImplRet Refl))
+                    pure (LocalImplRet Refl))
 
 
 ----------------------------------------------------------------------
