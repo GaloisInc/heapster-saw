@@ -318,7 +318,7 @@ instance PermPretty a => PermPretty (Mb (ctx :: RList CrucibleType) a) where
   permPrettyM =
     permPrettyExprMb $ \docs ppm ->
     (\pp -> PP.group (PP.group (parens $ ppCommaSep $ RL.toList docs) <>
-                      dot <> line <> indent 2 pp)) <$> ppm
+                      nest 2 (dot <> line <> pp))) <$> ppm
 
 -- FIXME: no longer needed?
 {-
