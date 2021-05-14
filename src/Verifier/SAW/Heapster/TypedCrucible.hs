@@ -1451,10 +1451,7 @@ liftInnerToTopM m =
 -- block info map
 top_get :: PermCheckM ext cblocks blocks tops ret r ps r ps
            (TopPermCheckState ext cblocks blocks tops ret)
-top_get = gcaptureCC $ \k ->
-  do top_st <- ask
-     deltas <- innerBlockInfo <$> unClosed <$> get
-     k $ applyDeltasToTopState deltas top_st
+top_get = lift (applyDeltasToTopState <$> gets (innerBlockInfo . unClosed) <*> ask)
 
 -- | Look up the 'BlockInfo' for a block
 lookupBlockInfo :: Member blocks args ->
@@ -1655,7 +1652,7 @@ ppCruRegAndPerms ctx r =
 -- their permissions, the variables in those permissions etc., as in
 -- 'varPermsTransFreeVars'
 getRelevantPerms :: [SomeName CrucibleType] ->
-                    PermCheckM ext cblocks blocks tops ret r ps r ps 
+                    PermCheckM ext cblocks blocks tops ret r ps r ps
                       (Some DistPerms)
 getRelevantPerms (namesListToNames -> SomeRAssign ns) =
   stCurPerms <$> get >>>= \perms ->
@@ -1843,15 +1840,17 @@ pcmEmbedImplWithErrM f_impl vars fail_doc m =
   getErrorPrefix >>>= \err_prefix ->
   gmapRet ((f_impl . AnnotPermImpl (renderDoc
                                     (err_prefix <> line <> fail_doc))) <$>) >>>
-  (stCurPerms <$> get) >>>= \perms_in ->
-  (stPermEnv <$> top_get) >>>= \env ->
-  (stPPInfo <$> get) >>>= \ppInfo ->
-  (stVarTypes <$> get) >>>= \varTypes ->
-  (gcaptureCC $ \k ->
-    ask >>= \r ->
-    lift $
-    runImplM vars perms_in env ppInfo "" True varTypes
-    (flip runReaderT r . k) m) >>>= \(a, implSt) ->
+  (stPermEnv  <$> top_get) >>>= \env ->
+  (stCurPerms <$> get    ) >>>= \perms_in ->
+  (stPPInfo   <$> get    ) >>>= \ppInfo ->
+  (stVarTypes <$> get    ) >>>= \varTypes ->
+  lift ask >>>= \r ->
+
+  gcaptureCC (\k ->
+    let k' x = runReaderT (k x) r in
+    lift $ runImplM vars perms_in env ppInfo "" True varTypes k' m)
+    >>>= \(a, implSt) ->
+
   gmodify ((\st -> st { stPPInfo = implSt ^. implStatePPInfo,
                         stVarTypes = implSt ^. implStateNameTypes })
            . setSTCurPerms (implSt ^. implStatePerms)) >>>
@@ -2308,7 +2307,7 @@ couldSatisfyPermsM (CruCtxCons tps (BVRepr _)) (TypedRegsCons args arg)
   couldSatisfyPermsM tps args ps >>>= \b ->
   getRegEqualsExpr arg >>>= \arg_val ->
   pure (b && mbLift (fmap (bvCouldEqual arg_val) mb_e))
-couldSatisfyPermsM (CruCtxCons tps _) (TypedRegsCons args arg) 
+couldSatisfyPermsM (CruCtxCons tps _) (TypedRegsCons args arg)
                    (mbMatch -> [nuMP| ValPerms_Cons ps
                                        (ValPerm_Eq (PExpr_LLVMWord mb_e)) |]) =
   couldSatisfyPermsM tps args ps >>>= \b ->
