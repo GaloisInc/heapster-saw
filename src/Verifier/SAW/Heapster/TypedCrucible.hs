@@ -1009,6 +1009,8 @@ data TypedCFG
                  !(TypedEntryID blocks inits RNil)
              }
 
+data SomeTypedCFG ext where
+  SomeTypedCFG :: TypedCFG ext blocks ghosts inits ret -> SomeTypedCFG ext
 
 tpcfgInputPerms :: TypedCFG ext blocks ghosts inits ret ->
                    MbValuePerms (ghosts :++: inits)
@@ -1653,7 +1655,7 @@ ppCruRegAndPerms ctx r =
 -- their permissions, the variables in those permissions etc., as in
 -- 'varPermsTransFreeVars'
 getRelevantPerms :: [SomeName CrucibleType] ->
-                    PermCheckM ext cblocks blocks tops ret r ps r ps 
+                    PermCheckM ext cblocks blocks tops ret r ps r ps
                       (Some DistPerms)
 getRelevantPerms (namesListToNames -> SomeRAssign ns) =
   stCurPerms <$> gget >>>= \perms ->
@@ -2306,7 +2308,7 @@ couldSatisfyPermsM (CruCtxCons tps (BVRepr _)) (TypedRegsCons args arg)
   couldSatisfyPermsM tps args ps >>>= \b ->
   getRegEqualsExpr arg >>>= \arg_val ->
   greturn (b && mbLift (fmap (bvCouldEqual arg_val) mb_e))
-couldSatisfyPermsM (CruCtxCons tps _) (TypedRegsCons args arg) 
+couldSatisfyPermsM (CruCtxCons tps _) (TypedRegsCons args arg)
                    (mbMatch -> [nuMP| ValPerms_Cons ps
                                        (ValPerm_Eq (PExpr_LLVMWord mb_e)) |]) =
   couldSatisfyPermsM tps args ps >>>= \b ->

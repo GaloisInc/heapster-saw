@@ -488,7 +488,7 @@ data PermExpr (a :: CrucibleType) where
   PExpr_PermListCons :: TypeRepr a -> PermExpr a -> ValuePerm a ->
                         PermExpr PermListType -> PermExpr PermListType
 
-  -- | A read/write modality 
+  -- | A read/write modality
   PExpr_RWModality :: RWModality -> PermExpr RWModalityType
 
   -- | The empty / vacuously true shape
@@ -576,7 +576,7 @@ exprsToRAssign (PExprs_Cons es e) = exprsToRAssign es :>: e
 -- | Convert an 'RAssign' to a 'PermExprs'
 rassignToExprs :: RAssign PermExpr as -> PermExprs as
 rassignToExprs MNil = PExprs_Nil
-rassignToExprs (es :>: e) = PExprs_Cons (rassignToExprs es) e 
+rassignToExprs (es :>: e) = PExprs_Cons (rassignToExprs es) e
 
 -- | Convert a list of names to a 'PermExprs' list
 namesToExprs :: RAssign Name as -> PermExprs as
@@ -6144,7 +6144,7 @@ instance AbstractNamedShape w (AtomicPerm a) where
   abstractNSM (Perm_LLVMFunPtr tp p) = fmap (Perm_LLVMFunPtr tp) <$> abstractNSM p
   abstractNSM (Perm_LLVMBlockShape sh) = fmap Perm_LLVMBlockShape <$> abstractNSM sh
   abstractNSM Perm_IsLLVMPtr = pureBindingM Perm_IsLLVMPtr
-  abstractNSM (Perm_NamedConj n args off) = 
+  abstractNSM (Perm_NamedConj n args off) =
     mbMap2 (Perm_NamedConj n) <$> abstractNSM args <*> abstractNSM off
   abstractNSM (Perm_LLVMFrame fp) = fmap Perm_LLVMFrame <$> abstractNSM fp
   abstractNSM (Perm_LOwned ps_in ps_out) =
@@ -6254,7 +6254,7 @@ data BlockHint blocks init ret args where
 blockHintSort :: BlockHint blocks init ret args -> BlockHintSort args
 blockHintSort (BlockHint _ _ _ sort) = sort
 
--- FIXME: all the per-block hints 
+-- FIXME: all the per-block hints
 
 -- | A "hint" from the user for type-checking
 data Hint where
@@ -6373,7 +6373,7 @@ permEnvAddRecShapeM :: (Monad m, MonadFail m, 1 <= w, KnownNat w) =>
                        PermEnv -> String -> CruCtx args -> Ident ->
                        (NamedShape 'True args w -> PermEnv ->
                         m (Mb args (PermExpr (LLVMShapeType w)))) ->
-                       (NamedShape 'True args w -> 
+                       (NamedShape 'True args w ->
                         Mb args (PermExpr (LLVMShapeType w)) -> PermEnv ->
                         m (Ident, Ident)) ->
                        m PermEnv
@@ -6381,7 +6381,7 @@ permEnvAddRecShapeM env nm args trans_ident bodyF foldIdentsF =
   do let body_err = error "Analyzing recursive shape cases before it is defined!"
          fold_err = error "Folding recursive shape before it is defined!"
          unfold_err = error "Unfolding recursive shape before it is defined!"
-     let nsh1 = NamedShape nm args $  
+     let nsh1 = NamedShape nm args $
                   RecShapeBody body_err trans_ident fold_err unfold_err
          tmp_env1 = permEnvAddNamedShape env nsh1
      body <- bodyF nsh1 tmp_env1
@@ -6389,7 +6389,7 @@ permEnvAddRecShapeM env nm args trans_ident bodyF foldIdentsF =
      case fmap mbCombine . mbMaybe $
             mbMap2 (abstractNS nm args) mb_args body of
        Just mb_body ->
-         do let nsh2 = NamedShape nm args $  
+         do let nsh2 = NamedShape nm args $
                          RecShapeBody mb_body trans_ident fold_err unfold_err
                 tmp_env2 = permEnvAddNamedShape env nsh2
                 nsh_unf = unfoldNamedShape nsh2 <$> mb_args
@@ -6397,7 +6397,7 @@ permEnvAddRecShapeM env nm args trans_ident bodyF foldIdentsF =
             return $ permEnvAddNamedShape env $ NamedShape nm args $
                        RecShapeBody mb_body trans_ident fold_ident unfold_ident
        Nothing ->
-         fail $ "recursive shape applied to different arguments in its body" 
+         fail $ "recursive shape applied to different arguments in its body"
 
 
 -- | Add a defined named permission to a 'PermEnv'
