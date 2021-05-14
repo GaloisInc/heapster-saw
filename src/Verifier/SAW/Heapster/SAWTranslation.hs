@@ -323,7 +323,7 @@ nuMultiTransM :: TransInfo info => (RAssign Name ctx -> b) ->
                  TransM info ctx (Mb ctx b)
 nuMultiTransM f =
   do info <- ask
-     return $ nuMulti (infoCtx info) f
+     return $ nuMulti (RL.map (\_ -> Proxy) (infoCtx info)) f
 
 -- | Apply the result of a translation to that of another
 applyTransM :: TransM info ctx OpenTerm -> TransM info ctx OpenTerm ->
@@ -801,7 +801,7 @@ instance TransInfo info =>
     [nuMP| PExpr_ExShape mb_sh |] ->
       do tp_trans <- translate $ fmap bindingType mb_sh
          tp_f_trm <- lambdaTupleTransM "x_exsh" tp_trans $ \e ->
-           transTupleTerm <$> inExtTransM e (translate $ mbCombine mb_sh)
+           transTupleTerm <$> inExtTransM e (translate $ mbCombine RL.typeCtxProxies mb_sh)
          return $ ETrans_Term (dataTypeOpenTerm "Prelude.Sigma"
                                [typeTransTupleType tp_trans, tp_f_trm])
 
@@ -1066,7 +1066,7 @@ eqPermTransCtx :: forall (ctx :: RList CrucibleType) (ps :: RList CrucibleType) 
                   RAssign any ctx -> RAssign (Member ctx) ps ->
                   PermTransCtx ctx ps
 eqPermTransCtx ns =
-  RL.map (\memb -> PTrans_Eq $ nuMulti ns (PExpr_Var . RL.get memb))
+  RL.map (\memb -> PTrans_Eq $ nuMulti (RL.map (\_-> Proxy) ns) (PExpr_Var . RL.get memb))
 
 
 instance IsTermTrans (PermTrans ctx a) where
@@ -1174,7 +1174,9 @@ permTransPermEq ptrans mb_p =
 
 
 extsMb :: CruCtx ctx2 -> Mb ctx a -> Mb (ctx :++: ctx2) a
-extsMb ctx = mbCombine . fmap (nus (cruCtxProxies ctx) . const)
+extsMb ctx = mbCombine proxies . fmap (nus proxies . const)
+  where
+    proxies = cruCtxProxies ctx
 
 -- | Generic function to extend the context of the translation of a permission
 class ExtPermTrans f where
@@ -1556,7 +1558,7 @@ instance TransInfo info =>
          tp_trans <- translateClosed tp
          mkPermTypeTrans1 p <$>
            sigmaTypeTransM "x_ex" tp_trans (\x -> inExtTransM x $
-                                                  translate $ mbCombine p1)
+                                                  translate $ mbCombine RL.typeCtxProxies p1)
     [nuMP| ValPerm_Named npn args off |] ->
       do env <- infoEnv <$> ask
          args_trans <- translate args
@@ -1713,10 +1715,12 @@ instance TransInfo info =>
 instance TransInfo info =>
          Translate info ctx (FunPerm ghosts args ret) OpenTerm where
   translate (mbMatch -> [nuMP| FunPerm ghosts args ret perms_in perms_out |]) =
-    piExprCtx (appendCruCtx (mbLift ghosts) (mbLift args)) $
-    piPermCtx (mbCombine perms_in) $ \_ ->
+    let ctx = appendCruCtx (mbLift ghosts) (mbLift args)
+        pxys = cruCtxProxies ctx in
+    piExprCtx ctx $
+    piPermCtx (mbCombine pxys perms_in) $ \_ ->
     applyTransM (return $ globalOpenTerm "Prelude.CompM") $
-    translateRetType (mbLift ret) $ mbCombine perms_out
+    translateRetType (mbLift ret) $ mbCombine (pxys :>: Proxy) perms_out
 
 -- | Lambda-abstraction over a permission
 lambdaPermTrans :: TransInfo info => String -> Mb ctx (ValuePerm a) ->
@@ -2071,7 +2075,7 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
        tp_trans <- translateClosed tp
        etrans <- translate e
        sigma_trm <-
-         sigmaTransM "x_ex" tp_trans (flip inExtTransM $ translate $ mbCombine p)
+         sigmaTransM "x_ex" tp_trans (flip inExtTransM $ translate $ mbCombine RL.typeCtxProxies p)
          etrans getTopPermM
        withPermStackM id
          ((:>: PTrans_Term (fmap ValPerm_Exists p) sigma_trm) . RL.tail)
@@ -2982,14 +2986,15 @@ implTransAltErr str (ImplFailContMsg _) =
 -- translation function if the argument succeeds and fails if the translation of
 -- the argument fails
 translatePermImplUnary ::
+  RL.TypeCtx bs =>
   ImplTranslateF r ext blocks tops ret =>
   Mb ctx (MbPermImpls r (RNil :> '(bs,ps_out))) ->
   (ImpTransM ext blocks tops ret ps_out (ctx :++: bs) OpenTerm ->
    ImpTransM ext blocks tops ret ps ctx OpenTerm) ->
-  PermImplTransM (ImplFailCont ->
-                  ImpTransM ext blocks tops ret ps ctx OpenTerm)
-translatePermImplUnary (mbMatch -> [nuMP| MbPermImpls_Cons _ mb_impl |]) f =
-  translatePermImpl Proxy (mbCombine mb_impl) >>= \trans ->
+  PermImplTransM
+    (ImplFailCont -> ImpTransM ext blocks tops ret ps ctx OpenTerm)
+translatePermImplUnary (mbMatch -> [nuMP| MbPermImpls_Cons _ _ mb_impl |]) f =
+  translatePermImpl Proxy (mbCombine RL.typeCtxProxies mb_impl) >>= \trans ->
   return $ \k -> f $ trans k
 
 
@@ -3008,9 +3013,9 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
     tell [mbLift str] >> mzero
 
   ([nuMP| Impl1_Catch |],
-   [nuMP| (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2) |]) ->
-    pitmCatching (translatePermImpl prx $ mbCombine mb_impl1) >>= \maybe_trans1 ->
-    pitmCatching (translatePermImpl prx $ mbCombine mb_impl2) >>= \maybe_trans2 ->
+   [nuMP| (MbPermImpls_Cons _ (MbPermImpls_Cons _ _ mb_impl1) mb_impl2) |]) ->
+    pitmCatching (translatePermImpl prx $ mbCombine RL.typeCtxProxies mb_impl1) >>= \maybe_trans1 ->
+    pitmCatching (translatePermImpl prx $ mbCombine RL.typeCtxProxies mb_impl2) >>= \maybe_trans2 ->
     case (maybe_trans1, maybe_trans2) of
       (Just trans1, Just trans2) ->
         return $ \k ->
@@ -3040,9 +3045,9 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
   -- If both branches of an or elimination fail, the whole thing fails; otherwise,
   -- an or elimination performs a pattern-match on an Either
   ([nuMP| Impl1_ElimOr x p1 p2 |],
-   [nuMP| (MbPermImpls_Cons (MbPermImpls_Cons _ mb_impl1) mb_impl2) |]) ->
-    pitmCatching (translatePermImpl prx $ mbCombine mb_impl1) >>= \maybe_trans1 ->
-    pitmCatching (translatePermImpl prx $ mbCombine mb_impl2) >>= \maybe_trans2 ->
+   [nuMP| (MbPermImpls_Cons _ (MbPermImpls_Cons _ _ mb_impl1) mb_impl2) |]) ->
+    pitmCatching (translatePermImpl prx $ mbCombine RL.typeCtxProxies mb_impl1) >>= \maybe_trans1 ->
+    pitmCatching (translatePermImpl prx $ mbCombine RL.typeCtxProxies mb_impl2) >>= \maybe_trans2 ->
     case (maybe_trans1, maybe_trans2) of
       (Nothing, Nothing) -> mzero
       _ ->
@@ -3069,7 +3074,7 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
        top_ptrans <- getTopPermM
        tp_trans <- translateClosed tp
        sigmaElimTransM "x_elimEx" tp_trans
-         (flip inExtTransM $ translate $ mbCombine p)
+         (flip inExtTransM $ translate $ mbCombine RL.typeCtxProxies p)
          compReturnTypeTransM
          (\etrans ptrans ->
            inExtTransM etrans $
@@ -3098,7 +3103,7 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
        let etrans_y = case etrans_x of
              ETrans_Struct flds -> RL.get (mbLift memb) flds
              _ -> error "translatePermImpl1: Impl1_ElimStructField"
-       let mb_y = mbCombine $ fmap (const $ nu $ \y -> PExpr_Var y) x
+       let mb_y = mbCombine RL.typeCtxProxies $ fmap (const $ nu $ \y -> PExpr_Var y) x
        inExtTransM etrans_y $
          withPermStackM (:>: Member_Base)
          (\(pctx :>: PTrans_Conj [APTrans_Struct pctx_str]) ->
@@ -3116,12 +3121,12 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
             unPTransLLVMField "translatePermImpl1: Impl1_ElimLLVMFieldContents"
             knownNat ptrans_x in
       pctx :>: PTrans_Conj [APTrans_LLVMField
-                            (mbCombine $
+                            (mbCombine RL.typeCtxProxies $
                              fmap (\fld -> nu $ \y ->
                                     fld { llvmFieldContents =
                                             ValPerm_Eq (PExpr_Var y)})
                              mb_fld) $
-                            PTrans_Eq (mbCombine $
+                            PTrans_Eq (mbCombine RL.typeCtxProxies $
                                        fmap (const $ nu PExpr_Var) mb_fld)]
       :>: ptrans')
     m
@@ -3177,8 +3182,8 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
   -- implTransAltErr, not the entire type-checking error message, because this is
   -- considered just an assertion and not a failure
   ([nuMP| Impl1_TryProveBVProp x prop@(BVProp_Eq e1 e2) prop_str |],
-   [nuMP| MbPermImpls_Cons _ mb_impl' |]) ->
-    translatePermImpl prx (mbCombine mb_impl') >>= \trans ->
+   [nuMP| MbPermImpls_Cons _ _ mb_impl' |]) ->
+    translatePermImpl prx (mbCombine RL.typeCtxProxies mb_impl') >>= \trans ->
     return $ \k ->
     do prop_tp_trans <- translate prop
        applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
@@ -3193,8 +3198,8 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
 
   -- For an inequality test, we don't need a proof, so just insert an if
   ([nuMP| Impl1_TryProveBVProp x prop@(BVProp_Neq e1 e2) prop_str |],
-   [nuMP| MbPermImpls_Cons _ mb_impl' |]) ->
-    translatePermImpl prx (mbCombine mb_impl') >>= \trans ->
+   [nuMP| MbPermImpls_Cons _ _ mb_impl' |]) ->
+    translatePermImpl prx (mbCombine RL.typeCtxProxies mb_impl') >>= \trans ->
     return $ \k ->
     let w = natVal2 prop in
     applyMultiTransM (return $ globalOpenTerm "Prelude.ite")
@@ -3218,8 +3223,8 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
   -}
 
   ([nuMP| Impl1_TryProveBVProp x prop@(BVProp_ULt e1 e2) prop_str |],
-   [nuMP| MbPermImpls_Cons _ mb_impl' |]) ->
-    translatePermImpl prx (mbCombine mb_impl') >>= \trans ->
+   [nuMP| MbPermImpls_Cons _ _ mb_impl' |]) ->
+    translatePermImpl prx (mbCombine RL.typeCtxProxies mb_impl') >>= \trans ->
     return $ \k ->
     do prop_tp_trans <- translate prop
        applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
@@ -3245,8 +3250,8 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
   -}
 
   ([nuMP| Impl1_TryProveBVProp x prop@(BVProp_ULeq e1 e2) prop_str |],
-   [nuMP| MbPermImpls_Cons _ mb_impl' |]) ->
-    translatePermImpl prx (mbCombine mb_impl') >>= \trans ->
+   [nuMP| MbPermImpls_Cons _ _ mb_impl' |]) ->
+    translatePermImpl prx (mbCombine RL.typeCtxProxies mb_impl') >>= \trans ->
     return $ \k ->
     do prop_tp_trans <- translate prop
        applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
@@ -3262,8 +3267,8 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
 
 
   ([nuMP| Impl1_TryProveBVProp x prop@(BVProp_ULeq_Diff e1 e2 e3) prop_str |],
-   [nuMP| MbPermImpls_Cons _ mb_impl' |]) ->
-    translatePermImpl prx (mbCombine mb_impl') >>= \trans ->
+   [nuMP| MbPermImpls_Cons _ _ mb_impl' |]) ->
+    translatePermImpl prx (mbCombine RL.typeCtxProxies mb_impl') >>= \trans ->
     return $ \k ->
     do prop_tp_trans <- translate prop
        applyMultiTransM (return $ globalOpenTerm "Prelude.maybe")
@@ -3724,7 +3729,8 @@ translateStmt loc mb_stmt m = case mbMatch mb_stmt of
              PTrans_Conj [APTrans_Fun _ f_trm] -> f_trm
              _ -> error "translateStmt: TypedCall: unexpected function permission"
        -- let perms_in = fmap (distPermsSnoc . typedStmtIn) stmt
-       let perms_out = mbCombine $ fmap (\stmt' -> nu $ \ret ->
+       let perms_out = mbCombine RL.typeCtxProxies
+                     $ fmap (\stmt' -> nu $ \ret ->
                                           typedStmtOut stmt' (MNil :>: ret)) stmt
        ret_tp <- translate $ fmap funPermRet fun_perm
        ectx_gexprs <- translate gexprs
@@ -3811,11 +3817,11 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
             (knownNat @sz) p_ptr in
       RL.append
       (pctx :>: PTrans_Conj [APTrans_LLVMField
-                             (mbCombine $
+                             (mbCombine RL.typeCtxProxies $
                               fmap (\fp -> nu $ \ret ->
                                      fp { llvmFieldContents =
                                             ValPerm_Eq (PExpr_Var ret)}) mb_fp)
-                             (PTrans_Eq $ mbCombine $
+                             (PTrans_Eq $ mbCombine RL.typeCtxProxies $
                               fmap (const $ nu $ \ret -> PExpr_Var ret) mb_fp)]
        :>: p_ret) pctx_l)
     m
@@ -3887,7 +3893,7 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
     inExtTransM ETrans_LLVM $
     do b <- translate1 $ extMb mb_r1
        tptrans <-
-         translate $ mbCombine $ flip fmap mb_stmt $ \stmt -> nu $ \ret ->
+         translate $ mbCombine RL.typeCtxProxies $ flip fmap mb_stmt $ \stmt -> nu $ \ret ->
          distPermsHeadPerm $ typedLLVMStmtOut stmt ret
        let t = applyOpenTerm (globalOpenTerm "Prelude.boolToEither") b
        withPermStackM (:>: Member_Base) (:>: typeTransF tptrans [t]) m
@@ -3911,7 +3917,7 @@ instance PermCheckExtC ext =>
        ret_tp <- returnTypeM
        sigma_trm <-
          sigmaTransM "r" tp_trans (flip inExtTransM $
-                                   translate $ mbCombine mb_perms)
+                                   translate $ mbCombine RL.typeCtxProxies mb_perms)
          r_trans (itiPermStack <$> ask)
        return $
          applyOpenTermMulti (globalOpenTerm "Prelude.returnM")
@@ -3942,8 +3948,8 @@ instance PermCheckExtC ext =>
          (TypedStmtSeq ext blocks tops ret ps) OpenTerm where
   translate mb_x = case mbMatch mb_x of
     [nuMP| TypedImplStmt impl_seq |] -> translate impl_seq
-    [nuMP| TypedConsStmt loc stmt mb_seq |] ->
-      translateStmt (mbLift loc) stmt (translate $ mbCombine mb_seq)
+    [nuMP| TypedConsStmt loc stmt pxys mb_seq |] ->
+      translateStmt (mbLift loc) stmt (translate $ mbCombine (mbLift pxys) mb_seq)
     [nuMP| TypedTermStmt _ term_stmt |] -> translate term_stmt
 
 instance PermCheckExtC ext =>
@@ -4126,7 +4132,7 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
                all_pctx = RL.append pctx inits_eq_perms in
            impTransM all_membs all_pctx mapTrans retTypeTrans $
            translateCallEntryID "CFG" (tpcfgEntryBlockID cfg) Proxy
-           (nuMulti all_pctx $ \_ -> PExprs_Nil)
+           (nuMulti (RL.map (\_-> Proxy) all_pctx) $ \_ -> PExprs_Nil)
            (mbValuePermsToDistPerms $ funPermToBlockInputs fun_perm)
          )
        ]
@@ -4307,7 +4313,7 @@ translateCompleteTypeInCtx :: SharedContext -> PermEnv ->
 translateCompleteTypeInCtx sc env args ret =
   completeOpenTerm sc $
   runNilTypeTransM (piExprCtx args (typeTransType1 <$> translate ret')) env
-  where ret' = mbCombine . emptyMb $ ret
+  where ret' = mbCombine (cruCtxProxies args) . emptyMb $ ret
 
 -- | Translate an input list of 'ValuePerms' and an output 'ValuePerm' to a SAW
 -- core function type in a manner similar to 'translateCompleteFunPerm', except
@@ -4321,5 +4327,6 @@ translateCompletePureFun sc env ctx args ret =
   completeOpenTerm sc $
   runNilTypeTransM (piExprCtx ctx $ piPermCtx args' $ const $
                     typeTransTupleType <$> translate ret') env
-  where args' = mbCombine . emptyMb $ args
-        ret'  = mbCombine . emptyMb $ ret
+  where args' = mbCombine pxys . emptyMb $ args
+        ret'  = mbCombine pxys . emptyMb $ ret
+        pxys  = cruCtxProxies ctx

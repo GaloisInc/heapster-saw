@@ -14,6 +14,7 @@ module Verifier.SAW.Heapster.PermParser (
   parseAtomicPermsInCtxString,
   parsePermInCtxString,
   parseExprInCtxString,
+  parseRustTypeString,
   ) where
 
 import Data.List
@@ -208,3 +209,15 @@ parseFunPermStringMaybeRust nm w env args ret str =
   case find (\c -> c == '<' || c == '(') str of
     Just '<' -> parseFunPermFromRust env w args ret str
     _ -> parseFunPermString nm env args ret str
+
+-- | Parse a 'SomeNamedShape' from the given 'String'. This 'SomeNamedShape'
+-- must be a valid Rust @struct@ or @enum@ declaration given in Rust syntax.
+-- The @w@ argument gives the bit width of pointers in the current\
+-- architecture.
+parseRustTypeString ::
+  (1 <= w, KnownNat w, MonadFail m) =>
+  PermEnv               {- ^ permission environment     -} ->
+  prx w                 {- ^ pointer bit-width proxy    -} ->
+  String                {- ^ input text                 -} ->
+  m SomeNamedShape
+parseRustTypeString = parseNamedShapeFromRustDecl

@@ -13,29 +13,12 @@ Import iter_linked_list.
 
 Import SAWCorePrelude.
 
-Ltac listF_destruct l l' := destruct l as [| ? l'].
-Ltac listF_induction l l' := induction l as [| ? l'].
-Ltac listF_simpl := simpl unfoldListF in *; simpl foldListF in *; simpl ListF__rec in *.
 
-Hint Extern 2 (IntroArg ?n (eq (unfoldListF _ _ ?l)
-                               (SAWCorePrelude.Left _ _ _)) _) =>
-  doDestruction (listF_destruct) (listF_simpl) l : refinesFun.
-Hint Extern 2 (IntroArg ?n (eq (unfoldListF _ _ ?l)
-                               (SAWCorePrelude.Right _ _ _)) _) =>
-  doDestruction (listF_destruct) (listF_simpl) l : refinesFun.
-
-Hint Extern 9 (ListF__rec _ _ _ _ _ ?l |= _) =>
-  doInduction (listF_induction) (listF_simpl) l : refinesFun.
-Hint Extern 9 (_ |= ListF__rec _ _ _ _ _ ?l) =>
-  doInduction (listF_induction) (listF_simpl) l : refinesFun.
-
-Lemma transListF_NilF_r a b l x : transListF a b l (NilF a b x) = putListF a unit b l x.
-Proof. induction l; eauto. Qed.
-
-Lemma putListF_unit a l u : putListF a unit unit l u = l.
-Proof. destruct u; induction l; [ destruct b | simpl; f_equal ]; eauto. Qed.
-
-Hint Rewrite transListF_NilF_r putListF_unit : refinesM.
+Lemma appendList_Nil_r a l : appendList a l List.nil = l.
+Proof.
+  induction l; eauto.
+  simpl; f_equal; eauto.
+Qed.
 
 
 Definition incr_list_invar :=
@@ -44,19 +27,21 @@ Definition incr_list_invar :=
 
 Arguments incr_list_invar !l.
 
-(* Lemma no_errors_incr_list : *)
-(*   refinesFun incr_list (fun l => assumingM (incr_list_invar l) noErrorsSpec). *)
-(* Proof. *)
-(*   unfold incr_list, incr_list__tuple_fun. *)
-(*   prove_refinement_match_letRecM_l. *)
-(*   - exact (fun _ l => assumingM (incr_list_invar l) noErrorsSpec). *)
-(*   unfold noErrorsSpec, BVVec, bitvector in * |- *. *)
-(*   time "no_errors_incr_list" prove_refinement. *)
-(*   (* All but one of the remaining goals are taken care of by assumptions we have in scope: *) *)
-(*   all: try destruct e_assuming0 as [?e_assuming ?e_assuming]. simpl. apply e_assuming1. try assumption. *)
-(*   (* We just have to show this case is impossible by virtue of our loop invariant: *) *)
-(*   apply isBvult_to_isBvule_suc in e_assuming0. *)
-(*   apply bvule_msb_l in e_assuming0; try assumption. *)
-(*   compute_bv_funs in e_assuming0; inversion e_assuming0. *)
-(* (* Qed. *) *)
-(* Admitted. *)
+Lemma no_errors_incr_list :
+  refinesFun incr_list (fun l => assumingM (incr_list_invar l) noErrorsSpec).
+Proof.
+  unfold incr_list, incr_list__tuple_fun.
+  prove_refinement_match_letRecM_l.
+  - exact (fun _ l => assumingM (incr_list_invar l) noErrorsSpec).
+  unfold noErrorsSpec, BVVec, bitvector in * |- *.
+  time "no_errors_incr_list" prove_refinement.
+  all: try destruct e_assuming as [?e_assuming ?e_assuming];
+       try destruct e_assuming0 as [?e_assuming ?e_assuming];
+       try destruct e_assuming1 as [?e_assuming ?e_assuming]; simpl in *.
+  (* All but one of the remaining goals are taken care of by assumptions we have in scope: *)
+  all: try (split; [| rewrite appendList_Nil_r]); eauto.
+  (* We just have to show this case is impossible by virtue of our loop invariant: *)
+  apply isBvult_to_isBvule_suc in e_assuming0.
+  apply bvule_msb_l in e_assuming0; try assumption.
+  compute_bv_funs in e_assuming0; inversion e_assuming0.
+Qed.

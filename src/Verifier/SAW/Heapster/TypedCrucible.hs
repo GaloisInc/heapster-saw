@@ -31,6 +31,7 @@ import qualified Data.Text as Text
 import Data.List (findIndex)
 import Data.Type.Equality
 import Data.Kind
+import Data.Reflection
 import qualified Data.BitVector.Sized as BV
 import GHC.TypeLits
 
@@ -601,6 +602,7 @@ data TypedStmtSeq ext blocks tops ret ps_in where
   -- value(s) of each statement
   TypedConsStmt :: !ProgramLoc ->
                    !(TypedStmt ext rets ps_in ps_next) ->
+                   !(RAssign Proxy rets) ->
                    !(Mb rets (TypedStmtSeq ext blocks tops ret ps_next)) ->
                    TypedStmtSeq ext blocks tops ret ps_in
 
@@ -862,10 +864,11 @@ instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
   genSubst s mb_x = case mbMatch mb_x of
     [nuMP| TypedImplStmt impl_seq |] ->
       TypedImplStmt <$> genSubst s impl_seq
-    [nuMP| TypedConsStmt loc stmt mb_seq |] ->
-      TypedConsStmt (mbLift loc) <$> genSubst s stmt <*> genSubst s mb_seq
+    [nuMP| TypedConsStmt loc stmt pxys mb_seq |] ->
+      TypedConsStmt (mbLift loc) <$> genSubst s stmt <*> pure (mbLift pxys) <*> give (mbLift pxys) (genSubst s mb_seq)
     [nuMP| TypedTermStmt loc term_stmt |] ->
       TypedTermStmt (mbLift loc) <$> genSubst s term_stmt
+
 
 instance (PermCheckExtC ext, SubstVar PermVarSubst m) =>
          Substable1 PermVarSubst (TypedStmtSeq ext blocks tops ret) m where
@@ -2076,7 +2079,7 @@ emitStmt :: CruCtx rets -> ProgramLoc ->
             (RAssign Name rets)
 emitStmt tps loc stmt =
   gopenBinding
-  ((TypedConsStmt loc stmt <$>) . strongMbM)
+  ((TypedConsStmt loc stmt (cruCtxProxies tps) <$>) . strongMbM)
   (mbPure (cruCtxProxies tps) ()) >>>= \(ns, ()) ->
   setVarTypes "x" ns tps >>>
   gmodify (modifySTCurPerms $ applyTypedStmt stmt ns) >>>
@@ -3119,6 +3122,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
       let ghosts = entryGhosts entryID
           ghosts_prxs = cruCtxProxies ghosts
           ex_perms =
+            give ghosts_prxs $
             varSubst (permVarSubstOfNames tops_args_ns) $
             mbSeparate ghosts_prxs $
             mbValuePermsToDistPerms entry_perms_in in
@@ -3339,7 +3343,7 @@ tcBlockEntry in_deg blk (BlockEntryInfo {..}) =
   let args_prxs = cruCtxProxies entryInfoArgs
       ghosts_prxs = cruCtxProxies $ entryGhosts entryInfoID
       ret_perms =
-        mbCombine $ extMbMulti ghosts_prxs $ extMbMulti args_prxs $
+        mbCombine RL.typeCtxProxies  $ extMbMulti ghosts_prxs $ extMbMulti args_prxs $
         mbSeparate (MNil :>: Proxy) stRetPerms in
   fmap (TypedEntry entryInfoID (addInDegrees in_deg entryInfoInDegree)
         stTopCtx entryInfoArgs stRetType entryInfoPermsIn ret_perms) $
