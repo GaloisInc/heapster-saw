@@ -1046,7 +1046,8 @@ type family TransData phase a where
 -- also includes a 'TypedEntryID' for the callee, to make translation easier.
 data CallSiteImplRet blocks tops args ghosts ps_out =
   CallSiteImplRet (TypedEntryID blocks args) (CruCtx ghosts)
-  ((tops :++: args) :++: ghosts :~: ps_out) (PermExprs ghosts)
+  ((tops :++: args) :++: ghosts :~: ps_out)
+  (RAssign ExprVar (tops :++: args)) (RAssign ExprVar ghosts)
 
 $(mkNuMatching [t| forall blocks tops args ghosts ps_out.
                 CallSiteImplRet blocks tops args ghosts ps_out |])
@@ -1057,9 +1058,9 @@ instance NuMatchingAny1 (CallSiteImplRet blocks tops args ghosts) where
 instance SubstVar PermVarSubst m =>
          Substable PermVarSubst (CallSiteImplRet
                                  blocks tops args ghosts ps) m where
-  genSubst s (mbMatch -> [nuMP| CallSiteImplRet entryID ghosts Refl gexprs |]) =
+  genSubst s (mbMatch -> [nuMP| CallSiteImplRet entryID ghosts Refl tavars gvars |]) =
     CallSiteImplRet (mbLift entryID) (mbLift ghosts) Refl <$>
-    genSubst s gexprs
+    genSubst s tavars <*> genSubst s gvars
 
 instance SubstVar PermVarSubst m =>
          Substable1 PermVarSubst (CallSiteImplRet
@@ -1079,10 +1080,10 @@ idCallSiteImpl :: TypedEntryID blocks args ->
                   CallSiteImpl blocks ((tops :++: args) :++: vars) tops args vars
 idCallSiteImpl entryID tops args vars =
   let tops_args_prxs = cruCtxProxies (appendCruCtx tops args) in
-  CallSiteImpl $ mbCombine $ nuMulti tops_args_prxs $ \_ ->
+  CallSiteImpl $ mbCombine $ nuMulti tops_args_prxs $ \tops_args_ns ->
   nuMulti (cruCtxProxies vars) $ \vars_ns ->
   AnnotPermImpl "" $ PermImpl_Done $
-  CallSiteImplRet entryID vars Refl (namesToExprs vars_ns)
+  CallSiteImplRet entryID vars Refl tops_args_ns vars_ns
 
 -- | A jump / branch to a particular entrypoint
 data TypedCallSite phase blocks tops args ghosts vars =
@@ -3649,11 +3650,11 @@ proveCallSiteImpl srcID destID args ghosts vars mb_perms_in mb_perms_out =
   permGetPPInfo >>>= \ppInfo ->
   -- FIXME HERE NOW: add the input perms and call site to our error message
   let err = pretty "Could not prove" <+> permPretty ppInfo perms_out in
-  pcmRunImplM ghosts err (CallSiteImplRet destID ghosts Refl .
-                          exprsOfSubst . completePSubst ghosts)
-  (recombinePerms perms_in >>>
-   proveVarsImpl perms_out >>> getPSubst) >>>= \impl ->
+  pcmRunImplM ghosts err
+  (CallSiteImplRet destID ghosts Refl (RL.append tops_ns args_ns))
+  (recombinePerms perms_in >>> proveVarsImplVarEVars perms_out) >>>= \impl ->
   gmapRet (>> return impl)
+
 
 -- | Set the entrypoint ghost variables of a call site, erasing its implication
 callSiteSetGhosts :: CruCtx ghosts' ->

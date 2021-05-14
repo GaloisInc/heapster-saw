@@ -89,6 +89,7 @@ scInsertDef sc mnm ident def_tp def_tm =
                         defType = def_tp,
                         defBody = Just def_tm }
 
+
 ----------------------------------------------------------------------
 -- * Translation Monads
 ----------------------------------------------------------------------
@@ -2055,10 +2056,8 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
   
   [nuMP| SImpl_MoveUp (mb_ps1 :: DistPerms ps1) (_mb_x :: ExprVar a) _
                       (mb_ps2 :: DistPerms ps2) |] ->
-    let mkProxies :: forall vars ps. Mb vars (DistPerms ps) -> RAssign Proxy ps
-        mkProxies = mbLift . fmap (RL.map (const Proxy)) . mbDistPermsToValuePerms
-        ps1 = mkProxies mb_ps1
-        ps2 = mkProxies mb_ps2
+    let ps1 = mbRAssignProxies mb_ps1
+        ps2 = mbRAssignProxies mb_ps2
         prxa = Proxy :: Proxy a
         prx0a = Proxy :: Proxy (ps0 :> a) in
     case (RL.appendRNilConsEq ps0 prxa (RL.append ps1 ps2)) of
@@ -2075,6 +2074,23 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
           RL.append pctx0 $ RL.append (pctx1 :>: ptrans) pctx2)
         m
   
+  [nuMP| SImpl_MoveDown mb_ps1 (mb_x :: ExprVar a) _ mb_ps2 |]
+    | prx_a <- mbLift $ fmap (const (Proxy :: Proxy a)) mb_x
+    , ps1 <- mbRAssignProxies mb_ps1
+    , ps1a <- ps1 :>: prx_a
+    , ps2 <- mbRAssignProxies mb_ps2
+    , Refl <- RL.appendRNilConsEq ps0 prx_a (RL.append ps1 ps2) ->
+      withPermStackM
+      (\xs ->
+        let (xs0, xs1a2) = RL.split ps0 (RL.append ps1a ps2) xs
+            ((xs1 :>: x), xs2) = RL.split ps1a ps2 xs1a2 in
+        RL.append xs0 (RL.append (MNil :>: x) $ RL.append xs1 xs2))
+      (\pctx ->
+        let (pctx0, pctx1a2) = RL.split ps0 (RL.append ps1a ps2) pctx
+            ((pctx1 :>: ptrans), pctx2) = RL.split ps1a ps2 pctx1a2 in
+        RL.append pctx0 (RL.append (MNil :>: ptrans) $ RL.append pctx1 pctx2))
+      m
+
   [nuMP| SImpl_IntroOrL _ p1 p2 |] ->
     do tp1 <- translate p1
        tp2 <- translate p2
@@ -3670,29 +3686,23 @@ translateApply nm f perms =
 -- | Translate a call to (the translation of) an entrypoint, by either calling
 -- the letrec-bound variable for the entrypoint, if it has one, or by just
 -- translating the body of the entrypoint if it does not.
-translateCallEntry :: forall ext ps tops args ghosts blocks ctx ret.
-                      (PermCheckExtC ext,
-                       ps ~ ((tops :++: args) :++: ghosts)) => String ->
+translateCallEntry :: forall ext tops args ghosts blocks ctx ret.
+                      PermCheckExtC ext => String ->
                       TypedEntryTrans ext blocks tops ret args ghosts ->
-                      Mb ctx (PermExprs ghosts) -> Mb ctx (DistPerms ps) ->
-                      ImpTransM ext blocks tops ret ps ctx OpenTerm
-translateCallEntry nm entry_trans mb_ghosts mb_perms =
+                      Mb ctx (RAssign ExprVar (tops :++: args)) ->
+                      Mb ctx (RAssign ExprVar ghosts) ->
+                      ImpTransM ext blocks tops ret
+                      ((tops :++: args) :++: ghosts) ctx OpenTerm
+translateCallEntry nm entry_trans mb_tops_args mb_ghosts =
   -- First test that the stack == the required perms for entryID
   do let entry = typedEntryTransEntry entry_trans
-     let perms_in = mbValuePermsToDistPerms $ typedEntryPermsIn entry
-     let tops_args = appendCruCtx (typedEntryTops entry) (typedEntryArgs entry)
-     () <- assertPermStackEqM (nm ++ " 1")
-       (mbMap2
-        (\ghosts perms ->
-          let all_ns = distPermsVars perms
-              (tops_args_ns,_) = RL.split tops_args (proxiesOfExprs ghosts) all_ns in
-          valuePermsToDistPerms all_ns $
-          subst (substOfExprs $
-                 appendExprs (namesToExprs tops_args_ns) ghosts) $
-          fmap distPermsToValuePerms perms_in)
-        mb_ghosts
-        mb_perms)
-     () <- assertPermStackEqM (nm ++ " 2") mb_perms
+     let mb_s =
+           mbMap2 (\tops_args ghosts ->
+                    permVarSubstOfNames $ RL.append tops_args ghosts)
+           mb_tops_args mb_ghosts
+     let mb_perms = fmap (\s -> varSubst s $ mbValuePermsToDistPerms $
+                                typedEntryPermsIn entry) mb_s
+     () <- assertPermStackEqM nm mb_perms
 
      -- Now check if entryID has an associated letRec-bound function
      case typedEntryTransFun entry_trans of
@@ -3703,26 +3713,18 @@ translateCallEntry nm entry_trans mb_ghosts mb_perms =
          -- If not, continue by translating entry, setting the variable
          -- permission map to empty (as in the beginning of a block)
          clearVarPermsM $ translate $
-         fmap (\perms ->
-                varSubst (permVarSubstOfNames $ distPermsVars perms) $
-                typedEntryBody entry) mb_perms
+         fmap (\s -> varSubst s $ typedEntryBody entry) mb_s
 
 
 instance PermCheckExtC ext =>
          Translate (ImpTransInfo ext blocks tops ret ps) ctx
          (CallSiteImplRet blocks tops args ghosts ps) OpenTerm where
   translate (mbMatch ->
-             [nuMP| CallSiteImplRet entryID ghosts Refl mb_gexprs |]) =
+             [nuMP| CallSiteImplRet entryID ghosts Refl mb_tavars mb_gvars |]) =
     do entry_trans <-
          lookupEntryTransCast (mbLift entryID) (mbLift ghosts) <$>
          itiBlockMapTrans <$> ask
-       -- FIXME: the next line is a bit disingenuous, because translateCallEntry
-       -- checks that the perm stack == the input perms, and we are just passing
-       -- in the perm stack as the input perms; maybe we should store the
-       -- required permissions in CallSiteImplRets? Or just ditch the check in
-       -- translateCallEntry?
-       mb_perms <- getPermStackDistPerms
-       translateCallEntry "CallSiteImplRet" entry_trans mb_gexprs mb_perms
+       translateCallEntry "CallSiteImplRet" entry_trans mb_tavars mb_gvars
 
 instance PermCheckExtC ext =>
          ImplTranslateF (CallSiteImplRet blocks tops args ghosts)
@@ -4193,11 +4195,12 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
                all_pctx = RL.append pctx inits_eq_perms
                init_entry =
                  lookupEntryTransCast (tpcfgEntryID cfg) CruCtxNil mapTrans in
-           impTransM all_membs all_pctx mapTrans retTypeTrans $
-           translateCallEntry "CFG" init_entry
-           (nuMulti all_pctx $ \_ -> PExprs_Nil)
-           (mbValuePermsToDistPerms $ funPermToBlockInputs fun_perm)
-         )
+           impTransM all_membs all_pctx mapTrans retTypeTrans
+           (assertPermStackEqM "translateCFG" (mbValuePermsToDistPerms $
+                                               funPermToBlockInputs fun_perm)
+            >>
+            translateCallEntry "CFG" init_entry
+            (nuMulti all_pctx id) (nuMulti all_pctx $ \_ -> MNil)))
        ]
 
 
