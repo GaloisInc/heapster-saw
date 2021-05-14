@@ -1406,10 +1406,10 @@ type InnerPermCheckM ext cblocks blocks tops ret =
 
 -- | The generalized monad for permission-checking
 type PermCheckM ext cblocks blocks tops ret r1 ps1 r2 ps2 =
-  GenStateCont (PermCheckState ext tops ret ps1)
-  (InnerPermCheckM ext cblocks blocks tops ret r1)
-  (PermCheckState ext tops ret ps2)
-  (InnerPermCheckM ext cblocks blocks tops ret r2)
+  GenStateContT
+    (PermCheckState ext tops ret ps1) r1
+    (PermCheckState ext tops ret ps2) r2
+    (InnerPermCheckM ext cblocks blocks tops ret)
 
 -- | The generalized monad for permission-checking statements
 type StmtPermCheckM ext cblocks blocks tops ret ps1 ps2 =
@@ -1419,7 +1419,7 @@ type StmtPermCheckM ext cblocks blocks tops ret ps1 ps2 =
 
 liftPermCheckM :: InnerPermCheckM ext cblocks blocks tops ret a ->
                   PermCheckM ext cblocks blocks tops ret r ps r ps a
-liftPermCheckM m = gcaptureCC $ \k -> m >>= k
+liftPermCheckM = lift
 
 runPermCheckM :: KnownRepr ExtRepr ext =>
                  RAssign Name tops -> PermSet ps_in ->
@@ -1434,7 +1434,7 @@ runPermCheckM topVars perms m =
            stVarTypes  = NameMap.empty,
            stPPInfo    = emptyPPInfo,
            stErrPrefix = Nothing }
-     runGenStateCont m st (\_ () -> pure ())
+     runGenStateContT m st (\_ () -> pure ())
 
 -- | Lift an 'InnerPermCheckM' to a 'TopPermCheckM'
 liftInnerToTopM :: InnerPermCheckM ext cblocks blocks tops ret a ->
@@ -1796,7 +1796,7 @@ localPermCheckM ::
   PermCheckM ext cblocks blocks tops ret r' ps_in r' ps_in r_in
 localPermCheckM m =
   get >>>= \st ->
-  liftPermCheckM (runGenStateCont m st (\_ -> pure))
+  liftPermCheckM (runGenStateContT m st (\_ -> pure))
 
 -- | Call 'runImplM' in the 'PermCheckM' monad
 pcmRunImplM ::
@@ -3233,7 +3233,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           -- Step 6: insert a new block entrypoint that has all the permissions
           -- we constructed above as input permissions
           implGetVarTypes ghosts_ns >>>= \ghosts_tps ->
-          (liftGenStateCont $ flip runReaderT top_st $ insNewBlockEntry
+          (lift $ flip runReaderT top_st $ insNewBlockEntry
            memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
 
           -- Step 6: return a TypedJumpTarget inside a PermImpl that proves all

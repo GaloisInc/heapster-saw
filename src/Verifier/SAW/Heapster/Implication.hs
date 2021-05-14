@@ -2570,9 +2570,10 @@ unextImplState s =
 
 -- | The implication monad is a state-continuation monad that uses 'ImplState'
 type ImplM vars s r ps_out ps_in =
-  GenStateCont (ImplState vars ps_out) (State (Closed s) (PermImpl r ps_out))
-  (ImplState vars ps_in) (State (Closed s) (PermImpl r ps_in))
-
+  GenStateContT
+    (ImplState vars ps_out) (PermImpl r ps_out)
+    (ImplState vars ps_in ) (PermImpl r ps_in )
+    (State (Closed s))
 
 -- | Run an 'ImplM' computation by passing it a @vars@ context, a starting
 -- permission set, top-level state, and a continuation to consume the output
@@ -2581,7 +2582,7 @@ runImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
             ((a, ImplState vars ps_out) -> State (Closed s) (r ps_out)) ->
             ImplM vars s r ps_out ps_in a -> State (Closed s) (PermImpl r ps_in)
 runImplM vars perms env ppInfo fail_prefix do_trace nameTypes k m =
-  runGenStateCont
+  runGenStateContT
     m
     (mkImplState vars perms env ppInfo fail_prefix do_trace nameTypes)
     (\s a -> PermImpl_Done <$> k (a, s))
@@ -2594,7 +2595,7 @@ runImplImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
                 ImplM vars s r ps_out ps_in (PermImpl r ps_out) ->
                 State (Closed s) (PermImpl r ps_in)
 runImplImplM vars perms env ppInfo fail_prefix do_trace nameTypes m =
-  runGenStateCont
+  runGenStateContT
     m
     (mkImplState vars perms env ppInfo fail_prefix do_trace nameTypes)
     (\_ -> pure)
@@ -2607,7 +2608,7 @@ embedImplM :: DistPerms ps_in ->
               ImplM vars s r ps ps (PermImpl r' ps_in)
 embedImplM ps_in m =
   get >>>= \s ->
-  liftGenStateCont $
+  lift $
   runImplM CruCtxNil (distPermSet ps_in)
   (view implStatePermEnv s) (view implStatePPInfo s)
   (view implStateFailPrefix s) (view implStateDoTrace s)
@@ -2621,7 +2622,7 @@ embedMbImplM :: Mb ctx (PermSet ps_in) ->
                 ImplM vars s r ps ps (Mb ctx (PermImpl r' ps_in))
 embedMbImplM mb_ps_in mb_m =
   get >>>= \s ->
-  liftGenStateCont $
+  lift $
   strongMbM (mbMap2
        (\ps_in m ->
          runImplM CruCtxNil ps_in
@@ -2640,7 +2641,7 @@ localImplM ::
   ImplM vars s r ps_in ps_in (PermImpl r ps_in)
 localImplM m =
   get >>>= \st ->
-  gcaptureCC $ \k -> runGenStateCont m st (\_ -> pure) >>= k
+  gcaptureCC $ \k -> runGenStateContT m st (\_ -> pure) >>= k
 
 -- | Look up the type of an existential variable
 getExVarType :: Member vars tp -> ImplM vars s r ps ps (TypeRepr tp)
@@ -2700,12 +2701,13 @@ withExtVarsM :: KnownRepr TypeRepr tp =>
                 ImplM (vars :> tp) s r ps1 ps2 a ->
                 ImplM vars s r ps1 ps2 (a, PermExpr tp)
 withExtVarsM m =
-  withAltStateM extImplState (const unextImplState) $
-  (m >>>= \a ->
-    getPSubst >>>= \psubst ->
-    pure (a, case psubstLookup psubst Member_Base of
-               Just e -> e
-               Nothing -> zeroOfType knownRepr))
+  gmodify extImplState   >>>
+  m                      >>>= \a ->
+  getPSubst              >>>= \psubst ->
+  gmodify unextImplState >>>
+  pure (a, case psubstLookup psubst Member_Base of
+             Just e -> e
+             Nothing -> zeroOfType knownRepr)
 
 -- | Get the recursive permission recursion flag
 implGetRecRecurseFlag :: ImplM vars s r ps ps (Maybe (Either () ()))
@@ -2899,10 +2901,10 @@ implApplyImpl1 impl1 mb_ms =
   where
     helper :: MbPermSets ps_outs ->
               RAssign (Impl1Cont vars s r ps_r a) ps_outs ->
-              GenStateCont (ImplState vars ps_r)
-              (State (Closed s) (PermImpl r ps_r))
-              (ImplState vars ps_in)
-              (State (Closed s) (MbPermImpls r ps_outs)) a
+              GenStateContT
+                (ImplState vars ps_r)  (PermImpl r ps_r)
+                (ImplState vars ps_in) (MbPermImpls r ps_outs)
+                (State (Closed s)) a
     helper MbPermSets_Nil _ = gabortM (return MbPermImpls_Nil)
     helper (MbPermSets_Cons mbperms ctx mbperm) (args :>: Impl1Cont f) =
       gparallel (\m1 m2 -> MbPermImpls_Cons ctx <$> m1 <*> m2)
