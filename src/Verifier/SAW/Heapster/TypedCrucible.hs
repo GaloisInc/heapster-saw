@@ -1511,7 +1511,7 @@ getVarPerm x = view (varPerm x) <$> stCurPerms <$> get
 -- | Set the current primary permission associated with a variable
 setVarPerm :: ExprVar a -> ValuePerm a ->
               PermCheckM ext cblocks blocks tops ret r ps r ps ()
-setVarPerm x p = gmodify $ modifySTCurPerms $ set (varPerm x) p
+setVarPerm x p = modify (modifySTCurPerms (set (varPerm x) p))
 
 -- | Look up the current primary permission associated with a register
 getRegPerm :: TypedReg a ->
@@ -1706,7 +1706,7 @@ getFramePtr = get >>>= \st -> case stExtState st of
 setFramePtr :: TypedReg (LLVMFrameType (ArchWidth arch)) ->
                PermCheckM (LLVM arch) cblocks blocks tops ret r ps r ps ()
 setFramePtr fp =
-  gmodify (\st -> st { stExtState = PermCheckExtState_LLVM (Just fp) })
+  modify (\st -> st { stExtState = PermCheckExtState_LLVM (Just fp) })
 
 -- | Look up the type of a free variable, or raise an error if it is unknown
 getVarType :: ExprVar a ->
@@ -1730,7 +1730,7 @@ getVarTypes (xs :>: x) = CruCtxCons <$> getVarTypes xs <*> getVarType x
 setVarType :: String -> ExprVar a -> TypeRepr a ->
               PermCheckM ext cblocks blocks tops ret r ps r ps ()
 setVarType str x tp =
-  gmodify $ \st ->
+  modify $ \st ->
   st { stCurPerms = initVarPerm x (stCurPerms st),
        stVarTypes = NameMap.insert x tp (stVarTypes st),
        stPPInfo = ppInfoAddExprName str x (stPPInfo st) }
@@ -1761,7 +1761,7 @@ setErrorPrefix loc stmt_pp ctx regs =
                   <+> parens stmt_pp),
          PP.group (pretty "Regs:" <+> regs_pp),
          PP.group (pretty "Input perms:" <+> perms_pp)] in
-  gmodify $ \st -> st { stErrPrefix = Just prefix }
+  modify $ \st -> st { stErrPrefix = Just prefix }
 
 -- | Emit debugging output using the current 'PPInfo'
 stmtTraceM :: (PPInfo -> Doc ()) ->
@@ -2079,7 +2079,7 @@ emitStmt tps loc stmt =
   ((TypedConsStmt loc stmt (cruCtxProxies tps) <$>) . strongMbM)
   (mbPure (cruCtxProxies tps) ()) >>>= \(ns, ()) ->
   setVarTypes "x" ns tps >>>
-  gmodify (modifySTCurPerms $ applyTypedStmt stmt ns) >>>
+  gmodify (modifySTCurPerms (applyTypedStmt stmt ns)) >>>
   pure ns
 
 
@@ -2742,7 +2742,7 @@ tcEmitLLVMStmt _arch ctx loc (LLVM_PopFrame _) =
         stmtProvePerm fp (emptyMb fp_perm) >>>= \_ ->
         emitLLVMStmt knownRepr loc (TypedLLVMDeleteFrame
                                     fp fperms del_perms) >>>= \y ->
-        gmodify (\st -> st { stExtState = PermCheckExtState_LLVM Nothing }) >>>
+        modify (\st -> st { stExtState = PermCheckExtState_LLVM Nothing }) >>>
         pure (addCtxName ctx y)
     _ -> stmtFailM (const $ pretty "LLVM_PopFrame: no frame perms")
 

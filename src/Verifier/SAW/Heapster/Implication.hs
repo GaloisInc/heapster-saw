@@ -2516,6 +2516,9 @@ instance SubstVar s m => Substable1 s (LocalImplRet ps) m where
 -- FIXME HERE: instead of having a separate PPInfo and name type map, we should
 -- maybe combine all the local context into one type...?
 
+data RecurseFlag = RecLeft | RecRight | RecNone
+  deriving (Eq, Show, Read)
+
 data ImplState vars ps =
   ImplState { _implStatePerms :: PermSet ps,
               _implStateVars :: CruCtx vars,
@@ -2525,7 +2528,7 @@ data ImplState vars ps =
               -- current lifetime (we should have an @lowned@ permission for it)
               -- and each lifetime contains (i.e., has an @lcurrent@ permission
               -- for) the next lifetime in the stack
-              _implStateRecRecurseFlag :: Maybe (Either () ()),
+              _implStateRecRecurseFlag :: RecurseFlag,
               -- ^ Whether we are recursing under a recursive permission, either
               -- on the left hand or the right hand side
               _implStatePermEnv :: PermEnv,
@@ -2549,7 +2552,7 @@ mkImplState vars perms env info fail_prefix do_trace nameTypes =
               _implStatePerms = perms,
               _implStatePSubst = emptyPSubst vars,
               _implStateLifetimes = [],
-              _implStateRecRecurseFlag = Nothing,
+              _implStateRecRecurseFlag = RecNone,
               _implStatePermEnv = env,
               _implStatePPInfo = info,
               _implStateNameTypes = nameTypes,
@@ -2607,7 +2610,7 @@ embedImplM :: DistPerms ps_in ->
               ImplM RNil s r' ps_out ps_in (r' ps_out) ->
               ImplM vars s r ps ps (PermImpl r' ps_in)
 embedImplM ps_in m =
-  get >>>= \s ->
+  get >>= \s ->
   lift $
   runImplM CruCtxNil (distPermSet ps_in)
   (view implStatePermEnv s) (view implStatePPInfo s)
@@ -2621,7 +2624,7 @@ embedMbImplM :: Mb ctx (PermSet ps_in) ->
                 Mb ctx (ImplM RNil s r' ps_out ps_in (r' ps_out)) ->
                 ImplM vars s r ps ps (Mb ctx (PermImpl r' ps_in))
 embedMbImplM mb_ps_in mb_m =
-  get >>>= \s ->
+  get >>= \s ->
   lift $
   strongMbM (mbMap2
        (\ps_in m ->
@@ -2646,23 +2649,19 @@ localImplM m =
 -- | Look up the type of an existential variable
 getExVarType :: Member vars tp -> ImplM vars s r ps ps (TypeRepr tp)
 getExVarType memb =
-  (view implStateVars <$> get) >>>= \varTypes ->
-  pure (cruCtxLookup varTypes memb)
+  do varTypes <- use implStateVars
+     pure (cruCtxLookup varTypes memb)
 
 -- | Look up the current partial substitution
 getPSubst :: ImplM vars s r ps ps (PartialSubst vars)
-getPSubst = view implStatePSubst <$> get
-
--- | Look up the current pretty-printing info
-getPPInfo :: ImplM vars s r ps ps PPInfo
-getPPInfo = view implStatePPInfo <$> get
+getPSubst = use implStatePSubst
 
 -- | Add a multi-binding for the current existential variables around a value
 -- (that does not use those variables)
 mbVarsM :: a -> ImplM vars s r ps ps (Mb vars a)
 mbVarsM a =
-  (view implStateVars <$> get) >>>= \vars ->
-  pure $ mbPure (cruCtxProxies vars) a
+  do px <- uses implStateVars cruCtxProxies
+     pure (mbPure px a)
 
 -- | Apply the current partial substitution to an expression, failing if the
 -- partial substitution is not complete enough. The supplied 'String' is the
@@ -2671,28 +2670,28 @@ partialSubstForceM :: (NuMatchingAny1 r, PermPretty a,
                        Substable PartialSubst a Maybe) =>
                       Mb vars a -> String -> ImplM vars s r ps ps a
 partialSubstForceM mb_e caller =
-  getPSubst >>>= \psubst ->
-  case partialSubst psubst mb_e of
-    Just e -> pure e
-    Nothing ->
-      implTraceM (\i -> sep [pretty ("Incomplete susbtitution in " ++ caller
-                                     ++ " for:"),
-                             permPretty i mb_e]) >>>= implFailM
+  do psubst <- getPSubst
+     case partialSubst psubst mb_e of
+       Just e -> pure e
+       Nothing ->
+         implTraceM (\i -> sep [pretty ("Incomplete susbtitution in " ++ caller
+                                        ++ " for:"),
+                                permPretty i mb_e]) >>= implFailM
 
 -- | Modify the current partial substitution
 modifyPSubst :: (PartialSubst vars -> PartialSubst vars) ->
                 ImplM vars s r ps ps ()
-modifyPSubst f = gmodify (over implStatePSubst f)
+modifyPSubst f = implStatePSubst %= f
 
 -- | Set the value for an existential variable in the current substitution,
 -- raising an error if it is already set
 setVarM :: Member vars a -> PermExpr a -> ImplM vars s r ps ps ()
 setVarM memb e =
-  (cruCtxProxies <$> view implStateVars <$> get) >>>= \vars ->
-  implTraceM (\i -> pretty "Setting" <+>
-                    permPretty i (nuMulti vars $ \ns -> RL.get memb ns) <+>
-                    pretty "=" <+> permPretty i e) >>>
-  modifyPSubst (psubstSet memb e)
+  do vars <- uses implStateVars cruCtxProxies
+     implTraceM (\i -> pretty "Setting" <+>
+                       permPretty i (nuMulti vars $ \ns -> RL.get memb ns) <+>
+                       pretty "=" <+> permPretty i e)
+     modifyPSubst (psubstSet memb e)
 
 -- | Run an implication computation with one more existential variable,
 -- returning the optional expression it was bound to in the current partial
@@ -2709,41 +2708,33 @@ withExtVarsM m =
              Just e -> e
              Nothing -> zeroOfType knownRepr)
 
--- | Get the recursive permission recursion flag
-implGetRecRecurseFlag :: ImplM vars s r ps ps (Maybe (Either () ()))
-implGetRecRecurseFlag = view implStateRecRecurseFlag <$> get
-
 -- | Perform either the first, second, or both computations with an 'implCatchM'
 -- between, depending on the recursion flag
 implRecFlagCaseM :: NuMatchingAny1 r => ImplM vars s r ps_out ps_in a ->
                     ImplM vars s r ps_out ps_in a ->
                     ImplM vars s r ps_out ps_in a
 implRecFlagCaseM m1 m2 =
-  implGetRecRecurseFlag >>>= \flag ->
-  case flag of
-    Just (Left ()) -> m1
-    Just (Right ()) -> m2
-    Nothing -> implCatchM m1 m2
+  use implStateRecRecurseFlag >>>= \case
+    RecLeft  -> m1
+    RecRight -> m2
+    RecNone  -> implCatchM m1 m2
 
 -- | Set the recursive permission recursion flag to indicate recursion on the
 -- right, or fail if we are already recursing on the left
 implSetRecRecurseRightM :: NuMatchingAny1 r => ImplM vars s r ps ps ()
 implSetRecRecurseRightM =
-  get >>>= \s ->
-  case view implStateRecRecurseFlag s of
-    Just (Left ()) ->
-      implFailMsgM "Tried to unfold a mu on the right after unfolding on the left"
-    _ -> gmodify (set implStateRecRecurseFlag (Just (Right ())))
+  use implStateRecRecurseFlag >>= \case
+    RecLeft -> implFailMsgM "Tried to unfold a mu on the right after unfolding on the left"
+    _ -> implStateRecRecurseFlag .= RecRight
 
 -- | Set the recursive recursion flag to indicate recursion on the left, or fail
 -- if we are already recursing on the right
 implSetRecRecurseLeftM :: NuMatchingAny1 r => ImplM vars s r ps ps ()
 implSetRecRecurseLeftM =
-  get >>>= \s ->
-  case view implStateRecRecurseFlag s of
-    Just (Right ()) ->
+  use implStateRecRecurseFlag >>= \case
+    RecRight ->
       implFailMsgM "Tried to unfold a mu on the left after unfolding on the right"
-    _ -> gmodify (set implStateRecRecurseFlag (Just (Left ())))
+    _ -> implStateRecRecurseFlag .= RecLeft
 
 -- | Look up the 'NamedPerm' structure for a named permssion
 implLookupNamedPerm :: NamedPermName ns args a ->
@@ -2757,53 +2748,52 @@ implLookupNamedPerm npn =
 
 -- | Get the current 'PermSet'
 getPerms :: ImplM vars s r ps ps (PermSet ps)
-getPerms = view implStatePerms <$> get
+getPerms = use implStatePerms
 
 -- | Look up the current permission for a given variable
 getPerm :: ExprVar a -> ImplM vars s r ps ps (ValuePerm a)
-getPerm x = view (implStatePerms . varPerm x) <$> get
+getPerm x = use (implStatePerms . varPerm x)
 
 -- | Get the pointer permissions for a variable @x@, assuming @x@ has LLVM
 -- pointer permissions
 getLLVMPtrPerms :: ExprVar (LLVMPointerType w) ->
                    ImplM vars s r ps ps [LLVMPtrPerm w]
-getLLVMPtrPerms x =
-  view (implStatePerms . varPerm x . llvmPtrPerms) <$> get
+getLLVMPtrPerms x = use (implStatePerms . varPerm x . llvmPtrPerms)
 
 -- | Get the distinguished permission stack
 getDistPerms :: ImplM vars s r ps ps (DistPerms ps)
-getDistPerms = view (implStatePerms . distPerms) <$> get
+getDistPerms = use (implStatePerms . distPerms)
 
 -- | Get the top permission in the stack
 getTopDistPerm :: ExprVar a -> ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
-getTopDistPerm x = view (implStatePerms . topDistPerm x) <$> get
+getTopDistPerm x = use (implStatePerms . topDistPerm x)
 
 -- | Set the current 'PermSet'
 setPerms :: PermSet ps -> ImplM vars s r ps ps ()
-setPerms perms = modify $ set (implStatePerms) perms
+setPerms perms = implStatePerms .= perms
 
 -- | Set the current permission for a given variable
 setPerm :: ExprVar a -> ValuePerm a -> ImplM vars s r ps ps ()
-setPerm x p = modify $ set (implStatePerms . varPerm x) p
+setPerm x p = implStatePerms . varPerm x .= p
 
 -- | Get the current lifetime
 getCurLifetime :: ImplM vars s r ps ps (ExprVar LifetimeType)
 getCurLifetime =
-  (view implStateLifetimes <$> get) >>>= \ls ->
-  case ls of
-    l:_ -> pure l
-    [] -> error "getCurLifetime: no current lifetime!"
+  do ls <- use implStateLifetimes
+     case ls of
+       l:_ -> pure l
+       [] -> error "getCurLifetime: no current lifetime!"
 
 -- | Push a lifetime onto the lifetimes stack
 pushLifetime :: ExprVar LifetimeType -> ImplM vars s r ps ps ()
-pushLifetime l = gmodify (over implStateLifetimes (l:))
+pushLifetime l = implStateLifetimes %= (l:)
 
 -- | Pop a lifetime off of the lifetimes stack
 popLifetime :: ImplM vars s r ps ps (ExprVar LifetimeType)
 popLifetime =
-  getCurLifetime >>>= \l ->
-  gmodify (over implStateLifetimes tail) >>>
-  pure l
+  do l <- getCurLifetime
+     implStateLifetimes %= tail
+     pure l
 
 -- | Push (as in 'implPushM') the permission for the current lifetime
 implPushCurLifetimePermM :: NuMatchingAny1 r => ExprVar LifetimeType ->
@@ -2842,13 +2832,13 @@ gmapRetAndPerms f_perms f_impl =
 -- | Look up the type of a free variable
 implGetVarType :: Name a -> ImplM vars s r ps ps (TypeRepr a)
 implGetVarType n =
-  (view implStateNameTypes <$> get) >>>= \varTypes ->
-  case NameMap.lookup n varTypes of
-    Just tp -> pure tp
-    Nothing ->
-      implTraceM (\i -> pretty "Could not find type for variable:" <+>
-                        permPretty i n) >>>
-      error "implGetVarType"
+  do varTypes <- use implStateNameTypes
+     case NameMap.lookup n varTypes of
+       Just tp -> pure tp
+       Nothing ->
+         implTraceM (\i -> pretty "Could not find type for variable:" <+>
+                           permPretty i n) >>>
+         error "implGetVarType"
 
 -- | Look up the types of a list of free variables
 implGetVarTypes :: RAssign Name a -> ImplM vars s r ps ps (CruCtx a)
@@ -2859,21 +2849,21 @@ implGetVarTypes (xs :>: x) =
 -- | Find the first variable of a specific type
 implFindVarOfType :: TypeRepr a -> ImplM vars s r ps ps (Maybe (Name a))
 implFindVarOfType tp =
-  (view implStateNameTypes <$> get) >>>= \varTypes ->
-  return (foldr (\(NameAndElem n tp') rest ->
-                  case testEquality tp tp' of
-                    Just Refl -> return n
-                    Nothing -> rest) Nothing
-          (NameMap.assocs varTypes))
+  do varTypes <- use implStateNameTypes
+     pure (foldr (\(NameAndElem n tp') rest ->
+                     case testEquality tp tp' of
+                       Just Refl -> return n
+                       Nothing -> rest) Nothing
+             (NameMap.assocs varTypes))
 
 -- | Remember the types associated with a list of 'Name's, and also ensure those
 -- names have permissions
 implSetNameTypes :: RAssign Name ctx -> CruCtx ctx -> ImplM vars s r ps ps ()
 implSetNameTypes MNil _ = pure ()
 implSetNameTypes (ns :>: n) (CruCtxCons tps tp) =
-  gmodify (over implStateNameTypes $ NameMap.insert n tp) >>
-  gmodify (over implStatePerms $ initVarPerm n) >>
-  implSetNameTypes ns tps
+  do implStateNameTypes %= NameMap.insert n tp
+     implStatePerms     %= initVarPerm n
+     implSetNameTypes ns tps
 
 
 ----------------------------------------------------------------------
@@ -2893,10 +2883,9 @@ implApplyImpl1 :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
                   RAssign (Impl1Cont vars s r ps_r a) ps_outs ->
                   ImplM vars s r ps_r ps_in a
 implApplyImpl1 impl1 mb_ms =
-  getPerms >>>= \perms ->
-  (view implStatePPInfo <$> get) >>>= \pp_info ->
+  use implStatePerms >>>= \perms ->
+  use implStatePPInfo >>>= \pp_info ->
   gmapRet (PermImpl_Step impl1 <$>) >>>
-  -- gmapRet (permImplStep impl1 <$>) >>>
   helper (applyImpl1 pp_info impl1 perms) mb_ms
   where
     helper :: MbPermSets ps_outs ->
@@ -2919,26 +2908,28 @@ implApplyImpl1 impl1 mb_ms =
 -- flag is set
 implTraceM :: (PPInfo -> PP.Doc ann) -> ImplM vars s r ps ps String
 implTraceM f =
-  (view implStateDoTrace <$> get) >>>= \do_trace ->
-  (f <$> view implStatePPInfo <$> get) >>>= \doc ->
-  let str = renderDoc doc in fn do_trace str (pure str)
-  where fn True  = trace
-        fn False = const id
+  do do_trace <- use implStateDoTrace
+     doc <- uses implStatePPInfo f
+     let str = renderDoc doc
+     fn do_trace str (pure str)
+  where
+    fn True  = trace
+    fn False = const id
 
 -- | Run an 'ImplM' computation with 'implStateDoTrace' temporarily disabled
 implWithoutTracingM :: ImplM vars s r ps_out ps_in a ->
                        ImplM vars s r ps_out ps_in a
 implWithoutTracingM m =
-  (view implStateDoTrace <$> get) >>>= \saved ->
-  gmodify (set implStateDoTrace False) >>>
+  use implStateDoTrace >>>= \saved ->
+  (implStateDoTrace .= False) >>>
   m >>>= \a ->
-  gmodify (set implStateDoTrace saved) >>>
+  (implStateDoTrace .= saved) >>
   pure a
 
 -- | Terminate the current proof branch with a failure
 implFailM :: NuMatchingAny1 r => String -> ImplM vars s r ps_any ps a
 implFailM str =
-  (view implStateFailPrefix <$> get) >>>= \prefix ->
+  use implStateFailPrefix >>>= \prefix ->
   implTraceM (const $ pretty (prefix ++ "Implication failed")) >>>
   implApplyImpl1 (Impl1_Fail (prefix ++ str)) MNil
 
@@ -3187,7 +3178,7 @@ implTryProveBVProp :: (1 <= w, KnownNat w, NuMatchingAny1 r) =>
                       ExprVar (LLVMPointerType w) -> BVProp w ->
                       ImplM vars s r (ps :> LLVMPointerType w) ps ()
 implTryProveBVProp x p =
-  getPPInfo >>>= \i ->
+  use implStatePPInfo >>>= \i ->
   let str = renderDoc (permPretty i p) in
   implApplyImpl1 (Impl1_TryProveBVProp x p str)
   (MNil :>: Impl1Cont (const $ pure ()))
@@ -3248,20 +3239,18 @@ implMoveUpM (ps :: prx ps) ps1 (x :: ExprVar a) ps2 =
 elimOrsExistsM :: NuMatchingAny1 r => ExprVar a ->
                   ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
 elimOrsExistsM x =
-  getTopDistPerm x >>>= \p ->
-  case p of
+  getTopDistPerm x >>= \case
     ValPerm_Or p1 p2 -> implElimOrM x p1 p2 >>> elimOrsExistsM x
     ValPerm_Exists mb_p ->
       implElimExistsM x mb_p >>> elimOrsExistsM x
-    _ -> pure p
+    p -> pure p
 
 -- | Eliminate disjunctives, existentials, recusive permissions, and
 -- defined permissions on the top of the stack
 elimOrsExistsNamesM :: NuMatchingAny1 r => ExprVar a ->
                        ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
 elimOrsExistsNamesM x =
-  getTopDistPerm x >>>= \p ->
-  case p of
+  getTopDistPerm x >>= \case
     ValPerm_Or p1 p2 -> implElimOrM x p1 p2 >>> elimOrsExistsNamesM x
     ValPerm_Exists mb_p ->
       implElimExistsM x mb_p >>> elimOrsExistsNamesM x
@@ -3271,14 +3260,14 @@ elimOrsExistsNamesM x =
     ValPerm_Named npn args off
       | TrueRepr <- nameIsConjRepr npn ->
         implNamedToConjM x npn args off >>> getTopDistPerm x
-    _ -> pure p
+    p -> pure p
 
 -- | Eliminate any disjunctions, existentials, recursive permissions, or defined
 -- permissions for a variable and then return the resulting "simple" permission
 getSimpleVarPerm :: NuMatchingAny1 r => ExprVar a ->
                     ImplM vars s r ps ps (ValuePerm a)
 getSimpleVarPerm x =
-  getPerm x >>>= \p_init ->
+  getPerm x >>= \p_init ->
   implPushM x p_init >>>
   elimOrsExistsNamesM x >>>= \p ->
   implPopM x p >>> pure p
@@ -3289,7 +3278,9 @@ getSimpleVarPerm x =
 getVarEqPerm :: NuMatchingAny1 r => ExprVar a ->
                 ImplM vars s r ps ps (Maybe (PermExpr a))
 getVarEqPerm x =
-  getPerm x >>>= \p_init -> implPushM x p_init >>> elimOrsExistsNamesM x >>>=
+  getPerm x >>= \p_init ->
+  implPushM x p_init >>>
+  elimOrsExistsNamesM x >>>=
   \case
     p@(ValPerm_Eq e) -> implPopM x p >>> pure (Just e)
     ValPerm_Conj [Perm_Struct ps] ->
@@ -3306,8 +3297,8 @@ getVarEqPerm x =
 getEqualsExpr :: NuMatchingAny1 r => PermExpr a ->
                  ImplM vars s r ps ps (PermExpr a)
 getEqualsExpr e@(PExpr_Var x) =
-  getVarEqPerm x >>>= \case Just e' -> getEqualsExpr e'
-                            Nothing -> pure e
+  getVarEqPerm x >>= \case Just e' -> getEqualsExpr e'
+                           Nothing -> pure e
 getEqualsExpr (PExpr_BV factors off) =
   foldr bvAdd (PExpr_BV [] off) <$>
   mapM (\(BVFactor (BV.BV i) x) ->
@@ -3315,9 +3306,7 @@ getEqualsExpr (PExpr_BV factors off) =
 getEqualsExpr (PExpr_LLVMWord e) =
   PExpr_LLVMWord <$> getEqualsExpr e
 getEqualsExpr (PExpr_LLVMOffset x off) =
-  getEqualsExpr (PExpr_Var x) >>>= \e ->
-  getEqualsExpr off >>>= \off' ->
-  pure (addLLVMOffset e off')
+  addLLVMOffset <$> getEqualsExpr (PExpr_Var x) <*> getEqualsExpr off
 getEqualsExpr e = pure e
 
 
@@ -3543,8 +3532,8 @@ implFoldNamedM :: (NameSortCanFold ns ~ 'True, NuMatchingAny1 r) => ExprVar a ->
                   NamedPermName ns args a -> PermExprs args -> PermOffset a ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 implFoldNamedM x npn args off =
-  implLookupNamedPerm npn >>>= \np ->
-  implSimplM Proxy (SImpl_FoldNamed x np args off)
+  do np <- implLookupNamedPerm npn
+     implSimplM Proxy (SImpl_FoldNamed x np args off)
 
 -- | Unfold a named permission (other than an opaque permission), returning the
 -- unfolding
@@ -3553,9 +3542,9 @@ implUnfoldNamedM :: (NameSortCanFold ns ~ 'True, NuMatchingAny1 r) =>
                     PermExprs args -> PermOffset a ->
                     ImplM vars s r (ps :> a) (ps :> a) (ValuePerm a)
 implUnfoldNamedM x npn args off =
-  implLookupNamedPerm npn >>>= \np ->
-  implSimplM Proxy (SImpl_UnfoldNamed x np args off) >>>
-  pure (unfoldPerm np args off)
+  do np <- implLookupNamedPerm npn
+     implSimplM Proxy (SImpl_UnfoldNamed x np args off)
+     pure (unfoldPerm np args off)
 
 -- | Map a named permission that is conjoinable to a conjunction
 implNamedToConjM :: (NameSortIsConj ns ~ 'True, NuMatchingAny1 r) =>
@@ -3578,7 +3567,7 @@ implBeginLifetimeM :: NuMatchingAny1 r =>
                       ImplM vars s r ps ps (ExprVar LifetimeType)
 implBeginLifetimeM =
   implApplyImpl1 Impl1_BeginLifetime
-  (MNil :>: Impl1Cont (\(_ :>: n) -> pure n)) >>>= \l ->
+    (MNil :>: Impl1Cont (\(_ :>: n) -> pure n)) >>>= \l ->
   implPopM l (ValPerm_LOwned MNil MNil) >>>
   pure l
 
@@ -3624,15 +3613,15 @@ lifetimesThatCouldProve :: NuMatchingAny1 r => Mb vars (DistPerms ps') ->
                            ImplM vars s r ps ps [(ExprVar LifetimeType,
                                                   AtomicPerm LifetimeType)]
 lifetimesThatCouldProve mb_ps =
-  (permSetAllVarPerms <$> getPerms) >>>= \(Some all_perms) ->
-  return (RL.foldr
-          (\case
-              VarAndPerm l (ValPerm_LOwned ps_in ps_out)
-                | mbLift $ fmap (lownedPermsCouldProve ps_out) mb_ps ->
-                  ((l, Perm_LOwned ps_in ps_out) :)
-              _ -> id)
-          []
-          all_perms)
+  do Some all_perms <- uses implStatePerms permSetAllVarPerms
+     pure (RL.foldr
+             (\case
+                 VarAndPerm l (ValPerm_LOwned ps_in ps_out)
+                   | mbLift $ fmap (lownedPermsCouldProve ps_out) mb_ps ->
+                     ((l, Perm_LOwned ps_in ps_out) :)
+                 _ -> id)
+             []
+             all_perms)
 
 -- | Combine proofs of @x:ptr(pps,(off,spl) |-> eq(y))@ and @y:p@ on the top of
 -- the permission stack into a proof of @x:ptr(pps,(off,spl |-> p))@
@@ -3907,17 +3896,16 @@ getLifetimeCurrentPerms :: NuMatchingAny1 r => PermExpr LifetimeType ->
                            ImplM vars s r ps ps (Some LifetimeCurrentPerms)
 getLifetimeCurrentPerms PExpr_Always = pure $ Some AlwaysCurrentPerms
 getLifetimeCurrentPerms (PExpr_Var l) =
-  getPerm l >>>= \p ->
-  case p of
+  getPerm l >>= \case
     ValPerm_LOwned ps_in ps_out ->
       pure $ Some $ LOwnedCurrentPerms l ps_in ps_out
     ValPerm_LCurrent l' ->
-      getLifetimeCurrentPerms l' >>>= \some_cur_perms ->
+      getLifetimeCurrentPerms l' >>= \some_cur_perms ->
       case some_cur_perms of
         Some cur_perms -> pure $ Some $ CurrentTransPerms cur_perms l
     _ ->
       implTraceM (\i -> pretty "Could not prove lifetime is current:" <+>
-                        permPretty i l) >>>=
+                        permPretty i l) >>=
       implFailM
 
 -- | Prove the permissions represented by a 'LifetimeCurrentPerms'
@@ -3945,13 +3933,13 @@ proveLifetimeCurrent (CurrentTransPerms cur_perms l) =
 simplEqPerm :: NuMatchingAny1 r => ExprVar a -> PermExpr a ->
                ImplM vars s r (as :> a) (as :> a) (PermExpr a)
 simplEqPerm x e@(PExpr_Var y) =
-  getPerm y >>>= \case
+  getPerm y >>= \case
   p@(ValPerm_Eq e') ->
     implPushM y p >>> implCopyM y p >>> implPopM y p >>>
     introCastM x y p >>> pure e'
   _ -> pure e
 simplEqPerm x e@(PExpr_LLVMOffset y off) =
-  getPerm y >>>= \case
+  getPerm y >>= \case
   p@(ValPerm_Eq e') ->
     implPushM y p >>> implCopyM y p >>> implPopM y p >>>
     castLLVMPtrM y p off x >>> pure (addLLVMOffset e' off)
@@ -3971,7 +3959,7 @@ recombinePermExpl :: NuMatchingAny1 r => ExprVar a -> ValuePerm a ->
                      ValuePerm a -> ImplM vars s r as (as :> a) ()
 recombinePermExpl x x_p p =
   {-
-  getPPInfo >>>= \info ->
+  use implStatePPInfo >>>= \info ->
   tracePretty (string "recombinePerm" <+> permPretty info x
                </> permPretty info x_p </> string "<-"
                </> permPretty info p) $ -}
@@ -4148,41 +4136,43 @@ class ProveEq a where
 instance (Eq a, Eq b, ProveEq a, ProveEq b, Substable PermSubst a Identity,
           Substable PermSubst b Identity) => ProveEq (a,b) where
   proveEq (a,b) mb_ab =
-    proveEq a (fmap fst mb_ab) >>>= \eqp1 ->
-    proveEq b (fmap snd mb_ab) >>>= \eqp2 ->
-    pure ((,) <$> eqp1 <*> eqp2)
+    do eqp1 <- proveEq a (fmap fst mb_ab)
+       eqp2 <- proveEq b (fmap snd mb_ab)
+       pure ((,) <$> eqp1 <*> eqp2)
 
 instance (Eq a, Eq b, Eq c, ProveEq a, ProveEq b, ProveEq c,
           Substable PermSubst a Identity,
           Substable PermSubst b Identity,
           Substable PermSubst c Identity) => ProveEq (a,b,c) where
   proveEq (a,b,c) mb_abc =
-    proveEq a (fmap (\(x,_,_) -> x) mb_abc) >>>= \eqp1 ->
-    proveEq b (fmap (\(_,y,_) -> y) mb_abc) >>>= \eqp2 ->
-    proveEq c (fmap (\(_,_,z) -> z) mb_abc) >>>= \eqp3 ->
-    pure ((,,) <$> eqp1 <*> eqp2 <*> eqp3)
+    do eqp1 <- proveEq a (fmap (\(x,_,_) -> x) mb_abc)
+       eqp2 <- proveEq b (fmap (\(_,y,_) -> y) mb_abc)
+       eqp3 <- proveEq c (fmap (\(_,_,z) -> z) mb_abc)
+       pure ((,,) <$> eqp1 <*> eqp2 <*> eqp3)
 
 instance ProveEq (PermExpr a) where
-  proveEq e mb_e = getPSubst >>>= \psubst -> proveEqH psubst e mb_e
+  proveEq e mb_e =
+    do psubst <- getPSubst
+       proveEqH psubst e mb_e
 
 instance ProveEq (LLVMFramePerm w) where
   proveEq [] [nuP| [] |] = pure $ SomeEqProofRefl []
   proveEq ((e,i):fperms) [nuP| ((mb_e,mb_i)):mb_fperms |]
     | mbLift mb_i == i =
-      proveEq e mb_e >>>= \eqp1 ->
-      proveEq fperms mb_fperms >>>= \eqp2 ->
-      pure (liftA2 (\x y -> (x,i):y) eqp1 eqp2)
+      do eqp1 <- proveEq e mb_e
+         eqp2 <- proveEq fperms mb_fperms
+         pure (liftA2 (\x y -> (x,i):y) eqp1 eqp2)
   proveEq perms mb = proveEqFail perms mb
 
 instance ProveEq (LLVMBlockPerm w) where
   proveEq bp mb_bp =
-    proveEq (llvmBlockRW bp) (fmap llvmBlockRW mb_bp) >>>= \eqp_rw ->
-    proveEq (llvmBlockLifetime bp) (fmap llvmBlockLifetime mb_bp) >>>= \eqp_l ->
-    proveEq (llvmBlockOffset bp) (fmap llvmBlockOffset mb_bp) >>>= \eqp_off ->
-    proveEq (llvmBlockLen bp) (fmap llvmBlockLen mb_bp) >>>= \eqp_len ->
-    proveEq (llvmBlockShape bp) (fmap llvmBlockShape mb_bp) >>>= \eqp_sh ->
-    pure (LLVMBlockPerm <$>
-             eqp_rw <*> eqp_l <*> eqp_off <*> eqp_len <*> eqp_sh)
+    do eqp_rw  <- proveEq (llvmBlockRW       bp) (fmap llvmBlockRW       mb_bp)
+       eqp_l   <- proveEq (llvmBlockLifetime bp) (fmap llvmBlockLifetime mb_bp)
+       eqp_off <- proveEq (llvmBlockOffset   bp) (fmap llvmBlockOffset   mb_bp)
+       eqp_len <- proveEq (llvmBlockLen      bp) (fmap llvmBlockLen      mb_bp)
+       eqp_sh  <- proveEq (llvmBlockShape    bp) (fmap llvmBlockShape    mb_bp)
+       pure (LLVMBlockPerm <$>
+              eqp_rw <*> eqp_l <*> eqp_off <*> eqp_len <*> eqp_sh)
 
 
 -- | Substitute any equality permissions for the variables in an expression,
@@ -4196,8 +4186,8 @@ substEqsWithProof :: (AbstractVars a, FreeVars a,
                       Substable PermSubst a Identity, NuMatchingAny1 r) =>
                      a -> ImplM vars s r ps ps (SomeEqProof a)
 substEqsWithProof a =
-  (view varPermMap <$> getPerms) >>>= \var_ps ->
-  pure (someEqProofFromSubst var_ps a)
+  do var_ps <- use (implStatePerms . varPermMap)
+     pure (someEqProofFromSubst var_ps a)
 
 
 -- | The main work horse for 'proveEq' on expressions
@@ -4211,7 +4201,7 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
   (_, [nuMP| PExpr_Var z |])
     | Left memb <- mbNameBoundP z
     , Nothing <- psubstLookup psubst memb ->
-      substEqsWithProof e >>>= \eqp ->
+      substEqsWithProof e >>= \eqp ->
       setVarM memb (someEqProofRHS eqp) >>> pure eqp
   
   -- If the RHS is a set variable, substitute for it and recurse
@@ -4228,40 +4218,40 @@ proveEqH psubst e mb_e = case (e, mbMatch mb_e) of
   -- eliminating compound permissions, and proceed by transitivity if possible
   (PExpr_Var x, [nuMP| PExpr_Var mb_y |])
     | Right y <- mbNameBoundP mb_y ->
-      getPerm x >>>= \x_p ->
-      getPerm y >>>= \y_p ->
+      getPerm x >>= \x_p ->
+      getPerm y >>= \y_p ->
       case (x_p, y_p) of
         (ValPerm_Eq e', _) ->
           -- If we have x:eq(e'), prove e' = y and apply transitivity
-          proveEq e' mb_e >>>= \some_eqp ->
+          proveEq e' mb_e >>= \some_eqp ->
           pure $ someEqProofTrans (someEqProofPerm x e' True) some_eqp
         (_, ValPerm_Eq e') ->
           -- If we have y:eq(e'), prove x = e' and apply transitivity
-          proveEq e (fmap (const e') mb_e) >>>= \some_eqp ->
+          proveEq e (fmap (const e') mb_e) >>= \some_eqp ->
           pure $ someEqProofTrans some_eqp (someEqProofPerm y e' False)
         (_, _) ->
           -- If we have no equality perms, eliminate perms on x and y to see if we
           -- can get one; if so, recurse, and otherwise, raise an error
-          getVarEqPerm x >>>= \case
+          getVarEqPerm x >>= \case
           Just _ -> proveEqH psubst e mb_e
-          Nothing -> getVarEqPerm y >>>= \case
+          Nothing -> getVarEqPerm y >>= \case
             Just _ -> proveEqH psubst e mb_e
             Nothing -> proveEqFail e mb_e
   
   -- To prove x=e, try to see if x:eq(e') and proceed by transitivity
   (PExpr_Var x, _) ->
-    getVarEqPerm x >>>= \case
+    getVarEqPerm x >>= \case
     Just e' ->
-      proveEq e' mb_e >>>= \eqp2 ->
+      proveEq e' mb_e >>= \eqp2 ->
       pure (someEqProofTrans (someEqProofPerm x e' True) eqp2)
     Nothing -> proveEqFail e mb_e
   
   -- To prove e=x, try to see if x:eq(e') and proceed by transitivity
   (_, [nuMP| PExpr_Var z |])
     | Right x <- mbNameBoundP z ->
-      getVarEqPerm x >>>= \case
+      getVarEqPerm x >>= \case
         Just e' ->
-          proveEq e (fmap (const e') mb_e) >>>= \eqp ->
+          proveEq e (fmap (const e') mb_e) >>= \eqp ->
           pure (someEqProofTrans eqp (someEqProofPerm x e' False))
         Nothing -> proveEqFail e mb_e
   
@@ -4301,7 +4291,8 @@ proveEqCast :: (ProveEq a, NuMatchingAny1 r) => ExprVar b ->
                (a -> ValuePerm b) -> a -> Mb vars a ->
                ImplM vars s r (ps :> b) (ps :> b) ()
 proveEqCast x f e mb_e =
-  proveEq e mb_e >>>= \some_eqp -> implCastPermM x (fmap f some_eqp)
+  do some_eqp <- proveEq e mb_e
+     implCastPermM x (fmap f some_eqp)
 
 {-
 -- | Build a proof on the top of the stack that @x:eq(e)@. Assume that all @x@
@@ -4424,7 +4415,8 @@ proveVarLifetimeFunctor ::
   PermExpr LifetimeType -> Mb vars (PermExpr LifetimeType) ->
   ImplM vars s r (ps :> a) (ps :> a) ()
 proveVarLifetimeFunctor x f args l mb_l =
-  getPSubst >>>= \psubst -> proveVarLifetimeFunctor' x f args l mb_l psubst
+  do psubst <- getPSubst
+     proveVarLifetimeFunctor' x f args l mb_l psubst
 
 -- | The main workhorse for 'proveVarLifetimeFunctor'
 proveVarLifetimeFunctor' ::
@@ -4454,7 +4446,7 @@ proveVarLifetimeFunctor' x f args l mb_l psubst = case mbMatch mb_l of
   -- If mb_l is a free variable l2 /= l, we need to split or weaken the lifetime
   [nuMP| PExpr_Var mb_z |]
     | Right l2 <- mbNameBoundP mb_z ->
-      getPerm l2 >>>= \case
+      getPerm l2 >>= \case
   
         -- If we have l2:lowned ps, prove l:[l2]lcurrent * l2:lowned ps and then
         -- split the lifetime
@@ -4503,10 +4495,10 @@ tryUnifyLifetimes :: PermExpr LifetimeType -> Mb vars (PermExpr LifetimeType) ->
 tryUnifyLifetimes l mb_l = case mbMatch mb_l of
   [nuMP| PExpr_Var mb_l' |]
     | Left memb <- mbNameBoundP mb_l' ->
-      getPSubst >>>= \psubst ->
-      case psubstLookup psubst memb of
-        Nothing -> setVarM memb l
-        _ -> pure ()
+      do psubst <- getPSubst
+         case psubstLookup psubst memb of
+           Nothing -> setVarM memb l
+           _ -> pure ()
   _ -> pure ()
 
 -- | Find all the permissions that need to be added to the given list of
@@ -4559,16 +4551,16 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
   [nuMP| mb_ps_r :>: LOwnedPermField (PExpr_Var mb_x) mb_fp |]
     | Right x <- mbNameBoundP mb_x
     , mb_bp <- fmap llvmFieldPermToBlock mb_fp ->
-      solveForPermListImplBlock ps_l x mb_bp >>>= \needed1 ->
-      solveForPermListImpl ps_l mb_ps_r >>>= \needed2 ->
-      pure (needed1 <> needed2)
+      do needed1 <- solveForPermListImplBlock ps_l x mb_bp
+         needed2 <- solveForPermListImpl ps_l mb_ps_r
+         pure (needed1 <> needed2)
   
   -- If the RHS starts with a block perm, call solveForPermListImplBlock
   [nuMP| mb_ps_r :>: LOwnedPermBlock (PExpr_Var mb_x) mb_bp |]
     | Right x <- mbNameBoundP mb_x ->
-      solveForPermListImplBlock ps_l x mb_bp >>>= \needed1 ->
-      solveForPermListImpl ps_l mb_ps_r >>>= \needed2 ->
-      pure (needed1 <> needed2)
+      do needed1 <- solveForPermListImplBlock ps_l x mb_bp
+         needed2 <- solveForPermListImpl ps_l mb_ps_r
+         pure (needed1 <> needed2)
   
   -- If the RHS is an lowned perm that is in the LHS, return nothing
   --
@@ -4931,18 +4923,18 @@ proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
            (llvmArrayAbsOffsets ap))
          (llvmArrayBorrows $ llvmArrayRemArrayBorrows ap_lhs ap) =
 
-    -- Prove the rest of ap with b borrowed
-    let ap' = llvmArrayAddBorrow b ap in
-    proveVarLLVMArray_ArrayStep x ps ap' i ap_lhs >>>
+      -- Prove the rest of ap with b borrowed
+      let ap' = llvmArrayAddBorrow b ap in
+      proveVarLLVMArray_ArrayStep x ps ap' i ap_lhs >>>
 
-    -- Prove the borrowed perm
-    let p = permForLLVMArrayBorrow ap b in
-    mbVarsM p >>>= \mb_p ->
-    proveVarImplInt x mb_p >>>
-    implSwapM x (ValPerm_Conj1 $ Perm_LLVMArray ap') x p >>>
+      -- Prove the borrowed perm
+      let p = permForLLVMArrayBorrow ap b in
+      mbVarsM p >>>= \mb_p ->
+      proveVarImplInt x mb_p >>>
+      implSwapM x (ValPerm_Conj1 $ Perm_LLVMArray ap') x p >>>
 
-    -- Return the borrowed perm to ap' to get ap
-    implLLVMArrayReturnBorrow x ap' b
+      -- Return the borrowed perm to ap' to get ap
+      implLLVMArrayReturnBorrow x ap' b
 
 -- If there is a borrow in ap that is not in ap_lhs, borrow it from ap_lhs. Note
 -- the assymmetry with the previous case: we only add borrows if we definitely
@@ -5055,14 +5047,14 @@ proveNamedArgs :: NuMatchingAny1 r => ExprVar a ->
                   PermOffset a -> Mb vars (PermExprs args) ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveNamedArgs x npn args off mb_args =
-  implTraceM (\i -> pretty "proveNamedArgs:" <> softline <>
-                    ppImpl i x (ValPerm_Named npn args off)
-                    (fmap (\args' -> ValPerm_Named npn args' off) mb_args)) >>>
-  getPSubst >>>= \psubst ->
-  mapM_ (\case Some memb ->
-                 proveNamedArg x npn args off memb psubst $
-                 fmap (`nthPermExpr` memb) mb_args) $
-  getPermExprsMembers args
+  do implTraceM (\i -> pretty "proveNamedArgs:" <> softline <>
+                       ppImpl i x (ValPerm_Named npn args off)
+                       (fmap (\args' -> ValPerm_Named npn args' off) mb_args))
+     psubst <- getPSubst
+     mapM_ (\case Some memb ->
+                    proveNamedArg x npn args off memb psubst $
+                    fmap (`nthPermExpr` memb) mb_args)
+       (getPermExprsMembers args)
 
 
 -- | Prove @P<args1,arg,args2> |- P<args1,arg',args2>@ where @arg@ is specified
@@ -5151,8 +5143,8 @@ proveVarLLVMBlock ::
   [AtomicPerm (LLVMPointerType w)] -> Mb vars (LLVMBlockPerm w) ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 proveVarLLVMBlock x ps mb_bp =
-  getPSubst >>>= \psubst ->
-  proveVarLLVMBlocks x ps psubst (fmap (: []) mb_bp) (fmap (const []) mb_bp)
+  do psubst <- getPSubst
+     proveVarLLVMBlocks x ps psubst (fmap (: []) mb_bp) (fmap (const []) mb_bp)
 
 
 -- | Prove a conjunction of block and atomic permissions for @x@, assuming all
@@ -5202,7 +5194,7 @@ proveVarLLVMBlocksExt2 x ps psubst mb_bps_ext mb_bps mb_ps =
   (withExtVarsM $
    proveVarLLVMBlocks x ps (extPSubst $ extPSubst psubst)
    (mbMap2 (++) mb_bps_ext (extMb $ extMb mb_bps))
-   (extMb $ extMb mb_ps)) >>>= \((_,e2),e1) ->
+   (extMb $ extMb mb_ps)) >>= \((_,e2),e1) ->
   pure (e1,e2)
 
 
@@ -5807,21 +5799,21 @@ proveVarAtomicImplUnfoldOrFail :: NuMatchingAny1 r => ExprVar a ->
                                   [AtomicPerm a] -> Mb vars (AtomicPerm a) ->
                                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveVarAtomicImplUnfoldOrFail x ps mb_ap =
-  let p_l = ValPerm_Conj ps
-      mb_p_r = fmap ValPerm_Conj1 mb_ap in
-  implGetRecRecurseFlag >>>= \flag ->
-  case () of
-    -- We can always unfold a defined name on the left
-    _ | Just i <- findIndex isDefinedConjPerm ps ->
-        proveVarImplUnfoldLeft x p_l mb_p_r (Just i)
+  do let p_l = ValPerm_Conj ps
+         mb_p_r = fmap ValPerm_Conj1 mb_ap
+     flag <- use implStateRecRecurseFlag
+     case () of
+       -- We can always unfold a defined name on the left
+       _ | Just i <- findIndex isDefinedConjPerm ps ->
+           proveVarImplUnfoldLeft x p_l mb_p_r (Just i)
 
-    -- If flag allows it, we can unfold a recursive name on the left
-    _ | Just i <- findIndex isRecursiveConjPerm ps
-      , flag /= Just (Right ()) ->
-        proveVarImplUnfoldLeft x p_l mb_p_r (Just i)
+       -- If flag allows it, we can unfold a recursive name on the left
+       _ | Just i <- findIndex isRecursiveConjPerm ps
+         , flag /= RecRight ->
+           proveVarImplUnfoldLeft x p_l mb_p_r (Just i)
 
-    -- Otherwise, we fail
-    _ -> implFailVarM "proveVarAtomicImpl" x p_l mb_p_r
+       -- Otherwise, we fail
+       _ -> implFailVarM "proveVarAtomicImpl" x p_l mb_p_r
 
 
 -- | Prove @x:(p1 * ... * pn) |- x:p@ for some atomic permission @p@, assuming
@@ -5947,7 +5939,7 @@ proveVarAtomicImpl x ps mb_p = case mbMatch mb_p of
       let mb_ps_inL' = fmap (const ps_inL') mb_ps_inR' in
       solveForPermListImpl ps_inR' mb_ps_inL' >>>= \(Some neededs1) ->
       solveForPermListImpl ps_outL' mb_ps_outR' >>>= \(Some neededs2) ->
-      (cruCtxProxies <$> view implStateVars <$> get) >>>= \prxs ->
+      uses implStateVars cruCtxProxies >>>= \prxs ->
       let mb_ps1 = neededPermsToExDistPerms prxs neededs1
           mb_ps2 = neededPermsToExDistPerms prxs neededs2 in
 
@@ -6188,12 +6180,12 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
     implCatchM
     (proveVarImplInt x mb_p1 >>>
      partialSubstForceM mb_p1 "proveVarImpl" >>>= \p1 ->
-      partialSubstForceM mb_p2 "proveVarImpl"  >>>= \p2 ->
-      introOrLM x p1 p2)
+     partialSubstForceM mb_p2 "proveVarImpl" >>>= \p2 ->
+     introOrLM x p1 p2)
     (proveVarImplInt x mb_p2 >>>
      partialSubstForceM mb_p1 "proveVarImpl" >>>= \p1 ->
-      partialSubstForceM mb_p2 "proveVarImpl"  >>>= \p2 ->
-      introOrRM x p1 p2)
+     partialSubstForceM mb_p2 "proveVarImpl" >>>= \p2 ->
+     introOrRM x p1 p2)
   
   -- Prove x:exists (z:tp).p by proving x:p in an extended vars context
   (_, [nuMP| ValPerm_Exists mb_p' |]) ->
@@ -6347,7 +6339,7 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
   -- If proving a function permission for an x we know equals a constant function
   -- handle f, look up the function permission for f
   (ValPerm_Eq (PExpr_Fun f), [nuMP| ValPerm_Conj [Perm_Fun mb_fun_perm] |]) ->
-    (view implStatePermEnv <$> get) >>>= \env ->
+    use implStatePermEnv >>>= \env ->
     case lookupFunPerm env f of
       Just (SomeFunPerm fun_perm, ident)
         | [nuMP| Just (Refl,Refl,Refl) |] <-
@@ -6557,7 +6549,8 @@ findProvablePerm mbUnsetVars mb_ps = case mbMatch mb_ps of
 instantiateLifetimeVars :: NuMatchingAny1 r => ExDistPerms vars ps ->
                            ImplM vars s r ps_in ps_in ()
 instantiateLifetimeVars mb_ps =
-  getPSubst >>>= \psubst -> instantiateLifetimeVars' psubst mb_ps
+  do psubst <- getPSubst
+     instantiateLifetimeVars' psubst mb_ps
 
 -- | The main loop for 'instantiateLifetimeVars'
 instantiateLifetimeVars' :: NuMatchingAny1 r => PartialSubst vars ->
@@ -6584,7 +6577,7 @@ proveVarsImplAppendInt :: NuMatchingAny1 r => ExDistPerms vars ps ->
 proveVarsImplAppendInt (mbMatch -> [nuMP| DistPermsNil |]) = return ()
 proveVarsImplAppendInt ps =
   getPSubst >>>= \psubst ->
-  getPerms >>>= \cur_perms ->
+  use implStatePerms >>>= \cur_perms ->
   case findProvablePerm (psubstMbUnsetVars psubst) ps of
     ((> 0) -> True, ExDistPermsSplit ps1 mb_x mb_p ps2) ->
       proveExVarImpl psubst mb_x mb_p >>>= \x ->
@@ -6634,7 +6627,7 @@ localProveVars ps_in ps_out =
 proveVarsImplAppend :: NuMatchingAny1 r => ExDistPerms vars ps ->
                        ImplM vars s r (ps_in :++: ps) ps_in ()
 proveVarsImplAppend mb_ps =
-  getPerms >>>= \(_ :: PermSet ps_in) ->
+  use implStatePerms >>>= \(_ :: PermSet ps_in) ->
   let prx :: Proxy ps_in = Proxy in
   lifetimesThatCouldProve mb_ps >>>= \ls_ps ->
   foldr1 implCatchM
