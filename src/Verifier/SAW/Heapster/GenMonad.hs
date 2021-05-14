@@ -20,9 +20,11 @@ newtype GenStateCont s1 r1 s2 r2 a = GenStateCont {
   runGenStateCont :: s2 -> (s1 -> a -> r1) -> r2
   } deriving Functor
 
+-- | Sequence two 'GenStateCont' values. Type-changing analogue of '>>='
 (>>>=) :: GenStateCont s2 r2 s1 r1 a -> (a -> GenStateCont s3 r3 s2 r2 b) -> GenStateCont s3 r3 s1 r1 b
 x >>>= y = GenStateCont \s1 z -> runGenStateCont x s1 \s2 a -> runGenStateCont (y a) s2 z
 
+-- | Sequence two 'GenStateCont' values ignoring the return value. Type-changing analogue of '>>'
 (>>>) :: GenStateCont s2 r2 s1 r1 a -> GenStateCont s3 r3 s2 r2 b -> GenStateCont s3 r3 s1 r1 b
 m1 >>> m2 = m1 >>>= \_ -> m2
 
@@ -50,6 +52,7 @@ liftGenStateContM m = GenStateCont \s k -> m >>= k s
 -- Continuation operations
 -----------------------------------------------------------------------
 
+-- | Capture the current continuation while preserving the state.
 gcaptureCC :: ((a -> r1) -> r2) -> GenStateCont s r1 s r2 a
 gcaptureCC f = GenStateCont \s k -> f (k s)
 
@@ -74,6 +77,7 @@ instance (s1 ~ s2, r1 ~ r2) => MonadState s1 (GenStateCont s1 r1 s2 r2) where
   get = GenStateCont \s k -> k s s
   put = gput
 
+-- | Overwrite the previous state value (with the ability to change its type)
 gput :: s -> GenStateCont s r s_ r ()
 gput s = GenStateCont \_ k -> k s ()
 
@@ -81,9 +85,11 @@ gput s = GenStateCont \_ k -> k s ()
 -- Derived operations
 -----------------------------------------------------------------------
 
+-- | Apply a function to the state to update it.
 gmodify :: (s -> t) -> GenStateCont t r s r ()
 gmodify f = get >>>= gput . f
 
+-- | Map a function over the final return value.
 gmapRet :: (r1 -> r2) -> GenStateCont s r1 s r2 ()
 gmapRet f_ret = gcaptureCC \k -> f_ret (k ())
 
@@ -102,7 +108,6 @@ gopenBinding f_ret mb_a =
 -- extract out the starting inner @s2@ state from the outer @s1@ state and an
 -- update function to update the resulting outer @s1@ state with the final inner
 -- @s2@ state.
-
 withAltStateM ::
   (s4 -> s2) ->
   (s4 -> s1 -> s3) ->
