@@ -3374,11 +3374,13 @@ implSimplM prx simpl =
   (MNil :>: Impl1Cont (const $ greturn ()))
 
 -- | Bind a new variable @x@ that is set to the supplied expression @e@ and has
--- permissions @eq(e)@, returning @x@. If @e@ is already a variable, do nothing
--- and just return it.
+-- permissions @eq(e)@, returning @x@
 implLetBindVar :: NuMatchingAny1 r => TypeRepr tp -> PermExpr tp ->
                   ImplM vars s r ps ps (Name tp)
-implLetBindVar _ (PExpr_Var x) = greturn x
+-- NOTE: we explicitly do *not* want to re-use an existing variable, for the
+-- case where we need distinct bound variables, i.e., for proveVarsImplVarEVars
+--
+-- implLetBindVar _ (PExpr_Var x) = greturn x
 implLetBindVar tp e =
   implApplyImpl1 (Impl1_LetBind tp e)
   (MNil :>: Impl1Cont (\(_ :>: n) -> greturn n)) >>>= \n ->
@@ -6684,15 +6686,17 @@ proveVarImplH x p mb_p = case (p, mbMatch mb_p) of
 ----------------------------------------------------------------------
 
 -- | Prove an existentially-quantified permission where the variable holding the
--- permission could itself be existentially-quantified. Return the variable that
--- the potentially existentially-quantified has been set to.
+-- permission could itself be existentially-quantified. If that variable is
+-- existentially quantified, be sure to instantiate it with a variable that is
+-- locally bound inside the current implication proof, i.e., that is returned by
+-- 'getVarVarM'. Return the variable that was used.
 proveExVarImpl :: NuMatchingAny1 r => PartialSubst vars -> Mb vars (Name tp) ->
                   Mb vars (ValuePerm tp) ->
                   ImplM vars s r (ps :> tp) ps (Name tp)
 
--- If the variable is instantiated to another variable, just call proveVarImpl
+-- If the variable is a free variable, just call proveVarImpl
 proveExVarImpl psubst mb_x mb_p
-  | Just (PExpr_Var n) <- partialSubst psubst (fmap PExpr_Var mb_x)
+  | Right n <- mbNameBoundP mb_x
   = proveVarImplInt n mb_p >>> greturn n
 
 -- If the variable is instantiated to a non-variable expression, bind a fresh
@@ -6711,7 +6715,10 @@ proveExVarImpl _ mb_x mb_p@(mbMatch -> [nuMP| ValPerm_Conj [Perm_LLVMFrame _] |]
     implFindVarOfType x_tp >>>= \maybe_n ->
     case maybe_n of
       Just n ->
-        setVarM memb (PExpr_Var n) >>> proveVarImplInt n mb_p >>> greturn n
+        -- NOTE: we still need to call getVarVarM to get a locally-bound var
+        setVarM memb (PExpr_Var n) >>>
+        getVarVarM memb >>>= \n' ->
+        proveVarImplInt n' mb_p >>> greturn n'
       Nothing ->
         implFailMsgM "proveExVarImpl: No LLVM frame pointer in scope"
 
@@ -6952,7 +6959,8 @@ proveVarsImpl ps
 -- | Prove a list of existentially-quantified permissions and put the proofs on
 -- the stack, similarly to 'proveVarsImpl', but ensure that the existential
 -- variables are themselves only instanitated with variables, not arbitrary
--- terms. Return the variables used to instantiate the evars.
+-- terms. The variables must be distinct from each other and from any other
+-- variables in scope. Return the variables used to instantiate the evars.
 proveVarsImplVarEVars :: NuMatchingAny1 r => ExDistPerms vars as ->
                          ImplM vars s r as RNil (RAssign ExprVar vars)
 proveVarsImplVarEVars mb_ps =
