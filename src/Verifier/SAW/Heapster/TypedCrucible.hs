@@ -1809,8 +1809,8 @@ pcmRunImplM vars fail_doc retF impl_m =
   (stVarTypes <$> get) >>>= \varTypes ->
   liftPermCheckM $ lift $
   fmap (AnnotPermImpl (renderDoc (err_prefix <> line <> fail_doc))) $
-  runImplM vars perms_in env ppInfo "" True varTypes
-  (return . retF . fst) impl_m
+  runImplM vars perms_in env ppInfo "" True varTypes impl_m
+  (return . retF . fst)
 
 -- | Call 'runImplImplM' in the 'PermCheckM' monad
 pcmRunImplImplM ::
@@ -1844,11 +1844,8 @@ pcmEmbedImplWithErrM f_impl vars fail_doc m =
   (stCurPerms <$> get    ) >>>= \perms_in ->
   (stPPInfo   <$> get    ) >>>= \ppInfo ->
   (stVarTypes <$> get    ) >>>= \varTypes ->
-  lift ask >>>= \r ->
 
-  gcaptureCC (\k ->
-    let k' x = runReaderT (k x) r in
-    lift $ runImplM vars perms_in env ppInfo "" True varTypes k' m)
+  addReader (gcaptureCC (runImplM vars perms_in env ppInfo "" True varTypes m))
     >>>= \(a, implSt) ->
 
   gmodify ((\st -> st { stPPInfo = implSt ^. implStatePPInfo,

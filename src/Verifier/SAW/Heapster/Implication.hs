@@ -2580,11 +2580,18 @@ type ImplM vars s r ps_out ps_in =
 
 -- | Run an 'ImplM' computation by passing it a @vars@ context, a starting
 -- permission set, top-level state, and a continuation to consume the output
-runImplM :: CruCtx vars -> PermSet ps_in -> PermEnv -> PPInfo ->
-            String -> Bool -> NameMap TypeRepr ->
-            ((a, ImplState vars ps_out) -> State (Closed s) (r ps_out)) ->
-            ImplM vars s r ps_out ps_in a -> State (Closed s) (PermImpl r ps_in)
-runImplM vars perms env ppInfo fail_prefix do_trace nameTypes k m =
+runImplM ::
+  CruCtx vars ->
+  PermSet ps_in ->
+  PermEnv                   {- ^ permission environment   -} ->
+  PPInfo                    {- ^ pretty-printer settings  -} ->
+  String                    {- ^ fail prefix              -} ->
+  Bool                      {- ^ do trace                 -} ->
+  NameMap TypeRepr          {- ^ name types               -} ->
+  ImplM vars s r ps_out ps_in a ->
+  ((a, ImplState vars ps_out) -> State (Closed s) (r ps_out)) ->
+  State (Closed s) (PermImpl r ps_in)
+runImplM vars perms env ppInfo fail_prefix do_trace nameTypes m k =
   runGenStateContT
     m
     (mkImplState vars perms env ppInfo fail_prefix do_trace nameTypes)
@@ -2615,7 +2622,7 @@ embedImplM ps_in m =
   runImplM CruCtxNil (distPermSet ps_in)
   (view implStatePermEnv s) (view implStatePPInfo s)
   (view implStateFailPrefix s) (view implStateDoTrace s)
-  (view implStateNameTypes s) (return . fst) m
+  (view implStateNameTypes s) m (pure . fst)
 
 -- | Embed a sub-computation in a name-binding inside another 'ImplM'
 -- computation, throwing away any state from that sub-computation and returning
@@ -2631,7 +2638,7 @@ embedMbImplM mb_ps_in mb_m =
          CruCtxNil ps_in
          (view implStatePermEnv    s) (view implStatePPInfo  s)
          (view implStateFailPrefix s) (view implStateDoTrace s)
-         (view implStateNameTypes  s) (return . fst) m)
+         (view implStateNameTypes  s) m (pure . fst))
        mb_ps_in mb_m
 
 -- | Run an 'ImplM' computation in a locally-scoped way, where all effects
