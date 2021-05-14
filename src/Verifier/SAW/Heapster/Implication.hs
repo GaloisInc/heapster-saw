@@ -2607,7 +2607,7 @@ embedImplM :: DistPerms ps_in ->
               ImplM vars s r ps ps (PermImpl r' ps_in)
 embedImplM ps_in m =
   get >>>= \s ->
-  liftGenStateContM $
+  liftGenStateCont $
   runImplM CruCtxNil (distPermSet ps_in)
   (view implStatePermEnv s) (view implStatePPInfo s)
   (view implStateFailPrefix s) (view implStateDoTrace s)
@@ -2621,7 +2621,7 @@ embedMbImplM :: Mb ctx (PermSet ps_in) ->
                 ImplM vars s r ps ps (Mb ctx (PermImpl r' ps_in))
 embedMbImplM mb_ps_in mb_m =
   get >>>= \s ->
-  liftGenStateContM $
+  liftGenStateCont $
   strongMbM (mbMap2
        (\ps_in m ->
          runImplM CruCtxNil ps_in

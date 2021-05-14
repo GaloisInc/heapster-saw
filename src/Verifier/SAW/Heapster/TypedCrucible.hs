@@ -3233,7 +3233,7 @@ tcJumpTarget ctx (JumpTarget blkID args_tps args) =
           -- Step 6: insert a new block entrypoint that has all the permissions
           -- we constructed above as input permissions
           implGetVarTypes ghosts_ns >>>= \ghosts_tps ->
-          (liftGenStateContM $ flip runReaderT top_st $ insNewBlockEntry
+          (liftGenStateCont $ flip runReaderT top_st $ insNewBlockEntry
            memb (mkCruCtx args_tps) ghosts_tps cl_mb_perms_in) >>>= \entryID ->
 
           -- Step 6: return a TypedJumpTarget inside a PermImpl that proves all

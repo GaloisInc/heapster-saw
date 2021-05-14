@@ -5,7 +5,7 @@
 {-# Language TypeFamilies #-} -- Equality constraints
 module Verifier.SAW.Heapster.GenMonad (
   -- * Core definitions
-  GenStateCont(..), (>>>=), (>>>), liftGenStateContM,
+  GenStateCont(..), (>>>=), (>>>), liftGenStateCont,
   -- * Continuation operations
   gcaptureCC, gmapRet, gabortM, gparallel, gopenBinding,
   -- * State operations
@@ -45,8 +45,8 @@ instance (s1 ~ s2, r1 ~ r2) => Monad (GenStateCont s1 r1 s2 r2) where
   (>>=) = (>>>=)
 
 -- | Lift a monadic action into a generalized state-continuation monad
-liftGenStateContM :: Monad m => m a -> GenStateCont s (m b) s (m b) a
-liftGenStateContM m = GenStateCont \s k -> m >>= k s
+liftGenStateCont :: Monad m => m a -> GenStateCont s (m b) s (m b) a
+liftGenStateCont m = GenStateCont \s k -> m >>= k s
 
 -----------------------------------------------------------------------
 -- Continuation operations
