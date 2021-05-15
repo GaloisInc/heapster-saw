@@ -3292,9 +3292,9 @@ implFailMsgM msg =
 ppImpl :: PPInfo -> ExprVar tp -> ValuePerm tp ->
           Mb (vars :: RList CrucibleType) (ValuePerm tp) -> PP.Doc ann
 ppImpl i x p mb_p =
-  sep [permPretty i x <> PP.colon <> PP.align (permPretty i p),
+  sep [PP.group (permPretty i x <> PP.colon <> PP.align (permPretty i p)),
        PP.pretty "-o",
-       PP.align (permPretty i mb_p)]
+       PP.group (PP.align (permPretty i mb_p))]
 
 -- | Terminate the current proof branch with a failure proving @x:p -o mb_p@
 implFailVarM :: NuMatchingAny1 r => String -> ExprVar tp -> ValuePerm tp ->
@@ -5125,10 +5125,12 @@ proveVarLLVMArray ::
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
 proveVarLLVMArray x first_p ps ap =
-  implTraceM (\i -> pretty "proveVarLLVMArray:" <+>
-                    permPretty i x <> colon <>
-                    permPretty i (ValPerm_Conj ps) <+> pretty "-o" <+>
-                    permPretty i (ValPerm_Conj1 $ Perm_LLVMArray ap)) >>>
+  implTraceM (\i ->
+               pretty "proveVarLLVMArray:" <+> permPretty i x <> colon <>
+               align (sep [PP.group (permPretty i (ValPerm_Conj ps)),
+                           pretty "-o",
+                           PP.group (permPretty i (ValPerm_Conj1 $
+                                                   Perm_LLVMArray ap))])) >>>
   proveVarLLVMArrayH x first_p ps ap
 
 
