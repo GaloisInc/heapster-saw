@@ -4046,7 +4046,9 @@ introLLVMFieldContentsM x y fp =
 -- | Borrow a field from an LLVM array permission on the top of the stack, after
 -- proving (with 'implTryProveBVProps') that the index is in the array exclusive
 -- of any outstanding borrows (see 'llvmArrayIndexInArray'). Return the
--- resulting array permission with the borrow and the borrowed field permission.
+-- resulting array permission with the borrow and the borrowed field permission,
+-- leaving the arry permission on top of the stack and the field permission just
+-- below it on the stack.
 implLLVMArrayIndexBorrow ::
   (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
@@ -4126,8 +4128,10 @@ implLLVMArrayBorrowBorrow ::
   ImplM vars s r (ps :> LLVMPointerType w :> LLVMPointerType w)
   (ps :> LLVMPointerType w) (ValuePerm (LLVMPointerType w))
 implLLVMArrayBorrowBorrow x ap (FieldBorrow ix) =
-  implLLVMArrayIndexBorrow x ap ix >>>= \(_,field) ->
-  greturn $ ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm field
+  implLLVMArrayIndexBorrow x ap ix >>>= \(ap',field) ->
+  let fld_p = ValPerm_Conj1 $ llvmArrayFieldToAtomicPerm field in
+  implSwapM x fld_p x (ValPerm_LLVMArray ap') >>>
+  greturn fld_p
 implLLVMArrayBorrowBorrow x ap b@(RangeBorrow _) =
   let p = permForLLVMArrayBorrow ap b
       ValPerm_Conj1 (Perm_LLVMArray sub_ap) = p
@@ -5212,18 +5216,21 @@ proveVarLLVMArray_ArrayStep ::
   Int -> LLVMArrayPerm w ->
   ImplM vars s r (ps :> LLVMPointerType w) (ps :> LLVMPointerType w) ()
 
--- If there is a field borrow in ap_lhs that is not in ap but might overlap with
--- ap, return it to ap_lhs
+-- If there is a borrow in ap_lhs that is not in ap but might overlap with ap,
+-- return it to ap_lhs
 --
 -- FIXME: when an array ap_ret is being borrowed from ap_lhs, this code requires
 -- all of it to be returned, with no borrows, even though it could be that ap
 -- allows some of ap_ret to be borrowed
 proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
-  | Just b <-
+  | Just ap_cell_off <- llvmArrayIsOffsetArray ap_lhs ap
+  , Just b <-
     find (\b ->
-           bvRangesCouldOverlap (llvmArrayBorrowAbsOffsets ap_lhs b)
-           (llvmArrayAbsOffsets ap))
-         (llvmArrayBorrows $ llvmArrayRemArrayBorrows ap_lhs ap) =
+           bvRangesCouldOverlap (llvmArrayBorrowAbsOffsets ap b)
+           (llvmArrayAbsOffsets ap) &&
+           not (elem b $ llvmArrayBorrows ap))
+         (map (cellOffsetLLVMArrayBorrow ap_cell_off) $
+          llvmArrayBorrows ap_lhs) =
 
     -- Prove the rest of ap with b borrowed
     let ap' = llvmArrayAddBorrow b ap in
@@ -5242,10 +5249,14 @@ proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
 -- the assymmetry with the previous case: we only add borrows if we definitely
 -- have to, but we remove borrows if we might have to.
 proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
-  | Just b <-
-    find (\b -> bvRangesOverlap (llvmArrayBorrowAbsOffsets ap b)
-                (llvmArrayAbsOffsets ap_lhs))
-         (llvmArrayBorrows $ llvmArrayRemArrayBorrows ap ap_lhs) =
+  | Just ap_lhs_cell_off <- llvmArrayIsOffsetArray ap ap_lhs
+  , Just b <-
+    find (\b ->
+           let b' = cellOffsetLLVMArrayBorrow ap_lhs_cell_off b in
+           bvRangesOverlap (llvmArrayBorrowAbsOffsets ap b)
+                           (llvmArrayAbsOffsets ap_lhs) &&
+           not (elem b' (llvmArrayBorrows ap_lhs)))
+         (llvmArrayBorrows ap) =
 
     -- Prove the rest of ap without b borrowed
     let ap' = llvmArrayRemBorrow b ap in
