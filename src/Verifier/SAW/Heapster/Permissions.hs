@@ -213,7 +213,14 @@ tracePretty doc = trace (renderDoc doc)
 ppCommaSep :: [Doc ann] -> Doc ann
 ppCommaSep [] = mempty
 ppCommaSep ds =
-  align $ fillSep (map (<> comma) (take (length ds - 1) ds) ++ [last ds])
+  PP.group $ align $ fillSep (map (<> comma) (take (length ds - 1) ds)
+                              ++ [last ds])
+
+-- | Pretty-print a comma-separated list using 'fillSep' enclosed inside either
+-- parentheses (if the supplied flag is 'True') or brackets (if it is 'False')
+ppEncList :: Bool -> [Doc ann] -> Doc ann
+ppEncList flag ds =
+  (if flag then parens else brackets) $ ppCommaSep ds
 
 instance (PermPretty a, PermPretty b) => PermPretty (a,b) where
   permPrettyM (a,b) = tupled <$> sequence [permPrettyM a, permPrettyM b]
@@ -317,7 +324,7 @@ permPrettyPermMb f mb =
 instance PermPretty a => PermPretty (Mb (ctx :: RList CrucibleType) a) where
   permPrettyM =
     permPrettyExprMb $ \docs ppm ->
-    (\pp -> PP.group (PP.group (parens $ ppCommaSep $ RL.toList docs) <>
+    (\pp -> PP.group (ppEncList True (RL.toList docs) <>
                       nest 2 (dot <> line <> pp))) <$> ppm
 
 -- FIXME: no longer needed?
@@ -2595,9 +2602,10 @@ instance (1 <= w, KnownNat w) => PermPretty (LLVMArrayPerm w) where
        pp_flds <- mapM permPrettyM llvmArrayFields
        pp_bs <- mapM permPrettyM llvmArrayBorrows
        return $ PP.group (pretty "array" <>
-                          parens (ppCommaSep [pp_off, pretty "<" <> pp_len,
-                                              pretty "*" <> pp_stride,
-                                              list pp_flds, list pp_bs]))
+                          ppEncList True [pp_off, pretty "<" <> pp_len,
+                                          pretty "*" <> pp_stride,
+                                          ppEncList False pp_flds,
+                                          ppEncList False pp_bs])
 
 instance (1 <= w, KnownNat w) => PermPretty (LLVMBlockPerm w) where
   permPrettyM (LLVMBlockPerm {..}) =
@@ -2607,7 +2615,7 @@ instance (1 <= w, KnownNat w) => PermPretty (LLVMBlockPerm w) where
        pp_len <- permPrettyM llvmBlockLen
        pp_sh <- permPrettyM llvmBlockShape
        return $ PP.group (pp_l <> pretty "memblock" <>
-                          parens (ppCommaSep [pp_rw, pp_off, pp_len, pp_sh]))
+                          ppEncList True [pp_rw, pp_off, pp_len, pp_sh])
 
 instance PermPretty (AtomicPerm a) where
   permPrettyM (Perm_LLVMField fp) = permPrettyLLVMField False fp
@@ -3521,7 +3529,7 @@ llvmArrayRemBorrows bs ap = foldr llvmArrayRemBorrow ap bs
 -- | Remove all borrows from the second array to the first, assuming the one is
 -- an offset array as in 'llvmArrayIsOffsetArray'
 llvmArrayRemArrayBorrows :: (1 <= w, KnownNat w) => LLVMArrayPerm w ->
-                               LLVMArrayPerm w -> LLVMArrayPerm w
+                            LLVMArrayPerm w -> LLVMArrayPerm w
 llvmArrayRemArrayBorrows ap sub_ap
   | Just cell_num <- llvmArrayIsOffsetArray ap sub_ap =
     llvmArrayRemBorrows
