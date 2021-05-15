@@ -225,6 +225,22 @@ doubleSplitWidenPerm _ p1 p2 =
   return ((p1, p2), ValPerm_True)
 
 
+-- | Replace all variables @x@ in an expression that have an equality permission
+-- @eq(e)@ with the expression @e@
+--
+-- NOTE: if we want this to work for arbitrary expression types, we should
+-- refactor it as a generic function, so it can work on all of the various
+-- expression construcs, like 'ValuePerm', 'AtomicPerm', 'LLVMFieldPerm', etc.
+substEqVars :: WidNameMap -> PermExpr (BVType w) -> PermExpr (BVType w)
+substEqVars wnmap (PExpr_Var x)
+  | ValPerm_Eq e <- wnMapGetPerm x wnmap =
+    substEqVars wnmap e
+substEqVars wnmap (PExpr_BV factors k) =
+  foldr bvAdd (bvBV k) $
+  map (\(BVFactor i x) -> bvMultBV i $ substEqVars wnmap $ PExpr_Var x) factors
+substEqVars _ e = e
+
+
 -- | Widen two expressions against each other
 --
 -- FIXME: document this more
@@ -516,27 +532,33 @@ widenAtomicPerms' tp (p1 : ps1) ps2
   | Just i <- findIndex (== p1) ps2 =
     (p1 :) <$> widenAtomicPerms tp ps1 (deleteNth i ps2)
 
--- FIXME HERE NOW: need to unify the lengths of array perms
-
 -- If we have array permissions with the same offset, length, and stride on both
 -- sides, check that their fields are the same and equalize their borrows
 --
 -- FIXME: handle arrays with different lengths, and widen their fields
-widenAtomicPerms' tp (Perm_LLVMArray ap1 : ps1) ps2
-  | Just i <- findIndex (\case
-                            Perm_LLVMArray ap2 ->
-                              llvmArrayAbsOffsets ap1
-                              == llvmArrayAbsOffsets ap2
-                            _ -> False) ps2
-  , Perm_LLVMArray ap2 <- ps2!!i
-  , llvmArrayStride ap1 == llvmArrayStride ap2
-  , llvmArrayFields ap1 == llvmArrayFields ap2 =
-    -- NOTE: at this point, ap1 and ap2 are equal except for perhaps their
-    -- borrows, so we just filter out the borrows in ap1 that are also in ap2
-    (Perm_LLVMArray (ap1 { llvmArrayBorrows =
-                             filter (flip elem (llvmArrayBorrows ap2))
-                             (llvmArrayBorrows ap1) }) :) <$>
-    widenAtomicPerms tp ps1 (deleteNth i ps2)
+widenAtomicPerms' tp (Perm_LLVMArray ap1 : ps1) ps2 =
+  (view wsNameMap <$> get) >>= \wnmap ->
+  case findIndex
+       (\case
+           Perm_LLVMArray ap2 ->
+             substEqVars wnmap (llvmArrayOffset ap1)
+             == substEqVars wnmap (llvmArrayOffset ap2) &&
+             substEqVars wnmap (llvmArrayLen ap1)
+             == substEqVars wnmap (llvmArrayLen ap2) &&
+             llvmArrayStride ap1 == llvmArrayStride ap2 &&
+             llvmArrayFields ap1 == llvmArrayFields ap2
+           _ -> False) ps2 of
+    Just i
+      | Perm_LLVMArray ap2 <- ps2!!i ->
+        -- NOTE: at this point, ap1 and ap2 are equal except for perhaps their
+        -- borrows, so we just filter out the borrows in ap1 that are also in ap2
+        (Perm_LLVMArray (ap1 { llvmArrayBorrows =
+                               filter (flip elem (llvmArrayBorrows ap2))
+                               (llvmArrayBorrows ap1) }) :) <$>
+        widenAtomicPerms tp ps1 (deleteNth i ps2)
+    _ ->
+      -- We did not find an appropriate array on the RHS, so drop this one
+      widenAtomicPerms tp ps1 ps2
 
 -- If the first permission on the left is an LLVM permission overlaps with some
 -- permission on the right, widen these against each other

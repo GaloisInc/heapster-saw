@@ -1221,14 +1221,19 @@ bvAdd (bvMatch -> (factors1, const1)) (bvMatch -> (factors2, const2)) =
   bvNormVar $
   PExpr_BV (bvMergeFactors factors1 factors2) (BV.add knownNat const1 const2)
 
+-- | Multiply a bitvector expression by a bitvector
+bvMultBV :: (1 <= w, KnownNat w) => BV.BV w -> PermExpr (BVType w) ->
+            PermExpr (BVType w)
+bvMultBV i_bv (bvMatch -> (factors, off)) =
+  bvNormVar $
+  PExpr_BV (map (\(BVFactor j x) ->
+                  BVFactor (BV.mul knownNat i_bv j) x) factors)
+  (BV.mul knownNat i_bv off)
+
 -- | Multiply a bitvector expression by a constant
 bvMult :: (1 <= w, KnownNat w, Integral a) => a -> PermExpr (BVType w) ->
           PermExpr (BVType w)
-bvMult i (bvMatch -> (factors, off)) =
-  let i_bv = BV.mkBV knownNat $ toInteger i in
-  bvNormVar $
-  PExpr_BV (map (\(BVFactor j x) -> BVFactor (BV.mul knownNat i_bv j) x) factors)
-  (BV.mul knownNat i_bv off)
+bvMult i = bvMultBV (BV.mkBV knownNat $ toInteger i)
 
 -- | Negate a bitvector expression
 bvNegate :: (1 <= w, KnownNat w) => PermExpr (BVType w) -> PermExpr (BVType w)
