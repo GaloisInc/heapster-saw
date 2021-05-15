@@ -5263,8 +5263,10 @@ proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
     proveVarLLVMArray_ArrayStep x ps ap' i ap_lhs >>>
 
     -- Borrow the permission if that is possible; this will fail if ap has a
-    -- borrow that is not actually in its range
+    -- borrow that is not actually in its range. Note that the borrow is always
+    -- added to the front of the list of borrows, so we need to rearrange.
     implLLVMArrayBorrowBorrow x ap' b >>>= \p ->
+    implLLVMArrayRearrange x (llvmArrayAddBorrow b ap') ap >>>
     recombinePerm x p
 
 -- If ap and ap_lhs are equal up to the order of their borrows, just rearrange
