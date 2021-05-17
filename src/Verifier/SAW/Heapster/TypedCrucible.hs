@@ -2313,7 +2313,7 @@ tcEmitStmt :: PermCheckExtC ext => CtxTrans ctx -> ProgramLoc ->
               StmtPermCheckM ext cblocks blocks tops ret RNil RNil
               (CtxTrans ctx')
 tcEmitStmt ctx loc stmt =
-  do stmtTraceM (const (pretty "Type-checking statement:" <+>
+  do _     <- stmtTraceM (const (pretty "Type-checking statement:" <+>
                         ppStmt (size ctx) stmt))
      !_    <- permGetPPInfo
      !pps  <- mapM (\(Some r) -> ppCruRegAndPerms ctx r) (stmtInputRegs stmt)
@@ -2321,7 +2321,7 @@ tcEmitStmt ctx loc stmt =
      !ctx' <- tcEmitStmt' ctx loc stmt
      !pps' <- mapM (\(Some r) -> ppCruRegAndPerms ctx' r)
                    (stmtOutputRegs (Ctx.size ctx') stmt)
-     stmtTraceM (const (pretty "Output perms:" <> softline <> ppCommaSep pps'))
+     _     <- stmtTraceM (const (pretty "Output perms:" <> softline <> ppCommaSep pps'))
      pure ctx'
 
 
