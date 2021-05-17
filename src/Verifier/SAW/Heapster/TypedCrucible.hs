@@ -2748,6 +2748,7 @@ tcEmitLLVMStmt _arch ctx loc (LLVM_LoadHandle _ _ ptr args ret) =
         (TypedLLVMLoadHandle tptr tp p) >>>= \ret' ->
         stmtRecombinePerms >>>
         pure (addCtxName ctx ret')
+    _ -> stmtFailM (\_ -> pretty "Unresolved LLVM_LoadHandle")
 
 -- Type-check a ResolveGlobal instruction by looking up the global symbol
 tcEmitLLVMStmt _arch ctx loc (LLVM_ResolveGlobal w _ gsym) =
