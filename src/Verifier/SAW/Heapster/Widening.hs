@@ -673,6 +673,44 @@ widenPerms (CruCtxCons tps tp) (ps1 :>: p1) (ps2 :>: p2) =
 
 
 ----------------------------------------------------------------------
+-- * Extension-Specific Widening
+----------------------------------------------------------------------
+
+data SomeLLVMFrameMember ctx =
+  forall w. SomeLLVMFrameMember (TypeRepr (LLVMFrameType w)) (Member ctx
+                                                              (LLVMFrameType w))
+-- | Find some LLVM frame variable type in a 'CruCtx'
+findLLVMFrameType :: CruCtx ctx -> Maybe (SomeLLVMFrameMember ctx)
+findLLVMFrameType CruCtxNil = Nothing
+findLLVMFrameType (CruCtxCons _ tp@(LLVMFrameRepr _)) =
+  Just (SomeLLVMFrameMember tp Member_Base)
+findLLVMFrameType (CruCtxCons tps _) =
+  fmap (\(SomeLLVMFrameMember tp memb) ->
+         SomeLLVMFrameMember tp (Member_Step memb)) $
+  findLLVMFrameType tps
+
+-- | Infer which ghost variables on the LHS and RHS correspond to
+-- extension-specific state, and widen them against each other
+--
+-- FIXME: instead of this guessing which variables correspond to
+-- extension-specific state, that state should really be part of what is
+-- widened, and, correspondingly, should thus be part of @CallSiteImplRet@. That
+-- is, @CallSiteImplRet@ should contain a @PermCheckExtState@, which should be
+-- passed to 'widen' along with the permissions. This change would additionally
+-- eliminate @setInputExtState@, which also has to guess which variables
+-- correspond to extension-specific state.
+widenExtGhostVars :: CruCtx tp1 -> RAssign Name tp1 ->
+                     CruCtx tp2 -> RAssign Name tp2 -> WideningM ()
+widenExtGhostVars tps1 vars1 tps2 vars2
+  | Just (SomeLLVMFrameMember tp1 memb1) <- findLLVMFrameType tps1
+  , Just (SomeLLVMFrameMember tp2 memb2) <- findLLVMFrameType tps2
+  , Just Refl <- testEquality tp1 tp2 =
+    void $ widenExpr tp1 (PExpr_Var $ RL.get memb1 vars1) (PExpr_Var $
+                                                           RL.get memb2 vars2)
+widenExtGhostVars _ _ _ _ = return ()
+
+
+----------------------------------------------------------------------
 -- * Top-Level Entrypoints
 ----------------------------------------------------------------------
 
@@ -753,6 +791,7 @@ widen tops args (Some (ArgVarPerms vars1 mb_perms1)) (Some (ArgVarPerms
               indent 2 (permPretty i dist_ps2))
      void $ widenExprs all_args (RL.map PExpr_Var args_ns1) (RL.map
                                                              PExpr_Var args_ns2)
+     widenExtGhostVars vars1 vars1_ns vars2 vars2_ns
      wnmap <- view wsNameMap <$> get
      traceM (\i ->
               pretty "Widening returning:" <> line <>
