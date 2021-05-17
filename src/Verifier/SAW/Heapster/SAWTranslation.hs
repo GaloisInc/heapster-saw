@@ -742,6 +742,8 @@ instance TransInfo info =>
       return $ ETrans_Term $ globalOpenTerm "Prelude.False"
     [nuMP| PExpr_Nat i |] ->
       return $ ETrans_Term $ natOpenTerm $ mbLift i
+    [nuMP| PExpr_String str |] ->
+      return $ ETrans_Term $ stringLitOpenTerm $ Data.Text.pack $ mbLift str
     [nuMP| PExpr_BV bvfactors@[] off |] ->
       let w = natRepr3 bvfactors in
       return $ ETrans_Term $ bvLitOpenTerm w $ mbLift off
