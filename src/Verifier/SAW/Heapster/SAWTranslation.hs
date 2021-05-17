@@ -1636,7 +1636,8 @@ instance TransInfo info =>
     [nuMP| Perm_Fun fun_perm |] ->
       translate fun_perm >>= \tp_term ->
       return $ mkTypeTrans1 tp_term (APTrans_Fun fun_perm)
-
+    [nuMP| Perm_BVProp prop |] ->
+      fmap APTrans_BVProp <$> translate prop
 
 -- | Translate an array permission to a 'TypeTrans' for an array permission
 -- translation, also returning the translations of the bitvector width as a
