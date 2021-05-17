@@ -632,6 +632,8 @@ instance TransInfo info =>
       return $ error "translate: CharRepr"
     [nuMP| StringRepr UnicodeRepr |] ->
       returnType1 stringTypeOpenTerm
+    [nuMP| StringRepr _ |] ->
+      return $ error "translate: StringRepr non-unicode"
     [nuMP| FunctionHandleRepr _ _ |] ->
       -- NOTE: function permissions translate to the SAW function, but the
       -- function handle itself has no SAW translation
