@@ -3291,6 +3291,9 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
              [return (natOpenTerm $ natVal2 prop), translate1 e2, translate1 e3]]
          ]
 
+  ([nuMP| Impl1_TryProveBVProp _ _ _ |], _) ->
+    tell ["translatePermImpl1: Unhandled BVProp case"] >> mzero
+
 
 -- | Translate a 'PermImpl' in the 'PermImplTransM' monad to a function that
 -- takes a failure continuation and returns a monadic computation to generate
