@@ -77,6 +77,7 @@ import Verifier.SAW.OpenTerm
 
 import Verifier.SAW.Heapster.CruUtil
 
+
 import Debug.Trace
 
 
@@ -6392,49 +6393,6 @@ permEnvAddRecPermM env nm args tp trans_ident reachC casesF foldIdentsF reachMet
             cases2 <- casesF npn2 (mkTmpEnv npn2)
             mkRealEnv npn2 cases2 (foldIdentsF npn2 cases2) (reachMethsF npn2)
 
-<<<<<<< HEAD
--- | Add a recursive named shape to a 'PermEnv', assuming that the
--- body and the fold and unfold functions depend recursively on the
--- recursive named shape being defined. This is handled by adding a
--- "temporary" version of the named shape to the environment to be used to
--- compute the body and the fold and unfold functions and then passing
--- the expanded environment with this temporary named permission to the supplied
--- functions for computing these values. This temporary named shape has its
--- body and its fold and unfold functions undefined, so the supplied
--- functions cannot depend on these values being defined, which makes sense
--- because they are defining them!
-permEnvAddRecShapeM :: (Monad m, MonadFail m, 1 <= w, KnownNat w) =>
-                       PermEnv -> String -> CruCtx args -> Ident ->
-                       (NamedShape 'True args w -> PermEnv ->
-                        m (Mb args (PermExpr (LLVMShapeType w)))) ->
-                       (NamedShape 'True args w ->
-                        Mb args (PermExpr (LLVMShapeType w)) -> PermEnv ->
-                        m (Ident, Ident)) ->
-                       m PermEnv
-permEnvAddRecShapeM env nm args trans_ident bodyF foldIdentsF =
-  do let body_err = error "Analyzing recursive shape cases before it is defined!"
-         fold_err = error "Folding recursive shape before it is defined!"
-         unfold_err = error "Unfolding recursive shape before it is defined!"
-     let nsh1 = NamedShape nm args $
-                  RecShapeBody body_err trans_ident fold_err unfold_err
-         tmp_env1 = permEnvAddNamedShape env nsh1
-     body <- bodyF nsh1 tmp_env1
-     let mb_args = nus (cruCtxProxies args) namesToExprs
-     case fmap mbCombine . mbMaybe $
-            mbMap2 (abstractNS nm args) mb_args body of
-       Just mb_body ->
-         do let nsh2 = NamedShape nm args $
-                         RecShapeBody mb_body trans_ident fold_err unfold_err
-                tmp_env2 = permEnvAddNamedShape env nsh2
-                nsh_unf = unfoldNamedShape nsh2 <$> mb_args
-            (fold_ident, unfold_ident) <- foldIdentsF nsh2 nsh_unf tmp_env2
-            return $ permEnvAddNamedShape env $ NamedShape nm args $
-                       RecShapeBody mb_body trans_ident fold_ident unfold_ident
-       Nothing ->
-         fail $ "recursive shape applied to different arguments in its body"
-
-=======
->>>>>>> origin/master
 
 -- | Add a defined named permission to a 'PermEnv'
 permEnvAddDefinedPerm :: PermEnv -> String -> CruCtx args -> TypeRepr a ->

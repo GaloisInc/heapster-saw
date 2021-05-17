@@ -4187,7 +4187,7 @@ someCFGAndPermPtrPerm w (SomeCFGAndPerm _ _ _ fun_perm) =
 tcTranslateCFGTupleFun ::
   (1 <= ArchWidth arch, KnownNat (ArchWidth arch), w ~ ArchWidth arch) =>
   NatRepr w -> PermEnv -> EndianForm -> [SomeCFGAndPerm (LLVM arch)] ->
-  (OpenTerm, [SomeTypedCFG (LLVM arch)], OpenTerm)
+  (OpenTerm, [SomeTypedCFG], OpenTerm)
 tcTranslateCFGTupleFun w env endianness cfgs_and_perms =
   let lrts = map (someCFGAndPermLRT env) cfgs_and_perms
       lrts_tm =
@@ -4224,7 +4224,6 @@ tcTranslateCFGTupleFun w env endianness cfgs_and_perms =
   tupleOpenTerm $ flip map (zip cfgs_and_perms funs) $ \(cfg_and_perm, _) ->
   case cfg_and_perm of
     SomeCFGAndPerm sym _ cfg fun_perm ->
-      -- let tcfg = tcCFG env' endianness fun_perm cfg
       trace ("Type-checking " ++ show sym) $
         translateCFG env' (tcCFG env' endianness fun_perm cfg)
 
@@ -4257,7 +4256,7 @@ tcTranslateAddCFGs ::
   (1 <= ArchWidth arch, KnownNat (ArchWidth arch), w ~ ArchWidth arch) =>
   SharedContext -> ModuleName ->
   NatRepr w -> PermEnv -> EndianForm -> [SomeCFGAndPerm (LLVM arch)] ->
-  IO (PermEnv, [SomeTypedCFG (LLVM arch)])
+  IO (PermEnv, [SomeTypedCFG])
 tcTranslateAddCFGs sc mod_name w env endianness cfgs_and_perms =
   do let (lrts, tcfgs, tup_fun) =
            tcTranslateCFGTupleFun w env endianness cfgs_and_perms
