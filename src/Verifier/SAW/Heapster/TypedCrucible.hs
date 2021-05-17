@@ -2525,6 +2525,9 @@ tcEmitLLVMSetExpr _arch ctx loc (LLVM_SideConditions tp conds reg) =
     stmtRecombinePerms >>>
     pure (addCtxName ctx ret))
   conds
+tcEmitLLVMSetExpr _arch _ctx _loc X86Expr{} =
+  stmtFailM (\_ -> pretty "X86Expr not supported")
+
 
 
 -- FIXME HERE: move withLifetimeCurrentPerms somewhere better...
