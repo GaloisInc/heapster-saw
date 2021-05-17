@@ -62,6 +62,7 @@ import Data.Binding.Hobbits
 import Verifier.SAW.Heapster.CruUtil
 import Verifier.SAW.Heapster.Permissions
 
+import GHC.Stack
 import Debug.Trace
 
 
@@ -2111,8 +2112,9 @@ simplImplOut (SImpl_ReachabilityTrans x rp args off _ e) =
 -- | Apply a 'SimplImpl' implication to the permissions on the top of a
 -- permission set stack, checking that they equal the 'simplImplIn' of the
 -- 'SimplImpl' and then replacing them with its 'simplImplOut'
-applySimplImpl :: PPInfo -> Proxy ps -> SimplImpl ps_in ps_out ->
-                  PermSet (ps :++: ps_in) -> PermSet (ps :++: ps_out)
+applySimplImpl :: HasCallStack => PPInfo -> Proxy ps ->
+                  SimplImpl ps_in ps_out -> PermSet (ps :++: ps_in) ->
+                  PermSet (ps :++: ps_out)
 applySimplImpl pp_info prx simpl =
   modifyDistPerms $ \all_ps ->
   let (ps, ps_in) =
@@ -2144,8 +2146,8 @@ mbPermSets2 ps1 ps2 =
   MbPermSets_Cons (MbPermSets_Cons MbPermSets_Nil knownRepr ps1) knownRepr ps2
 
 -- | Apply a single permission implication step to a permission set
-applyImpl1 :: PPInfo -> PermImpl1 ps_in ps_outs -> PermSet ps_in ->
-              MbPermSets ps_outs
+applyImpl1 :: HasCallStack => PPInfo -> PermImpl1 ps_in ps_outs ->
+              PermSet ps_in -> MbPermSets ps_outs
 applyImpl1 _ (Impl1_Fail _) _ = MbPermSets_Nil
 applyImpl1 _ Impl1_Catch ps = mbPermSets2 (emptyMb ps) (emptyMb ps)
 applyImpl1 pp_info (Impl1_Push x p) ps =
@@ -3230,7 +3232,7 @@ newtype Impl1Cont vars s r ps_r a bs_ps =
 
 -- | Apply a permission implication rule, with the given continuations in the
 -- possible disjunctive branches of the result
-implApplyImpl1 :: NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
+implApplyImpl1 :: HasCallStack => NuMatchingAny1 r => PermImpl1 ps_in ps_outs ->
                   RAssign (Impl1Cont vars s r ps_r a) ps_outs ->
                   ImplM vars s r ps_r ps_in a
 implApplyImpl1 impl1 mb_ms =
@@ -3367,7 +3369,8 @@ implElimExistsM x p =
   (MNil :>: Impl1Cont (const $ greturn ()))
 
 -- | Apply a simple implication rule to the top permissions on the stack
-implSimplM :: NuMatchingAny1 r => Proxy ps -> SimplImpl ps_in ps_out ->
+implSimplM :: HasCallStack => NuMatchingAny1 r => Proxy ps ->
+              SimplImpl ps_in ps_out ->
               ImplM vars s r (ps :++: ps_out) (ps :++: ps_in) ()
 implSimplM prx simpl =
   implApplyImpl1 (Impl1_Simpl simpl prx)
@@ -4073,8 +4076,8 @@ implLLVMArrayIndexCopy x ap ix =
   implSimplM Proxy (SImpl_LLVMArrayIndexCopy x ap ix)
 
 -- | Return a field permission that has been borrowed from an array permission,
--- where the field permission is on the top of the stack and the array
--- permission is just below it
+-- where the array permission is on the top of the stack and the field
+-- permission borrowed from it is just below it
 implLLVMArrayIndexReturn ::
   (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayIndex w ->
@@ -4105,9 +4108,10 @@ implLLVMArrayCopy x ap sub_ap =
   implTryProveBVProps x (llvmArrayContainsArray ap sub_ap) >>>
   implSimplM Proxy (SImpl_LLVMArrayCopy x ap sub_ap)
 
--- | Return a borrowed sub-array to an array as per 'SImpl_LLVMArrayReturn', and
--- return the new array permission after the return that is now on the top of
--- the stack
+-- | Return a borrowed sub-array to an array as per 'SImpl_LLVMArrayReturn',
+-- where the borrowed array permission is just below the top of the stack and
+-- the array it was borrowed from is on top of the stack.  Return the new array
+-- permission after the return that is now on the top of the stack.
 implLLVMArrayReturn ::
   (1 <= w, KnownNat w, NuMatchingAny1 r) =>
   ExprVar (LLVMPointerType w) -> LLVMArrayPerm w -> LLVMArrayPerm w ->
@@ -5266,8 +5270,8 @@ proveVarLLVMArray_ArrayStep x ps ap i ap_lhs
     -- borrow that is not actually in its range. Note that the borrow is always
     -- added to the front of the list of borrows, so we need to rearrange.
     implLLVMArrayBorrowBorrow x ap' b >>>= \p ->
-    implLLVMArrayRearrange x (llvmArrayAddBorrow b ap') ap >>>
-    recombinePerm x p
+    recombinePerm x p >>>
+    implLLVMArrayRearrange x (llvmArrayAddBorrow b ap') ap
 
 -- If ap and ap_lhs are equal up to the order of their borrows, just rearrange
 -- the borrows and we should be good
