@@ -2710,7 +2710,6 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
            m
   
   -- Intro for a defined named shape (the other case) is a no-op
-  [nuMP| SImpl_IntroLLVMBlockNamed _ _ nmsh |]
     | [nuMP| DefinedShapeBody _ |] <- mbMatch $ fmap namedShapeBody nmsh ->
       do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
          withPermStackM id
