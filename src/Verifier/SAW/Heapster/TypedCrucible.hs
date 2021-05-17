@@ -20,7 +20,6 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE ConstraintKinds #-}
--- {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
