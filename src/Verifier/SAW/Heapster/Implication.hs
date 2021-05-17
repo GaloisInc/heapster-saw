@@ -2695,7 +2695,7 @@ modifyPSubst f = implStatePSubst %= f
 setVarM :: Member vars a -> PermExpr a -> ImplM vars s r ps ps ()
 setVarM memb e =
   do vars <- uses implStateVars cruCtxProxies
-     implTraceM (\i -> pretty "Setting" <+>
+     _ <- implTraceM (\i -> pretty "Setting" <+>
                        permPretty i (nuMulti vars $ \ns -> RL.get memb ns) <+>
                        pretty "=" <+> permPretty i e)
      modifyPSubst (psubstSet memb e)
@@ -4533,7 +4533,7 @@ solveForPermListImplBlock (ps_l :>: LOwnedPermBlock (PExpr_Var y) bp_l) x mb_bp
   , rng_l <- llvmBlockRange bp_l
   , [nuMP| Just mb_bps |] <- mbMatch $ fmap (remLLVMBLockPermRange rng_l) mb_bp =
     tryUnifyLifetimes (llvmBlockLifetime bp_l) (fmap llvmBlockLifetime mb_bp) >>>
-    mconcat <$> mapM (solveForPermListImplBlock ps_l x) (mbList mb_bps)
+    concatSomeRAssign <$> mapM (solveForPermListImplBlock ps_l x) (mbList mb_bps)
 
 -- Otherwise, recurse on the tail of the permission list
 solveForPermListImplBlock (ps_l :>: _) x mb_bp =
@@ -4551,7 +4551,7 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
 
   -- If the RHS is empty, we are done
   [nuMP| MNil |] ->
-    pure mempty
+    pure (Some MNil)
 
   -- If the RHS starts with a field perm, convert to a block perm and call
   -- solveForPermListImplBlock
@@ -4560,14 +4560,14 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
     , mb_bp <- fmap llvmFieldPermToBlock mb_fp ->
       do needed1 <- solveForPermListImplBlock ps_l x mb_bp
          needed2 <- solveForPermListImpl ps_l mb_ps_r
-         pure (needed1 <> needed2)
+         pure (apSomeRAssign needed1 needed2)
 
   -- If the RHS starts with a block perm, call solveForPermListImplBlock
   [nuMP| mb_ps_r :>: LOwnedPermBlock (PExpr_Var mb_x) mb_bp |]
     | Right x <- mbNameBoundP mb_x ->
       do needed1 <- solveForPermListImplBlock ps_l x mb_bp
          needed2 <- solveForPermListImpl ps_l mb_ps_r
-         pure (needed1 <> needed2)
+         pure (apSomeRAssign needed1 needed2)
 
   -- If the RHS is an lowned perm that is in the LHS, return nothing
   --
@@ -4584,13 +4584,19 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
 
   -- If the RHS is an lowned perm not in the LHS, return the RHS
   [nuMP| mb_ps_r :>: LOwnedPermLifetime (PExpr_Var mb_l) mb_ps_in mb_ps_out |] ->
-    (<>) (neededPerms1 mb_l (mbMap2 ValPerm_LOwned mb_ps_in mb_ps_out)) <$>
+    apSomeRAssign (neededPerms1 mb_l (mbMap2 ValPerm_LOwned mb_ps_in mb_ps_out)) <$>
     solveForPermListImpl ps_l mb_ps_r
 
   -- Otherwise, we don't know what to do, so do nothing and return
   _ ->
-    pure mempty
+    pure (Some MNil)
 
+concatSomeRAssign :: [Some (RAssign f)] -> Some (RAssign f)
+concatSomeRAssign = foldl apSomeRAssign (Some MNil) 
+-- foldl is intentional, appending RAssign matches on the second argument
+
+apSomeRAssign :: Some (RAssign f) -> Some (RAssign f) -> Some (RAssign f)
+apSomeRAssign (Some x) (Some y) = Some (RL.append x y)
 
 ----------------------------------------------------------------------
 -- * Proving Field Permissions
@@ -5054,7 +5060,7 @@ proveNamedArgs :: NuMatchingAny1 r => ExprVar a ->
                   PermOffset a -> Mb vars (PermExprs args) ->
                   ImplM vars s r (ps :> a) (ps :> a) ()
 proveNamedArgs x npn args off mb_args =
-  do implTraceM (\i -> pretty "proveNamedArgs:" <> softline <>
+  do _ <- implTraceM (\i -> pretty "proveNamedArgs:" <> softline <>
                        ppImpl i x (ValPerm_Named npn args off)
                        (fmap (\args' -> ValPerm_Named npn args' off) mb_args))
      psubst <- getPSubst

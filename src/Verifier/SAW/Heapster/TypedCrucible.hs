@@ -23,7 +23,7 @@
 -- {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
-
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe

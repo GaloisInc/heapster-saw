@@ -2713,9 +2713,11 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
            (\(pctx :>: ptrans) ->
              pctx :>: typeTransF ttrans [transTerm1 ptrans])
            m
+
+    | otherwise -> fail "translateSimplImpl: SImpl_IntroLLVMBlockNamed, unknown named shape"
   
-  -- Elim for a recursive named shape applies the fold function
   [nuMP| SImpl_ElimLLVMBlockNamed _ bp nmsh |]
+  -- Elim for a recursive named shape applies the fold function
     | [nuMP| RecShapeBody _ _ _ unfold_id |] <- mbMatch $ fmap namedShapeBody nmsh
     , [nuMP| PExpr_NamedShape _ _ _ args |] <- mbMatch $ fmap llvmBlockShape bp ->
       do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
@@ -2727,13 +2729,14 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
            m
   
   -- Intro for a defined named shape (the other case) is a no-op
-  [nuMP| SImpl_ElimLLVMBlockNamed _ _ nmsh |]
     | [nuMP| DefinedShapeBody _ |] <- mbMatch $ fmap namedShapeBody nmsh ->
       do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
          withPermStackM id
            (\(pctx :>: ptrans) ->
              pctx :>: typeTransF ttrans [transTerm1 ptrans])
            m
+
+    | otherwise -> fail "translateSimplImpl: ElimLLVMBlockNamed, unknown named shape"
   
   [nuMP| SImpl_IntroLLVMBlockFromEq _ _ _ |] ->
     do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
@@ -2764,8 +2767,9 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
          m
   
   [nuMP| SImpl_ElimLLVMBlockField _ _ _ |] ->
-    do let mb_ps = fmap ((\case ValPerm_Conj ps -> ps)
-                         . distPermsHeadPerm . simplImplOut) mb_simpl
+    do let mb_ps = fmap ((\case ValPerm_Conj ps -> ps
+                                _ -> error "translateSimplImpl: SImpl_ElimLLVMBlockField, VPerm_Conj required"
+                         ). distPermsHeadPerm . simplImplOut) mb_simpl
        ttrans1 <- translate $ fmap (!!0) mb_ps
        ttrans2 <- translate $ fmap (!!1) mb_ps
        withPermStackM id
