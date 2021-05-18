@@ -896,7 +896,7 @@ rsConvertFun w abi (Generics ldefs _tparams@[]
   do arg_shapes <- mapM (rsConvert w) args
      ret_shape <- rsConvert w ret_tp
      layoutFun abi arg_shapes ret_shape
-rsConvertFun _ _ _ _ = fail "rsConvertFun: not supported"
+rsConvertFun _ _ _ _ = fail "rsConvertFun: unsupported Rust function type"
 
 
 ----------------------------------------------------------------------
