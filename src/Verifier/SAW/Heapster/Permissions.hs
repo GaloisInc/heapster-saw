@@ -24,7 +24,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE EmptyDataDecls #-}
-
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Verifier.SAW.Heapster.Permissions where
 
 import Prelude hiding (pred)
@@ -83,14 +83,6 @@ import Debug.Trace
 ----------------------------------------------------------------------
 -- * Utility Functions
 ----------------------------------------------------------------------
-
--- | An existentially-quantified 'RAssign' forms a semigroup
-instance Semigroup (Some (RAssign f)) where
-  (Some fs1) <> (Some fs2) = Some (RL.append fs1 fs2)
-
--- | An existentially-quantified 'RAssign' forms a monoid
-instance Monoid (Some (RAssign f)) where
-  mempty = Some MNil
 
 -- | Delete the nth element of a list
 deleteNth :: Int -> [a] -> [a]
@@ -1962,16 +1954,18 @@ namedShapeEq nmsh1 nmsh2
 namedShapeEq _ _ = Nothing
 
 data NamedShapeBody b args w where
-     -- | A defined shape is just a definition in terms of the arguments
+  -- | A defined shape is just a definition in terms of the arguments
   DefinedShapeBody :: Mb args (PermExpr (LLVMShapeType w)) ->
                       NamedShapeBody 'True args w
+
   -- | An opaque shape has no body, just a length and a translation to a type
   OpaqueShapeBody :: Mb args (PermExpr (BVType w)) -> Ident ->
                      NamedShapeBody 'False args w
-    -- | A recursive shape body has a one-step unfolding to a shape, which can
-    -- refer to the shape itself via the last bound variable; it also has
-    -- identifiers for the type it is translated to, along with fold and unfold
-    -- functions for mapping to and from this type
+
+  -- | A recursive shape body has a one-step unfolding to a shape, which can
+  -- refer to the shape itself via the last bound variable; it also has
+  -- identifiers for the type it is translated to, along with fold and unfold
+  -- functions for mapping to and from this type
   RecShapeBody :: Mb (args :> LLVMShapeType w) (PermExpr (LLVMShapeType w)) ->
                   Ident -> Ident -> Ident ->
                   NamedShapeBody 'True args w
@@ -4319,6 +4313,7 @@ lownedPermCouldProve (LOwnedPermLifetime (PExpr_Var l) _ ps_out) ps =
   any (\case Perm_LOwned _ _ -> True
              _ -> False) (varAtomicPermsInDistPerms l ps) ||
   lownedPermsCouldProve ps_out ps
+lownedPermCouldProve _ _ = False
 
 -- | Test if an 'LOwnedPerms' list could help prove any of a list of permissions
 lownedPermsCouldProve :: LOwnedPerms ps -> DistPerms ps' -> Bool
@@ -4403,7 +4398,7 @@ class FreeVars a where
 -- | Get the free variables of an expression as an 'RAssign'
 freeVarsRAssign :: FreeVars a => a -> Some (RAssign ExprVar)
 freeVarsRAssign =
-  foldl (\(Some ns) (SomeName n) -> Some (ns :>: n)) mempty . toList . freeVars
+  foldl (\(Some ns) (SomeName n) -> Some (ns :>: n)) (Some MNil) . toList . freeVars
 
 instance FreeVars a => FreeVars (Maybe a) where
   freeVars = maybe NameSet.empty freeVars

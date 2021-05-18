@@ -20,10 +20,9 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE ConstraintKinds #-}
--- {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
-
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Verifier.SAW.Heapster.TypedCrucible where
 
 import Data.Maybe
@@ -2314,7 +2313,7 @@ tcEmitStmt :: PermCheckExtC ext => CtxTrans ctx -> ProgramLoc ->
               StmtPermCheckM ext cblocks blocks tops ret RNil RNil
               (CtxTrans ctx')
 tcEmitStmt ctx loc stmt =
-  do stmtTraceM (const (pretty "Type-checking statement:" <+>
+  do _     <- stmtTraceM (const (pretty "Type-checking statement:" <+>
                         ppStmt (size ctx) stmt))
      !_    <- permGetPPInfo
      !pps  <- mapM (\(Some r) -> ppCruRegAndPerms ctx r) (stmtInputRegs stmt)
@@ -2322,7 +2321,7 @@ tcEmitStmt ctx loc stmt =
      !ctx' <- tcEmitStmt' ctx loc stmt
      !pps' <- mapM (\(Some r) -> ppCruRegAndPerms ctx' r)
                    (stmtOutputRegs (Ctx.size ctx') stmt)
-     stmtTraceM (const (pretty "Output perms:" <> softline <> ppCommaSep pps'))
+     _     <- stmtTraceM (const (pretty "Output perms:" <> softline <> ppCommaSep pps'))
      pure ctx'
 
 
@@ -2526,6 +2525,9 @@ tcEmitLLVMSetExpr _arch ctx loc (LLVM_SideConditions tp conds reg) =
     stmtRecombinePerms >>>
     pure (addCtxName ctx ret))
   conds
+tcEmitLLVMSetExpr _arch _ctx _loc X86Expr{} =
+  stmtFailM (\_ -> pretty "X86Expr not supported")
+
 
 
 -- FIXME HERE: move withLifetimeCurrentPerms somewhere better...
@@ -2746,6 +2748,7 @@ tcEmitLLVMStmt _arch ctx loc (LLVM_LoadHandle _ _ ptr args ret) =
         (TypedLLVMLoadHandle tptr tp p) >>>= \ret' ->
         stmtRecombinePerms >>>
         pure (addCtxName ctx ret')
+    _ -> stmtFailM (\_ -> pretty "Unresolved LLVM_LoadHandle")
 
 -- Type-check a ResolveGlobal instruction by looking up the global symbol
 tcEmitLLVMStmt _arch ctx loc (LLVM_ResolveGlobal w _ gsym) =

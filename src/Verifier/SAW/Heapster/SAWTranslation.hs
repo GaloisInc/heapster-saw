@@ -632,6 +632,8 @@ instance TransInfo info =>
       return $ error "translate: CharRepr"
     [nuMP| StringRepr UnicodeRepr |] ->
       returnType1 stringTypeOpenTerm
+    [nuMP| StringRepr _ |] ->
+      return $ error "translate: StringRepr non-unicode"
     [nuMP| FunctionHandleRepr _ _ |] ->
       -- NOTE: function permissions translate to the SAW function, but the
       -- function handle itself has no SAW translation
@@ -742,6 +744,8 @@ instance TransInfo info =>
       return $ ETrans_Term $ globalOpenTerm "Prelude.False"
     [nuMP| PExpr_Nat i |] ->
       return $ ETrans_Term $ natOpenTerm $ mbLift i
+    [nuMP| PExpr_String str |] ->
+      return $ ETrans_Term $ stringLitOpenTerm $ Data.Text.pack $ mbLift str
     [nuMP| PExpr_BV bvfactors@[] off |] ->
       let w = natRepr3 bvfactors in
       return $ ETrans_Term $ bvLitOpenTerm w $ mbLift off
@@ -1632,7 +1636,8 @@ instance TransInfo info =>
     [nuMP| Perm_Fun fun_perm |] ->
       translate fun_perm >>= \tp_term ->
       return $ mkTypeTrans1 tp_term (APTrans_Fun fun_perm)
-
+    [nuMP| Perm_BVProp prop |] ->
+      fmap APTrans_BVProp <$> translate prop
 
 -- | Translate an array permission to a 'TypeTrans' for an array permission
 -- translation, also returning the translations of the bitvector width as a
@@ -2706,16 +2711,17 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
            m
   
   -- Intro for a defined named shape (the other case) is a no-op
-  [nuMP| SImpl_IntroLLVMBlockNamed _ _ nmsh |]
     | [nuMP| DefinedShapeBody _ |] <- mbMatch $ fmap namedShapeBody nmsh ->
       do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
          withPermStackM id
            (\(pctx :>: ptrans) ->
              pctx :>: typeTransF ttrans [transTerm1 ptrans])
            m
+
+    | otherwise -> fail "translateSimplImpl: SImpl_IntroLLVMBlockNamed, unknown named shape"
   
-  -- Elim for a recursive named shape applies the fold function
   [nuMP| SImpl_ElimLLVMBlockNamed _ bp nmsh |]
+  -- Elim for a recursive named shape applies the fold function
     | [nuMP| RecShapeBody _ _ _ unfold_id |] <- mbMatch $ fmap namedShapeBody nmsh
     , [nuMP| PExpr_NamedShape _ _ _ args |] <- mbMatch $ fmap llvmBlockShape bp ->
       do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
@@ -2727,13 +2733,14 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
            m
   
   -- Intro for a defined named shape (the other case) is a no-op
-  [nuMP| SImpl_ElimLLVMBlockNamed _ _ nmsh |]
     | [nuMP| DefinedShapeBody _ |] <- mbMatch $ fmap namedShapeBody nmsh ->
       do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
          withPermStackM id
            (\(pctx :>: ptrans) ->
              pctx :>: typeTransF ttrans [transTerm1 ptrans])
            m
+
+    | otherwise -> fail "translateSimplImpl: ElimLLVMBlockNamed, unknown named shape"
   
   [nuMP| SImpl_IntroLLVMBlockFromEq _ _ _ |] ->
     do ttrans <- translate $ fmap (distPermsHeadPerm . simplImplOut) mb_simpl
@@ -2764,8 +2771,9 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
          m
   
   [nuMP| SImpl_ElimLLVMBlockField _ _ _ |] ->
-    do let mb_ps = fmap ((\case ValPerm_Conj ps -> ps)
-                         . distPermsHeadPerm . simplImplOut) mb_simpl
+    do let mb_ps = fmap ((\case ValPerm_Conj ps -> ps
+                                _ -> error "translateSimplImpl: SImpl_ElimLLVMBlockField, VPerm_Conj required"
+                         ). distPermsHeadPerm . simplImplOut) mb_simpl
        ttrans1 <- translate $ fmap (!!0) mb_ps
        ttrans2 <- translate $ fmap (!!1) mb_ps
        withPermStackM id
@@ -3283,6 +3291,9 @@ translatePermImpl1 prx mb_impl mb_impls = case (mbMatch mb_impl, mbMatch mb_impl
              applyMultiTransM (return $ globalOpenTerm "Prelude.bvSub")
              [return (natOpenTerm $ natVal2 prop), translate1 e2, translate1 e3]]
          ]
+
+  ([nuMP| Impl1_TryProveBVProp _ _ _ |], _) ->
+    tell ["translatePermImpl1: Unhandled BVProp case"] >> mzero
 
 
 -- | Translate a 'PermImpl' in the 'PermImplTransM' monad to a function that
