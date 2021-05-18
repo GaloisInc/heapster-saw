@@ -1012,8 +1012,9 @@ data TypedCFG
                  !(TypedEntryID blocks inits RNil)
              }
 
-data SomeTypedCFG where
-  SomeTypedCFG :: TypedCFG ext blocks ghosts inits ret -> SomeTypedCFG
+data SomeTypedCFG ext where
+  SomeTypedCFG :: PermCheckExtC ext => TypedCFG ext blocks ghosts inits ret -> SomeTypedCFG ext
+
 
 tpcfgInputPerms :: TypedCFG ext blocks ghosts inits ret ->
                    MbValuePerms (ghosts :++: inits)
