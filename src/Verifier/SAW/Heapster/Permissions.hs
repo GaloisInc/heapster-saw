@@ -230,7 +230,7 @@ instance (PermPretty a, PermPretty b, PermPretty c) => PermPretty (a,b,c) where
     tupled <$> sequence [permPrettyM a, permPrettyM b, permPrettyM c]
 
 instance PermPretty a => PermPretty [a] where
-  permPrettyM as = list <$> mapM permPrettyM as
+  permPrettyM as = ppEncList False <$> mapM permPrettyM as
 
 instance PermPretty (ExprVar a) where
   permPrettyM x =
@@ -856,7 +856,8 @@ instance PermPretty (PermExpr a) where
     do len_pp <- permPrettyM len
        flds_pp <- mapM permPrettyM flds
        let stride_pp = pretty (toInteger stride)
-       return (pretty "arraysh" <> tupled [len_pp, stride_pp, list flds_pp])
+       return (pretty "arraysh" <> tupled [len_pp, stride_pp,
+                                           ppEncList False flds_pp])
   permPrettyM (PExpr_SeqShape sh1 sh2) =
     do pp1 <- permPrettyM sh1
        pp2 <- permPrettyM sh2
@@ -2629,7 +2630,7 @@ instance PermPretty (AtomicPerm a) where
   permPrettyM Perm_IsLLVMPtr = return (pretty "is_llvmptr")
   permPrettyM (Perm_LLVMFrame fperm) =
     do pps <- mapM (\(e,i) -> (<> (colon <> pretty i)) <$> permPrettyM e) fperm
-       return (pretty "llvmframe" <+> list pps)
+       return (pretty "llvmframe" <+> ppEncList False pps)
   permPrettyM (Perm_LOwned ps_in ps_out) =
     do pp_in <- permPrettyM ps_in
        pp_out <- permPrettyM ps_out
