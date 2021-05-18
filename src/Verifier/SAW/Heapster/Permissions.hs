@@ -1606,6 +1606,10 @@ llvmArrayFieldToAtomicPerm :: (1 <= w, KnownNat w) => LLVMArrayField w ->
                               AtomicPerm (LLVMPointerType w)
 llvmArrayFieldToAtomicPerm (LLVMArrayField fp) = Perm_LLVMField fp
 
+-- | Get the length in bytes of an array field
+llvmArrayFieldLen :: LLVMArrayField w -> Integer
+llvmArrayFieldLen (LLVMArrayField fp) = intValue $ llvmFieldSize fp
+
 -- | A permission to an array of repeated field permissions. An array permission
 -- is structured as zero or more cells, each of which are composed of one or
 -- more individual fields. The number of cells can be a dynamic expression, but
