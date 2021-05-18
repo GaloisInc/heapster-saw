@@ -660,6 +660,14 @@ appendCruCtx :: CruCtx ctx1 -> CruCtx ctx2 -> CruCtx (ctx1 :++: ctx2)
 appendCruCtx ctx1 CruCtxNil = ctx1
 appendCruCtx ctx1 (CruCtxCons ctx2 tp) = CruCtxCons (appendCruCtx ctx1 ctx2) tp
 
+-- | Split a context in two
+splitCruCtx :: prx1 ctx1 -> RAssign prx2 ctx2 -> CruCtx (ctx1 :++: ctx2) ->
+               (CruCtx ctx1, CruCtx ctx2)
+splitCruCtx _ MNil cru_ctx = (cru_ctx, CruCtxNil)
+splitCruCtx ctx1 (ctx2 :>: _) (CruCtxCons cru_ctx tp) =
+  let (cru_ctx1, cru_ctx2) = splitCruCtx ctx1 ctx2 cru_ctx in
+  (cru_ctx1, CruCtxCons cru_ctx2 tp)
+
 -- | Build a 'RAssign' phantom argument from a context of Crucible types
 cruCtxProxies :: CruCtx ctx -> RAssign Proxy ctx
 cruCtxProxies CruCtxNil = MNil
