@@ -819,21 +819,6 @@ subst1Mid :: Substable PermSubst b Identity =>
 subst1Mid ctx1 ctx2 mb_e mb_b =
   mbMap2 subst1 mb_e $ mbSwapMidToEnd ctx1 ctx2 Proxy mb_b
 
-{-
-simplify1GhostEqPerm :: RAssign Proxy args -> Proxy a ->
-                        RAssign Proxy vars1 -> RAssign Proxy vars2 ->
-                        ArgVarPerms args (vars1 :> a :++: vars2) ->
-                        Mb (args :++: vars1 :++: vars2) (PermExpr a) ->
-                        ArgVarPerms args (vars1 :++: vars2)
-simplify1GhostEqPerm args a vars1 vars2 (ArgVarPerms vars mb_perms) mb_e
-  | Refl <- RL.appendAssoc args vars1 vars2
-  , Refl <- RL.appendAssoc args (vars1 :>: a) vars2
-  , args_vars1 <- RL.append args vars1 =
-    ArgVarPerms (cruCtxRemMid vars1 vars2 a vars)
-    (subst1Mid args_vars1 vars2 mb_e $
-     fmap (rlRemMid args_vars1 vars2 a) mb_perms)
--}
-
 tryLift1Mid :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 ->
                Proxy (a :: CrucibleType) ->
                Mb (ctx1 :> a :++: ctx2) (PermExpr b) ->
@@ -847,22 +832,6 @@ emptyPSubst' = PartialSubst . RL.map (PSubstElem . const Nothing)
 
 mbExprProxy :: Mb ctx (PermExpr a) -> Proxy a
 mbExprProxy _ = Proxy
-
-{-
-trySimplify1GhostEqPerm :: RAssign Proxy args -> Proxy a ->
-                           RAssign Proxy vars1 -> RAssign Proxy vars2 ->
-                           ArgVarPerms args (vars1 :> a :++: vars2) ->
-                           Mb (args :++: vars1 :> a :++: vars2) (PermExpr a) ->
-                           ArgVarPerms args (vars1 :++: vars2)
-trySimplify1GhostEqPerm args a vars1 vars2 (ArgVarPerms vars mb_perms) mb_e
-  | Refl <- RL.appendAssoc args vars1 vars2
-  , Refl <- RL.appendAssoc args (vars1 :>: a) vars2
-  , args_vars1 <- RL.append args vars1
-  , Just mb_e' <- tryLift1Mid args_vars1 vars2 a mb_e =
-    ArgVarPerms (cruCtxRemMid vars1 vars2 a vars)
-    (subst1Mid args_vars1 vars2 mb_e' $
-     fmap (rlRemMid args_vars1 vars2 a) mb_perms)
--}
 
 simplify1GhostEqPerm :: RAssign Proxy args ->
                         FoundEqPerm (args :++: vars) vars ->
@@ -880,18 +849,6 @@ simplify1GhostEqPerm args (FoundEqPerm vars1 vars2 mb_e) (ArgVarPerms
            fmap (rlRemMid args_vars1 vars2 a) mb_perms))
 simplify1GhostEqPerm _ _ _ = Nothing
 
-{-
-trySimplify1GhostEqPerm :: RAssign Proxy args ->
-                           FoundEqPerm (args :++: vars) vars ->
-                           ArgVarPerms args vars ->
-                           Maybe (Some (ArgVarPerms args))
-trySimplify1GhostEqPerm args (FoundEqPerm vars1 vars2 mb_e) avps
-  , 
-  | Just mb_e' <- tryLift1Mid vars1 vars2
-  | [nuP| Just mb_e' |] <- fmap (partialSubst $ emptyPSubst' $ MNil :>: _) mb_e =
-    Just (simplify1GhostEqPerm args Proxy vars1 vars2 avps mb_e')
-trySimplify1GhostEqPerm _ _ _ = Nothing
--}
 
 simplifyGhostEqPerms :: RAssign Proxy args -> Some (ArgVarPerms args) ->
                         Some (ArgVarPerms args)
