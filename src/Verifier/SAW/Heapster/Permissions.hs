@@ -6202,6 +6202,9 @@ class GetDetVarsClauses a where
   getDetVarsClauses ::
     a -> ReaderT (PermSet ps) (State (NameSet CrucibleType)) [DetVarsClause]
 
+instance GetDetVarsClauses a => GetDetVarsClauses [a] where
+  getDetVarsClauses l = concat <$> mapM getDetVarsClauses l
+
 instance GetDetVarsClauses (ExprVar a) where
   -- If x has not been visited yet, then return a clause stating that x is
   -- determined and add all variables that are potentially determined by the
@@ -6276,7 +6279,33 @@ instance (1 <= w, KnownNat w) => GetDetVarsClauses (LLVMBlockPerm w) where
          NameSet.unions [freeVars llvmBlockOffset, freeVars llvmBlockLen]) <$>
     concat <$> sequence [getDetVarsClauses llvmBlockRW,
                          getDetVarsClauses llvmBlockLifetime,
-                         getDetVarsClauses llvmBlockShape]
+                         getShapeDetVarsClauses llvmBlockShape]
+
+instance GetDetVarsClauses (LLVMFieldShape w) where
+  getDetVarsClauses (LLVMFieldShape p) = getDetVarsClauses p
+
+-- | Compute the 'DetVarsClause's for a block permission with the given shape
+getShapeDetVarsClauses ::
+  (1 <= w, KnownNat w) => PermExpr (LLVMShapeType w) ->
+  ReaderT (PermSet ps) (State (NameSet CrucibleType)) [DetVarsClause]
+getShapeDetVarsClauses (PExpr_Var x) =
+  getDetVarsClauses x
+getShapeDetVarsClauses (PExpr_NamedShape _ _ _ args) =
+  -- FIXME: maybe also include the variables determined by the modalities?
+  getDetVarsClauses args
+getShapeDetVarsClauses (PExpr_EqShape e) = getDetVarsClauses e
+getShapeDetVarsClauses (PExpr_PtrShape _ _ sh) =
+  -- FIXME: maybe also include the variables determined by the modalities?
+  getShapeDetVarsClauses sh
+getShapeDetVarsClauses (PExpr_FieldShape fldsh) = getDetVarsClauses fldsh
+getShapeDetVarsClauses (PExpr_ArrayShape len _ fldshs) =
+  map (detVarsClauseAddLHS (freeVars len)) <$>
+  getDetVarsClauses fldshs
+getShapeDetVarsClauses (PExpr_SeqShape sh1 sh2)
+  | isJust $ llvmShapeLength sh1 =
+    (++) <$> getDetVarsClauses sh1 <*> getDetVarsClauses sh2
+getShapeDetVarsClauses _ = return []
+
 
 -- | Compute all the variables whose values are /determined/ by the permissions
 -- on the given input variables, other than those variables themselves. The
