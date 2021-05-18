@@ -54,6 +54,13 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Lang.Crucible.Types
 
 
+-- | FIXME HERE: move to Hobbits (though maybe Eric's latest changes have
+-- already implemented this?)
+mbSeparate' :: prx ctx1 -> RAssign any ctx2 -> Mb (ctx1 :++: ctx2) a ->
+               Mb ctx1 (Mb ctx2 a)
+mbSeparate' _ = mbSeparate
+
+
 ----------------------------------------------------------------------
 -- * The Widening Monad
 ----------------------------------------------------------------------
@@ -754,9 +761,6 @@ rlMap2ToList f (xs :>: x) (ys :>: y) = rlMap2ToList f xs ys ++ [f x y]
 extMbMultiL :: RAssign f ctx1 -> Mb ctx2 a -> Mb (ctx1 :++: ctx2) a
 extMbMultiL ns mb = mbCombine $ nuMulti ns $ const mb
 
-mbSeparatePrx :: prx ctx1 -> RAssign any ctx2 -> Mb (ctx1 :++: ctx2) a ->
-                 Mb ctx1 (Mb ctx2 a)
-mbSeparatePrx _ = mbSeparate
 -}
 
 data FoundEqPerm ctx ps where
@@ -777,28 +781,45 @@ findEqPerms mb_ps_top = case mbMatch mb_ps_top of
     map extFoundEqPerm (findEqPerms mb_ps)
 
 findGhostEqPerm :: ArgVarPerms args vars -> [FoundEqPerm (args :++: vars) vars]
-findGhostEqPerm = error "FIXME HERE NOW"
+findGhostEqPerm (avps :: ArgVarPerms args vars) =
+  findEqPerms $
+  fmap (snd . RL.split (Proxy :: Proxy args) (cruCtxProxies $
+                                              wideningVars avps)) $
+  wideningPerms avps
 
-mbSwapMidToEnd :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 ->
+-- | Swap a name in the middle of a binding list to the inner-most position, as
+-- its own binding
+--
+-- NOTE: this is specifically implemented in a way to avoid using 'fmap' so that
+-- name-bindings in pair representation maintain that pair representation
+mbSwapMidToEnd :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 -> Proxy a ->
                   Mb (ctx1 :> a :++: ctx2) b ->
                   Mb (ctx1 :++: ctx2) (Binding a b)
-mbSwapMidToEnd = error "FIXME HERE NOW"
+mbSwapMidToEnd ctx1 ctx2 a mb_b =
+  mbCombine $ mbSwap $ mbSeparate' ctx2 ctx1 $
+  mbSeparate' (RL.append ctx2 ctx1) (MNil :>: a) $
+  mbCombine $ mbSwap $ mbSeparate' (ctx1 :>: a) ctx2 mb_b
 
 cruCtxRemMid :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 -> prx a ->
                 CruCtx (ctx1 :> a :++: ctx2) -> CruCtx (ctx1 :++: ctx2)
-cruCtxRemMid = error "FIXME HERE NOW"
+cruCtxRemMid _ MNil _ (CruCtxCons tps _) = tps
+cruCtxRemMid ctx1 (ctx2 :>: _) a (CruCtxCons tps tp) =
+  CruCtxCons (cruCtxRemMid ctx1 ctx2 a tps) tp
 
 rlRemMid :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 -> prx a ->
             RAssign f (ctx1 :> a :++: ctx2) -> RAssign f (ctx1 :++: ctx2)
-rlRemMid = error "FIXME HERE NOW"
+rlRemMid _ MNil _ (fs :>: _) = fs
+rlRemMid ctx1 (ctx2 :>: _) a (fs :>: f) =
+  rlRemMid ctx1 ctx2 a fs :>: f
 
 subst1Mid :: Substable PermSubst b Identity =>
              RAssign Proxy ctx1 -> RAssign Proxy ctx2 ->
              Mb (ctx1 :++: ctx2) (PermExpr a) ->
              Mb (ctx1 :> a :++: ctx2) b -> Mb (ctx1 :++: ctx2) b
 subst1Mid ctx1 ctx2 mb_e mb_b =
-  mbMap2 subst1 mb_e $ mbSwapMidToEnd ctx1 ctx2 mb_b
+  mbMap2 subst1 mb_e $ mbSwapMidToEnd ctx1 ctx2 Proxy mb_b
 
+{-
 simplify1GhostEqPerm :: RAssign Proxy args -> Proxy a ->
                         RAssign Proxy vars1 -> RAssign Proxy vars2 ->
                         ArgVarPerms args (vars1 :> a :++: vars2) ->
@@ -811,15 +832,23 @@ simplify1GhostEqPerm args a vars1 vars2 (ArgVarPerms vars mb_perms) mb_e
     ArgVarPerms (cruCtxRemMid vars1 vars2 a vars)
     (subst1Mid args_vars1 vars2 mb_e $
      fmap (rlRemMid args_vars1 vars2 a) mb_perms)
+-}
 
-tryLift1Mid :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 -> Proxy a ->
+tryLift1Mid :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 ->
+               Proxy (a :: CrucibleType) ->
                Mb (ctx1 :> a :++: ctx2) (PermExpr b) ->
                Maybe (Mb (ctx1 :++: ctx2) (PermExpr b))
-tryLift1Mid = error "FIXME HERE NOW"
+tryLift1Mid ctx1 ctx2 a mb_e =
+  mbMaybe $ fmap (partialSubst $ emptyPSubst' (MNil :>: a)) $
+  mbSwapMidToEnd ctx1 ctx2 a mb_e
 
 emptyPSubst' :: RAssign any ctx -> PartialSubst ctx
 emptyPSubst' = PartialSubst . RL.map (PSubstElem . const Nothing)
 
+mbExprProxy :: Mb ctx (PermExpr a) -> Proxy a
+mbExprProxy _ = Proxy
+
+{-
 trySimplify1GhostEqPerm :: RAssign Proxy args -> Proxy a ->
                            RAssign Proxy vars1 -> RAssign Proxy vars2 ->
                            ArgVarPerms args (vars1 :> a :++: vars2) ->
@@ -833,6 +862,23 @@ trySimplify1GhostEqPerm args a vars1 vars2 (ArgVarPerms vars mb_perms) mb_e
     ArgVarPerms (cruCtxRemMid vars1 vars2 a vars)
     (subst1Mid args_vars1 vars2 mb_e' $
      fmap (rlRemMid args_vars1 vars2 a) mb_perms)
+-}
+
+simplify1GhostEqPerm :: RAssign Proxy args ->
+                        FoundEqPerm (args :++: vars) vars ->
+                        ArgVarPerms args vars ->
+                        Maybe (Some (ArgVarPerms args))
+simplify1GhostEqPerm args (FoundEqPerm vars1 vars2 mb_e) (ArgVarPerms
+                                                          vars mb_perms)
+  | a <- mbExprProxy mb_e
+  , Refl <- RL.appendAssoc args vars1 vars2
+  , Refl <- RL.appendAssoc args (vars1 :>: a) vars2
+  , args_vars1 <- RL.append args vars1
+  , Just mb_e' <- tryLift1Mid args_vars1 vars2 a mb_e =
+    Just (Some $ ArgVarPerms (cruCtxRemMid vars1 vars2 a vars)
+          (subst1Mid args_vars1 vars2 mb_e' $
+           fmap (rlRemMid args_vars1 vars2 a) mb_perms))
+simplify1GhostEqPerm _ _ _ = Nothing
 
 {-
 trySimplify1GhostEqPerm :: RAssign Proxy args ->
@@ -847,25 +893,13 @@ trySimplify1GhostEqPerm args (FoundEqPerm vars1 vars2 mb_e) avps
 trySimplify1GhostEqPerm _ _ _ = Nothing
 -}
 
-{-
 simplifyGhostEqPerms :: RAssign Proxy args -> Some (ArgVarPerms args) ->
                         Some (ArgVarPerms args)
 simplifyGhostEqPerms args (Some avps)
-  | 
--}
-
-{-
-simplify1EqPerm :: Mb (ctx1 :> a :++: ctx2) (ValuePerms ctx1) ->
-                   Mb (ctx1 :++: ctx2) (PermExpr a) ->
-                   Mb (ctx1 :> a :++: ctx2) (ValuePerms ctx2) ->
-                   MbValuePerms (ctx1 :++: ctx2)
-simplify1EqPerm mb_ps1 mb_e mb_ps2 =
-  let prxs1 = mbRAssignProxies mb_ps1
-      prxs2 = mbRAssignProxies mb_ps2 in
-  mbMap2 RL.append
-  (mbMap2 subst1 mb_e $ mbSwapMidToEnd prxs1 prxs2 mb_ps1)
-  (mbMap2 subst1 mb_e $ mbSwapMidToEnd prxs1 prxs2 mb_ps2)
--}
+  | some_avps':_ <-
+      mapMaybe (flip (simplify1GhostEqPerm args) avps) (findGhostEqPerm avps)
+  = simplifyGhostEqPerms args some_avps'
+simplifyGhostEqPerms _ some_avps = some_avps
 
 
 ----------------------------------------------------------------------
@@ -882,6 +916,7 @@ widen tops args (Some (ArgVarPerms vars1 mb_perms1)) (Some (ArgVarPerms
       prxs1 = cruCtxProxies vars1
       prxs2 = cruCtxProxies vars2
       mb_mb_perms1 = mbSeparate prxs1 mb_perms1 in
+  simplifyGhostEqPerms (cruCtxProxies all_args) $
   completeArgVarPerms $ flip nuMultiWithElim1 mb_mb_perms1 $
   \args_ns1 mb_perms1' ->
   (\m -> runWideningM m NameMap.empty args_ns1) $
