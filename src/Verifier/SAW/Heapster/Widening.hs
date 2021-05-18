@@ -232,20 +232,18 @@ doubleSplitWidenPerm _ p1 p2 =
   return ((p1, p2), ValPerm_True)
 
 
--- | Replace all variables @x@ in an expression that have an equality permission
--- @eq(e)@ with the expression @e@
---
--- NOTE: if we want this to work for arbitrary expression types, we should
--- refactor it as a generic function, so it can work on all of the various
--- expression construcs, like 'ValuePerm', 'AtomicPerm', 'LLVMFieldPerm', etc.
-substEqVars :: WidNameMap -> PermExpr (BVType w) -> PermExpr (BVType w)
-substEqVars wnmap (PExpr_Var x)
-  | ValPerm_Eq e <- wnMapGetPerm x wnmap =
-    substEqVars wnmap e
-substEqVars wnmap (PExpr_BV factors k) =
-  foldr bvAdd (bvBV k) $
-  map (\(BVFactor i x) -> bvMultBV i $ substEqVars wnmap $ PExpr_Var x) factors
-substEqVars _ e = e
+-- | Replace all variables @x@ in an expression or permission that have an
+-- equality permission @eq(e)@ with the expression @e@
+substEqVars :: Substable PermSubst a Identity => PermPretty a =>
+               AbstractVars a => FreeVars a => WidNameMap -> a -> a
+substEqVars wnmap a
+  | AbsObj vars cl_mb_a <- abstractFreeVars a =
+    subst (substOfExprs $
+           RL.map (\x -> case wnMapGetPerm x wnmap of
+                      ValPerm_Eq e -> substEqVars wnmap e
+                      _ -> PExpr_Var x)
+           vars) $
+    unClosed cl_mb_a
 
 
 -- | Widen two expressions against each other
@@ -553,7 +551,8 @@ widenAtomicPerms' tp (Perm_LLVMArray ap1 : ps1) ps2 =
              substEqVars wnmap (llvmArrayLen ap1)
              == substEqVars wnmap (llvmArrayLen ap2) &&
              llvmArrayStride ap1 == llvmArrayStride ap2 &&
-             llvmArrayFields ap1 == llvmArrayFields ap2
+             substEqVars wnmap (llvmArrayFields ap1)
+             == substEqVars wnmap (llvmArrayFields ap2)
            _ -> False) ps2 of
     Just i
       | Perm_LLVMArray ap2 <- ps2!!i ->
