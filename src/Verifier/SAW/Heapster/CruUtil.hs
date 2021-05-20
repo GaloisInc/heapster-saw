@@ -132,6 +132,15 @@ someNatGeq1 i
   , Left leq <- decideLeq oneRepr w = Just (Some (Pair w leq))
 someNatGeq1 _ = Nothing
 
+data SomeKnownNatGeq1 where
+  SomeKnownNatGeq1 :: (KnownNat n, 1 <= n) => NatRepr n -> SomeKnownNatGeq1
+
+someKnownNatGeq1 :: Integral a => a -> Maybe SomeKnownNatGeq1
+someKnownNatGeq1 i
+  | Just (Some (Pair w LeqProof)) <- someNatGeq1 i
+  = Just $ withKnownNat w (SomeKnownNatGeq1 w)
+someKnownNatGeq1 _ = Nothing
+
 
 ----------------------------------------------------------------------
 -- * Building 'NuMatching' and 'Closable' Instances for Crucible Types

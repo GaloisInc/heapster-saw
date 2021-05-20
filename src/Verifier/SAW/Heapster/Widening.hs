@@ -54,13 +54,6 @@ import qualified Data.Binding.Hobbits.NameMap as NameMap
 import Lang.Crucible.Types
 
 
--- | FIXME HERE: move to Hobbits (though maybe Eric's latest changes have
--- already implemented this?)
-mbSeparate' :: prx ctx1 -> RAssign any ctx2 -> Mb (ctx1 :++: ctx2) a ->
-               Mb ctx1 (Mb ctx2 a)
-mbSeparate' _ = mbSeparate
-
-
 ----------------------------------------------------------------------
 -- * The Widening Monad
 ----------------------------------------------------------------------
@@ -735,7 +728,9 @@ completeMbArgVarPerms vars (mbMatch -> [nuMP| ExtVarPerms_Base ps |]) =
   Some $ ArgVarPerms vars ps
 completeMbArgVarPerms vars (mbMatch ->
                             [nuMP| ExtVarPerms_Mb var mb_ext_wid |]) =
-  completeMbArgVarPerms (CruCtxCons vars (mbLift var)) (mbCombine mb_ext_wid)
+  completeMbArgVarPerms
+    (CruCtxCons vars (mbLift var))
+    (mbCombine RL.typeCtxProxies mb_ext_wid)
 
 completeArgVarPerms :: Mb args (ExtVarPerms args) -> Some (ArgVarPerms args)
 completeArgVarPerms = completeMbArgVarPerms CruCtxNil
@@ -803,9 +798,9 @@ mbSwapMidToEnd :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 -> Proxy a ->
                   Mb (ctx1 :> a :++: ctx2) b ->
                   Mb (ctx1 :++: ctx2) (Binding a b)
 mbSwapMidToEnd ctx1 ctx2 a mb_b =
-  mbCombine $ mbSwap $ mbSeparate' ctx2 ctx1 $
-  mbSeparate' (RL.append ctx2 ctx1) (MNil :>: a) $
-  mbCombine $ mbSwap $ mbSeparate' (ctx1 :>: a) ctx2 mb_b
+  mbCombine ctx2 $ mbSwap ctx1 $ mbSeparate ctx1 $
+  mbSeparate (MNil :>: a) $
+  mbCombine (ctx1 :>: a) $ mbSwap ctx2 $ mbSeparate ctx2 mb_b
 
 cruCtxRemMid :: RAssign Proxy ctx1 -> RAssign Proxy ctx2 -> prx a ->
                 CruCtx (ctx1 :> a :++: ctx2) -> CruCtx (ctx1 :++: ctx2)

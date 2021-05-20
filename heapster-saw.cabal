@@ -36,27 +36,28 @@ library
     vector,
     filepath,
     language-rust,
-    hobbits >= 1.3.2
+    hobbits ^>= 1.4,
   hs-source-dirs: src
   build-tool-depends:
     alex:alex,
     happy:happy,
   exposed-modules:
-     Verifier.SAW.Heapster.CruUtil
-     Verifier.SAW.Heapster.Permissions
-     Verifier.SAW.Heapster.PermParser
-     Verifier.SAW.Heapster.RustTypes
-     Verifier.SAW.Heapster.Implication
-     Verifier.SAW.Heapster.Widening
-     Verifier.SAW.Heapster.TypedCrucible
-     Verifier.SAW.Heapster.SAWTranslation
-     Verifier.SAW.Heapster.IRTTranslation
-     Verifier.SAW.Heapster.Parser
-     Verifier.SAW.Heapster.Lexer
-     Verifier.SAW.Heapster.UntypedAST
-     Verifier.SAW.Heapster.Located
-     Verifier.SAW.Heapster.Token
-     Verifier.SAW.Heapster.TypeChecker
-     Verifier.SAW.Heapster.ParsedCtx
+    Verifier.SAW.Heapster.CruUtil
+    Verifier.SAW.Heapster.GenMonad
+    Verifier.SAW.Heapster.Implication
+    Verifier.SAW.Heapster.IRTTranslation
+    Verifier.SAW.Heapster.Lexer
+    Verifier.SAW.Heapster.Located
+    Verifier.SAW.Heapster.ParsedCtx
+    Verifier.SAW.Heapster.Parser
+    Verifier.SAW.Heapster.Permissions
+    Verifier.SAW.Heapster.PermParser
+    Verifier.SAW.Heapster.RustTypes
+    Verifier.SAW.Heapster.SAWTranslation
+    Verifier.SAW.Heapster.Token
+    Verifier.SAW.Heapster.TypeChecker
+    Verifier.SAW.Heapster.TypedCrucible
+    Verifier.SAW.Heapster.UntypedAST
+    Verifier.SAW.Heapster.Widening
   GHC-options: -Wall
   default-language: Haskell2010
