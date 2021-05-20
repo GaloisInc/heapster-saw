@@ -30,8 +30,10 @@ import qualified Data.BitVector.Sized as BV
 import System.FilePath
 import GHC.TypeNats
 import Data.Functor.Product
+import Control.Lens hiding ((:>), Index, Empty, ix, op)
 
 import Data.Binding.Hobbits
+import qualified Data.Type.RList as RL
 
 import What4.ProgramLoc
 import What4.Partial
@@ -64,6 +66,21 @@ import qualified Lang.Crucible.LLVM.Errors.Poison as Poison
 import qualified Lang.Crucible.LLVM.Errors.UndefinedBehavior as UB
 import Verifier.SAW.Term.Functor
 import Verifier.SAW.OpenTerm
+
+
+-- | The lens into an 'RAssign' associated with a 'Member' proof
+--
+-- FIXME HERE: this should go into Hobbits, possibly using 
+member :: Member ctx a -> Lens' (RAssign f ctx) (f a)
+member memb = lens (RL.get memb) (flip (RL.set memb))
+
+-- | Traverse an 'RAssign' inside an 'Applicative'
+--
+-- FIXME HERE: move to Hobbits, renaming it just plain 'traverse'
+traverseRAssign :: Applicative m => (forall x. f x -> m (g x)) ->
+                   RAssign f c -> m (RAssign g c)
+traverseRAssign _ MNil = pure MNil
+traverseRAssign f (xs :>: x) = (:>:) <$> traverseRAssign f xs <*> f x
 
 
 ----------------------------------------------------------------------
@@ -472,6 +489,14 @@ assignToRList asgn = case viewAssign asgn of
   AssignEmpty -> MNil
   AssignExtend asgn' f -> assignToRList asgn' :>: f
 
+-- | Convert a Crucible 'Assignment' over a context of contexts to an 'RAssign'
+-- over a right-list of right-lists
+assignToRListRList :: (forall c. f c -> g (CtxToRList c)) ->
+                      Assignment f ctx -> RAssign g (CtxCtxToRList ctx)
+assignToRListRList f asgn = case viewAssign asgn of
+  AssignEmpty -> MNil
+  AssignExtend asgn' x -> assignToRListRList f asgn' :>: f x
+
 -- | Convert a Hobbits 'RAssign' to a Crucible 'Assignment'
 rlistToAssign :: RAssign f ctx -> Assignment f (RListToCtx ctx)
 rlistToAssign MNil = Ctx.empty
@@ -482,6 +507,14 @@ indexToMember :: Size ctx -> Index ctx tp -> Member (CtxToRList ctx) tp
 indexToMember sz ix = case viewIndex sz ix of
   IndexViewLast _ -> Member_Base
   IndexViewInit ix' -> Member_Step $ indexToMember (decSize sz) ix'
+
+-- | Convert a Crucible 'Index' into a Crucible context of contexts into a
+-- Hobbits 'Member' in the associated 'RList' of 'RList's
+indexCtxToMember :: Size ctx -> Index ctx c ->
+                    Member (CtxCtxToRList ctx) (CtxToRList c)
+indexCtxToMember sz ix = case viewIndex sz ix of
+  IndexViewLast _ -> Member_Base
+  IndexViewInit ix' -> Member_Step $ indexCtxToMember (decSize sz) ix'
 
 -- | A data-level encapsulation of the 'KnownRepr' typeclass
 data KnownReprObj f a = KnownRepr f a => KnownReprObj
@@ -590,6 +623,14 @@ reprToCruCtxEq (viewAssign -> AssignExtend ctx _) =
   case reprToCruCtxEq ctx of
     Refl -> Refl
 
+-- | Build a proof that converting a Crucible context of contexts to a list of
+-- lists and back again is the identity
+reprReprToCruCtxCtxEq :: Assignment CtxRepr ctxs ->
+                         RListToCtxCtx (CtxCtxToRList ctxs) :~: ctxs
+reprReprToCruCtxCtxEq (viewAssign -> AssignEmpty) = Refl
+reprReprToCruCtxCtxEq (viewAssign -> AssignExtend ctxs ctx)
+  | (Refl, Refl) <- (reprReprToCruCtxCtxEq ctxs, reprToCruCtxEq ctx) = Refl
+
 -- | Convert a 'CruCtx' to an assignment of 'TypeRepr's
 --
 -- FIXME: 'CruCtx' should just be defined as an assignment!
@@ -627,6 +668,14 @@ unextCruCtx (CruCtxCons ctx _) = ctx
 appendCruCtx :: CruCtx ctx1 -> CruCtx ctx2 -> CruCtx (ctx1 :++: ctx2)
 appendCruCtx ctx1 CruCtxNil = ctx1
 appendCruCtx ctx1 (CruCtxCons ctx2 tp) = CruCtxCons (appendCruCtx ctx1 ctx2) tp
+
+-- | Split a context in two
+splitCruCtx :: prx1 ctx1 -> RAssign prx2 ctx2 -> CruCtx (ctx1 :++: ctx2) ->
+               (CruCtx ctx1, CruCtx ctx2)
+splitCruCtx _ MNil cru_ctx = (cru_ctx, CruCtxNil)
+splitCruCtx ctx1 (ctx2 :>: _) (CruCtxCons cru_ctx tp) =
+  let (cru_ctx1, cru_ctx2) = splitCruCtx ctx1 ctx2 cru_ctx in
+  (cru_ctx1, CruCtxCons cru_ctx2 tp)
 
 -- | Build a 'RAssign' phantom argument from a context of Crucible types
 cruCtxProxies :: CruCtx ctx -> RAssign Proxy ctx

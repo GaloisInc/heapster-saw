@@ -56,6 +56,8 @@ import Data.Binding.Hobbits.Liftable ()
 import Prettyprinter as PP
 import Prettyprinter.Render.String
 
+import Data.Parameterized.TraversableF
+
 import Lang.Crucible.Types
 import Lang.Crucible.LLVM.Extension
 import Lang.Crucible.LLVM.MemModel
@@ -86,6 +88,7 @@ scInsertDef sc mnm ident def_tp def_tm =
                         defQualifier = NoQualifier,
                         defType = def_tp,
                         defBody = Just def_tm }
+
 
 ----------------------------------------------------------------------
 -- * Translation Monads
@@ -745,7 +748,7 @@ instance TransInfo info =>
     [nuMP| PExpr_Nat i |] ->
       return $ ETrans_Term $ natOpenTerm $ mbLift i
     [nuMP| PExpr_String str |] ->
-      return $ ETrans_Term $ stringLitOpenTerm $ Data.Text.pack $ mbLift str
+      return $ ETrans_Term $ stringLitOpenTerm $ pack $ mbLift str
     [nuMP| PExpr_BV bvfactors@[] off |] ->
       let w = natRepr3 bvfactors in
       return $ ETrans_Term $ bvLitOpenTerm w $ mbLift off
@@ -1758,6 +1761,18 @@ translateRetType ret ret_perms =
      sigmaTypeTransM "ret" tptrans (\etrans ->
                                      inExtTransM etrans $ translate ret_perms)
 
+-- | Build the return type for the function resulting from an entrypoint
+translateEntryRetType :: TransInfo info =>
+                         TypedEntry phase ext blocks tops ret args ghosts ->
+                         TransM info ((tops :++: args) :++: ghosts) OpenTerm
+translateEntryRetType (TypedEntry {..}) =
+  let mb_perms_out =
+        mbCombine RL.typeCtxProxies $
+        extMbMulti (cruCtxProxies typedEntryGhosts) $
+        extMbMulti (cruCtxProxies typedEntryArgs) $
+        mbSeparate (MNil :>: Proxy) typedEntryPermsOut in
+  translateRetType typedEntryRet mb_perms_out
+
 
 ----------------------------------------------------------------------
 -- * The Implication Translation Monad
@@ -1767,52 +1782,60 @@ translateRetType ret ret_perms =
 -- bound to its translation if it has one: only those entrypoints marked as the
 -- heads of strongly-connect components have translations as letrec-bound
 -- variables
-data TypedEntryTrans ext blocks tops ret args =
-  TypedEntryTrans (TypedEntry ext blocks tops ret args) (Maybe OpenTerm)
-
-typedEntryTransEntry :: TypedEntryTrans ext blocks tops ret args ->
-                        TypedEntry ext blocks tops ret args
-typedEntryTransEntry (TypedEntryTrans entry _) = entry
+data TypedEntryTrans ext blocks tops ret args ghosts =
+  TypedEntryTrans { typedEntryTransEntry ::
+                      TypedEntry TransPhase ext blocks tops ret args ghosts,
+                    typedEntryTransFun :: Maybe OpenTerm }
 
 -- | A mapping from a block to the SAW functions for each entrypoint
 data TypedBlockTrans ext blocks tops ret args =
-  TypedBlockTrans [TypedEntryTrans ext blocks tops ret args]
+  TypedBlockTrans { typedBlockTransEntries ::
+                      [Some (TypedEntryTrans ext blocks tops ret args)] }
 
 -- | A mapping from all block entrypoints to their SAW translations
 type TypedBlockMapTrans ext blocks tops ret =
   RAssign (TypedBlockTrans ext blocks tops ret) blocks
 
 -- | Look up the translation of an entry by entry ID
-lookupEntryTrans :: TypedEntryID blocks args ghosts ->
+lookupEntryTrans :: TypedEntryID blocks args ->
                     TypedBlockMapTrans ext blocks tops ret ->
-                    TypedEntryTrans ext blocks tops ret args
+                    Some (TypedEntryTrans ext blocks tops ret args)
 lookupEntryTrans entryID blkMap =
-  let TypedBlockTrans entries = RL.get (entryBlockID entryID) blkMap in
-  foldr (\trans rest ->
-          case trans of
-            TypedEntryTrans (TypedEntry entryID' _ _ _ _ _ _ _) _
-              | Just Refl <- testEquality entryID entryID' -> trans
-            _ -> rest)
-  (case find (\(TypedEntryTrans entry _) ->
-               typedEntryIndex entry == entryIndex entryID) entries of
-      Just _ ->
-        error ("lookupEntryTrans: type mismatch on entry "
-               ++ show (entryIndex entryID))
-      Nothing ->
-        error ("lookupEntryTrans: entry " ++ show (entryIndex entryID)
-               ++ " not in list: "
-               ++ show (map (typedEntryIndex . typedEntryTransEntry) entries)))
-  entries
+  typedBlockTransEntries (RL.get (entryBlockID entryID) blkMap) !!
+  entryIndex entryID
 
--- | Look up the input permissions of an entry by entry ID
-lookupEntryPermsIn :: TypedEntryID blocks args ghosts ->
-                      TypedBlockMapTrans ext blocks tops ret ->
-                      MbValuePerms ((tops :++: args) :++: ghosts)
-lookupEntryPermsIn entryID blkMap =
-  case lookupEntryTrans entryID blkMap of
-    TypedEntryTrans (TypedEntry entryID' _ _ _ _ perms_in _ _) _
-      | Just Refl <- testEquality entryID entryID' -> perms_in
-    _ -> error "lookupEntryPermsIn: internal error"
+-- | Look up the translation of an entry by entry ID and make sure that it has
+-- the supplied ghost arguments
+lookupEntryTransCast :: TypedEntryID blocks args -> CruCtx ghosts ->
+                        TypedBlockMapTrans ext blocks tops ret ->
+                        TypedEntryTrans ext blocks tops ret args ghosts
+lookupEntryTransCast entryID ghosts blkMap
+  | Some entry_trans <- lookupEntryTrans entryID blkMap
+  , Just Refl <- testEquality ghosts (typedEntryGhosts $
+                                      typedEntryTransEntry entry_trans)
+  = entry_trans
+lookupEntryTransCast _ _ _ =
+  error "lookupEntryTransCast: incorrect ghosts argument"
+
+-- | A 'TypedCallSite' with existentially quantified ghost variables
+data SomeTypedCallSite blocks tops args vars =
+  forall ghosts.
+  SomeTypedCallSite (TypedCallSite TransPhase blocks tops args ghosts vars)
+
+-- | Look up a call site by id in a 'TypedBlockMapTrans'
+lookupCallSite :: TypedCallSiteID blocks args vars ->
+                  TypedBlockMapTrans ext blocks tops ret ->
+                  SomeTypedCallSite blocks tops args vars
+lookupCallSite siteID blkMap
+  | Some entry_trans <- lookupEntryTrans (callSiteDest siteID) blkMap
+  , Just site <- typedEntryCallerSite siteID (typedEntryTransEntry entry_trans)
+  = SomeTypedCallSite site
+lookupCallSite siteID blkMap
+  | Some entry_trans <- lookupEntryTrans (callSiteDest siteID) blkMap =
+    error ("lookupCallSite: no call site for site ID: " ++ show siteID ++
+           "\n" ++ "call sites for entrypoint: " ++
+           show (map (\(Some site) -> show $ typedCallSiteID site)
+                 (typedEntryCallers $ typedEntryTransEntry entry_trans)))
 
 
 -- | Contextual info for an implication translation
@@ -1955,7 +1978,9 @@ assertTopPermM nm x p =
              permPrettyString emptyPPInfo (mbMap2 distPerms1 x p) ++
              "\nFound top permissions:\n" ++
              permPrettyString emptyPPInfo (mbMap2 distPerms1 x' p') ++
-             nlPrettyCallStack callStack)
+             nlPrettyCallStack callStack ++
+             "\nCurrent perm stack:\n" ++
+             permPrettyString emptyPPInfo stack_perms)
 
 -- | Get the (translation of the) perms for a variable
 getVarPermM :: Mb ctx (ExprVar tp) ->
@@ -2039,10 +2064,8 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
   
   [nuMP| SImpl_MoveUp (mb_ps1 :: DistPerms ps1) (_mb_x :: ExprVar a) _
                       (mb_ps2 :: DistPerms ps2) |] ->
-    let mkProxies :: forall vars ps. Mb vars (DistPerms ps) -> RAssign Proxy ps
-        mkProxies = mbLift . fmap (RL.map (const Proxy)) . mbDistPermsToValuePerms
-        ps1 = mkProxies mb_ps1
-        ps2 = mkProxies mb_ps2
+    let ps1 = mbRAssignProxies mb_ps1
+        ps2 = mbRAssignProxies mb_ps2
         prxa = Proxy :: Proxy a
         prx0a = Proxy :: Proxy (ps0 :> a) in
     case (RL.appendRNilConsEq ps0 prxa (RL.append ps1 ps2)) of
@@ -2059,6 +2082,23 @@ translateSimplImpl (ps0 :: Proxy ps0) mb_simpl m = case mbMatch mb_simpl of
           RL.append pctx0 $ RL.append (pctx1 :>: ptrans) pctx2)
         m
   
+  [nuMP| SImpl_MoveDown mb_ps1 (mb_x :: ExprVar a) _ mb_ps2 |]
+    | prx_a <- mbLift $ fmap (const (Proxy :: Proxy a)) mb_x
+    , ps1 <- mbRAssignProxies mb_ps1
+    , ps1a <- ps1 :>: prx_a
+    , ps2 <- mbRAssignProxies mb_ps2
+    , Refl <- RL.appendRNilConsEq ps0 prx_a (RL.append ps1 ps2) ->
+      withPermStackM
+      (\xs ->
+        let (xs0, xs1a2) = RL.split ps0 (RL.append ps1a ps2) xs
+            ((xs1 :>: x), xs2) = RL.split ps1a ps2 xs1a2 in
+        RL.append xs0 (RL.append (MNil :>: x) $ RL.append xs1 xs2))
+      (\pctx ->
+        let (pctx0, pctx1a2) = RL.split ps0 (RL.append ps1a ps2) pctx
+            ((pctx1 :>: ptrans), pctx2) = RL.split ps1a ps2 pctx1a2 in
+        RL.append pctx0 (RL.append (MNil :>: ptrans) $ RL.append pctx1 pctx2))
+      m
+
   [nuMP| SImpl_IntroOrL _ p1 p2 |] ->
     do tp1 <- translate p1
        tp2 <- translate p2
@@ -3658,55 +3698,64 @@ translateApply nm f perms =
              ) $
        applyOpenTermMulti f (exprCtxToTerms e_args ++ permCtxToTerms i_args)
 
--- | Look up the 'TypedEntryTrans' for a 'TypedEntryID' and test if it has a
--- letrec-bound variable. If so, call that, otherwise translate the body of the
--- corresponding 'TypedEntry'
---
--- FIXME: check that the supplied perms match those expected by the entryID
-translateCallEntryID :: forall ext ps tops args ghosts blocks ctx ret.
-                        (PermCheckExtC ext,
-                         ps ~ ((tops :++: args) :++: ghosts)) =>
-                        String -> TypedEntryID blocks args ghosts ->
-                        Proxy (tops :++: args) -> Mb ctx (PermExprs ghosts) ->
-                        Mb ctx (DistPerms ps) ->
-                        ImpTransM ext blocks tops ret ps ctx OpenTerm
-translateCallEntryID nm entryID prx mb_ghosts mb_perms =
+-- | Translate a call to (the translation of) an entrypoint, by either calling
+-- the letrec-bound variable for the entrypoint, if it has one, or by just
+-- translating the body of the entrypoint if it does not.
+translateCallEntry :: forall ext tops args ghosts blocks ctx ret.
+                      PermCheckExtC ext => String ->
+                      TypedEntryTrans ext blocks tops ret args ghosts ->
+                      Mb ctx (RAssign ExprVar (tops :++: args)) ->
+                      Mb ctx (RAssign ExprVar ghosts) ->
+                      ImpTransM ext blocks tops ret
+                      ((tops :++: args) :++: ghosts) ctx OpenTerm
+translateCallEntry nm entry_trans mb_tops_args mb_ghosts =
   -- First test that the stack == the required perms for entryID
-  do perms_in <-
-       mbValuePermsToDistPerms <$>
-       lookupEntryPermsIn entryID <$> itiBlockMapTrans <$> ask
-     () <- assertPermStackEqM (nm ++ " 1")
-       (mbMap2
-        (\ghosts perms ->
-          let all_ns = distPermsVars perms
-              (tops_args_ns,_) = RL.split prx (proxiesOfExprs ghosts) all_ns in
-          valuePermsToDistPerms all_ns $
-          subst (substOfExprs $
-                 appendExprs (namesToExprs tops_args_ns) ghosts) $
-          fmap distPermsToValuePerms perms_in)
-        mb_ghosts
-        mb_perms)
-     () <- assertPermStackEqM (nm ++ " 2") mb_perms
+  do let entry = typedEntryTransEntry entry_trans
+     let mb_s =
+           mbMap2 (\tops_args ghosts ->
+                    permVarSubstOfNames $ RL.append tops_args ghosts)
+           mb_tops_args mb_ghosts
+     let mb_perms = fmap (\s -> varSubst s $ mbValuePermsToDistPerms $
+                                typedEntryPermsIn entry) mb_s
+     () <- assertPermStackEqM nm mb_perms
 
      -- Now check if entryID has an associated letRec-bound function
-     entry_trans <- lookupEntryTrans entryID <$> itiBlockMapTrans <$> ask
-     case entry_trans of
-       TypedEntryTrans _ (Just f) ->
+     case typedEntryTransFun entry_trans of
+       Just f ->
          -- If so, call the letRec-bound function
          translateApply nm f mb_perms
-       TypedEntryTrans entry Nothing ->
+       Nothing ->
          -- If not, continue by translating entry, setting the variable
          -- permission map to empty (as in the beginning of a block)
          clearVarPermsM $ translate $
-         fmap (\perms ->
-                varSubst (permVarSubstOfNames $ distPermsVars perms) $
-                typedEntryBody entryID entry) mb_perms
+         fmap (\s -> varSubst s $ typedEntryBody entry) mb_s
+
+
+instance PermCheckExtC ext =>
+         Translate (ImpTransInfo ext blocks tops ret ps) ctx
+         (CallSiteImplRet blocks tops args ghosts ps) OpenTerm where
+  translate (mbMatch ->
+             [nuMP| CallSiteImplRet entryID ghosts Refl mb_tavars mb_gvars |]) =
+    do entry_trans <-
+         lookupEntryTransCast (mbLift entryID) (mbLift ghosts) <$>
+         itiBlockMapTrans <$> ask
+       translateCallEntry "CallSiteImplRet" entry_trans mb_tavars mb_gvars
+
+instance PermCheckExtC ext =>
+         ImplTranslateF (CallSiteImplRet blocks tops args ghosts)
+         ext blocks tops ret where
+  translateF mb_tgt = translate mb_tgt
+
 
 instance PermCheckExtC ext =>
          Translate (ImpTransInfo ext blocks tops ret ps) ctx
          (TypedJumpTarget blocks tops ps) OpenTerm where
-  translate (mbMatch -> [nuMP| TypedJumpTarget entryID _ _ ghosts perms |]) =
-    translateCallEntryID "TypedJumpTarget" (mbLift entryID) Proxy ghosts perms
+  translate (mbMatch -> [nuMP| TypedJumpTarget siteID _ _ mb_perms_in |]) =
+    do SomeTypedCallSite site <-
+         lookupCallSite (mbLift siteID) <$> itiBlockMapTrans <$> ask
+       let CallSiteImpl mb_impl = typedCallSiteImpl site
+       translate $ flip fmap mb_perms_in $ \perms_in ->
+         varSubst (permVarSubstOfNames $ distPermsVars perms_in) mb_impl
 
 instance PermCheckExtC ext =>
          ImplTranslateF (TypedJumpTarget blocks tops) ext blocks tops ret where
@@ -3973,55 +4022,66 @@ instance PermCheckExtC ext =>
 -- * Translating CFGs
 ----------------------------------------------------------------------
 
--- | Fold a function over each 'TypedEntry' in a 'TypedBlockMap' that
--- corresponds to a letrec-bound variable, which is each entry in a 'TypedBlock'
--- with in-degree > 1
+-- | An entrypoint over some regular and ghost arguments
+data SomeTypedEntry ext blocks tops ret =
+  forall ghosts args.
+  SomeTypedEntry (TypedEntry TransPhase ext blocks tops ret args ghosts)
+
+-- | Get all entrypoints in a block map that will be translated to letrec-bound
+-- variables, which is all entrypoints with in-degree > 1
 --
 -- FIXME: consider whether we want let and not letRec for entrypoints that have
 -- in-degree > 1 but are not the heads of loops
-foldBlockMapLetRec :: (forall args.
-                       TypedEntry ext blocks tops ret args -> b -> b) ->
-                      b -> TypedBlockMap ext blocks tops ret -> b
-foldBlockMapLetRec = helper where
-  helper :: (forall args. TypedEntry ext blocks tops ret args -> b -> b) ->
-            b -> RAssign (TypedBlock ext blocks tops ret) bs -> b
-  helper _ b MNil = b
-  helper f b (bs :>: TypedBlock (entry:entries))
-    | typedEntryHasMultiInDegree entry =
-      f entry $ helper f b (bs :>: TypedBlock entries)
-  helper f b (bs :>: TypedBlock (_:entries)) =
-    helper f b (bs :>: TypedBlock entries)
-  helper f b (bs :>: TypedBlock []) = helper f b bs
+typedBlockLetRecEntries :: TypedBlockMap TransPhase ext blocks tops ret ->
+                           [SomeTypedEntry ext blocks tops ret]
+typedBlockLetRecEntries =
+  concat . RL.mapToList (map (\(Some entry) ->
+                               SomeTypedEntry entry)
+                         . filter (anyF typedEntryHasMultiInDegree)
+                         . (^. typedBlockEntries))
 
--- FIXME: documentation
-lambdaLRTTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
-                   TransM info ctx OpenTerm
-lambdaLRTTransM x tps body_f =
+-- | Fold a function over each 'TypedEntry' in a 'TypedBlockMap' that
+-- corresponds to a letrec-bound variable
+foldBlockMapLetRec ::
+  (forall args ghosts.
+   TypedEntry TransPhase ext blocks tops ret args ghosts -> b -> b) ->
+  b -> TypedBlockMap TransPhase ext blocks tops ret -> b
+foldBlockMapLetRec f r =
+  foldr (\(SomeTypedEntry entry) -> f entry) r . typedBlockLetRecEntries
+
+-- | Construct a @LetRecType@ inductive description
+--
+-- > LRT_Fun tp1 \(x1 : tp1) -> ... -> LRT_Fun tpn \(xn : tpn) -> body x1 ... xn
+--
+-- of a pi abstraction over the types @tpi@ in a 'TypeTrans', passing the
+-- abstracted variables to the supplied @body@ function
+piLRTTransM :: String -> TypeTrans tr -> (tr -> TransM info ctx OpenTerm) ->
+               TransM info ctx OpenTerm
+piLRTTransM x tps body_f =
   foldr (\(i,tp) rest_f vars ->
           (\t -> ctorOpenTerm "Prelude.LRT_Fun" [tp, t]) <$>
-          lambdaOpenTermTransM (x ++ show (i :: Integer)) tp (\var -> rest_f (vars ++ [var])))
+          lambdaOpenTermTransM (x ++ show (i :: Integer)) tp
+          (\var -> rest_f (vars ++ [var])))
   (body_f . typeTransF tps) (zip [0..] $ typeTransTypes tps) []
 
 -- | Build a @LetRecType@ that describes the type of the translation of a
 -- 'TypedEntry'
-translateEntryLRT :: TypedEntry ext blocks tops ret args ->
+translateEntryLRT :: TypedEntry TransPhase ext blocks tops ret args ghosts ->
                      TypeTransM ctx OpenTerm
-translateEntryLRT (TypedEntry entryID _ tops args ret perms_in perms_out _) =
+translateEntryLRT entry@(TypedEntry {..}) =
   trace "translateEntryLRT starting..." $ inEmptyCtxTransM $
-  translateClosed (appendCruCtx (appendCruCtx tops args)
-                   (entryGhosts entryID)) >>= \arg_tps ->
-  lambdaLRTTransM "arg" arg_tps $ \ectx ->
+  translateClosed (typedEntryAllArgs entry) >>= \arg_tps ->
+  piLRTTransM "arg" arg_tps $ \ectx ->
   inCtxTransM ectx $
-  translate perms_in >>= \perms_in_tps ->
-  lambdaLRTTransM "p" perms_in_tps $ \_ ->
-  translateRetType ret perms_out >>= \retType ->
+  translate typedEntryPermsIn >>= \perms_in_tps ->
+  piLRTTransM "p" perms_in_tps $ \_ ->
+  translateEntryRetType entry >>= \retType ->
   trace "translateEntryLRT finished" $
   return $ ctorOpenTerm "Prelude.LRT_Ret" [retType]
 
-
 -- | Build a @LetRecTypes@ list that describes the types of all of the
 -- entrypoints in a 'TypedBlockMap'
-translateBlockMapLRTs :: TypedBlockMap ext blocks tops ret ->
+translateBlockMapLRTs :: TypedBlockMap TransPhase ext blocks tops ret ->
                          TypeTransM ctx OpenTerm
 translateBlockMapLRTs =
   trace "translateBlockMapLRTs started..." $
@@ -4033,52 +4093,59 @@ translateBlockMapLRTs =
   (trace "translateBlockMapLRTs finished" $
    return $ ctorOpenTerm "Prelude.LRT_Nil" [])
 
-
--- | FIXME: documentation
-lambdaBlockMap :: TypedBlockMap ext blocks tops ret ->
+-- | Lambda-abstract over all the entrypoints in a 'TypedBlockMap' that
+-- correspond to letrec-bound functions, putting the lambda-bound variables into
+-- a 'TypedBlockMapTrans' structure and passing it to the supplied body function
+lambdaBlockMap :: TypedBlockMap TransPhase ext blocks tops ret ->
                   (TypedBlockMapTrans ext blocks tops ret ->
                    TypeTransM ctx OpenTerm) ->
                   TypeTransM ctx OpenTerm
 lambdaBlockMap = helper where
-  helper :: RAssign (TypedBlock ext blocks tops ret) bs ->
-            (RAssign (TypedBlockTrans ext blocks tops ret) bs ->
+  helper :: RAssign (TypedBlock TransPhase ext blocks tops ret) blks ->
+            (RAssign (TypedBlockTrans ext blocks tops ret) blks ->
              TypeTransM ctx OpenTerm) ->
             TypeTransM ctx OpenTerm
   helper MNil f = f MNil
-  helper (bs :>: TypedBlock []) f =
-    helper bs (f . (:>: TypedBlockTrans []))
-  helper (bs :>: TypedBlock (entry:entries)) f
-    | typedEntryHasMultiInDegree entry =
-      do entryLRT <- translateEntryLRT entry
-         lambdaOpenTermTransM "f" (applyOpenTerm
-                                   (globalOpenTerm "Prelude.lrtToType")
-                                   entryLRT) $ \fvar ->
-           helper (bs :>: TypedBlock entries)
-           (\(bsTrans :>: TypedBlockTrans eTranss) ->
-             f (bsTrans :>:
-                TypedBlockTrans (TypedEntryTrans entry (Just fvar):eTranss)))
-  helper (bs :>: TypedBlock (entry:entries)) f =
-    helper (bs :>: TypedBlock entries)
-           (\(bsTrans :>: TypedBlockTrans eTranss) ->
-             f (bsTrans :>:
-                TypedBlockTrans (TypedEntryTrans entry Nothing:eTranss)))
+  helper (blks :>: blk) f =
+    helper blks $
+    foldl
+    (\g (Some entry) entry_transs blks_trans ->
+      if typedEntryHasMultiInDegree entry then
+        do entryLRT <- translateEntryLRT entry
+           lambdaOpenTermTransM "f" (applyOpenTerm
+                                     (globalOpenTerm "Prelude.lrtToType")
+                                     entryLRT) $ \fvar ->
+             g (Some (TypedEntryTrans entry $ Just fvar) : entry_transs) blks_trans
+      else
+        g (Some (TypedEntryTrans entry Nothing) : entry_transs) blks_trans)
+    (\entry_transs blks_trans ->
+      f (blks_trans :>: TypedBlockTrans entry_transs))
+    (blk ^. typedBlockEntries)
+    []
 
+-- | Translate the typed statements of an entrypoint to a function
+--
+-- > \top1 ... topn arg1 ... argm ghost1 ... ghostk p1 ... pj -> stmts_trans
+--
+-- over the top-level, local, and ghost arguments and (the translations of) the
+-- input permissions of the entrypoint
 translateEntryBody :: PermCheckExtC ext =>
                       TypedBlockMapTrans ext blocks tops ret ->
-                      TypedEntry ext blocks tops ret args ->
+                      TypedEntry TransPhase ext blocks tops ret args ghosts ->
                       TypeTransM ctx OpenTerm
-translateEntryBody mapTrans (TypedEntry entryID _ tops args ret in_perms
-                             ret_perms stmts) =
+translateEntryBody mapTrans entry =
   inEmptyCtxTransM $
-  lambdaExprCtx (appendCruCtx (appendCruCtx tops args) (entryGhosts entryID)) $
-  lambdaPermCtx in_perms $ \pctx ->
-  do retType <- translateRetType ret ret_perms
-     impTransM (RL.members pctx) pctx mapTrans retType $ translate stmts
+  lambdaExprCtx (typedEntryAllArgs entry) $
+  lambdaPermCtx (typedEntryPermsIn entry) $ \pctx ->
+  do retType <- translateEntryRetType entry
+     impTransM (RL.members pctx) pctx mapTrans retType $ translate $
+       typedEntryBody entry
 
-
+-- | Translate all the entrypoints in a 'TypedBlockMap' that correspond to
+-- letrec-bound functions to SAW core functions as in 'translateEntryBody'
 translateBlockMapBodies :: PermCheckExtC ext =>
                            TypedBlockMapTrans ext blocks tops ret ->
-                           TypedBlockMap ext blocks tops ret ->
+                           TypedBlockMap TransPhase ext blocks tops ret ->
                            TypeTransM ctx OpenTerm
 translateBlockMapBodies mapTrans =
   trace "translateBlockMapBodies starting..." $
@@ -4086,6 +4153,7 @@ translateBlockMapBodies mapTrans =
   (\entry restM ->
     pairOpenTerm <$> translateEntryBody mapTrans entry <*> restM)
   (trace "translateBlockMapBodies finished" $ return unitOpenTerm)
+
 
 -- | Translate a typed CFG to a SAW term
 translateCFG :: PermCheckExtC ext => PermEnv ->
@@ -4140,12 +4208,16 @@ translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
                  snd $ RL.split ghosts (cruCtxProxies inits) $
                  fst $ RL.split ctx (cruCtxProxies inits) all_membs
                inits_eq_perms = eqPermTransCtx all_membs inits_membs
-               all_pctx = RL.append pctx inits_eq_perms in
-           impTransM all_membs all_pctx mapTrans retTypeTrans $
-           translateCallEntryID "CFG" (tpcfgEntryBlockID cfg) Proxy
-           (nuMulti (RL.map (\_-> Proxy) all_pctx) $ \_ -> PExprs_Nil)
-           (mbValuePermsToDistPerms $ funPermToBlockInputs fun_perm)
-         )
+               all_pctx = RL.append pctx inits_eq_perms
+               init_entry =
+                 lookupEntryTransCast (tpcfgEntryID cfg) CruCtxNil mapTrans in
+           impTransM all_membs all_pctx mapTrans retTypeTrans
+           (assertPermStackEqM "translateCFG" (mbValuePermsToDistPerms $
+                                               funPermToBlockInputs fun_perm)
+            >>
+            let px = RL.map (\_ -> Proxy) all_pctx in
+            translateCallEntry "CFG" init_entry
+            (nuMulti px id) (nuMulti px (\_ -> MNil))))
        ]
 
 
@@ -4160,25 +4232,30 @@ data SomeCFGAndPerm ext where
                     FunPerm ghosts (CtxToRList inits) ret ->
                     SomeCFGAndPerm ext
 
+-- | Extract the 'GlobalSymbol' from a 'SomeCFGAndPerm'
 someCFGAndPermSym :: SomeCFGAndPerm ext -> GlobalSymbol
 someCFGAndPermSym (SomeCFGAndPerm sym _ _ _) = sym
 
+-- | Extract the 'String' name from a 'SomeCFGAndPerm'
 someCFGAndPermToName :: SomeCFGAndPerm ext -> String
 someCFGAndPermToName (SomeCFGAndPerm _ nm _ _) = nm
 
+-- | Convert the 'FunPerm' of a 'SomeCFGAndPerm' to an inductive @LetRecType@
+-- description of the SAW core type it translates to
 someCFGAndPermLRT :: PermEnv -> SomeCFGAndPerm ext -> OpenTerm
 someCFGAndPermLRT env (SomeCFGAndPerm _ _ _
                        (FunPerm ghosts args ret perms_in perms_out)) =
   flip runNilTypeTransM env $
   translateClosed (appendCruCtx ghosts args) >>= \ctx_trans ->
-  lambdaLRTTransM "arg" ctx_trans $ \ectx ->
+  piLRTTransM "arg" ctx_trans $ \ectx ->
   inCtxTransM ectx $
   translate perms_in >>= \perms_trans ->
-  lambdaLRTTransM "perm" perms_trans $ \_ ->
+  piLRTTransM "perm" perms_trans $ \_ ->
   translateRetType ret perms_out >>= \ret_tp ->
   return $ ctorOpenTerm "Prelude.LRT_Ret" [ret_tp]
 
-
+-- | Extract the 'FunPerm' of a 'SomeCFGAndPerm' as a permission on LLVM
+-- function pointer values
 someCFGAndPermPtrPerm :: (1 <= ArchWidth arch, KnownNat (ArchWidth arch),
                           w ~ ArchWidth arch) =>
                          NatRepr w -> SomeCFGAndPerm (LLVM arch) ->
