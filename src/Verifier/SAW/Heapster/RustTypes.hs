@@ -376,7 +376,7 @@ isRecursiveDef item =
     containsName i (TupleD fields _) = any (isBoxed i) $ typeOf <$> fields
     containsName _ (UnitD _) = False
 
-instance RsConvert w (Item Span) SomeNamedShape where
+instance RsConvert w (Item Span) (Either SomeNamedShape ()) where
   rsConvert w s@(StructItem _ _ ident vd generics _)
     | isRecursiveDef s = error "Recursive struct definitions not yet supported"
     | otherwise =
@@ -386,7 +386,7 @@ instance RsConvert w (Item Span) SomeNamedShape where
                               , namedShapeArgs = rustCtxCtx ctx
                               , namedShapeBody = DefinedShapeBody sh
                               }
-         return $ SomeNamedShape nsh
+         return $ Left $ SomeNamedShape nsh
   rsConvert w e@(Enum _ _ ident variants generics _)
     | isRecursiveDef e = error "Recursive enum definitions not yet supported"
     | otherwise =
@@ -396,7 +396,7 @@ instance RsConvert w (Item Span) SomeNamedShape where
                               , namedShapeArgs = rustCtxCtx ctx
                               , namedShapeBody = DefinedShapeBody sh
                               }
-         return $ SomeNamedShape nsh
+         return $ Left $ SomeNamedShape nsh
   rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
@@ -941,7 +941,7 @@ parseFunPermFromRust _ _ _ _ str =
 -- Note: No CruCtx / TypeRepr as arguments for now
 parseNamedShapeFromRustDecl :: (MonadFail m, 1 <= w, KnownNat w) =>
                                PermEnv -> prx w -> String ->
-                               m SomeNamedShape
+                               m (Either SomeNamedShape ())
 parseNamedShapeFromRustDecl env w str
   | Right item <- parse @(Item Span) (inputStreamFromString str) =
     runLiftRustConvM (mkRustConvInfo env) $ rsConvert w item

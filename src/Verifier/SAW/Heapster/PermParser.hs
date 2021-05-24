@@ -219,5 +219,5 @@ parseRustTypeString ::
   PermEnv               {- ^ permission environment     -} ->
   prx w                 {- ^ pointer bit-width proxy    -} ->
   String                {- ^ input text                 -} ->
-  m SomeNamedShape
+  m (Either SomeNamedShape ())
 parseRustTypeString = parseNamedShapeFromRustDecl
