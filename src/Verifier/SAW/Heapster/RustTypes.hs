@@ -382,13 +382,21 @@ isRecursiveDef item =
 
 instance RsConvert w (Item Span) (SomePartialNamedShape w) where
   rsConvert w s@(StructItem _ _ ident vd generics _)
-    | isRecursiveDef s = error "Recursive struct definitions not yet supported"
+    | isRecursiveDef s =
+      do Some ctx <- rsConvert w generics
+         let ctx' = rustCtxCons ctx (name ident) (LLVMShapeRepr $ natRepr w)
+         sh <- inRustCtx ctx' $ rsConvert w vd
+         return $ RecShape (name ident) (rustCtxCtx ctx') sh
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w vd
          return $ NonRecShape (name ident) (rustCtxCtx ctx) sh
   rsConvert w e@(Enum _ _ ident variants generics _)
-    | isRecursiveDef e = error "Recursive enum definitions not yet supported"
+    | isRecursiveDef e =
+      do Some ctx <- rsConvert w generics
+         let ctx' = rustCtxCons ctx (name ident) (LLVMShapeRepr $ natRepr w)
+         sh <- inRustCtx ctx' $ rsConvert w variants
+         return $ RecShape (name ident) (rustCtxCtx ctx') sh
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w variants
