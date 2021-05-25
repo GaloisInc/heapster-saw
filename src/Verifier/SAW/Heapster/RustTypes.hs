@@ -376,12 +376,6 @@ isRecursiveDef item =
     containsName i (TupleD fields _) = any (isBoxed i) $ typeOf <$> fields
     containsName _ (UnitD _) = False
 
-data SomePartialNamedShape w where
-  NonRecShape :: String -> CruCtx args -> Mb args (PermExpr (LLVMShapeType w))
-              -> SomePartialNamedShape w
-  RecShpe :: String -> CruCtx args -> Mb args (PermExpr (LLVMShapeType w))
-          -> SomePartialNamedShape w
-
 instance RsConvert w (Item Span) (SomePartialNamedShape w) where
   rsConvert w s@(StructItem _ _ ident vd generics _)
     | isRecursiveDef s = error "Recursive struct definitions not yet supported"
