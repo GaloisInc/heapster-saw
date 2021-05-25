@@ -386,7 +386,7 @@ instance RsConvert w (Item Span) (SomePartialNamedShape w) where
       do Some ctx <- rsConvert w generics
          let ctx' = rustCtxCons ctx (name ident) (LLVMShapeRepr $ natRepr w)
          sh <- inRustCtx ctx' $ rsConvert w vd
-         return $ RecShape (name ident) (rustCtxCtx ctx') sh
+         return $ RecShape (name ident) (rustCtxCtx ctx) sh
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w vd
@@ -396,7 +396,7 @@ instance RsConvert w (Item Span) (SomePartialNamedShape w) where
       do Some ctx <- rsConvert w generics
          let ctx' = rustCtxCons ctx (name ident) (LLVMShapeRepr $ natRepr w)
          sh <- inRustCtx ctx' $ rsConvert w variants
-         return $ RecShape (name ident) (rustCtxCtx ctx') sh
+         return $ RecShape (name ident) (rustCtxCtx ctx) sh
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w variants
