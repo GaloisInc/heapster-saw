@@ -376,27 +376,33 @@ isRecursiveDef item =
     containsName i (TupleD fields _) = any (isBoxed i) $ typeOf <$> fields
     containsName _ (UnitD _) = False
 
-instance RsConvert w (Item Span) (Either SomeNamedShape ()) where
+data SomePartialNamedShape w where
+  NonRecShape :: String -> CruCtx args -> Mb args (PermExpr (LLVMShapeType w))
+              -> SomePartialNamedShape w
+  RecShpe :: String -> CruCtx args -> Mb args (PermExpr (LLVMShapeType w))
+          -> SomePartialNamedShape w
+
+instance RsConvert w (Item Span) (SomePartialNamedShape w) where
   rsConvert w s@(StructItem _ _ ident vd generics _)
     | isRecursiveDef s = error "Recursive struct definitions not yet supported"
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w vd
-         let nsh = NamedShape { namedShapeName = name ident
-                              , namedShapeArgs = rustCtxCtx ctx
-                              , namedShapeBody = DefinedShapeBody sh
-                              }
-         return $ Left $ SomeNamedShape nsh
+        --  let nsh = NamedShape { namedShapeName = name ident
+        --                       , namedShapeArgs = rustCtxCtx ctx
+        --                       , namedShapeBody = DefinedShapeBody sh
+        --                       }
+         return $ NonRecShape (name ident) (rustCtxCtx ctx) sh -- Left $ sh -- SomeNamedShape nsh
   rsConvert w e@(Enum _ _ ident variants generics _)
     | isRecursiveDef e = error "Recursive enum definitions not yet supported"
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w variants
-         let nsh = NamedShape { namedShapeName = name ident
-                              , namedShapeArgs = rustCtxCtx ctx
-                              , namedShapeBody = DefinedShapeBody sh
-                              }
-         return $ Left $ SomeNamedShape nsh
+        --  let nsh = NamedShape { namedShapeName = name ident
+        --                       , namedShapeArgs = rustCtxCtx ctx
+        --                       , namedShapeBody = DefinedShapeBody sh
+        --                       }
+         return $ NonRecShape (name ident) (rustCtxCtx ctx) sh -- Left $ sh -- SomeNamedShape nsh
   rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
@@ -941,7 +947,7 @@ parseFunPermFromRust _ _ _ _ str =
 -- Note: No CruCtx / TypeRepr as arguments for now
 parseNamedShapeFromRustDecl :: (MonadFail m, 1 <= w, KnownNat w) =>
                                PermEnv -> prx w -> String ->
-                               m (Either SomeNamedShape ())
+                               m (SomePartialNamedShape w)
 parseNamedShapeFromRustDecl env w str
   | Right item <- parse @(Item Span) (inputStreamFromString str) =
     runLiftRustConvM (mkRustConvInfo env) $ rsConvert w item
