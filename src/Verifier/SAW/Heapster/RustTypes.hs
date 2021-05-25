@@ -128,6 +128,10 @@ rustCtx1 name tp = MNil :>: Pair (Constant name) tp
 rustCtxCtx :: RustCtx ctx -> CruCtx ctx
 rustCtxCtx = cruCtxOfTypes . RL.map (\(Pair _ tp) -> tp)
 
+-- | Extend a 'RustCtx' with a single binding on the right
+rustCtxCons :: RustCtx ctx -> String -> TypeRepr a -> RustCtx (ctx :> a)
+rustCtxCons ctx nm tp = ctx :>: Pair (Constant nm) tp
+
 -- | Build a 'RustCtx' from the given variable names, all having the same type
 rustCtxOfNames :: TypeRepr a -> [String] -> Some RustCtx
 rustCtxOfNames tp =
@@ -382,21 +386,13 @@ instance RsConvert w (Item Span) (SomePartialNamedShape w) where
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w vd
-        --  let nsh = NamedShape { namedShapeName = name ident
-        --                       , namedShapeArgs = rustCtxCtx ctx
-        --                       , namedShapeBody = DefinedShapeBody sh
-        --                       }
-         return $ NonRecShape (name ident) (rustCtxCtx ctx) sh -- Left $ sh -- SomeNamedShape nsh
+         return $ NonRecShape (name ident) (rustCtxCtx ctx) sh
   rsConvert w e@(Enum _ _ ident variants generics _)
     | isRecursiveDef e = error "Recursive enum definitions not yet supported"
     | otherwise =
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w variants
-        --  let nsh = NamedShape { namedShapeName = name ident
-        --                       , namedShapeArgs = rustCtxCtx ctx
-        --                       , namedShapeBody = DefinedShapeBody sh
-        --                       }
-         return $ NonRecShape (name ident) (rustCtxCtx ctx) sh -- Left $ sh -- SomeNamedShape nsh
+         return $ NonRecShape (name ident) (rustCtxCtx ctx) sh
   rsConvert _ item = fail ("Top-level item not supported: " ++ show item)
 
 instance RsConvert w [Variant Span] (PermExpr (LLVMShapeType w)) where
