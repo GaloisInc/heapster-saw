@@ -323,12 +323,18 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        sh <- rsConvert w tp'
        return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
   rsConvert w (PathTy Nothing path _) =
-    do someShapeFn <- rsConvert w (rsPathName path)
-       someTypedArgs <- rsConvert w (rsPathParams path)
+    do someShapeFn@(SomeShapeFun expected _ ) <- rsConvert w (rsPathName path)
+       someTypedArgs@(Some tyArgs) <- rsConvert w (rsPathParams path)
+       let actual = typedPermExprsCtx tyArgs
        case tryApplySomeShapeFun someShapeFn someTypedArgs of
          Just shTp -> return shTp
          Nothing ->
-           fail $ renderDoc $ pretty "Failed to apply shape funtion to arguments"
+           fail $ renderDoc $ fillSep
+           [ pretty "Converting PathTy: " <+> pretty $ show $ rsPathName path
+           , pretty "Expected arguments:" <+> pretty expected
+           , pretty "Actual arguments:" <+> pretty actual
+           ]
+           -- fail $ renderDoc $ pretty "Failed to apply shape funtion to arguments"
   rsConvert (w :: prx w) (BareFn _ abi rust_ls2 fn_tp span) =
     do Some3FunPerm fun_perm <- rsConvertMonoFun w span abi rust_ls2 fn_tp
        let args = funPermArgs fun_perm
