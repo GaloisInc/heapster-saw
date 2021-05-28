@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -73,13 +74,16 @@ handleSomeCFG cfg =
 -- | Each TCFG, which is for a function, will have several basic blocks.  This
 -- is a map containing those blocks, so we handle each seperately and
 -- concatenate the results into one list.
-handleBlockMap :: PermCheckExtC ext => TypedBlockMap ext blocks tops ret -> [LogEntryFormat]
+handleBlockMap :: PermCheckExtC ext => TypedBlockMap TransPhase ext blocks tops ret -> [LogEntryFormat]
 handleBlockMap bm = do
   concat $ RL.mapToList handleBlock bm
 
 -- | For a single basic block, look at each entry point and dump corresponding information.
-handleBlock :: PermCheckExtC ext => TypedBlock ext blocks tops ret args -> [LogEntryFormat]
-handleBlock tb = concatMap handleTypedEntry' (typedBlockEntries tb)
+handleBlock :: PermCheckExtC ext => TypedBlock TransPhase ext blocks tops ret args -> [LogEntryFormat]
+handleBlock tb =
+  let tbes = _typedBlockEntries tb
+  in concatMap (\case (Some tbe) -> handleTypedEntry' tbe) tbes
+   --concatMap handleTypedEntry' tbe
 
 -- handleTypedEntry :: PermCheckExtC ext => TypedEntry ext blocks tops ret args -> String
 -- handleTypedEntry (TypedEntry _ _ _ _ _ _ _ perms) =
@@ -92,10 +96,10 @@ handleBlock tb = concatMap handleTypedEntry' (typedBlockEntries tb)
 -- want as well as the location information.  For now, since we're only looking
 -- at entry permissions, we just take the first location in  the statement
 -- sequence and ignore the rest.
-handleTypedEntry' :: PermCheckExtC ext => TypedEntry ext blocks tops ret args -> [LogEntryFormat]
-handleTypedEntry' (TypedEntry _ _ _ _ _ entryperms _ stmts) =
-  let loc = mbLift $ fmap getFirstProgramLoc stmts
-  in handleMbPerms entryperms loc
+handleTypedEntry' :: PermCheckExtC ext => TypedEntry TransPhase ext blocks tops ret args ghosts -> [LogEntryFormat]
+handleTypedEntry' te =
+  let loc = mbLift $ fmap getFirstProgramLoc (typedEntryBody te)
+  in handleMbPerms (typedEntryPermsIn te) loc
 
 -- | From the sequence, get the first program location we encounter, which
 -- should correspond to the permissions for the entry point we want to log

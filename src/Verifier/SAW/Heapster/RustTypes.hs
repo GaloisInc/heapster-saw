@@ -298,6 +298,10 @@ instance RsConvert w (PathParameters Span) (Some TypedPermExprs) where
        shs <- mapM (rsConvert w) rust_tps
        return $ appendTypedExprs
          (typedExprsOfList knownRepr ls) (typedExprsOfList knownRepr shs)
+  rsConvert _ (AngleBracketed _ _ (_:_) _) =
+    error "rsConvert: angle-bracketed arguments not supported"
+  rsConvert _ (Parenthesized _ _ _) =
+    error "rsConvert: parenthesized types not supported"
 
 instance RsConvert w [PathParameters Span] (Some TypedPermExprs) where
   rsConvert w paramss =
@@ -892,6 +896,7 @@ rsConvertFun w abi (Generics ldefs _tparams@[]
   do arg_shapes <- mapM (rsConvert w) args
      ret_shape <- rsConvert w ret_tp
      layoutFun abi arg_shapes ret_shape
+rsConvertFun _ _ _ _ = fail "rsConvertFun: unsupported Rust function type"
 
 
 ----------------------------------------------------------------------
