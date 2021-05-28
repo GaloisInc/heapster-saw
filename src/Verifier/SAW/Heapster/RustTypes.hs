@@ -34,6 +34,7 @@ import Data.List hiding (span)
 import GHC.TypeLits
 import Data.Functor.Constant
 import Data.Functor.Product
+import Debug.Trace (trace, traceM)
 import Control.Applicative
 import Control.Monad.Reader
 import Control.Monad.Except
@@ -71,14 +72,16 @@ data SomeLLVMPerm =
 $(mkNuMatching [t| SomeLLVMPerm |])
 
 -- | Info used for converting Rust types to shapes
+-- NOTE: @rciRecType@ should probably have some info about lifetimes
 data RustConvInfo =
   RustConvInfo { rciPermEnv :: PermEnv,
-                 rciCtx :: [(String, TypedName)] }
+                 rciCtx :: [(String, TypedName)],
+                 rciRecType :: Maybe (RustName, [RustName], TypedName) }
 
 -- | The default, top-level 'RustConvInfo' for a given 'PermEnv'
 mkRustConvInfo :: PermEnv -> RustConvInfo
 mkRustConvInfo env =
-  RustConvInfo { rciPermEnv = env, rciCtx = [] }
+  RustConvInfo { rciPermEnv = env, rciCtx = [], rciRecType = Nothing }
 
 -- | The Rust conversion monad is just a state-error monad
 newtype RustConvM a =
@@ -197,7 +200,7 @@ tryApplySomeShapeFun _ _ = Nothing
 
 -- | Build a 'SomeShapeFun' with no arguments
 constShapeFun :: PermExpr (LLVMShapeType w) -> SomeShapeFun w
-constShapeFun sh = SomeShapeFun CruCtxNil (emptyMb sh)
+constShapeFun sh = trace "Defining a constant shape function" SomeShapeFun CruCtxNil (emptyMb sh)
 
 -- | Build the shape @fieldsh(exists z:bv sz.eq(llvmword(z))@
 sizedIntShapeFun :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
@@ -265,11 +268,13 @@ instance RsConvert w RustName (SomeShapeFun w) where
     -- FIXME: figure out how to actually resolve names; for now we just look at
     -- the last string component...
     do let str = name $ last elems
+       traceM $ "Converting a RustName: " ++ show str
        env <- rciPermEnv <$> ask
        case lookupNamedShape env str of
          Just nmsh -> namedShapeShapeFun (natRepr w) nmsh
          Nothing ->
-           do n <- lookupName str (LLVMShapeRepr (natRepr w))
+           do traceM "Searching using lookupName..."
+              n <- lookupName str (LLVMShapeRepr (natRepr w))
               return $ constShapeFun (PExpr_Var n)
 
 -- | Get the "name" = sequence of identifiers out of a Rust path
@@ -323,14 +328,15 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        sh <- rsConvert w tp'
        return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
   rsConvert w (PathTy Nothing path _) =
-    do someShapeFn@(SomeShapeFun expected _ ) <- rsConvert w (rsPathName path)
+    do traceM $ "Converting a PathTy: " ++ show (rsPathName path)
+       someShapeFn@(SomeShapeFun expected _ ) <- rsConvert w (rsPathName path)
        someTypedArgs@(Some tyArgs) <- rsConvert w (rsPathParams path)
        let actual = typedPermExprsCtx tyArgs
        case tryApplySomeShapeFun someShapeFn someTypedArgs of
          Just shTp -> return shTp
          Nothing ->
            fail $ renderDoc $ fillSep
-           [ pretty "Converting PathTy: " <+> pretty $ show $ rsPathName path
+           [ pretty "Converting PathTy: " <+> pretty (show $ rsPathName path)
            , pretty "Expected arguments:" <+> pretty expected
            , pretty "Actual arguments:" <+> pretty actual
            ]
