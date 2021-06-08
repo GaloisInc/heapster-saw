@@ -70,7 +70,7 @@ import Verifier.SAW.OpenTerm
 
 -- | The lens into an 'RAssign' associated with a 'Member' proof
 --
--- FIXME HERE: this should go into Hobbits, possibly using 
+-- FIXME HERE: this should go into Hobbits, possibly using
 member :: Member ctx a -> Lens' (RAssign f ctx) (f a)
 member memb = lens (RL.get memb) (flip (RL.set memb))
 
@@ -693,7 +693,7 @@ cruCtxLookup (CruCtxCons _ tp) Member_Base = tp
 cruCtxLookup (CruCtxCons ctx _) (Member_Step memb) = cruCtxLookup ctx memb
 
 -- | Build a 'CruCtx' of the given length.
-cruCtxReplicate :: NatRepr n -> TypeRepr a -> Some CruCtx 
+cruCtxReplicate :: NatRepr n -> TypeRepr a -> Some CruCtx
 cruCtxReplicate n tp =
   case isZeroNat n of
     ZeroNat -> Some CruCtxNil

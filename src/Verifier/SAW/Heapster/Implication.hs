@@ -4600,7 +4600,7 @@ solveForPermListImpl ps_l mb_ps = case mbMatch mb_ps of
     pure (Some MNil)
 
 concatSomeRAssign :: [Some (RAssign f)] -> Some (RAssign f)
-concatSomeRAssign = foldl apSomeRAssign (Some MNil) 
+concatSomeRAssign = foldl apSomeRAssign (Some MNil)
 -- foldl is intentional, appending RAssign matches on the second argument
 
 apSomeRAssign :: Some (RAssign f) -> Some (RAssign f) -> Some (RAssign f)
