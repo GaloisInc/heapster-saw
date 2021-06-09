@@ -400,11 +400,12 @@ isRecursiveDef item =
     containsName _ (UnitD _) = False
 
 instance RsConvert w (Item Span) (SomePartialNamedShape w) where
-  rsConvert w s@(StructItem _ _ ident vd generics _)
+  rsConvert w s@(StructItem _ _ ident vd generics@(Generics _ tys _ _) _)
     | isRecursiveDef s =
       do Some ctx <- rsConvert w generics
          let ctx' = rustCtxCons ctx (name ident) (LLVMShapeRepr $ natRepr w)
-         sh <- inRustCtx ctx' $ rsConvert w vd
+             tyIdents = (\(TyParam _ i _ _ _) -> [i]) <$> tys
+         sh <- inRustCtxF ctx' $ \(_ :>: rec_n) -> withRecType (RustName [ident]) (RustName <$> tyIdents) rec_n $ rsConvert w vd
          return $ RecShape (name ident) (rustCtxCtx ctx) sh
     | otherwise =
       do Some ctx <- rsConvert w generics
