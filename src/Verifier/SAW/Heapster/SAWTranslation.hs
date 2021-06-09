@@ -24,6 +24,7 @@
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ImplicitParams #-}
 
 module Verifier.SAW.Heapster.SAWTranslation where
 
@@ -3830,7 +3831,7 @@ translateStmt loc mb_stmt m = case mbMatch mb_stmt of
 
 -- | Translate a 'TypedStmt' to a function on translation computations
 translateLLVMStmt ::
-  Mb ctx (TypedLLVMStmt w r ps_in ps_out) ->
+  Mb ctx (TypedLLVMStmt r ps_in ps_out) ->
   ImpTransM ext blocks tops ret ps_out (ctx :> r) OpenTerm ->
   ImpTransM ext blocks tops ret ps_in ctx OpenTerm
 translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
@@ -3875,6 +3876,7 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
       let (_, p_ret) =
             unPTransLLVMField "translateLLVMStmt: TypedLLVMLoad: expected field perm"
             (knownNat @sz) p_ptr in
+      withKnownNat ?ptrWidth $
       RL.append
       (pctx :>: PTrans_Conj [APTrans_LLVMField
                              (mbCombine RL.typeCtxProxies $
@@ -3890,6 +3892,7 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
                         (_ :: DistPerms ps) cur_perms |] ->
     let prx_l = mbLifetimeCurrentPermsProxies cur_perms
         prx_ps :: Proxy (ps :> LLVMPointerType w) = Proxy in
+    withKnownNat ?ptrWidth $
     inExtTransM ETrans_Unit $
     withPermStackM id
     (\(RL.split prx_ps prx_l -> (pctx :>: _p_ptr, pctx_l)) ->
@@ -3906,6 +3909,7 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
   [nuMP| TypedLLVMAlloca _ (mb_fperm :: LLVMFramePerm w) mb_sz |] ->
     let sz = mbLift mb_sz
         w :: Proxy w = Proxy in
+    withKnownNat ?ptrWidth $
     inExtTransM ETrans_LLVM $
     translateClosed (llvmFieldsPermOfSize w sz) >>= \ptrans_tp ->
     withPermStackM (:>: Member_Base)
@@ -3918,6 +3922,7 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
     m
   
   [nuMP| TypedLLVMCreateFrame |] ->
+    withKnownNat ?ptrWidth $
     inExtTransM ETrans_LLVMFrame $
     withPermStackM (:>: Member_Base)
     (:>: PTrans_Conj [APTrans_LLVMFrame $ fmap (const []) (extMb mb_stmt)])
@@ -3938,6 +3943,7 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
     m
   
   [nuMP| TypedLLVMResolveGlobal gsym (p :: ValuePerm (LLVMPointerType w))|] ->
+    withKnownNat ?ptrWidth $
     inExtTransM ETrans_LLVM $
     do env <- infoEnv <$> ask
        ptrans <- translate $ extMb p
@@ -3949,7 +3955,7 @@ translateLLVMStmt mb_stmt m = case mbMatch mb_stmt of
          Just (_, ts) ->
            withPermStackM (:>: Member_Base) (:>: typeTransF ptrans ts) m
   
-  [nuMP| TypedLLVMIte mb_r1 _ _ |] ->
+  [nuMP| TypedLLVMIte _ mb_r1 _ _ |] ->
     inExtTransM ETrans_LLVM $
     do b <- translate1 $ extMb mb_r1
        tptrans <-
@@ -4156,9 +4162,11 @@ translateBlockMapBodies mapTrans =
 
 
 -- | Translate a typed CFG to a SAW term
-translateCFG :: PermCheckExtC ext => PermEnv ->
-                TypedCFG ext blocks ghosts inits ret ->
-                OpenTerm
+translateCFG ::
+  PermCheckExtC ext =>
+  PermEnv ->
+  TypedCFG ext blocks ghosts inits ret ->
+  OpenTerm
 translateCFG env (cfg :: TypedCFG ext blocks ghosts inits ret) =
   let h = tpcfgHandle cfg
       fun_perm = tpcfgFunPerm cfg
@@ -4256,12 +4264,12 @@ someCFGAndPermLRT env (SomeCFGAndPerm _ _ _
 
 -- | Extract the 'FunPerm' of a 'SomeCFGAndPerm' as a permission on LLVM
 -- function pointer values
-someCFGAndPermPtrPerm :: (1 <= ArchWidth arch, KnownNat (ArchWidth arch),
-                          w ~ ArchWidth arch) =>
-                         NatRepr w -> SomeCFGAndPerm (LLVM arch) ->
-                         ValuePerm (LLVMPointerType w)
-someCFGAndPermPtrPerm w (SomeCFGAndPerm _ _ _ fun_perm) =
-  withKnownNat w $ ValPerm_Conj1 $ mkPermLLVMFunPtr w fun_perm
+someCFGAndPermPtrPerm ::
+  HasPtrWidth w =>
+  SomeCFGAndPerm LLVM ->
+  ValuePerm (LLVMPointerType w)
+someCFGAndPermPtrPerm (SomeCFGAndPerm _ _ _ fun_perm) =
+  withKnownNat ?ptrWidth $ ValPerm_Conj1 $ mkPermLLVMFunPtr ?ptrWidth fun_perm
 
 
 -- | Type-check a set of 'CFG's against their function permissions and translate
@@ -4273,10 +4281,10 @@ someCFGAndPermPtrPerm w (SomeCFGAndPerm _ _ _ fun_perm) =
 -- that defines the functions mutually recursively in terms of themselves, where
 -- each @tpi@ is the @i@th type in @lrts@
 tcTranslateCFGTupleFun ::
-  (1 <= ArchWidth arch, KnownNat (ArchWidth arch), w ~ ArchWidth arch) =>
-  NatRepr w -> PermEnv -> EndianForm -> [SomeCFGAndPerm (LLVM arch)] ->
+  HasPtrWidth w =>
+  PermEnv -> EndianForm -> [SomeCFGAndPerm LLVM] ->
   (OpenTerm, OpenTerm)
-tcTranslateCFGTupleFun w env endianness cfgs_and_perms =
+tcTranslateCFGTupleFun env endianness cfgs_and_perms =
   let lrts = map (someCFGAndPermLRT env) cfgs_and_perms in
   let lrts_tm =
         foldr (\lrt lrts' -> ctorOpenTerm "Prelude.LRT_Cons" [lrt,lrts'])
@@ -4289,18 +4297,19 @@ tcTranslateCFGTupleFun w env endianness cfgs_and_perms =
                              (globalOpenTerm
                               "Prelude.lrtToType")) lrts)) $ \funs ->
   let env' =
+        withKnownNat ?ptrWidth $
         permEnvAddGlobalSyms env $
         zipWith (\cfg_and_perm f ->
                   PermEnvGlobalEntry
                   (someCFGAndPermSym cfg_and_perm)
-                  (someCFGAndPermPtrPerm w cfg_and_perm)
+                  (someCFGAndPermPtrPerm cfg_and_perm)
                   [f])
         cfgs_and_perms funs in
   tupleOpenTerm $ flip map (zip cfgs_and_perms funs) $ \(cfg_and_perm, _) ->
   case cfg_and_perm of
     SomeCFGAndPerm sym _ cfg fun_perm ->
       trace ("Type-checking " ++ show sym) $
-      translateCFG env' $ tcCFG env' endianness fun_perm cfg
+      translateCFG env' $ tcCFG ?ptrWidth env' endianness fun_perm cfg
 
 
 -- | Make a "coq-safe" identifier from a string that might contain
@@ -4313,7 +4322,7 @@ mkSafeIdent :: ModuleName -> String -> Ident
 mkSafeIdent _ [] = "_"
 mkSafeIdent mnm nm =
   let is_safe_char c = isAlphaNum c || c == '_' || c == '\'' in
-  mkIdent mnm $
+  mkIdent mnm $ Data.Text.pack $
   (if nm!!0 == '\'' then ('_' :) else id) $
   concatMap
   (\c -> if is_safe_char c then [c] else
@@ -4328,13 +4337,13 @@ mkSafeIdent mnm nm =
 -- with the name @"n__tuple_fun"@ will also be added, where @n@ is the name
 -- associated with the first CFG in the list.
 tcTranslateAddCFGs ::
-  (1 <= ArchWidth arch, KnownNat (ArchWidth arch), w ~ ArchWidth arch) =>
+  HasPtrWidth w =>
   SharedContext -> ModuleName ->
-  NatRepr w -> PermEnv -> EndianForm -> [SomeCFGAndPerm (LLVM arch)] ->
+  PermEnv -> EndianForm -> [SomeCFGAndPerm LLVM] ->
   IO PermEnv
-tcTranslateAddCFGs sc mod_name w env endianness cfgs_and_perms =
+tcTranslateAddCFGs sc mod_name env endianness cfgs_and_perms =
   do let (lrts, tup_fun) =
-           tcTranslateCFGTupleFun w env endianness cfgs_and_perms
+           tcTranslateCFGTupleFun env endianness cfgs_and_perms
      let tup_fun_ident =
            mkSafeIdent mod_name (someCFGAndPermToName (head cfgs_and_perms)
                                  ++ "__tuple_fun")
@@ -4353,9 +4362,9 @@ tcTranslateAddCFGs sc mod_name w env endianness cfgs_and_perms =
               projTupleOpenTerm i (globalOpenTerm tup_fun_ident)
             let ident = mkSafeIdent mod_name (someCFGAndPermToName cfg_and_perm)
             scInsertDef sc mod_name ident tp tm
-            return $ PermEnvGlobalEntry
+            return $ withKnownNat ?ptrWidth $ PermEnvGlobalEntry
               (someCFGAndPermSym cfg_and_perm)
-              (someCFGAndPermPtrPerm w cfg_and_perm)
+              (someCFGAndPermPtrPerm cfg_and_perm)
               [globalOpenTerm ident])
        cfgs_and_perms [0 ..]
      return $ permEnvAddGlobalSyms env new_entries

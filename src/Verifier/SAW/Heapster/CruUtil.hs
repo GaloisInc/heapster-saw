@@ -369,10 +369,10 @@ instance NuMatchingAny1 (EmptyExprExtension f) where
 
 $(mkNuMatching [t| AVXOp1 |])
 $(mkNuMatching [t| forall f tp. NuMatchingAny1 f => ExtX86 f tp |])
-$(mkNuMatching [t| forall arch f tp. NuMatchingAny1 f =>
-                LLVMExtensionExpr arch f tp |])
+$(mkNuMatching [t| forall f tp. NuMatchingAny1 f =>
+                LLVMExtensionExpr f tp |])
 
-instance NuMatchingAny1 f => NuMatchingAny1 (LLVMExtensionExpr arch f) where
+instance NuMatchingAny1 f => NuMatchingAny1 (LLVMExtensionExpr f) where
   nuMatchingAny1Proof = nuMatchingProof
 
 {-
