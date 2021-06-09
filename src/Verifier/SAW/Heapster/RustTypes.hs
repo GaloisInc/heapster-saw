@@ -290,6 +290,11 @@ rsPathParams :: Path a -> [PathParameters a]
 rsPathParams (Path _ segments _) =
   mapMaybe (\(PathSegment _ maybe_params _) -> maybe_params) segments
 
+-- | Modify a 'RustConvM' to be run with a recursive type
+withRecType :: (1 <= w, KnownNat w) => RustName -> [RustName] -> Name (LLVMShapeType w) ->
+               RustConvM a -> RustConvM a
+withRecType rust_n rust_ns rec_n = local (\info -> info { rciRecType = Just (rust_n, rust_ns, Some (Typed knownRepr rec_n)) })
+
 
 ----------------------------------------------------------------------
 -- * Converting Rust Types to Heapster Shapes
