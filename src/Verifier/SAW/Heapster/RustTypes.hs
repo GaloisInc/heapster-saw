@@ -34,7 +34,6 @@ import Data.List hiding (span)
 import GHC.TypeLits
 import Data.Functor.Constant
 import Data.Functor.Product
-import Debug.Trace (trace, traceM)
 import Control.Applicative
 import Control.Monad.Reader
 import Control.Monad.Except
@@ -140,15 +139,21 @@ rustCtxOfNames :: TypeRepr a -> [String] -> Some RustCtx
 rustCtxOfNames tp =
   foldl (\(Some ctx) name -> Some (ctx :>: Pair (Constant name) tp)) (Some MNil)
 
--- | Run a 'RustConvM' computation in a context of bound type-level variables
-inRustCtx :: NuMatching a => RustCtx ctx -> RustConvM a ->
-             RustConvM (Mb ctx a)
-inRustCtx ctx m =
-  mbM $ nuMulti (RL.map (\_-> Proxy) ctx) $ \ns ->
+-- | Run a 'RustConvM' computation in a context of bound type-level variables,
+-- where the bound names are passed to the computation
+inRustCtxF :: NuMatching a => RustCtx ctx -> (RAssign Name ctx -> RustConvM a) ->
+              RustConvM (Mb ctx a)
+inRustCtxF ctx m =
+  mbM $ nuMulti (RL.map (\_ -> Proxy) ctx) $ \ns ->
   let ns_ctx =
         RL.toList $ RL.map2 (\n (Pair (Constant str) tp) ->
                               Constant (str, Some (Typed tp n))) ns ctx in
-  local (\info -> info { rciCtx = ns_ctx ++ rciCtx info }) m
+  local (\info -> info { rciCtx = ns_ctx ++ rciCtx info }) (m ns)
+
+-- | Run a 'RustConvM' computation in a context of bound type-level variables
+inRustCtx :: NuMatching a => RustCtx ctx -> RustConvM a ->
+             RustConvM (Mb ctx a)
+inRustCtx ctx m = inRustCtxF ctx (const m)
 
 -- | Class for a generic "conversion from Rust" function, given the bit width of
 -- the pointer type
@@ -200,7 +205,7 @@ tryApplySomeShapeFun _ _ = Nothing
 
 -- | Build a 'SomeShapeFun' with no arguments
 constShapeFun :: PermExpr (LLVMShapeType w) -> SomeShapeFun w
-constShapeFun sh = trace "Defining a constant shape function" SomeShapeFun CruCtxNil (emptyMb sh)
+constShapeFun sh = SomeShapeFun CruCtxNil (emptyMb sh)
 
 -- | Build the shape @fieldsh(exists z:bv sz.eq(llvmword(z))@
 sizedIntShapeFun :: (1 <= w, KnownNat w, 1 <= sz, KnownNat sz) =>
@@ -268,13 +273,11 @@ instance RsConvert w RustName (SomeShapeFun w) where
     -- FIXME: figure out how to actually resolve names; for now we just look at
     -- the last string component...
     do let str = name $ last elems
-       traceM $ "Converting a RustName: " ++ show str
        env <- rciPermEnv <$> ask
        case lookupNamedShape env str of
          Just nmsh -> namedShapeShapeFun (natRepr w) nmsh
          Nothing ->
-           do traceM "Searching using lookupName..."
-              n <- lookupName str (LLVMShapeRepr (natRepr w))
+           do n <- lookupName str (LLVMShapeRepr (natRepr w))
               return $ constShapeFun (PExpr_Var n)
 
 -- | Get the "name" = sequence of identifiers out of a Rust path
@@ -328,8 +331,7 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        sh <- rsConvert w tp'
        return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
   rsConvert w (PathTy Nothing path _) =
-    do traceM $ "Converting a PathTy: " ++ show (rsPathName path)
-       someShapeFn@(SomeShapeFun expected _ ) <- rsConvert w (rsPathName path)
+    do someShapeFn@(SomeShapeFun expected _ ) <- rsConvert w (rsPathName path)
        someTypedArgs@(Some tyArgs) <- rsConvert w (rsPathParams path)
        let actual = typedPermExprsCtx tyArgs
        case tryApplySomeShapeFun someShapeFn someTypedArgs of
