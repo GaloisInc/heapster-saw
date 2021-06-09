@@ -399,6 +399,7 @@ isRecursiveDef item =
     containsName i (TupleD fields _) = any (isBoxed i) $ typeOf <$> fields
     containsName _ (UnitD _) = False
 
+-- | NOTE: The translation of recursive types ignores lifetime parameters for now
 instance RsConvert w (Item Span) (SomePartialNamedShape w) where
   rsConvert w s@(StructItem _ _ ident vd generics@(Generics _ tys _ _) _)
     | isRecursiveDef s =
@@ -411,11 +412,12 @@ instance RsConvert w (Item Span) (SomePartialNamedShape w) where
       do Some ctx <- rsConvert w generics
          sh <- inRustCtx ctx $ rsConvert w vd
          return $ NonRecShape (name ident) (rustCtxCtx ctx) sh
-  rsConvert w e@(Enum _ _ ident variants generics _)
+  rsConvert w e@(Enum _ _ ident variants generics@(Generics _ tys _ _) _)
     | isRecursiveDef e =
       do Some ctx <- rsConvert w generics
          let ctx' = rustCtxCons ctx (name ident) (LLVMShapeRepr $ natRepr w)
-         sh <- inRustCtx ctx' $ rsConvert w variants
+             tyIdents = (\(TyParam _ i _ _ _) -> [i]) <$> tys
+         sh <- inRustCtxF ctx' $ \(_ :>: rec_n) -> withRecType (RustName [ident]) (RustName <$> tyIdents) rec_n $ rsConvert w variants
          return $ RecShape (name ident) (rustCtxCtx ctx) sh
     | otherwise =
       do Some ctx <- rsConvert w generics
