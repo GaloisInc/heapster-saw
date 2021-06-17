@@ -263,7 +263,7 @@ namedTypeTable w =
 
 -- | A fully qualified Rust path without any of the parameters; e.g.,
 -- @Foo<X>::Bar<Y,Z>::Baz@ just becomes @[Foo,Bar,Baz]@
-newtype RustName = RustName [Ident]
+newtype RustName = RustName [Ident] deriving (Eq)
 
 instance Show RustName where
   show (RustName ids) = concat $ intersperse "::" $ map show ids
@@ -289,6 +289,24 @@ rsPathName (Path _ segments _) =
 rsPathParams :: Path a -> [PathParameters a]
 rsPathParams (Path _ segments _) =
   mapMaybe (\(PathSegment _ maybe_params _) -> maybe_params) segments
+
+-- | Get the 'RustName' of a type, if it's a 'PathTy'
+tyName :: Ty a -> Maybe RustName
+tyName (PathTy _ path _) = Just $ rsPathName path
+tyName _ = Nothing
+
+isNamedType :: Ty a -> Bool
+isNamedType (PathTy _ _ _) = True
+isNamedType _ = False
+
+isNamedParams :: PathParameters a -> Bool
+isNamedParams (AngleBracketed _ tys _ _) = all isNamedType tys
+isNamedParams _ = error "Parenthesized types not supported"
+
+-- | Get all of the 'RustName's of path parameters, if they're angle-bracketed
+pParamNames :: PathParameters a -> [RustName]
+pParamNames (AngleBracketed _ tys _ _) = mapMaybe tyName tys
+pParamNames _ = error "Parenthesized types not supported"
 
 -- | Modify a 'RustConvM' to be run with a recursive type
 withRecType :: (1 <= w, KnownNat w) => RustName -> [RustName] -> Name (LLVMShapeType w) ->
@@ -336,18 +354,27 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
        sh <- rsConvert w tp'
        return $ PExpr_PtrShape (Just PExpr_Read) (Just l) sh
   rsConvert w (PathTy Nothing path _) =
-    do someShapeFn@(SomeShapeFun expected _ ) <- rsConvert w (rsPathName path)
-       someTypedArgs@(Some tyArgs) <- rsConvert w (rsPathParams path)
-       let actual = typedPermExprsCtx tyArgs
-       case tryApplySomeShapeFun someShapeFn someTypedArgs of
-         Just shTp -> return shTp
-         Nothing ->
-           fail $ renderDoc $ fillSep
-           [ pretty "Converting PathTy: " <+> pretty (show $ rsPathName path)
-           , pretty "Expected arguments:" <+> pretty expected
-           , pretty "Actual arguments:" <+> pretty actual
-           ]
-           -- fail $ renderDoc $ pretty "Failed to apply shape funtion to arguments"
+    do mrec <- asks rciRecType
+       case mrec of
+         Just (rec_n, rec_arg_ns, sh_nm)
+           | rec_n == rsPathName path &&
+             all isNamedParams (rsPathParams path) &&
+             rec_arg_ns == concatMap pParamNames (rsPathParams path) ->
+             PExpr_Var <$> castTypedM "TypedName" (LLVMShapeRepr (natRepr w)) sh_nm
+         Just (rec_n, _, _)
+           | rec_n == rsPathName path -> fail "Arguments do not match"
+         _ ->
+           do someShapeFn@(SomeShapeFun expected _ ) <- rsConvert w (rsPathName path)
+              someTypedArgs@(Some tyArgs) <- rsConvert w (rsPathParams path)
+              let actual = typedPermExprsCtx tyArgs
+              case tryApplySomeShapeFun someShapeFn someTypedArgs of
+                Just shTp -> return shTp
+                Nothing ->
+                  fail $ renderDoc $ fillSep
+                  [ pretty "Converting PathTy: " <+> pretty (show $ rsPathName path)
+                  , pretty "Expected arguments:" <+> pretty expected
+                  , pretty "Actual arguments:" <+> pretty actual
+                  ]
   rsConvert (w :: prx w) (BareFn _ abi rust_ls2 fn_tp span) =
     do Some3FunPerm fun_perm <- rsConvertMonoFun w span abi rust_ls2 fn_tp
        let args = funPermArgs fun_perm
