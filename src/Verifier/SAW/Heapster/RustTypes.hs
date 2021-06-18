@@ -424,7 +424,6 @@ isRecursiveDef item =
         TupTy ts _                 -> any (tyContainsName i) ts
         PathTy _ (Path _ segs _) _ -> any (segContainsName i) segs
         ParenTy t _                -> tyContainsName i t
-        BareFn _ _ _ _ _           -> error "Bare functions not supported"
         _                          -> False
 
     segContainsName :: Ident -> PathSegment Span -> Bool
