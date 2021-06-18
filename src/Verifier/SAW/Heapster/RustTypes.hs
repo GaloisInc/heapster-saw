@@ -295,10 +295,12 @@ tyName :: Ty a -> Maybe RustName
 tyName (PathTy _ path _) = Just $ rsPathName path
 tyName _ = Nothing
 
+-- | Decide whether a Rust type is named (i.e. a 'PathTy')
 isNamedType :: Ty a -> Bool
 isNamedType (PathTy _ _ _) = True
 isNamedType _ = False
 
+-- | Decide whether 'PathParameters' are all named types (angle-bracketed only)
 isNamedParams :: PathParameters a -> Bool
 isNamedParams (AngleBracketed _ tys _ _) = all isNamedType tys
 isNamedParams _ = error "Parenthesized types not supported"
