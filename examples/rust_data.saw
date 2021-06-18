@@ -124,7 +124,7 @@ heapster_typecheck_fun_rename env list_head_sym "list_head" "<'a> fn (l: &'a Lis
 
 // list_head_impl
 list_head_impl_sym <- heapster_find_symbol env "14list_head_impl";
-heapster_typecheck_fun_rename env list_head_impl_sym "list_head_impl" "<'a> fn (l: &'a List<u64>) -> Result<u64,()>";
+//heapster_typecheck_fun_rename env list_head_impl_sym "list_head_impl" "<'a> fn (l: &'a List<u64>) -> Result<u64,()>";
 //heapster_typecheck_fun_rename env list_head_impl_sym "list_head_impl" "(rw:rwmodality).arg0:List<fieldsh(int64<>),8,rw,always> -o ret:(struct(eq(llvmword(0)),exists z:bv 64. eq(llvmword(z)))) or (struct(eq(llvmword(1)),true))";
 
 // StrStruct::new
