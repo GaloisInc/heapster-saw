@@ -414,11 +414,21 @@ isRecursiveDef item =
     _ -> False
 
   where
-    -- TODO: I hate this, it needs to be better
-    isBoxed :: Ident -> Ty Span -> Bool
-    isBoxed i (PathTy _ (Path _ [PathSegment box (Just (AngleBracketed _ [PathTy _ (Path _ [PathSegment i' _ _] _) _] _ _)) _] _) _) =
-      box == mkIdent "Box" && i == i'
-    isBoxed _ _ = False
+    tyContainsName :: Ident -> Ty Span -> Bool
+    tyContainsName i ty =
+      case ty of
+        Slice t _                  -> tyContainsName i t
+        Language.Rust.Syntax.Array t _ _ -> tyContainsName i t
+        Ptr _ t _                  -> tyContainsName i t
+        Rptr _ _ t _               -> tyContainsName i t
+        TupTy ts _                 -> any (tyContainsName i) ts
+        PathTy _ (Path _ segs _) _ -> any (segContainsName i) segs
+        ParenTy t _                -> tyContainsName i t
+        BareFn _ _ _ _ _           -> error "Bare functions not supported"
+        _                          -> False
+
+    segContainsName :: Ident -> PathSegment Span -> Bool
+    segContainsName i (PathSegment i' _ _) = i == i'
 
     typeOf :: StructField Span -> Ty Span
     typeOf (StructField _ _ t _ _) = t
@@ -427,8 +437,8 @@ isRecursiveDef item =
     getVD (Variant _ _ vd _ _) = vd
 
     containsName :: Ident -> VariantData Span -> Bool
-    containsName i (StructD fields _) = any (isBoxed i) $ typeOf <$> fields
-    containsName i (TupleD fields _) = any (isBoxed i) $ typeOf <$> fields
+    containsName i (StructD fields _) = any (tyContainsName i) $ typeOf <$> fields
+    containsName i (TupleD fields _) = any (tyContainsName i) $ typeOf <$> fields
     containsName _ (UnitD _) = False
 
 -- | NOTE: The translation of recursive types ignores lifetime parameters for now
