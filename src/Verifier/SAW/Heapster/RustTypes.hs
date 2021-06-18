@@ -384,6 +384,9 @@ instance RsConvert w (Ty Span) (PermExpr (LLVMShapeType w)) where
            Perm_LLVMFunPtr
            (FunctionHandleRepr (cruCtxToRepr args) (funPermRet fun_perm)) $
            ValPerm_Conj1 $ Perm_Fun fun_perm
+  rsConvert w (TupTy tys _) =
+    do tyShs <- mapM (rsConvert w) tys
+       return $ foldr PExpr_SeqShape PExpr_EmptyShape tyShs
   rsConvert _ tp = fail ("Rust type not supported: " ++ show tp)
 
 instance RsConvert w (Arg Span) (PermExpr (LLVMShapeType w)) where
