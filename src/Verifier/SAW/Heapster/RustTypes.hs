@@ -49,7 +49,7 @@ import qualified Data.Binding.Hobbits.NameSet as NameSet
 
 import Language.Rust.Syntax
 import Language.Rust.Parser
-import Language.Rust.Data.Ident (Ident(..), mkIdent, name)
+import Language.Rust.Data.Ident (Ident(..), name)
 
 import Prettyprinter as PP
 
@@ -427,7 +427,14 @@ isRecursiveDef item =
         _                          -> False
 
     segContainsName :: Ident -> PathSegment Span -> Bool
-    segContainsName i (PathSegment i' _ _) = i == i'
+    segContainsName i (PathSegment i' mParams _) =
+      i == i' || case mParams of
+                   Nothing -> False
+                   Just params -> paramsContainName i params
+
+    paramsContainName :: Ident -> PathParameters Span -> Bool
+    paramsContainName i (AngleBracketed _ tys _ _) = any (tyContainsName i) tys
+    paramsContainName _ (Parenthesized _ _ _) = error "Parenthesized types not supported"
 
     typeOf :: StructField Span -> Ty Span
     typeOf (StructField _ _ t _ _) = t
